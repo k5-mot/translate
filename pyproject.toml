@@ -1,0 +1,227 @@
+[project]
+name = "agent-skills"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "openai>=2.8.1",
+    "pillow>=12.0.0",
+    "portalocker>=3.2.0,<4",
+    "pypdfium2>=5.13.0,<6",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "typer>=0.20.0",
+    "langchain>=1.4.0",
+    "langchain-openai>=1.6.0",
+    "langchain-qdrant>=1.1.0",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "langfuse>=3,<5",
+    "qdrant-client>=1.16.0,<2",
+    "typing-extensions>=4.16.0",
+    "streamlit>=1.64.0",
+    "langchain-text-splitters>=1.1.2",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.63.0",
+    "pytest>=9.1.1",
+    "pytest-playwright",
+    "ruff>=0.15.22",
+    "ty>=0.0.61",
+]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+
+[tool.ruff.lint]
+preview = true
+explicit-preview-rules = true
+select = [
+    # Core
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+
+    # Modern Python
+    "UP",     # pyupgrade
+    "FA",     # future annotations
+    "FURB",   # modern Python refactoring
+
+    # Bugs / correctness
+    "B",      # flake8-bugbear
+    "BLE",    # blind except
+    "C4",     # comprehensions
+    "DTZ",    # datetime timezone
+    "PIE",    # miscellaneous unnecessary code
+    "RSE",    # raise improvements
+    "RET",    # return improvements
+    "SIM",    # simplify
+    "SLOT",   # __slots__
+    "TRY",    # exception handling
+    "RUF",    # Ruff-specific rules
+
+    # Type annotations
+    "ANN",    # flake8-annotations
+    "TC",     # typing-only imports
+    "PYI",    # typing / stub best practices
+
+    # Async
+    "ASYNC",  # async correctness
+
+    # Security
+    "S",      # flake8-bandit
+
+    # Maintainability
+    "C90",    # McCabe complexity
+    "PL",     # Pylint
+    "PERF",   # performance
+    "ARG",    # unused arguments
+    "ERA",    # commented-out code
+
+    # API / design
+    "A",      # builtins shadowing
+    "FBT",    # boolean trap
+    "SLF",    # private member access
+    "N",      # naming
+
+    # Exceptions / logging
+    "EM",     # exception messages
+    "G",      # logging format
+    "LOG",    # logging best practices
+
+    # Paths / filesystem
+    "PTH",    # pathlib
+
+    # Imports / modules
+    "ICN",    # import conventions
+    "INP",    # implicit namespace packages
+    "TID",    # tidy imports
+
+    # Tests
+    "PT",     # pytest style
+
+    # Debug leftovers
+    "T10",    # debugger calls
+    "T20",    # print / pprint
+
+    # String/style consistency
+    "Q",      # quotes
+    "ISC",    # implicit string concat
+    "COM",    # commas
+
+    # Other hygiene
+    "EXE",    # executable files / shebang
+    "PGH",    # pygrep-hooks
+    "YTT",    # sys.version misuse
+
+    # Framework
+    "FAST",
+
+    # Modernization
+    "FLY",
+
+    # Documentation
+    "D",
+    "D420",
+    "DOC102",
+    "DOC201",
+    "DOC202",
+    "DOC402",
+    "DOC403",
+    "DOC501",
+]
+
+# Ruff formatter と競合するルールは除外
+ignore = [
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+
+    "D203",
+    "D206",
+    "D300",
+
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "Q004",
+
+    "COM812",
+    "COM819",
+
+    "ISC002",
+
+    "D",
+    "DOC",
+    "S101",
+    "PLR2004",
+    "S603",
+    "S607",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 8
+
+[tool.ruff.lint.pylint]
+max-args = 5
+max-branches = 8
+max-returns = 5
+max-statements = 40
+
+# テストでは assert は当然使うので Bandit の S101 だけ除外
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",
+    "PLR2004",
+    "S603",
+    "S607",
+]
+# Pipeline code works with recursive Docling JSON, Pydantic schemas and subprocesses.
+# These targeted exclusions keep Ruff strict on correctness while allowing those shapes.
+"translate/**/*.py" = [
+    "ANN401",
+    "C90",
+    "E501",
+    "EM",
+    "FBT",
+    "PLR0912",
+    "PLR0913",
+    "PLR0915",
+    "PLR0917",
+    "PLR2004",
+    "S603",
+    "S607",
+    "TRY003",
+    "TRY004",
+]
+"main.py" = ["ANN401"]
+"cli.py" = ["TC001", "TC003"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ty.environment]
+extra-paths = [
+    "skills/translate-ja/scripts",
+    "skills/translate-ja-v2/scripts",
+    "skills/translate-ja-v3/scripts",
+    "skills/translate-ja-v4/scripts",
+    "skills/review-enja/scripts",
+    "scripts/translate-ja-v5",
+]
