@@ -54,7 +54,7 @@
 | Gate | Status | Notes |
 |---|---|---|
 | Preflight | PASS | 固定入力、Service、Model、容量および隔離先を確認 |
-| Register | FAIL | 約25分後に`REGISTER / RegistrationError`。専用Collection未作成、Point 0件 |
+| Register | PASS | hardening Change適用後、公開CLI Resumeがexit code 0。1079 Point、重複0件、revision 1種類 |
 | Translate | PENDING | 未実行 |
 | User conversion | PENDING | DOCX生成後に利用者へ引渡し |
 | Review | PENDING | 翻訳PDF受領後に実行 |
@@ -81,7 +81,23 @@
 - Input hash／source key／canonical fingerprint: 期待値と一致
 - Security: console、`run.json`、`failure.json`、`run.log`にCredentialまたはraw外部応答なし
 
-Registerは部分成功を報告せずResume可能なfailed Runを保持したため、atomicityと失敗契約はPASS。一方、公開failureが`RegistrationError`だけでextract／write／verifyのstageと安全な下位例外型を保持せず、根本原因を判別できない。固定入力の登録完了条件はFAILであり、製品Codeの診断性改善と大規模PDF登録修正を`harden-run-identity-and-reference-registration`へ移管して本ChangeのApplyを停止する。
+初回Registerは部分成功を報告せずResume可能なfailed Runを保持したため、atomicityと失敗契約はPASSだった。一方、当時の公開failureは`RegistrationError`だけでextract／write／verifyのstageと安全な下位例外型を保持せず、根本原因を判別できなかった。その時点では固定入力の登録完了条件をFAILとし、製品Codeの診断性改善と大規模PDF登録修正を`harden-run-identity-and-reference-registration`へ移管して本ChangeのApplyを停止した。以下はhardening適用後の再検証結果である。
+
+#### Hardening適用後のRegister再検証
+
+- Command: `QDRANT_COLLECTION=translate-acceptance-sample-pdf uv run python cli.py register inputs/sample.pdf --source-id acceptance-sample-pdf --resume 01a0bf06-60d8-7446-a63c-7f22e8ee698a`
+- Run ID: `01a0bf06-60d8-7446-a63c-7f22e8ee698a`（UUIDv7、RFC variant）
+- Resume wall time: `1709.313 s`（Task deadline 21,600秒以内）
+- Exit code／status／last task: `0`／`completed`／`REGISTER`
+- Input: 65,475,787 bytes、358 pages、SHA-256は固定入力と一致
+- PDF parts: 36件、最大10 pages、合計358 pages
+- Registered chunks: 1079件、chunk 0〜1078
+- Qdrant read-only check: Point 1079件、重複ID 0件、revision 1種類、revision欠落0件、対象source key 1079件、別source key 0件
+- Run artifacts: `registration.json`あり、`failure.json`なし、Run size 130,994,938 bytes
+- Diagnostics: 先行失敗は`task=REGISTER stage=write cause=TypeError`だけを公開し、同じrun IDでResume可能。成功確認前の誤成功0件
+- Security: console、`run.json`、`run.log`およびwarningにCredential、原文全文、raw外部応答、Docling job ID、画像binaryなし
+
+登録用Embedding、Docling抽出およびWorkflowのmodel呼出しは同時実行数1で実施した。登録済みの決定的Point IDはResume時にbatch単位で照合し、確認済みbatchのEmbeddingを繰り返さない。Register gateはPASSへ更新し、Translate以降を再開可能と判定する。
 
 ### Translate
 
@@ -97,7 +113,7 @@ PENDING
 
 ## Disposal Candidates
 
-- Run directories: 実行後にrun IDとsizeを追記する。
+- Run directories: `runs/01a0bf06-60d8-7446-a63c-7f22e8ee698a/`（130,994,938 bytes）。旧UUIDv4失敗RunはUUIDv7切替により製品操作対象外。
 - External exports: `C:\Users\merry\Desktop\translate-acceptance-output\verify-sample-pdf-end-to-end`
 - Qdrant Collection: `translate-acceptance-sample-pdf`
 

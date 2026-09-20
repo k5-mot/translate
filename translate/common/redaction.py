@@ -96,6 +96,16 @@ def safe_error(error: BaseException, secrets: Sequence[str] = ()) -> str:
 def safe_failure_reason(error: BaseException) -> str:
     """外部応答本文を保存せず、例外型とHTTP statusだけで原因を示す。"""
 
+    stage = getattr(error, "stage", None)
+    cause_type = getattr(error, "cause_type", None)
+    if (
+        type(error).__name__ == "RegistrationError"
+        and stage
+        in {"collect", "hash", "split", "extract", "write", "verify", "replace"}
+        and isinstance(cause_type, str)
+        and cause_type.isidentifier()
+    ):
+        return f"RegistrationError stage={stage} cause={cause_type}"
     status = getattr(error, "status_code", None)
     if not isinstance(status, int):
         response = getattr(error, "response", None)

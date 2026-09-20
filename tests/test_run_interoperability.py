@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
+import pytest
 from typer.testing import CliRunner
 
 import cli
 import main
-from translate.common.runs import RunRepository
+from translate.common.runs import InvalidRunIdError, RunRepository
 from translate.common.workspace import atomic_write_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
-    import pytest
 
     from translate.adapters import qdrant
     from translate.common.progress import ProgressCallback
@@ -133,11 +133,15 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
 
     settings = settings_factory(runs_dir=tmp_path / "runs")
     captured: list[str] = []
+    workspaces: list[Path | None] = []
 
     def fake_register(
-        _settings: Settings, sources: list[qdrant.RegistrationSource]
+        _settings: Settings,
+        sources: list[qdrant.RegistrationSource],
+        _workspace: Path | None = None,
     ) -> int:
         captured.extend(item.source_key for item in sources)
+        workspaces.append(_workspace)
         return len(sources)
 
     monkeypatch.setattr("translate.common.lifecycle.register_documents", fake_register)
@@ -166,6 +170,11 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
     assert result.exit_code == 0, result.output
     assert len(captured) == 2
     assert captured[0] == captured[1]
+    assert all(path is not None for path in workspaces)
+    assert all(path.name == "registration" for path in workspaces if path is not None)
+    assert all(
+        path.parent.name == ".workspace" for path in workspaces if path is not None
+    )
 
 
 def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
@@ -241,3 +250,55 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     )
     assert resumed_cli.exit_code == 0, resumed_cli.output
     assert (tmp_path / "ui.docx").read_bytes() == b"second:custom-template"
+
+
+def test_uuid4_run_is_excluded_and_all_public_operations_reject_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """旧UUIDv4 Runは一覧外となりCLI/UIの各操作で同じ理由を返す。"""
+
+    settings = settings_factory(runs_dir=tmp_path / "runs")
+    source = tmp_path / "reference.md"
+    source.write_text("content", encoding="utf-8")
+    repository = RunRepository(settings.runs_dir)
+    current = repository.create("register", {"reference": source}, {}, "fingerprint")
+    legacy_id = "00000000-0000-4000-8000-000000000001"
+    legacy_root = repository.root / legacy_id
+    legacy_root.mkdir()
+    metadata = json.loads(repository.paths(current.run_id).metadata.read_text())
+    metadata["run_id"] = legacy_id
+    (legacy_root / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    runner = CliRunner()
+    expected = "run_id must be a canonical UUIDv7"
+
+    listed = runner.invoke(cli.app, ["runs"])
+    resumed = runner.invoke(
+        cli.app,
+        ["register", str(source), "--resume", legacy_id],
+    )
+    exported = runner.invoke(
+        cli.app,
+        ["export", legacy_id, "--output-dir", str(tmp_path / "export")],
+    )
+    deleted = runner.invoke(cli.app, ["delete-run", legacy_id, "--confirm"])
+
+    assert listed.exit_code == 0
+    assert f"{legacy_id}\t" not in listed.output
+    assert expected in listed.output
+    for result in (resumed, exported, deleted):
+        assert result.exit_code != 0
+        assert expected in result.output
+        assert "Traceback" not in result.output
+
+    with pytest.raises(InvalidRunIdError, match="canonical UUIDv7"):
+        main._run_selected(  # noqa: SLF001
+            "register",
+            {"reference": source},
+            settings,
+            "llm",
+            legacy_id,
+        )

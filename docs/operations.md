@@ -17,6 +17,7 @@ runs/<run-id>/
     ├── failure.json（失敗中のみ）
     ├── logs/run.log
     ├── run.lock
+    ├── registration/pdf-parts/<source-key-hash>/
     └── <task-name>/
 ```
 
@@ -28,17 +29,40 @@ runs/<run-id>/
 
 RollbackではApplication codeを以前の版へ戻しても、新しい`runs/`を削除または旧layoutへ変換しません。再適用時の診断と再開に使えるよう、そのまま保持してください。旧版が新Runを読めない場合は新しい公開操作を停止し、既存のexport済み成果物を利用します。
 
-schema version 1の翻訳・比較Runは一覧、Download、export、明示削除および互換なResumeを維持します。version 1の参照登録Runはstable source keyを持たないため、登録Resumeだけを理由付きで拒否します。一覧・export・削除は可能です。元の参照File／Directoryをversion 2の新規Runとして`--source-id`付きで登録し、登録完了を確認してから旧Runを削除してください。Rollback時もQdrantの旧revisionを推測して削除せず、新しいsource keyによる再登録で置換します。
+Run IDはcanonical lower-case UUIDv7だけを受理します。この切替にUUIDv4との互換性、自動変換、directory改名およびmetadata書換えはありません。UUIDv4 Runは一覧から警告付きで除外され、Resume、exportおよび削除を同じ検証Errorで拒否します。Version更新前に、旧Versionで必要なUUIDv4成果物をRun root外へexportし、不要なUUIDv4 Runを明示削除してください。更新後に残したUUIDv4 directoryの処分が必要な場合は、旧Codeと切替前のRun root backupを対で復元して操作します。
+
+元の参照File／DirectoryはUUIDv7の新規Runとして、必要に応じて`--source-id`付きで登録します。Rollback時もQdrantの旧revisionを推測して削除せず、新しいsource keyによる再登録で置換します。新CodeをRollbackする場合、切替後のUUIDv7 Runと`registration-v2` Pointは別領域へ保持し、旧Versionへ読ませたり自動削除したりしません。
+
+## 📚 大規模PDFの参照登録
+
+PDF登録は原FileのSHA-256をstreaming計算し、`.workspace/registration/pdf-parts/`へ`PDF_SPLIT_PAGES`以下のpartをatomic保存します。complete manifestが一致する同じRunのResumeだけがpartを再利用します。各partはpage順にDoclingへ送り、global chunk indexを付け、Embedding、Qdrant upsertおよびretrieve確認を最大16件のbatchで行います。外部model requestとWorkflow nodeは同時数1で順番に実行します。Chunk方式は`registration-v2`としてrevisionへ含まれ、同じsource keyの全新Pointを確認した後だけ旧schema、設定違いおよび失敗済みrevisionを削除します。
+
+登録全体は一つのTask deadlineを共有します。途中失敗では確認済みの新Pointが一時的に残る場合がありますが、成功件数は報告せず旧revisionを保持します。外部Serviceを復旧して同じrun IDを明示Resumeすると、決定的なPoint IDへのupsertと最終cleanupで一つのrevisionへ収束します。Runを削除するとsplit Artifactも削除されますが、Qdrant Pointは別Lifecycleであり自動削除されません。
+
+登録失敗の`failure.json`、Run log、CLIおよびStreamlitには`REGISTER`、次のstage、下位例外型だけを診断値として表示します。
+
+| stage | 確認対象 |
+| --- | --- |
+| `collect` | 登録対象Fileの収集 |
+| `hash` | streaming SHA-256 |
+| `split` | PDFの分割Artifact作成・検証 |
+| `extract` | Docling変換またはText抽出・Chunk化 |
+| `write` | EmbeddingまたはQdrant upsert |
+| `verify` | 書込み済みPointのretrieve確認 |
+| `replace` | 確認後の旧revision削除 |
+
+raw外部応答、Credential、文書本文、File pathおよびDocling job IDは診断へ保存しません。`extract`ではDocling、`write`ではEmbedding／Qdrant書込み、`verify`ではPoint確認、`replace`では旧revision削除の到達性と設定を確認してください。
 
 ## 📊 容量監視とSupport
 
-Runは自動削除されません。CLIの`runs`またはStreamlitのRun一覧に表示される`size`と更新日時を定期的に確認し、保存volumeの空き容量へ運用上の閾値を設けてください。入力PDF、Docling archive、画像およびDOCXを含むため、Run数だけでは容量を見積もれません。
+Runは自動削除されません。CLIの`runs`またはStreamlitのRun一覧に表示される`size`と更新日時を定期的に確認し、保存volumeの空き容量へ運用上の閾値を設けてください。入力PDF、分割PDF、Docling archive、画像およびDOCXを含むため、Run数だけでは容量を見積もれません。大規模PDFでは入力copyに加えて分割Artifact分の空き容量を確保します。
 
 障害調査では次を記録します。
 
 - run ID、status、operation、`last_task`
 - `.workspace/logs/run.log`の秘密を除いた警告
 - `.workspace/failure.json`のTask、Page、Group、対象IDおよび安全な原因
+- 登録失敗時のstage、下位例外型、Task deadlineおよび外部Service health
 - 失敗TaskのPage、Groupまたは対象ID
 - 使用したApplication versionと外部Serviceの到達性
 
@@ -63,9 +87,12 @@ CLIの非対話削除では対象pathを確認して`--confirm`を指定しま�
 | 保守・Support | Capability Scenario、fingerprint差分、active failure診断、redact済みlog、品質gate、Dependency lock | OpenSpec tasks、Q-MAIN Verification Evidence、本書「容量監視とSupport」 | 完了 |
 | 廃止 | 自動削除なし、確認付き削除、root containment、export保持 | Run Repository test、CLI／Streamlit削除test、本書 | 完了 |
 
+本変更ではruntime Dependency、公開CLI optionおよびWord→PDF機能を追加していません。Word→PDF変換は利用者側Operationです。
+
 ## 🔖 参考文献
 
 - [ISO/IEC/IEEE 12207:2026](https://www.iso.org/standard/90219.html)
 - [OpenSpec gap-resolution design](../openspec/changes/resolve-translate-contract-verification-gaps/design.md)
 - [Run Lifecycle specification](../openspec/changes/establish-translate-ja-contracts/specs/run-lifecycle/spec.md)
 - [Q-MAIN Verification Evidence](../openspec/changes/resolve-translate-contract-verification-gaps/verification.md)
+- [Run identity and registration hardening design](../openspec/changes/harden-run-identity-and-reference-registration/design.md)

@@ -49,11 +49,13 @@ Lifecycleは登録Adapterへ`.workspace/registration/`を渡す。PDFごとにso
 
 OS temporary directoryだけを使う案は再実行時に分割を繰り返すため採用しない。Docling JSON全文をCheckpointへ永続化する案は本文保持量とschemaを増やすため、本Changeでは採用しない。
 
-### 4. Chunkを64件ずつupsertして同じbatchを確認する
+### 4. Chunkを16件ずつupsertして同じbatchを確認する
 
-抽出順にglobal chunk indexを割り当て、最大64件の`Document`とPoint IDをbufferする。bufferが上限へ達するかsource末尾になった時点でupsertし、同じID集合を有限retryでretrieveして全件確認する。初回batchだけCollectionを作成し、以降は既存Collectionへupsertする。64は内部定数としてTestで固定し、新しい環境変数やCLI optionは増やさない。
+抽出順にglobal chunk indexを割り当て、最大16件の`Document`とPoint IDをbufferする。bufferが上限へ達するかsource末尾になった時点でupsertし、同じID集合を有限retryでretrieveして全件確認する。初回batchだけCollectionを作成し、以降は既存Collectionへupsertする。16は単一のlocal Embedding modelへ過大な一括要求を送らない内部定数としてTestで固定し、新しい環境変数やCLI optionは増やさない。外部model requestとWorkflow nodeは`max_concurrency=1`で順番に実行し、同時実行しない。
 
-失敗済みRunの再実行は確認済みPointも同じIDでupsertするため重複しない。全sourceの全batchを確認するまでは旧revision削除を開始しない。途中で失敗した新revision Pointは残り得るが成功報告せず、Resumeまたは後続revisionの成功時に決定的に収束させる。全登録をmemoryへ保持する現方式と一括retrieveは、大規模入力でmemoryとrequest sizeが入力全体に比例するため廃止する。
+OpenAI互換のlocal Embedding serverが一時的な不正応答を`TypeError`として返す実挙動に対し、登録write境界だけで既存回数・deadline内の有限retryを行う。一般処理、検索および他stageの`TypeError`はretryせず、programming errorを無制限に覆い隠さない。
+
+失敗済みRunの再実行はbatchの決定的IDを先にretrieveし、全件確認済みなら再Embeddingを省略し、欠落があるbatchだけ同じIDでupsertするため重複しない。全sourceの全batchを確認するまでは旧revision削除を開始しない。途中で失敗した新revision Pointは残り得るが成功報告せず、Resumeまたは後続revisionの成功時に決定的に収束させる。全登録をmemoryへ保持する現方式と一括retrieveは、大規模入力でmemoryとrequest sizeが入力全体に比例するため廃止する。
 
 ### 5. Chunk schemaをregistration revisionへ含める
 
@@ -76,7 +78,7 @@ raw例外messageを共通redactionへ通して保存する案は、未知形式�
 | 品質ID | Design Approach | Trade-off | 検証Evidence |
 | --- | --- | --- | --- |
 | Q-FUNC | UUIDv7 bit layout、順序付きPDF part、global chunk index、version付きrevision | Chunk schema移行時にPoint IDが変わる | RFC field Unit Test、固定受入PDF、再登録件数照合 |
-| Q-PERF | streaming hash、10 page既定のpart、64件batch、登録全体deadline | 外部request回数は増える | 全量読込み禁止Test、最大part page数／batch件数spy、wall time |
+| Q-PERF | streaming hash、10 page既定のpart、16件batch、登録全体deadline | 外部request回数は増える | 全量読込み禁止Test、最大part page数／batch件数spy、wall time |
 | Q-COMP | CLI／UI共通のUUIDv7限定validator、optional failure field、stable source key | UUIDv4 Runは利用不能になる | CLI↔UIのUUIDv7 Lifecycle／UUIDv4拒否Test、旧failure読込みTest |
 | Q-USE | allowlist stageと下位例外型を共通formatterで表示 | raw messageを使った詳細診断はできない | stage別CLI／AppTest、Run log／failure JSON検査 |
 | Q-REL | 絶対deadline、決定的upsert、batch確認後の全体置換 | 失敗中は新旧Pointが一時共存する | Docling／write／verify／replace障害注入、Resume Test |
@@ -96,7 +98,7 @@ raw例外messageを共通redactionへ通して保存する案は、未知形式�
 ## Risks / Trade-offs
 
 - [Docling part境界で段落または表が分断され、Chunk品質が変わる] → page順とpage範囲を保持し、固定PDFの代表箇所を検索して抽出欠落を確認する。
-- [有限batchによりEmbedding／Qdrant request回数が増える] → 64件を初期上限とし、wall timeとrate-limit retryをEvidenceへ記録する。
+- [有限batchによりEmbedding／Qdrant request回数が増える] → local modelの直列処理に合わせて16件を初期上限とし、wall timeとrate-limit retryをEvidenceへ記録する。
 - [登録失敗後に新revisionの部分Pointが残る] → 旧revisionを全確認前に削除せず、決定的upsertと後続成功時のrevision cleanupで収束させる。
 - [UUIDv7は生成時刻を公開する] → run IDは既に利用者が参照する運用識別子であり、秘密として扱わない。入力内容、利用者Identityまたはhost情報は埋め込まない。
 - [OS clockが逆行するとUUIDv7の辞書順が生成順と一致しない] → Run表示順と新旧判定には`updated_at`とfingerprintを使用し、ID順へ依存しない。
@@ -108,7 +110,7 @@ raw例外messageを共通redactionへ通して保存する案は、未知形式�
 1. UUIDv7 helperとUUIDv7限定validatorを追加し、新規Run Testをv7へ変更してUUIDv4拒否Testを追加する。
 2. `RegistrationError`と`FailureRecord`のoptional診断fieldを追加し、全stageと秘密sentinelの障害注入Testを通す。
 3. registration revision v2とlegacy cleanup Testを追加し、既存Qdrant revision置換を維持する。
-4. Lifecycleから登録workspaceを渡し、streaming hash、atomic PDF split、64件write／verify batchおよび全体deadlineを接続する。
+4. Lifecycleから登録workspaceを渡し、streaming hash、atomic PDF split、16件の直列write／verify batchおよび全体deadlineを接続する。
 5. Unit、Integration、CLI／UI、Windows／POSIXの品質Gateを実行する。
 6. `inputs/sample.pdf`を検証専用Collectionへ登録し、deadline、Chunk件数、重複、旧Point、診断情報および秘密漏えいを記録する。
 7. 問題時は新規登録を停止し、切替前のCodeとRun root backupを復元する。切替後のUUIDv7 Runと旧Qdrant revisionは別領域へ保持し、自動migrationや自動削除は行わない。

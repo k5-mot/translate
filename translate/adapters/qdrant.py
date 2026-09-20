@@ -12,7 +12,7 @@ import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
@@ -23,8 +23,13 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
+from translate.adapters import pdf
 from translate.adapters.docling import DoclingClient
-from translate.common.workspace import atomic_write_bytes, atomic_write_json
+from translate.common.workspace import (
+    atomic_write_bytes,
+    atomic_write_json,
+    sha256_file,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -32,10 +37,31 @@ if TYPE_CHECKING:
     from translate.common.settings import Settings
 
 SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
+CHUNK_SCHEMA = "registration-v2"
+CHUNK_SIZE = 1_000
+CHUNK_OVERLAP = 100
+# Bounded requests avoid scaling embedding and retrieve payloads with the whole input.
+REGISTRATION_BATCH_SIZE = 16
+RegistrationStage = Literal[
+    "collect", "hash", "split", "extract", "write", "verify", "replace"
+]
+REGISTRATION_STAGES = frozenset(
+    {"collect", "hash", "split", "extract", "write", "verify", "replace"}
+)
 
 
 class RegistrationError(RuntimeError):
-    """Qdrant登録が完全には確認できなかったことを示す。"""
+    """登録stageと安全な下位例外型だけを公開する。"""
+
+    def __init__(self, stage: RegistrationStage, cause: BaseException) -> None:
+        if stage not in REGISTRATION_STAGES:
+            msg = "invalid registration stage"
+            raise ValueError(msg)
+        self.stage = stage
+        self.cause_type = type(cause).__name__
+        super().__init__(
+            f"Qdrant registration failed during {stage}: {self.cause_type}"
+        )
 
 
 class _VerificationIncompleteError(OSError):
@@ -49,6 +75,14 @@ class RegistrationSource:
     path: Path
     logical_path: str
     source_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedSource:
+    source: RegistrationSource
+    source_hash: str
+    revision: str
+    parts: tuple[Path, ...]
 
 
 def _retryable(error: Exception) -> bool:
@@ -69,29 +103,67 @@ def _retryable(error: Exception) -> bool:
     )
 
 
-def _retry[T](settings: Settings, operation: Callable[[], T]) -> T:
-    deadline = time.monotonic() + settings.task_deadline_seconds
+def _retry[T](
+    settings: Settings,
+    operation: Callable[[], T],
+    *,
+    deadline: float | None = None,
+    retry_type_error: bool = False,
+) -> T:
+    expires = deadline or time.monotonic() + settings.task_deadline_seconds
     for attempt in range(1, settings.retry_attempts + 1):
+        _ensure_time(expires)
         try:
-            return operation()
+            result = operation()
         except Exception as error:
-            if (
-                not _retryable(error)
-                or attempt >= settings.retry_attempts
-                or time.monotonic() >= deadline
-            ):
+            retryable = _retryable(error) or (
+                retry_type_error and isinstance(error, TypeError)
+            )
+            if not retryable or attempt >= settings.retry_attempts:
                 raise
+            _ensure_time(expires)
             delay = min(
                 settings.retry_base_seconds * (2 ** (attempt - 1)),
                 settings.retry_max_seconds,
             )
             time.sleep(
                 random.uniform(  # noqa: S311
-                    0, min(delay, max(0.0, deadline - time.monotonic()))
+                    0, min(delay, max(0.0, expires - time.monotonic()))
                 )
             )
+        else:
+            _ensure_time(expires)
+            return result
     msg = "Qdrant operation exhausted without response"
     raise RuntimeError(msg)
+
+
+def _ensure_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        msg = "registration deadline exceeded"
+        raise TimeoutError(msg)
+    return remaining
+
+
+def _registration_client(settings: Settings, deadline: float) -> QdrantClient:
+    """現在の残時間を上限にした登録用Clientを生成する。"""
+
+    return QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+        timeout=_qdrant_timeout(settings, deadline),
+    )
+
+
+def _qdrant_timeout(settings: Settings, deadline: float) -> int:
+    """Qdrantの整数秒timeoutを残時間以下へ切り下げる。"""
+
+    available = min(settings.request_timeout_seconds, _ensure_time(deadline))
+    if available < 1:
+        msg = "registration deadline has less than one second remaining"
+        raise TimeoutError(msg)
+    return int(available)
 
 
 def _embeddings(settings: Settings) -> OpenAIEmbeddings:
@@ -150,10 +222,11 @@ def search(
     return results
 
 
-def _docling_text(path: Path, settings: Settings) -> str:
+def _docling_text(path: Path, settings: Settings, deadline: float) -> str:
     if not settings.docling_url:
         msg = "DOCLING_SERVER_URL is required for binary reference documents"
         raise ValueError(msg)
+    remaining = _ensure_time(deadline)
     payload, _ = DoclingClient(
         settings.docling_url,
         settings.docling_api_key,
@@ -163,8 +236,8 @@ def _docling_text(path: Path, settings: Settings) -> str:
         retry_attempts=settings.retry_attempts,
         retry_base_seconds=settings.retry_base_seconds,
         retry_max_seconds=settings.retry_max_seconds,
-        timeout_seconds=settings.request_timeout_seconds,
-        deadline_seconds=settings.task_deadline_seconds,
+        timeout_seconds=min(settings.request_timeout_seconds, remaining),
+        deadline_seconds=remaining,
     ).convert(path)
     with tempfile.TemporaryDirectory(prefix="qdrant-docling-") as temporary:
         archive_path = Path(temporary) / "result.zip"
@@ -181,131 +254,333 @@ def _docling_text(path: Path, settings: Settings) -> str:
         for item in value.get(collection, [])
         if isinstance(item, dict) and str(item.get("text", "")).strip()
     ]
+    _ensure_time(deadline)
     return "\n\n".join(texts)
 
 
-def _text(path: Path, settings: Settings) -> str:
+def _text(path: Path, settings: Settings, deadline: float) -> str:
     if path.suffix.casefold() in {".md", ".markdown", ".txt"}:
+        _ensure_time(deadline)
         return path.read_text(encoding="utf-8")
-    # Note 1: PDF, DOCX and PPTX share one extraction contract through Docling.
-    return _docling_text(path, settings)
+    return _docling_text(path, settings, deadline)
 
 
 def register_documents(
-    settings: Settings, paths: list[Path | RegistrationSource]
+    settings: Settings,
+    paths: list[Path | RegistrationSource],
+    workspace_dir: Path | None = None,
 ) -> int:
-    """文書を収集・分割・Embeddingし、Qdrantへ登録する。"""
+    """文書を有界単位で抽出・Embeddingし、確認後にrevisionを置換する。"""
 
-    stage = "collect"
+    deadline = time.monotonic() + settings.task_deadline_seconds
+    temporary: tempfile.TemporaryDirectory[str] | None = None
+    if workspace_dir is None:
+        temporary = tempfile.TemporaryDirectory(prefix="qdrant-registration-")
+        workspace = Path(temporary.name)
+    else:
+        workspace = workspace_dir
+        workspace.mkdir(parents=True, exist_ok=True)
+    try:
+        return _register(settings, paths, workspace, deadline)
+    finally:
+        if temporary is not None:
+            temporary.cleanup()
+
+
+def _register(
+    settings: Settings,
+    paths: list[Path | RegistrationSource],
+    workspace: Path,
+    deadline: float,
+) -> int:
     try:
         sources = _registration_sources(paths)
-        if not sources:
-            msg = "no supported reference documents found"
-            raise ValueError(msg)  # noqa: TRY301
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1_000, chunk_overlap=100)
-        documents: list[Document] = []
-        ids: list[str] = []
-        revisions: dict[str, tuple[str, str]] = {}
-        stage = "extract"
-        for source in sources:
-            path = source.path
-            source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
-            revisions[source.source_key] = (source.logical_path, source_hash)
-            for index, chunk in enumerate(splitter.split_text(_text(path, settings))):
-                documents.append(
-                    Document(
-                        page_content=chunk,
-                        metadata={
-                            "source": source.logical_path,
-                            "source_key": source.source_key,
-                            "source_hash": source_hash,
-                            "chunk": index,
-                        },
-                    )
-                )
+    except ValueError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        raise RegistrationError("collect", error) from None
+    if not sources:
+        msg = "no supported reference documents found"
+        raise ValueError(msg)
+
+    prepared: list[_PreparedSource] = []
+    for source in sources:
+        try:
+            _ensure_time(deadline)
+            source_hash = sha256_file(source.path)
+        except Exception as error:  # noqa: BLE001
+            raise RegistrationError("hash", error) from None
+        try:
+            parts = _source_parts(source, source_hash, settings, workspace, deadline)
+        except RegistrationError:
+            raise
+        except Exception as error:  # noqa: BLE001
+            raise RegistrationError("split", error) from None
+        prepared.append(
+            _PreparedSource(
+                source=source,
+                source_hash=source_hash,
+                revision=_registration_revision(source, source_hash, settings),
+                parts=parts,
+            )
+        )
+
+    try:
+        _ensure_time(deadline)
+        embedding = _embeddings(settings)
+    except Exception as error:  # noqa: BLE001
+        raise RegistrationError("write", error) from None
+
+    collection = settings.qdrant_collection or ""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+    )
+    documents: list[Document] = []
+    ids: list[str] = []
+    total = 0
+
+    for item in prepared:
+        chunk_index = 0
+        for part_number, part in enumerate(item.parts, 1):
+            try:
+                text = _text(part, settings, deadline)
+                chunks = splitter.split_text(text)
+                _ensure_time(deadline)
+            except Exception as error:  # noqa: BLE001
+                raise RegistrationError("extract", error) from None
+            for chunk in chunks:
+                metadata: dict[str, object] = {
+                    "source": item.source.logical_path,
+                    "source_key": item.source.source_key,
+                    "source_hash": item.source_hash,
+                    "registration_revision": item.revision,
+                    "chunk_schema": CHUNK_SCHEMA,
+                    "chunk": chunk_index,
+                }
+                if item.source.path.suffix.casefold() == ".pdf":
+                    metadata["part"] = part_number
+                documents.append(Document(page_content=chunk, metadata=metadata))
                 ids.append(
                     str(
                         uuid5(
                             NAMESPACE_URL,
-                            f"{source.source_key}:{source_hash}:{index}",
+                            f"{item.source.source_key}:{item.revision}:{chunk_index}",
                         )
                     )
                 )
-        if not documents:
-            msg = "reference documents contain no extractable text"
-            raise ValueError(msg)  # noqa: TRY301
-
-        client = QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
-        collection = settings.qdrant_collection or ""
-        embedding = _embeddings(settings)
-
-        def write_all() -> None:
-            if client.collection_exists(collection):
-                QdrantVectorStore(
-                    client=client,
-                    collection_name=collection,
-                    embedding=embedding,
-                ).add_documents(documents, ids=ids)
-                return
-            QdrantVectorStore.from_documents(
-                documents,
-                embedding,
-                ids=ids,
-                url=settings.qdrant_url,
-                api_key=settings.qdrant_api_key,
-                collection_name=collection,
-            )
-
-        stage = "write"
-        _retry(settings, write_all)
-
-        def verify_all() -> None:
-            records = client.retrieve(
-                collection_name=collection,
-                ids=ids,
-                with_payload=False,
-                with_vectors=False,
-            )
-            actual = {str(record.id) for record in records}
-            missing = set(ids) - actual
-            if missing:
-                msg = f"registration verification missing {len(missing)} point(s)"
-                raise _VerificationIncompleteError(msg)  # noqa: TRY301
-
-        stage = "verify"
-        _retry(settings, verify_all)
-
-        # Note 2: Verify the new revision before removing only older hashes.
-        stage = "replace"
-        for source_key, (_logical_path, source_hash) in revisions.items():
-            selector = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="metadata.source_key",
-                        match=models.MatchValue(value=source_key),
+                chunk_index += 1
+                total += 1
+                if len(documents) == REGISTRATION_BATCH_SIZE:
+                    _write_and_verify(
+                        settings,
+                        embedding,
+                        collection,
+                        documents,
+                        ids,
+                        deadline,
                     )
-                ],
-                must_not=[
-                    models.FieldCondition(
-                        key="metadata.source_hash",
-                        match=models.MatchValue(value=source_hash),
-                    )
-                ],
-            )
+                    documents = []
+                    ids = []
+
+    if documents:
+        _write_and_verify(
+            settings,
+            embedding,
+            collection,
+            documents,
+            ids,
+            deadline,
+        )
+    if total == 0:
+        error = ValueError("reference documents contain no extractable text")
+        raise RegistrationError("extract", error) from None
+
+    for item in prepared:
+        selector = models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.source_key",
+                    match=models.MatchValue(value=item.source.source_key),
+                )
+            ],
+            must_not=[
+                models.FieldCondition(
+                    key="metadata.registration_revision",
+                    match=models.MatchValue(value=item.revision),
+                )
+            ],
+        )
+        try:
             _retry(
                 settings,
-                lambda selector=selector: client.delete(
+                lambda selector=selector: _registration_client(
+                    settings, deadline
+                ).delete(
                     collection_name=collection,
                     points_selector=selector,
                     wait=True,
                 ),
+                deadline=deadline,
             )
-    except (ValueError, RegistrationError):
-        raise
+        except Exception as error:  # noqa: BLE001
+            raise RegistrationError("replace", error) from None
+    return total
+
+
+def _write_and_verify(
+    settings: Settings,
+    embedding: OpenAIEmbeddings,
+    collection: str,
+    documents: list[Document],
+    ids: list[str],
+    deadline: float,
+) -> None:
+    def batch_exists() -> bool:
+        client = _registration_client(settings, deadline)
+        if not client.collection_exists(collection):
+            return False
+        records = client.retrieve(
+            collection_name=collection,
+            ids=ids,
+            with_payload=False,
+            with_vectors=False,
+        )
+        actual = {str(record.id) for record in records}
+        return set(ids) <= actual
+
+    try:
+        if _retry(settings, batch_exists, deadline=deadline):
+            return
     except Exception as error:  # noqa: BLE001
-        msg = f"Qdrant registration failed during {stage}: {type(error).__name__}"
-        raise RegistrationError(msg) from None
-    return len(documents)
+        raise RegistrationError("verify", error) from None
+
+    def write_batch() -> None:
+        client = _registration_client(settings, deadline)
+        if client.collection_exists(collection):
+            QdrantVectorStore(
+                client=client,
+                collection_name=collection,
+                embedding=embedding,
+            ).add_documents(documents, ids=ids)
+            return
+        QdrantVectorStore.from_documents(
+            documents,
+            embedding,
+            ids=ids,
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+            collection_name=collection,
+            timeout=_qdrant_timeout(settings, deadline),
+        )
+
+    try:
+        # Some OpenAI-compatible local embedding servers surface a transient,
+        # malformed response as TypeError. Retry only this external write boundary.
+        _retry(
+            settings,
+            write_batch,
+            deadline=deadline,
+            retry_type_error=True,
+        )
+    except Exception as error:  # noqa: BLE001
+        raise RegistrationError("write", error) from None
+
+    def verify_batch() -> None:
+        client = _registration_client(settings, deadline)
+        records = client.retrieve(
+            collection_name=collection,
+            ids=ids,
+            with_payload=False,
+            with_vectors=False,
+        )
+        actual = {str(record.id) for record in records}
+        missing = set(ids) - actual
+        if missing:
+            msg = f"registration verification missing {len(missing)} point(s)"
+            raise _VerificationIncompleteError(msg)
+
+    try:
+        _retry(settings, verify_batch, deadline=deadline)
+    except Exception as error:  # noqa: BLE001
+        raise RegistrationError("verify", error) from None
+
+
+def _registration_revision(
+    source: RegistrationSource,
+    source_hash: str,
+    settings: Settings,
+) -> str:
+    binary = source.path.suffix.casefold() in {".pdf", ".docx", ".pptx"}
+    value = {
+        "schema": CHUNK_SCHEMA,
+        "source_hash": source_hash,
+        "suffix": source.path.suffix.casefold(),
+        "split_pages": (
+            settings.split_pages if source.path.suffix.casefold() == ".pdf" else None
+        ),
+        "docling": (
+            {
+                "ocr_preset": settings.docling_ocr_preset,
+                "ocr_lang": settings.docling_ocr_lang,
+                "force_ocr": settings.docling_force_ocr,
+            }
+            if binary
+            else None
+        ),
+        "chunk_size": CHUNK_SIZE,
+        "chunk_overlap": CHUNK_OVERLAP,
+    }
+    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _source_parts(
+    source: RegistrationSource,
+    source_hash: str,
+    settings: Settings,
+    workspace: Path,
+    deadline: float,
+) -> tuple[Path, ...]:
+    if source.path.suffix.casefold() != ".pdf":
+        return (source.path,)
+    key = hashlib.sha256(
+        f"{source.source_key}\0{source_hash}\0{settings.split_pages}".encode()
+    ).hexdigest()
+    target = workspace / "pdf-parts" / key
+    existing = _valid_pdf_parts(target, settings.split_pages)
+    if existing is not None:
+        return existing
+    _ensure_time(deadline)
+    pdf.split(source.path, target, settings.split_pages)
+    _ensure_time(deadline)
+    created = _valid_pdf_parts(target, settings.split_pages)
+    if created is None:
+        msg = "split PDF artifact is incomplete"
+        raise ValueError(msg)
+    return created
+
+
+def _valid_pdf_parts(root: Path, pages_per_part: int) -> tuple[Path, ...] | None:
+    manifest_path = root / "manifest.json"
+    if not (root / ".complete.json").is_file() or not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        items = sorted(manifest["parts"], key=lambda item: int(item["number"]))
+        parts: list[Path] = []
+        for item in items:
+            first = int(item["first_page"])
+            last = int(item["last_page"])
+            if first < 1 or last < first or last - first + 1 > pages_per_part:
+                return None
+            candidate = root / Path(str(item["path"])).name
+            if not candidate.is_file() or candidate.resolve().parent != root.resolve():
+                return None
+            parts.append(candidate)
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return None
+    return tuple(parts) if parts else None
 
 
 def _registration_sources(

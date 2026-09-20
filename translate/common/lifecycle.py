@@ -10,7 +10,12 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from translate.adapters.langfuse import bind_observation_context
-from translate.adapters.qdrant import RegistrationSource, register_documents
+from translate.adapters.qdrant import (
+    RegistrationError,
+    RegistrationSource,
+    RegistrationStage,
+    register_documents,
+)
 from translate.common.fingerprint import (
     Fingerprint,
     ResumeCompatibility,
@@ -62,6 +67,8 @@ class FailureRecord(BaseModel):
     target_id: str | None = None
     error_type: str
     reason: str
+    stage: RegistrationStage | None = None
+    cause_type: str | None = None
     failed_at: datetime
 
 
@@ -239,6 +246,7 @@ def execute_run(
         if event.phase != "failed":
             return
         error = event.error or RuntimeError("task failed")
+        registration = error if isinstance(error, RegistrationError) else None
         failure = FailureRecord(
             run_id=record.run_id,
             task=event.task,
@@ -247,6 +255,8 @@ def execute_run(
             target_id=event.target_id,
             error_type=type(error).__name__,
             reason=safe_failure_reason(error),
+            stage=registration.stage if registration is not None else None,
+            cause_type=(registration.cause_type if registration is not None else None),
             failed_at=datetime.now(UTC),
         )
         atomic_write_json(failure_path, failure.model_dump(mode="json"))
@@ -315,11 +325,16 @@ def execute_public_run(
     except Exception as error:  # noqa: BLE001
         failure = load_failure(repository, prepared.record.run_id)
         if failure is None:
+            registration = error if isinstance(error, RegistrationError) else None
             failure = FailureRecord(
                 run_id=prepared.record.run_id,
                 task=prepared.record.last_task or prepared.record.operation.upper(),
                 error_type=type(error).__name__,
                 reason=safe_failure_reason(error),
+                stage=registration.stage if registration is not None else None,
+                cause_type=(
+                    registration.cause_type if registration is not None else None
+                ),
                 failed_at=datetime.now(UTC),
             )
         raise PublicRunError(failure) from None
@@ -369,10 +384,12 @@ def format_failure(failure: FailureRecord) -> str:
         f"page={failure.page}" if failure.page is not None else None,
         f"group={failure.group}" if failure.group is not None else None,
         f"target={failure.target_id}" if failure.target_id is not None else None,
+        f"stage={failure.stage}" if failure.stage is not None else None,
     ]
     suffix = " ".join(item for item in targets if item)
     prefix = f"run_id={failure.run_id} task={failure.task}"
-    return f"{prefix} {suffix} cause={failure.reason}".replace("  ", " ")
+    cause = failure.cause_type or failure.reason
+    return f"{prefix} {suffix} cause={cause}".replace("  ", " ")
 
 
 def _copied_inputs(repository: RunRepository, record: RunRecord) -> dict[str, Path]:
@@ -435,6 +452,7 @@ def _execute_operation(
                 )
                 for item in prepared.record.inputs
             ],
+            prepared.paths.workspace / "registration",
         )
         result = prepared.paths.outputs / "registration.json"
         atomic_write_json(result, {"registered_chunks": count})

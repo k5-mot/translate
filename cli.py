@@ -21,7 +21,7 @@ from translate.common.lifecycle import (
     run_size,
 )
 from translate.common.progress import ProgressEvent
-from translate.common.runs import Operation, RunRepository
+from translate.common.runs import InvalidRunIdError, Operation, RunRepository
 from translate.common.settings import Backend, Settings, load_settings
 from translate.common.workspace import atomic_write_bytes
 
@@ -98,7 +98,7 @@ def _prepare(  # noqa: PLR0913, PLR0917
             selected,
             source_id,
         )
-    except ResumeRejectedError as error:
+    except (ResumeRejectedError, InvalidRunIdError) as error:
         raise typer.BadParameter(str(error), param_hint="--resume") from None
     typer.echo(
         f"run_id={prepared.record.run_id} "
@@ -232,7 +232,11 @@ def export_command(
     """完了Runの成果物を外部directoryへcopyする。"""
 
     repository = RunRepository(load_settings("convert").runs_dir)
-    for path in export_run(repository, run_id, output_dir):
+    try:
+        paths = export_run(repository, run_id, output_dir)
+    except InvalidRunIdError as error:
+        raise typer.BadParameter(str(error), param_hint="run_id") from None
+    for path in paths:
         typer.echo(path)
 
 
@@ -244,7 +248,10 @@ def delete_run(
     """停止済みRunをpath確認後に明示削除する。"""
 
     repository = RunRepository(load_settings("convert").runs_dir)
-    path = repository.paths(run_id).root
+    try:
+        path = repository.paths(run_id).root
+    except InvalidRunIdError as error:
+        raise typer.BadParameter(str(error), param_hint="run_id") from None
     typer.echo(f"delete target: {path}")
     approved = confirm
     if not approved and _is_interactive():

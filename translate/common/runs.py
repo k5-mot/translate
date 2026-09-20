@@ -9,10 +9,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
-from uuid import UUID, uuid4
+from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from translate.common.identifiers import uuid7
 from translate.common.redaction import redact_text, redact_value
 from translate.common.workspace import OutputLock, atomic_write_json
 
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 
 RunStatus = Literal["created", "running", "failed", "completed"]
 Operation = Literal["translate", "review", "register", "convert"]
+
+
+class InvalidRunIdError(ValueError):
+    """公開操作で受理できないRun ID。"""
 
 
 class RunInput(BaseModel):
@@ -85,16 +90,16 @@ class RunRecord(BaseModel):
     @field_validator("run_id")
     @classmethod
     def validate_run_id(cls, value: str) -> str:
-        """Run IDをcanonical UUID4だけに制限する。"""
+        """Run IDをcanonical UUIDv7だけに制限する。"""
 
         try:
             parsed = UUID(value)
         except ValueError as error:
-            msg = "run_id must be a canonical UUID4"
-            raise ValueError(msg) from error
-        if parsed.version != 4 or str(parsed) != value:
-            msg = "run_id must be a canonical UUID4"
-            raise ValueError(msg)
+            msg = "run_id must be a canonical UUIDv7"
+            raise InvalidRunIdError(msg) from error
+        if parsed.version != 7 or parsed.variant != RFC_4122 or str(parsed) != value:
+            msg = "run_id must be a canonical UUIDv7"
+            raise InvalidRunIdError(msg)
         return value
 
 
@@ -144,9 +149,9 @@ class RunRepository:
         settings_snapshot: dict[str, Any],
         fingerprint: str,
     ) -> RunRecord:
-        """UUID4 Runを作り、入力の正本copyとmetadataを保存する。"""
+        """UUIDv7 Runを作り、入力の正本copyとmetadataを保存する。"""
 
-        run_id = str(uuid4())
+        run_id = str(uuid7())
         paths = self.paths(run_id)
         paths.root.mkdir(parents=True, exist_ok=False)
         try:
@@ -227,9 +232,13 @@ class RunRepository:
             try:
                 record = _read_scanned_record(metadata)
             except (OSError, ValueError) as error:
+                reason = (
+                    str(error)
+                    if isinstance(error, InvalidRunIdError)
+                    else type(error).__name__
+                )
                 warnings.append(
-                    f"invalid run metadata excluded: {metadata.parent.name}: "
-                    f"{type(error).__name__}"
+                    f"invalid run metadata excluded: {metadata.parent.name}: {reason}"
                 )
                 continue
             records.append(record)
@@ -380,6 +389,7 @@ def _copy_verified(source: Path, target: Path) -> tuple[str, int]:
 
 
 def _read_scanned_record(metadata: Path) -> RunRecord:
+    RunRecord.validate_run_id(metadata.parent.name)
     record = RunRecord.model_validate_json(metadata.read_text(encoding="utf-8"))
     if metadata.parent.name != record.run_id:
         msg = "directory and metadata IDs differ"

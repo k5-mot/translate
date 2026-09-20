@@ -439,7 +439,10 @@ def _run(
     # Note 4: The context manager keeps the SQLite connection alive while streaming.
     with SqliteSaver.from_conn_string(str(work / "checkpoints.sqlite")) as saver:
         compiled = build_graph(settings).compile(checkpointer=saver)
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        config: RunnableConfig = {
+            "configurable": {"thread_id": thread_id},
+            "max_concurrency": 1,
+        }
         snapshot = compiled.get_state(config)
         existing = snapshot.values.get("docx") if snapshot.values else None
         if not snapshot.next and existing and Path(existing).exists():

@@ -372,7 +372,10 @@ def _run(
     }
     with SqliteSaver.from_conn_string(str(work / "checkpoints.sqlite")) as saver:
         compiled = build_graph(settings).compile(checkpointer=saver)
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        config: RunnableConfig = {
+            "configurable": {"thread_id": thread_id},
+            "max_concurrency": 1,
+        }
         snapshot = compiled.get_state(config)
         if not snapshot.next and snapshot.values and output.exists():
             return output

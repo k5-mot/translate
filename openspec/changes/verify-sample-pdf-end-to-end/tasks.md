@@ -9,9 +9,9 @@
 
 ## 2. 実PDFのReference Registration
 
-- [ ] 2.1 検証専用Collection設定で公開CLI `register inputs/sample.pdf --source-id acceptance-sample-pdf`を非対話実行し、exit code 0、run IDおよび1件以上の登録Chunk数を`verification.md`へ記録する（Q-FUNC、Q-USE）
-- [ ] 2.2 Register Runの`run.json`、`registration.json`、status、入力hash、source key、warningおよび容量を検査し、原文全文・Credential・画像binaryがmetadataへ含まれず、公開成功前に登録確認が完了していることを確認する（Q-REL、Q-SEC）
-- [ ] 2.3 Qdrantをread-only検索して対象source IDのPointだけが検証用Collectionへ存在し、Chunk重複、別source IDおよび既存Collectionへの変更が0件であることを確認する（Q-COMP、Q-REL）
+- [x] 2.1 検証専用Collection設定で公開CLI `register inputs/sample.pdf --source-id acceptance-sample-pdf`を非対話実行し、exit code 0、run IDおよび1件以上の登録Chunk数を`verification.md`へ記録する（Q-FUNC、Q-USE）
+- [x] 2.2 Register Runの`run.json`、`registration.json`、status、入力hash、source key、warningおよび容量を検査し、原文全文・Credential・画像binaryがmetadataへ含まれず、公開成功前に登録確認が完了していることを確認する（Q-REL、Q-SEC）
+- [x] 2.3 Qdrantをread-only検索して対象source IDのPointだけが検証用Collectionへ存在し、Chunk重複、別source IDおよび既存Collectionへの変更が0件であることを確認する（Q-COMP、Q-REL）
 
 製品Codeの診断性改善と大規模PDF登録修正は`harden-run-identity-and-reference-registration`へ移管する。本ChangeはそのApply／Verify完了後にTask 2.1〜2.3から再開する。
 
