@@ -6,18 +6,19 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
-    "openai>=2.8.1",
     "pillow>=12.0.0",
     "portalocker>=3.2.0,<4",
     "pypdfium2>=5.13.0,<6",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
     "typer>=0.20.0",
-    "langchain>=1.4.0",
+    "langchain>=1.4.0,<2",
+    "langchain-core>=1.4.0,<2",
     "langchain-openai>=1.6.0",
     "langchain-qdrant>=1.1.0",
-    "langgraph>=1.2.11",
+    "langgraph>=1.2.11,<2",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    "langsmith>=0.3,<1",
     "langfuse>=3,<5",
     "qdrant-client>=1.16.0,<2",
     "typing-extensions>=4.16.0",
@@ -37,6 +38,7 @@ dev = [
 [tool.ruff]
 line-length = 88
 indent-width = 4
+extend-exclude = [".agents"]
 
 [tool.ruff.lint]
 preview = true
@@ -126,15 +128,6 @@ select = [
     # Modernization
     "FLY",
 
-    # Documentation
-    "D",
-    "D420",
-    "DOC102",
-    "DOC201",
-    "DOC202",
-    "DOC402",
-    "DOC403",
-    "DOC501",
 ]
 
 # Ruff formatter と競合するルールは除外
@@ -216,12 +209,12 @@ docstring-code-line-length = "dynamic"
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.ty.environment]
-extra-paths = [
-    "skills/translate-ja/scripts",
-    "skills/translate-ja-v2/scripts",
-    "skills/translate-ja-v3/scripts",
-    "skills/translate-ja-v4/scripts",
-    "skills/review-enja/scripts",
-    "scripts/translate-ja-v5",
+[tool.ty.src]
+exclude = [".agents", "tests"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: 複数componentを接続する統合test",
+    "cli: CLIの公開操作を検証するtest",
+    "browser: Streamlitをbrowser経由で検証するtest",
 ]

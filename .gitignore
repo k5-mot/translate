@@ -1,0 +1,12 @@
+.env
+.agents/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+runs/
+playwright-report/
+test-results/
+inputs/

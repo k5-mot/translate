@@ -1,0 +1,5 @@
+# 配布用DOCXは正本Markdownから再生成する。
+*.docx
+
+# 共通テンプレートは再生成できないためGit管理する。
+!template.docx

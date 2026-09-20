@@ -1,0 +1,47 @@
+schema: mysdd
+
+context: |
+  - MUST; 計画、提案、新機能、破壊的変更、アーキテクチャ変更は OpenSpec ワークフローに従うこと
+  - MUST; `/opsx:*` コマンドによる変更は `CONTRIBUTING.md` に準拠した作業用ブランチで実行し、`main` 上では変更しないこと
+  - MUST; 同一の OpenSpec change は、原則として同一の作業用ブランチで完結させること
+  - MUST; `/opsx:*` による変更は操作完了後にコミットし、無関係な変更や空コミットを含めないこと
+  - MUST; ブランチ、コミット、Pull Request は `CONTRIBUTING.md` の規則に従うこと
+
+operations:
+  apply:
+    guidance:
+      - MUST; 変更を、`CONTRIBUTING.md` に従ってコミットすること
+
+  verify:
+    guidance:
+      - MUST; 検証成功時は、検証結果をコミットし、検証成功をメッセージに明示すること
+      - MUST; 検証失敗時も、検証結果をコミットし、検証失敗をメッセージに明示すること
+      - MUST; `CONTRIBUTING.md` に従ってコミットすること
+
+  archive:
+    guidance:
+      - MUST; 変更を、`CONTRIBUTING.md` に従ってコミットすること
+
+
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

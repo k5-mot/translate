@@ -48,8 +48,15 @@ Java固有の規則を定める。
 ### 🧰 実装と実行
 
 - MUST; Python 3.12以上を使用すること
-- MUST; 各Python Fileを直接実行可能なScriptとして構成すること
-- MUST; 実行Entry Pointを`main()`と`if __name__ == "__main__":`で明示すること
+- MUST; 製品として直接実行を保証するEntry Pointを`cli.py`と`main.py`に限定すること
+- MUST; 製品Entry Pointは`main()`またはCLI Applicationと
+  `if __name__ == "__main__":`で実行境界を明示すること
+- MAY; 内部Moduleには、開発時のDebugに有用な場合に限り、簡易な`main()`と
+  `if __name__ == "__main__":`を設けてもよい
+- MUST NOT; 内部ModuleのDebug Entry Pointを公開Interfaceとして扱わないこと
+- MUST; 内部ModuleのDebug Entry Pointは既存Functionへ委譲し、製品処理を
+  再実装しないこと
+- MUST NOT; 直接実行する用途がないPython Fileへ形式的なEntry Pointを追加しないこと
 - MUST; `time.perf_counter()`で各Taskの経過時間を計測可能にすること
 - SHOULD; Path操作には`pathlib`、Process実行には`subprocess.run()`を使用すること
 - MUST; RuffのLintとFormat検査を通すこと
@@ -172,15 +179,8 @@ line-ending = "lf"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
-[tool.ty.environment]
-extra-paths = [
-  "skills/translate-ja/scripts",
-  "skills/translate-ja-v2/scripts",
-  "skills/translate-ja-v3/scripts",
-  "skills/translate-ja-v4/scripts",
-  "skills/review-enja/scripts",
-  "scripts/translate-ja-v5",
-]
+[tool.ty.src]
+exclude = [".agents", "tests"]
 ```
 
 ## 🟦 TypeScript
