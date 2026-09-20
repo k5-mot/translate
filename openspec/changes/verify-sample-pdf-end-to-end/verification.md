@@ -81,7 +81,7 @@
 - Input hash／source key／canonical fingerprint: 期待値と一致
 - Security: console、`run.json`、`failure.json`、`run.log`にCredentialまたはraw外部応答なし
 
-Registerは部分成功を報告せずResume可能なfailed Runを保持したため、atomicityと失敗契約はPASS。一方、公開failureが`RegistrationError`だけでextract／write／verifyのstageと安全な下位例外型を保持せず、根本原因を判別できない。固定入力の登録完了条件はFAILであり、Task 2.4と2.5を追加してApplyを停止する。
+Registerは部分成功を報告せずResume可能なfailed Runを保持したため、atomicityと失敗契約はPASS。一方、公開failureが`RegistrationError`だけでextract／write／verifyのstageと安全な下位例外型を保持せず、根本原因を判別できない。固定入力の登録完了条件はFAILであり、製品Codeの診断性改善と大規模PDF登録修正を`harden-run-identity-and-reference-registration`へ移管して本ChangeのApplyを停止する。
 
 ### Translate
 

@@ -12,8 +12,8 @@
 - [ ] 2.1 検証専用Collection設定で公開CLI `register inputs/sample.pdf --source-id acceptance-sample-pdf`を非対話実行し、exit code 0、run IDおよび1件以上の登録Chunk数を`verification.md`へ記録する（Q-FUNC、Q-USE）
 - [ ] 2.2 Register Runの`run.json`、`registration.json`、status、入力hash、source key、warningおよび容量を検査し、原文全文・Credential・画像binaryがmetadataへ含まれず、公開成功前に登録確認が完了していることを確認する（Q-REL、Q-SEC）
 - [ ] 2.3 Qdrantをread-only検索して対象source IDのPointだけが検証用Collectionへ存在し、Chunk重複、別source IDおよび既存Collectionへの変更が0件であることを確認する（Q-COMP、Q-REL）
-- [ ] 2.4 固定入力のRegisterが約25分後に`RegistrationError`となった原因を特定できるよう、Credential・本文・raw応答を含めずregistration stageと下位例外型を`failure.json`およびRun logへ保持し、extract／write／verify／replaceの障害注入Testで診断可能性を確認する（Q-USE、Q-SEC、Q-MAIN）
-- [ ] 2.5 Task 2.4のEvidenceから65 MB・358 page PDFの登録失敗原因を修正し、同じ入力と専用CollectionでTask 2.1〜2.3を再実行して、有限時間内の登録完了、Chunk重複0件および誤成功0件を確認する（Q-FUNC、Q-PERF、Q-REL）
+
+製品Codeの診断性改善と大規模PDF登録修正は`harden-run-identity-and-reference-registration`へ移管する。本ChangeはそのApply／Verify完了後にTask 2.1〜2.3から再開する。
 
 ## 3. 実PDFのTranslation
 
