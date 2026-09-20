@@ -118,3 +118,46 @@ PENDING
 - Qdrant Collection: `translate-acceptance-sample-pdf`
 
 自動削除は行わない。利用者が対象を確認して明示指示した場合だけ削除する。
+
+## Verification Report: verify-sample-pdf-end-to-end
+
+- Verified: `2026-09-21`
+- Project revision: `3963e497470701e00002123e687a91321ec00b6d`
+
+| Dimension | Status |
+|---|---|
+| Completeness | 7/24 tasks。17件未完了 |
+| Correctness | Preflight／RegisterはPASS。Translate、User conversion、Review、Lifecycle、Securityおよび最終Quality gateは未判定 |
+| Coherence | `skip_specs: true`はProposalと一致。二Phase設計には準拠しているがPhase AのTranslation以降が未実施 |
+
+### CRITICAL
+
+| Task | 未完了内容 | 完了条件 |
+|---|---|---|
+| 3.1 | 実PDFのTranslation未実行 | 専用Collectionで公開CLIを非対話実行し、run ID、進捗、時間、retry、warningを記録する |
+| 3.2 | Translation失敗／Resume契約未判定 | 実行結果に応じて中間DOCX、failure、安全な原因、Resume時のArtifact不変性を確認する |
+| 3.3 | Translation成功gate未判定 | exit code 0、進捗100%、completed RunおよびDOCXのsize、SHA-256、ZIP entry、CRCを確認する |
+| 3.4 | 翻訳DOCX構造未検査 | 表紙重複なしと代表見出し、番号、Table、Figure、Caption、URL、保護対象をspot checkする |
+| 3.5 | Translation検索Artifact未検査 | Collection名、検索日時、引用元、取得記録およびfingerprint除外を確認する |
+| 4.1 | 利用者へのDOCX引渡し未実施 | DOCX絶対path、size、SHA-256を提示し、製品がWord→PDF変換を行わないことを確認する |
+| 4.2 | 利用者変換PDF未受領 | PDF pathを受領し、読取り可能性、page数、size、SHA-256、変換日時を記録する |
+| 4.3 | 原文PDFとの目視比較未実施 | 表紙、先頭本文、代表見出し、末尾pageを比較し、変換差分を分類する |
+| 5.1 | 実成果物のComparison Review未実行 | 公開CLIでreviewを実行し、run ID、進捗、時間、retry、warningを記録する |
+| 5.2 | Review失敗／Resume契約未判定 | 実行結果に応じて中間report、branch別failure、Resume時のArtifact不変性を確認する |
+| 5.3 | Review成功gate未判定 | exit code 0、進捗100%、completed Run、report、Finding集計、Group、入力hashを確認する |
+| 5.4 | Finding由来分類未実施 | 代表Findingを原文、DOCX、変換PDFと照合し、翻訳、変換、誤検出へ分類する |
+| 6.1 | 受入完了後の品質gate未実行 | 全受入作業後にruff、format、ty、pytestを再実行する。今回の中間実行は151 passed、1 skipped |
+| 6.2 | 最終Security scan未実施 | Run、failure、log、console、Evidenceの秘密・本文・LLM応答・画像binary漏えい0件を確認する |
+| 6.3 | 全acceptance gate未判定 | Register、Translate、User conversion、Review、Lifecycleを個別判定し、FAILを未完了Taskへ反映する |
+| 6.4 | 廃止対象一覧未完成 | 正本Run、外部export、検証用Collectionのidentifierとsizeを確定し、自動削除0件を確認する |
+| 6.5 | 最終archive判定未実施 | 全PENDING解消後にstrict validationを再実行し、未判定gate 0件とarchive可否を記録する |
+
+### WARNING
+
+0件。
+
+### SUGGESTION
+
+0件。
+
+OpenSpec strict validation、`uv run ruff check .`、`uv run ruff format --check .`、`uv run ty check`および`uv run pytest`は今回PASSした。ただし、実PDFのTranslation以降を検証していないためTask 6.1と最終gateの完了Evidenceには使用しない。17件のCRITICALを解消するまでarchive不可と判定する。
