@@ -5,6 +5,7 @@
 - Change: `harden-run-identity-and-reference-registration`
 - Platform: Windows
 - Python: 3.12
+- Re-verified: `2026-09-21` against commit `b881365f13493fea74c76f50fb5150c5a79e1e5e`
 - Fixed acceptance input: `inputs/sample.pdf`
 - Acceptance collection: `translate-acceptance-sample-pdf`
 - Acceptance source ID: `acceptance-sample-pdf`
@@ -34,7 +35,7 @@ Capability 2件、Requirement 3件、Scenario 10件をTest IDへ対応付けた�
 | --- | --- | --- |
 | 原PDF全量読込み0件 | `test_pdf_is_stream_hashed_split_once_and_reused_within_page_limit` | PASS |
 | Docling入力が`PDF_SPLIT_PAGES`以下 | 同Testで23 pageを10、10、3 pageへ分割 | PASS |
-| Qdrant write／retrieveが64件以下 | `test_registration_batches_are_bounded_and_point_ids_are_deterministic`で最大16件、外部model request同時数1 | PASS |
+| Qdrant write／retrieveが16件以下 | `test_registration_batches_are_bounded_and_point_ids_are_deterministic`で最大16件、外部model request同時数1 | PASS |
 | 一つの絶対deadline | `test_registration_deadline_is_shared_by_extraction_and_qdrant_attempts`; `test_docling_and_qdrant_clients_receive_only_remaining_deadline` | PASS |
 | Model呼出し同時数1・write境界の有限retry | Workflow `max_concurrency=1`; `test_only_registration_write_boundary_retries_transient_type_error` | PASS |
 | 全新Point確認後だけ旧revision削除 | `test_verification_partial_failure_never_reports_success`; `test_failed_middle_batch_preserves_old_revision_and_resume_converges` | PASS |
@@ -53,6 +54,8 @@ Capability 2件、Requirement 3件、Scenario 10件をTest IDへ対応付けた�
 | `uv run ty check` | PASS: error 0件 |
 | `uv run pytest` | PASS: 151 passed、1 skipped |
 | OpenSpec strict validation | PASS: 本Change 1 passed／0 failed、`verify-sample-pdf-end-to-end` 1 passed／0 failed |
+
+再検証時にも`uv run ruff check .`、`uv run ruff format --check .`、`uv run ty check`、`uv run pytest`および本ChangeのOpenSpec strict validationを順次実行し、同じ結果を確認した。
 
 ## Fixed PDF Acceptance Evidence
 
