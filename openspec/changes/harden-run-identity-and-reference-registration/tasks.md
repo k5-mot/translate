@@ -3,8 +3,8 @@
 ## 1. UUIDv7 Run Identity
 
 - [ ] 1.1 Python 3.12標準libraryだけでRFC 9562 UUIDv7を生成する共通helperを実装し、固定clock／randomによるbit layout、version、variant、canonical文字列、時刻範囲および衝突0件をUnit Testで確認する（Q-FUNC、Q-PORT）
-- [ ] 1.2 Run Repositoryの新規IDをUUIDv7へ切り替え、validatorをcanonical UUIDv4／UUIDv7両対応にして、不正version・大文字・path traversalがFilesystem access前に拒否されるTestを通す（Q-SEC、Q-COMP）
-- [ ] 1.3 保存済みUUIDv4 fixtureと新規UUIDv7 Runを同じrootへ置き、CLI／Streamlitの一覧、明示Resume、exportおよび削除がID書換えなしで成功する相互運用Testを通す（Q-COMP、ISO/IEC/IEEE 12207移行・運用Evidence）
+- [ ] 1.2 Run RepositoryのID生成とvalidatorをcanonical UUIDv7限定へ切り替え、不正version・大文字・path traversalがFilesystem access前に拒否されるTestを通す（Q-SEC、Q-COMP）
+- [ ] 1.3 UUIDv4 metadataを一覧から警告付きで除外し、CLI／StreamlitのResume、exportおよび削除が同じ安全なErrorで拒否する相互運用Testを通す（Q-COMP、ISO/IEC/IEEE 12207移行・運用Evidence）
 
 ## 2. 安全な登録失敗診断
 
@@ -23,8 +23,8 @@
 
 ## 4. 公開契約、運用文書および品質Gate
 
-- [ ] 4.1 Run ID移行、登録stageの意味、同一run IDでのResume、workspace容量、部分Pointの収束、Rollbackおよび明示削除を運用文書へ反映し、新規Dependency・公開option・Word→PDF機能が追加されていないことをReviewする（Q-USE、ISO/IEC/IEEE 12207運用・保守・Support・廃止Evidence）
-- [ ] 4.2 UUIDv7、UUIDv4互換、stage診断、大規模PDFの有界処理およびrevision移行をCapability／Scenario／Test IDへ対応付け、未対応Scenario 0件のverification Evidenceを作成する（Q-FUNC、Q-MAIN）
+- [ ] 4.1 UUIDv7限定への破壊的切替、UUIDv4成果物の事前export／明示削除、登録stageの意味、同一run IDでのResume、workspace容量、部分Pointの収束およびRollbackを運用文書へ反映し、新規Dependency・公開option・Word→PDF機能が追加されていないことをReviewする（Q-USE、ISO/IEC/IEEE 12207移行・運用・保守・Support・廃止Evidence）
+- [ ] 4.2 UUIDv7限定、UUIDv4拒否、stage診断、大規模PDFの有界処理およびrevision移行をCapability／Scenario／Test IDへ対応付け、未対応Scenario 0件のverification Evidenceを作成する（Q-FUNC、Q-MAIN）
 - [ ] 4.3 `uv run ruff check .`、`uv run ruff format --check .`、`uv run ty check`および`uv run pytest`をWindowsで実行し、CIのWindows／POSIX matrixを含む既存Testと新規Testをerror 0件で完了する（Q-MAIN、Q-PORT）
 - [ ] 4.4 検証専用Collectionで公開CLIから`inputs/sample.pdf`を登録し、設定済みTask deadline内の完了、各Docling入力10 page以下、登録Chunk 1件以上、重複Chunk・旧revision・誤成功・秘密漏えい0件およびUUIDv7 run IDを`verification.md`へ記録する（Q-FUNC、Q-PERF、Q-REL、Q-SEC）
 - [ ] 4.5 `verify-sample-pdf-end-to-end`へTask 4.4のEvidenceを引き継いでRegister gateを再開し、本Changeと影響する既存ChangeをOpenSpec strict validation／verifyしてerror・CRITICAL・未判定Requirementを0件にする（Q-MAIN、保守Evidence）
