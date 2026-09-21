@@ -2,7 +2,7 @@
 
 ## 3. 実PDFのTranslationとDOCX検査
 
-- [ ] 3.1 先行Changeの固定入力identity、Register Run `01a0bf06-60d8-7446-a63c-7f22e8ee698a`、専用Collection、source ID、1079 Point、重複0件をread-onlyで再確認し、他のlocal Model workloadがない状態で公開CLI `translate inputs/sample.pdf --backend llm --output-dir <external-export-dir>`を同時実行数1で開始する。新規UUIDv7 run ID、sanitized command、設定fingerprint、Model、進捗、wall time、retry、warningおよびRun容量を新Changeの`verification.md`へ記録する（Q-FUNC、Q-PERF、Q-COMP、Q-MAIN、運用Evidence）
+- [x] 3.1 先行Changeの固定入力identity、Register Run `01a0bf06-60d8-7446-a63c-7f22e8ee698a`、専用Collection、source ID、1079 Point、重複0件をread-onlyで再確認し、他のlocal Model workloadがない状態で公開CLI `translate inputs/sample.pdf --backend llm --output-dir <external-export-dir>`を同時実行数1で開始する。新規UUIDv7 run ID、sanitized command、設定fingerprint、Model、進捗、wall time、retry、warningおよびRun容量を新Changeの`verification.md`へ記録する（Q-FUNC、Q-PERF、Q-COMP、Q-MAIN、運用Evidence）
 - [ ] 3.2 Translationが失敗した場合は公開途中DOCXが0件で、`failure.json`がTask、stage、対象IDおよびredact済み原因を持つことを確認し、外部原因の修復後だけ同じrun IDを明示`--resume`して成功済みTask Artifactのhash／mtime不変を記録する。失敗しなかった場合は障害注入を行わず、Resume検査を`NOT EXERCISED`として理由を記録する（Q-REL、Q-SEC、Support Evidence）
 - [ ] 3.3 Translation成功時にexit code 0、最終進捗100%、Run status `completed`およびUUIDv7を確認し、export済み日本語DOCXの絶対path、size、SHA-256、ZIP必須entryおよびCRC検査結果を記録する。COVER失敗時にはCOVERからResume可能であり、不完全DOCXが公開されていないことを確認する（Q-FUNC、Q-REL）
 - [ ] 3.4 翻訳DOCXの表紙画像が一度だけ存在して対応する第1 page本文がMarkdown／DOCXに重複しないこと、および代表的な見出し、番号、Table、Figure、Caption、URL、保護対象が保持されていることをspot checkし、page／対象IDと判定だけを記録する（Q-FUNC、Q-SEC）
