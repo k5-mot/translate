@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import base64
+import json
 import mimetypes
 import random
 import time
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import httpx
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from translate.adapters.langfuse import observe
 
@@ -23,6 +25,40 @@ if TYPE_CHECKING:
     from translate.common.settings import Settings
 
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
+LLMStage = Literal[
+    "vision-invoke",
+    "vision-parse",
+    "text-invoke",
+    "text-parse",
+]
+LLM_STAGES: tuple[LLMStage, ...] = (
+    "vision-invoke",
+    "vision-parse",
+    "text-invoke",
+    "text-parse",
+)
+
+
+class LLMError(RuntimeError):
+    """LLM境界のstageと安全な下位例外型だけを公開する。"""
+
+    def __init__(self, stage: LLMStage, cause: BaseException) -> None:
+        if stage not in LLM_STAGES:
+            msg = "invalid LLM stage"
+            raise ValueError(msg)
+        self.stage = stage
+        self.cause_type = type(cause).__name__
+        super().__init__(f"LLM request failed during {stage}: {self.cause_type}")
+
+
+class _LLMAttemptError(Exception):
+    """一回の試行結果をraw messageなしでretry loopへ渡す。"""
+
+    def __init__(self, stage: LLMStage, cause: Exception, *, retryable: bool) -> None:
+        self.stage = stage
+        self.cause = cause
+        self.retryable = retryable
+        super().__init__("LLM attempt failed")
 
 
 def _model(settings: Settings, model: str, reasoning: str) -> ChatOpenAI:
@@ -47,24 +83,20 @@ def _status_code(error: Exception) -> int | None:
     return response_status if isinstance(response_status, int) else None
 
 
-def _invoke_with_retry(settings: Settings, call: Callable[[], Any]) -> Any:
+def _invoke_with_retry[ResultT](
+    settings: Settings, call: Callable[[], ResultT]
+) -> ResultT:
     deadline = time.monotonic() + settings.task_deadline_seconds
     for attempt in range(1, settings.retry_attempts + 1):
         try:
             return call()
-        except Exception as error:
-            status = _status_code(error)
-            retryable = (
-                isinstance(error, httpx.TransportError)
-                or status in {408, 429}
-                or (status is not None and status >= 500)
-            )
+        except _LLMAttemptError as error:
             if (
-                not retryable
+                not error.retryable
                 or attempt >= settings.retry_attempts
                 or time.monotonic() >= deadline
             ):
-                raise
+                raise LLMError(error.stage, error.cause) from None
             delay = min(
                 settings.retry_base_seconds * (2 ** (attempt - 1)),
                 settings.retry_max_seconds,
@@ -104,6 +136,36 @@ def structured[ResponseT: BaseModel](
             },
         ]
     client = _model(settings, model, reasoning)
+    mode: Literal["vision", "text"] = "vision" if image is not None else "text"
+    messages = [SystemMessage(content=system_text), HumanMessage(content=content)]
+
+    def invoke_and_parse() -> ResponseT:
+        invoke_stage: LLMStage = "vision-invoke" if mode == "vision" else "text-invoke"
+        try:
+            response = client.invoke(messages)
+        except Exception as error:  # noqa: BLE001
+            status = _status_code(error)
+            retryable = (
+                isinstance(error, (httpx.TransportError, TypeError))
+                or status in {408, 429}
+                or (status is not None and status >= 500)
+            )
+            raise _LLMAttemptError(invoke_stage, error, retryable=retryable) from None
+
+        parse_stage: LLMStage = "vision-parse" if mode == "vision" else "text-parse"
+        try:
+            value = response.content
+            if not isinstance(value, str):
+                value = str(value)
+            return parser.parse(value)
+        except (
+            TypeError,
+            json.JSONDecodeError,
+            OutputParserException,
+            ValidationError,
+        ) as error:
+            raise _LLMAttemptError(parse_stage, error, retryable=True) from None
+
     with observe(
         settings,
         "llm.request",
@@ -111,13 +173,4 @@ def structured[ResponseT: BaseModel](
         metadata={"reasoning": reasoning, "response_type": response_type.__name__},
         model=model,
     ):
-        response = _invoke_with_retry(
-            settings,
-            lambda: client.invoke(
-                [SystemMessage(content=system_text), HumanMessage(content=content)]
-            ),
-        )
-        value = response.content
-        if not isinstance(value, str):
-            value = str(value)
-        return parser.parse(value)
+        return _invoke_with_retry(settings, invoke_and_parse)

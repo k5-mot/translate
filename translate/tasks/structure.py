@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, Field
 
 from translate.adapters import pdf
-from translate.adapters.llm import structured
+from translate.adapters.llm import LLMError, LLMStage, structured
 from translate.common.workspace import (
     atomic_directory,
     atomic_write_json,
@@ -38,6 +38,20 @@ class StructureResponse(BaseModel):
     """ページの構造修正一覧。"""
 
     patches: list[StructurePatch] = Field(default_factory=list)
+
+
+class StructurePageError(RuntimeError):
+    """STRUCTURE失敗を本文なしのpage診断へ正規化する。"""
+
+    def __init__(self, page: int, target_id: str, cause: LLMError) -> None:
+        self.page = page
+        self.target_id = target_id
+        self.stage: LLMStage = cause.stage
+        self.cause_type = cause.cause_type
+        super().__init__(
+            f"STRUCTURE page failed: page={page} "
+            f"stage={self.stage} cause={self.cause_type}"
+        )
 
 
 def _heading_jumps(page: Page) -> None:
@@ -144,16 +158,21 @@ def _run_into(
                     reasoning="low",
                     image=image,
                 )
-            except Exception:  # noqa: BLE001
+            except LLMError:
                 # Note 2: Text-only fallback keeps the Task usable on non-vision models.
-                response = structured(
-                    settings,
-                    settings.structure_model or "",
-                    StructureResponse,
-                    rules,
-                    user,
-                    reasoning="low",
-                )
+                try:
+                    response = structured(
+                        settings,
+                        settings.structure_model or "",
+                        StructureResponse,
+                        rules,
+                        user,
+                        reasoning="low",
+                    )
+                except LLMError as error:
+                    raise StructurePageError(
+                        page.number, f"page/{page.number}", error
+                    ) from None
         audit = _apply(page, response)
         atomic_write_text(
             output_dir / f"page-{page.number:04d}.json",

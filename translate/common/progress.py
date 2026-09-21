@@ -38,6 +38,8 @@ class TaskStatusEvent:
     page: int | None = None
     group: str | None = None
     target_id: str | None = None
+    stage: str | None = None
+    cause_type: str | None = None
     error: BaseException | None = None
 
 

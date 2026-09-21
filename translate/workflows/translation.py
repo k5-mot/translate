@@ -388,6 +388,8 @@ def _failed_status(name: str, error: BaseException) -> TaskStatusEvent:
         page=getattr(error, "page", None),
         group=getattr(error, "group", None),
         target_id=getattr(error, "target_id", None),
+        stage=getattr(error, "stage", None),
+        cause_type=getattr(error, "cause_type", None),
         error=error,
     )
 

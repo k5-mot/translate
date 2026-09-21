@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from translate.adapters.langfuse import bind_observation_context
+from translate.adapters.llm import LLM_STAGES, LLMStage
 from translate.adapters.qdrant import (
-    RegistrationError,
     RegistrationSource,
     RegistrationStage,
     register_documents,
@@ -53,6 +53,17 @@ class ResumeRejectedError(ValueError):
 
 
 LOGGER = logging.getLogger(__name__)
+FailureStage = RegistrationStage | LLMStage
+FAILURE_STAGES: tuple[FailureStage, ...] = (
+    "collect",
+    "hash",
+    "split",
+    "extract",
+    "write",
+    "verify",
+    "replace",
+    *LLM_STAGES,
+)
 
 
 class FailureRecord(BaseModel):
@@ -67,7 +78,7 @@ class FailureRecord(BaseModel):
     target_id: str | None = None
     error_type: str
     reason: str
-    stage: RegistrationStage | None = None
+    stage: FailureStage | None = None
     cause_type: str | None = None
     failed_at: datetime
 
@@ -246,7 +257,7 @@ def execute_run(
         if event.phase != "failed":
             return
         error = event.error or RuntimeError("task failed")
-        registration = error if isinstance(error, RegistrationError) else None
+        stage, cause_type = _safe_diagnostics(event.stage, event.cause_type, error)
         failure = FailureRecord(
             run_id=record.run_id,
             task=event.task,
@@ -255,8 +266,8 @@ def execute_run(
             target_id=event.target_id,
             error_type=type(error).__name__,
             reason=safe_failure_reason(error),
-            stage=registration.stage if registration is not None else None,
-            cause_type=(registration.cause_type if registration is not None else None),
+            stage=stage,
+            cause_type=cause_type,
             failed_at=datetime.now(UTC),
         )
         atomic_write_json(failure_path, failure.model_dump(mode="json"))
@@ -325,16 +336,14 @@ def execute_public_run(
     except Exception as error:  # noqa: BLE001
         failure = load_failure(repository, prepared.record.run_id)
         if failure is None:
-            registration = error if isinstance(error, RegistrationError) else None
+            stage, cause_type = _safe_diagnostics(None, None, error)
             failure = FailureRecord(
                 run_id=prepared.record.run_id,
                 task=prepared.record.last_task or prepared.record.operation.upper(),
                 error_type=type(error).__name__,
                 reason=safe_failure_reason(error),
-                stage=registration.stage if registration is not None else None,
-                cause_type=(
-                    registration.cause_type if registration is not None else None
-                ),
+                stage=stage,
+                cause_type=cause_type,
                 failed_at=datetime.now(UTC),
             )
         raise PublicRunError(failure) from None
@@ -390,6 +399,28 @@ def format_failure(failure: FailureRecord) -> str:
     prefix = f"run_id={failure.run_id} task={failure.task}"
     cause = failure.cause_type or failure.reason
     return f"{prefix} {suffix} cause={cause}".replace("  ", " ")
+
+
+def _safe_diagnostics(
+    stage: str | None,
+    cause_type: str | None,
+    error: BaseException,
+) -> tuple[FailureStage | None, str | None]:
+    """固定stageと例外型identifierだけをFailureへ許可する。"""
+
+    candidate_stage = stage or getattr(error, "stage", None)
+    candidate_cause = cause_type or getattr(error, "cause_type", None)
+    safe_stage: FailureStage | None = (
+        candidate_stage if candidate_stage in FAILURE_STAGES else None
+    )
+    safe_cause = (
+        candidate_cause
+        if safe_stage is not None
+        and isinstance(candidate_cause, str)
+        and candidate_cause.isidentifier()
+        else None
+    )
+    return safe_stage, safe_cause
 
 
 def _copied_inputs(repository: RunRepository, record: RunRecord) -> dict[str, Path]:

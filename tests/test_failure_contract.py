@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from langchain_core.exceptions import OutputParserException
 from typer.testing import CliRunner
 
 import cli
+from translate.adapters.llm import LLMError
 from translate.adapters.qdrant import RegistrationError, RegistrationStage
 from translate.common.lifecycle import (
     FailureRecord,
@@ -24,6 +26,7 @@ from translate.common.lifecycle import (
 from translate.common.progress import TaskStatusEvent, report_task_status
 from translate.common.runs import RunRepository
 from translate.common.workspace import atomic_write_bytes
+from translate.tasks.structure import StructurePageError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -250,6 +253,106 @@ def test_legacy_failure_json_remains_readable() -> None:
         )
     )
 
+    assert failure.stage is None
+    assert failure.cause_type is None
+
+
+@pytest.mark.integration
+def test_structure_diagnostics_reach_failure_log_and_public_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """STRUCTUREのallowlist診断だけをLifecycleと公開表示へ伝播する。"""
+
+    sentinel = "SECRET prompt=DOCUMENT raw=RESPONSE"
+    settings = settings_factory(
+        runs_dir=tmp_path / "runs",
+        templates_dir=_templates(tmp_path / "templates"),
+    )
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"fixture")
+    repository = RunRepository(settings.runs_dir)
+    prepared = prepare_run(repository, "translate", {"source": source}, settings)
+
+    def workflow(*_args: object, **_kwargs: object) -> Path:
+        error = StructurePageError(
+            2, "page/2", LLMError("text-parse", OutputParserException(sentinel))
+        )
+        report_task_status(
+            TaskStatusEvent(
+                "STRUCTURE",
+                "failed",
+                page=error.page,
+                target_id=error.target_id,
+                stage=error.stage,
+                cause_type=error.cause_type,
+                error=error,
+            )
+        )
+        raise error
+
+    monkeypatch.setattr("translate.common.lifecycle.run_translation", workflow)
+
+    with pytest.raises(PublicRunError) as captured:
+        execute_public_run(repository, prepared, settings)
+
+    failure = captured.value.failure
+    persisted = prepared.paths.workspace / "failure.json"
+    log = prepared.paths.workspace / "logs" / "run.log"
+    diagnostic = (
+        str(captured.value)
+        + persisted.read_text(encoding="utf-8")
+        + log.read_text(encoding="utf-8")
+    )
+    assert failure.task == "STRUCTURE"
+    assert failure.page == 2
+    assert failure.target_id == "page/2"
+    assert failure.stage == "text-parse"
+    assert failure.cause_type == "OutputParserException"
+    assert "stage=text-parse" in str(captured.value)
+    assert "cause=OutputParserException" in str(captured.value)
+    for forbidden in ("SECRET", "DOCUMENT", "RESPONSE", sentinel):
+        assert forbidden not in diagnostic
+
+
+def test_failure_diagnostics_reject_values_outside_allowlist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """任意のstageとcause文字列はFailure Artifactへ保存しない。"""
+
+    settings = settings_factory(
+        runs_dir=tmp_path / "runs",
+        templates_dir=_templates(tmp_path / "templates"),
+    )
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"fixture")
+    repository = RunRepository(settings.runs_dir)
+    prepared = prepare_run(repository, "translate", {"source": source}, settings)
+
+    def workflow(*_args: object, **_kwargs: object) -> Path:
+        error = RuntimeError("raw")
+        report_task_status(
+            TaskStatusEvent(
+                "STRUCTURE",
+                "failed",
+                stage="prompt=SECRET",
+                cause_type="Not Valid",
+                error=error,
+            )
+        )
+        raise error
+
+    monkeypatch.setattr("translate.common.lifecycle.run_translation", workflow)
+
+    with pytest.raises(RuntimeError, match="raw"):
+        execute_run(repository, prepared, settings)
+
+    failure = FailureRecord.model_validate_json(
+        (prepared.paths.workspace / "failure.json").read_text(encoding="utf-8")
+    )
     assert failure.stage is None
     assert failure.cause_type is None
 

@@ -148,7 +148,7 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
             raise httpx.ConnectError(message)
 
     monkeypatch.setattr(llm, "_model", lambda *_args: FailingClient())
-    with pytest.raises(httpx.ConnectError):
+    with pytest.raises(llm.LLMError) as captured:
         llm.structured(
             settings,
             "model",
@@ -158,3 +158,156 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
             reasoning="low",
         )
     assert calls == 3
+    assert captured.value.stage == "text-invoke"
+    assert captured.value.cause_type == "ConnectError"
+    assert "persistent" not in str(captured.value)
+
+
+def test_llm_retries_boundary_type_and_parse_errors_without_leaking_content(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """invoke TypeErrorとmalformed responseを有限retryして安全に正規化する。"""
+
+    sentinel = "SECRET-PROMPT-OR-RAW-RESPONSE"
+    sleeps: list[float] = []
+    calls = 0
+
+    class BrokenResponse:
+        @property
+        def content(self) -> str:
+            raise TypeError(sentinel)
+
+    class Client:
+        def invoke(self, _messages: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TypeError(sentinel)
+            if calls == 2:
+                return BrokenResponse()
+            if calls == 3:
+                return AIMessage(content=sentinel)
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+    monkeypatch.setattr(llm.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm.random, "uniform", lambda _start, end: end)
+    settings = settings_factory(retry_attempts=4, retry_base_seconds=0.25)
+
+    result = llm.structured(
+        settings,
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning="low",
+    )
+
+    assert result.value == "ok"
+    assert calls == 4
+    assert sleeps == [0.25, 0.5, 1.0]
+
+    calls = 0
+
+    class MalformedClient:
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            return AIMessage(content=sentinel)
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: MalformedClient())
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings,
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+
+    assert calls == 4
+    assert captured.value.stage == "text-parse"
+    assert captured.value.cause_type == "OutputParserException"
+    assert sentinel not in str(captured.value)
+
+
+def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """恒久4xxとClient構築TypeErrorは一度で停止する。"""
+
+    calls = 0
+    request = httpx.Request("POST", "https://service.invalid")
+    response = httpx.Response(400, request=request)
+
+    class Client:
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            message = "permanent raw response"
+            raise httpx.HTTPStatusError(message, request=request, response=response)
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+    monkeypatch.setattr(llm.time, "sleep", lambda _value: None)
+    settings = settings_factory(retry_attempts=3, retry_base_seconds=0)
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings,
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-invoke"
+    assert captured.value.cause_type == "HTTPStatusError"
+    assert "raw response" not in str(captured.value)
+
+    model_calls = 0
+
+    def invalid_model(*_args: object) -> object:
+        nonlocal model_calls
+        model_calls += 1
+        message = "invalid client configuration"
+        raise TypeError(message)
+
+    monkeypatch.setattr(llm, "_model", invalid_model)
+    with pytest.raises(TypeError, match="invalid client configuration"):
+        llm.structured(
+            settings,
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+    assert model_calls == 1
+
+    prompt_calls = 0
+
+    def invalid_prompt(_parser: object) -> str:
+        nonlocal prompt_calls
+        prompt_calls += 1
+        message = "invalid prompt construction"
+        raise TypeError(message)
+
+    monkeypatch.setattr(
+        llm.PydanticOutputParser, "get_format_instructions", invalid_prompt
+    )
+    with pytest.raises(TypeError, match="invalid prompt construction"):
+        llm.structured(
+            settings,
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+    assert prompt_calls == 1
+    assert model_calls == 1

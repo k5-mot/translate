@@ -54,6 +54,23 @@ def test_translation_graph_exposes_each_task_node(
     assert set(translation.build_graph(settings_factory()).nodes) == EXPECTED_NODES
 
 
+def test_failed_status_copies_safe_structure_diagnostics() -> None:
+    """Workflow wrapperはpage、target、stageおよびcause typeをEventへ移す。"""
+
+    error = RuntimeError("raw response")
+    error.page = 7  # type: ignore[attr-defined]
+    error.target_id = "page/7"  # type: ignore[attr-defined]
+    error.stage = "vision-invoke"  # type: ignore[attr-defined]
+    error.cause_type = "TypeError"  # type: ignore[attr-defined]
+
+    status = translation._failed_status("STRUCTURE", error)  # noqa: SLF001
+
+    assert status.page == 7
+    assert status.target_id == "page/7"
+    assert status.stage == "vision-invoke"
+    assert status.cause_type == "TypeError"
+
+
 def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
