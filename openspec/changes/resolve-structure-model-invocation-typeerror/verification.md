@@ -64,7 +64,7 @@ Text-onlyの`structured()`は成功した一方、visionではlocal推論process
 - そのModelをunloadし、元のModel identifier、context 30,208、parallel 1で再ロードした。他のLLM／Embedding呼出しはない。
 - page 3画像だけを108 DPIのOS一時directoryへ描画した。1,090,584 pixels（約1.09 megapixels）。入力文書、RunのArtifact、製品コードは変更していない。
 - 同じpage 3 payload、rules、`structured()` vision経路を逐次1 request／1 attempt、900秒timeoutで実行した。結果は`vision-output`／`LLMOutputTruncatedError`、約414.36秒。高解像度probeの即時runtime終了は再現せず、Model応答までは進んだがschema-valid outputは得られなかった。
-- よって、画像サイズとruntime assertionの関連は強まったが、画像解像度を下げるだけではSTRUCTURE完了を保証できない。製品が出力上限で停止する既存契約を維持したまま成功させるには、入力分割、出力を簡潔にする設計、または安全なfallback条件などの追加設計が必要となる可能性がある。現Changeの「環境原因なら製品コードを変更せず設定処置で解消」というTask 3.1を満たせないため、変更範囲の判断待ちとしてRun Resumeを行わない。
+- よって、画像サイズとruntime assertionの関連は強まったが、画像解像度を下げるだけではSTRUCTURE完了を保証できなかった。この時点では現Changeの「環境原因なら製品コードを変更せず設定処置で解消」というTask 3.1を満たせず、変更範囲の判断待ちとしてRun Resumeを行わなかった。その後に再現した製品側の診断不具合と完了根拠は、後段のCause-Specific Correction Completionに記録する。
 
 ## Subsequent Correction and Automated Gate
 
@@ -93,3 +93,29 @@ Text-onlyの`structured()`は成功した一方、visionではlocal推論process
 ## Completion and Handoff
 
 本Changeが対象とした再現可能な製品側のinvoke診断不具合は、限定的なSDK length正規化と回帰Testにより解消し、Task 3.1を含む12件を完了した。一方、実page 3はreasoning tokenの出力枯渇により完全schemaを生成できておらず、Translation全体の成功を意味しない。この残存課題は`bound-structure-reasoning-and-schema-output`のEvidenceと未完了Taskへ引き渡し、同Changeの停止条件に従って別の修正なしにRunを再開しない。Word-to-PDF変換、目視比較およびComparison Reviewも完了扱いにしない。
+
+## Verification Report: resolve-structure-model-invocation-typeerror
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | PASS — 12/12 tasks complete、delta requirements 0件（`skip_specs: true`） |
+| Correctness | PASS — SDK length再現、限定正規化、retry／truncation／Failure回帰をTest済み |
+| Coherence | PASS — failing-first、raw値非保持、有限retry、逐次実行、一回限りのResume制約に適合 |
+
+### CRITICAL
+
+なし。
+
+### WARNING
+
+なし。
+
+### SUGGESTION
+
+なし。
+
+### Final Assessment
+
+全検査に合格した。本Changeはarchive可能である。実PDF Translationの成功判定は本Changeの範囲外であり、後続Changeの未完了Taskとして維持する。
