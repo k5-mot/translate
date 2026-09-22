@@ -49,7 +49,7 @@ class Settings(BaseModel):
     # OpenAI-compatible endpoint and purpose-specific model assignments.
     openai_base_url: str = ""
     openai_api_key: str = ""
-    # STRUCTURE uses low reasoning; translation/review/fix use high reasoning.
+    # STRUCTURE disables reasoning; translation/review/fix use high reasoning.
     structure_model: str | None = None
     translation_model: str | None = None
     review_model: str | None = None

@@ -12,10 +12,13 @@ from translate.common.fingerprint import (
     diff_snapshots,
 )
 from translate.common.runs import RunRepository
+from translate.tasks import structure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    import pytest
 
     from translate.common.settings import Backend, Settings
 
@@ -95,6 +98,25 @@ def test_credentials_retry_observation_and_qdrant_are_excluded(
     serialized = str(before.snapshot)
     assert "secret" not in serialized
     assert "qdrant" not in serialized
+
+
+def test_structure_generation_policy_stays_out_of_public_run_fingerprint(
+    settings_factory: Callable[..., Settings],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """固定実装修正はprivate page keyだけを変え同じRunを許可する。"""
+
+    settings = settings_factory(structure_model="model-a")
+    before = _fingerprint(settings, tmp_path)
+    monkeypatch.setattr(
+        structure, "STRUCTURE_REASONING_EFFORT", "changed", raising=False
+    )
+    monkeypatch.setattr(structure, "STRUCTURE_SCHEMA_MODE", "changed", raising=False)
+
+    after = _fingerprint(settings, tmp_path)
+
+    assert before == after
 
 
 def test_libretranslate_endpoint_only_affects_libre_backend(

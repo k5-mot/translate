@@ -139,10 +139,16 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
 ) -> None:
     """Visionの安全な最終失敗後だけTextへ逐次fallbackする。"""
 
-    calls: list[bool] = []
+    calls: list[tuple[bool, object, object]] = []
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
-        calls.append(kwargs.get("image") is not None)
+        calls.append(
+            (
+                kwargs.get("image") is not None,
+                kwargs.get("reasoning"),
+                kwargs.get("schema_mode"),
+            )
+        )
         if kwargs.get("image") is not None:
             stage = "vision-invoke"
             raise LLMError(stage, TypeError("RAW-VISION-SENTINEL"))
@@ -161,7 +167,10 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
     )
 
     assert result.pages[0].number == 2
-    assert calls == [True, False]
+    assert calls == [
+        (True, "none", "json-schema"),
+        (False, "none", "json-schema"),
+    ]
     assert (output / "page-0002.json").is_file()
     assert (output / ".complete.json").is_file()
 

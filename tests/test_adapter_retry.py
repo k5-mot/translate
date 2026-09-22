@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import httpx
@@ -103,6 +104,252 @@ class RetryResponse(BaseModel):
     """LLM retry test用のstructured response。"""
 
     value: str
+
+
+def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Schema modeはProvider制約を一度だけ設定しpromptへ重複しない。"""
+
+    seen: dict[str, object] = {}
+
+    class Client:
+        def bind(self, **kwargs: object) -> Client:
+            seen["bind"] = kwargs
+            return self
+
+        def invoke(self, messages: object) -> AIMessage:
+            seen["messages"] = messages
+            return AIMessage(content='{"value":"ok"}')
+
+    def model(_settings: Settings, name: str, reasoning: str) -> Client:
+        seen["model"] = name
+        seen["reasoning"] = reasoning
+        return Client()
+
+    format_calls = 0
+
+    def format_instructions(_parser: object) -> str:
+        nonlocal format_calls
+        format_calls += 1
+        return "FORMAT-INSTRUCTION-SENTINEL"
+
+    monkeypatch.setattr(llm, "_model", model)
+    monkeypatch.setattr(
+        llm.PydanticOutputParser, "get_format_instructions", format_instructions
+    )
+
+    result = llm.structured(
+        settings_factory(),
+        "structure-model",
+        RetryResponse,
+        "system rules",
+        "user payload",
+        reasoning="none",
+        schema_mode="json-schema",
+    )
+
+    assert result == RetryResponse(value="ok")
+    assert seen["model"] == "structure-model"
+    assert seen["reasoning"] == "none"
+    assert seen["bind"] == {
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "RetryResponse",
+                "strict": True,
+                "schema": RetryResponse.model_json_schema(),
+            },
+        }
+    }
+    messages = seen["messages"]
+    assert isinstance(messages, list)
+    assert messages[0].content == "system rules"
+    assert "FORMAT-INSTRUCTION-SENTINEL" not in str(messages)
+    assert format_calls == 0
+
+
+def test_llm_schema_mode_preserves_retry_and_parse_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Schema modeでもtransportとparseだけを有限retryする。"""
+
+    calls = 0
+    bind_calls = 0
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            nonlocal bind_calls
+            bind_calls += 1
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                message = "SECRET-TRANSPORT"
+                raise httpx.ConnectError(message)
+            if calls == 2:
+                return AIMessage(content="SECRET-MALFORMED")
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+    monkeypatch.setattr(llm.time, "sleep", lambda _value: None)
+
+    result = llm.structured(
+        settings_factory(retry_attempts=3, retry_base_seconds=0),
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning="none",
+        schema_mode="json-schema",
+    )
+
+    assert result.value == "ok"
+    assert calls == 3
+    assert bind_calls == 1
+
+
+def test_llm_schema_mode_classifies_length_before_parse(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Schema modeの途中応答もparseせず安全な出力枯渇にする。"""
+
+    calls = 0
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            return AIMessage(
+                content="SECRET-PARTIAL",
+                response_metadata={
+                    "finish_reason": "length",
+                    "token_usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 20,
+                        "total_tokens": 30,
+                    },
+                },
+            )
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=3),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-output"
+    assert captured.value.failure_kind == "output-truncated"
+    assert captured.value.finish_reason == "length"
+    assert captured.value.output_tokens == 20
+    assert "SECRET-PARTIAL" not in str(captured.value)
+
+
+def test_llm_schema_mode_normalizes_sdk_length_error_without_raw_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """SDKが先に投げるlength Errorから安全なusageだけを保持する。"""
+
+    calls = 0
+    length_error_type = type("LengthFinishReasonError", (Exception,), {})
+    length_error_type.__module__ = "openai"
+    error = length_error_type("SECRET-RAW-COMPLETION")
+    error.completion = SimpleNamespace(
+        choices=[SimpleNamespace(finish_reason="length")],
+        usage=SimpleNamespace(
+            prompt_tokens=1_324,
+            completion_tokens=16_384,
+            total_tokens=17_708,
+        ),
+    )
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            raise error
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=3),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-output"
+    assert captured.value.cause_type == "LLMOutputTruncatedError"
+    assert captured.value.failure_kind == "output-truncated"
+    assert captured.value.finish_reason == "length"
+    assert captured.value.input_tokens == 1_324
+    assert captured.value.output_tokens == 16_384
+    assert captured.value.total_tokens == 17_708
+    assert "SECRET-RAW-COMPLETION" not in str(captured.value)
+
+
+def test_llm_schema_mode_does_not_retry_permanent_400(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Providerがschema policyを拒否した400は一回で停止する。"""
+
+    calls = 0
+    request = httpx.Request("POST", "https://service.invalid")
+    response = httpx.Response(400, request=request)
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            message = "SECRET-PROVIDER-REJECTION"
+            raise httpx.HTTPStatusError(message, request=request, response=response)
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=3),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-invoke"
+    assert captured.value.cause_type == "HTTPStatusError"
+    assert "SECRET-PROVIDER-REJECTION" not in str(captured.value)
 
 
 @pytest.mark.parametrize(

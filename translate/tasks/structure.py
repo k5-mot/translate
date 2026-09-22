@@ -12,7 +12,13 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from translate.adapters import pdf
-from translate.adapters.llm import LLMError, LLMStage, structured
+from translate.adapters.llm import (
+    LLMError,
+    LLMStage,
+    ReasoningEffort,
+    StructuredOutputMode,
+    structured,
+)
 from translate.common.workspace import (
     atomic_directory,
     atomic_write_bytes,
@@ -67,7 +73,21 @@ class StructurePageError(RuntimeError):
 # failure boundary. This is a pixel count, not a PDF rendering DPI.
 MAX_VISION_PIXELS = 1_000_000
 # Bump this version whenever the meaning of a persisted page changes.
-PAGE_CHECKPOINT_VERSION = 1
+PAGE_CHECKPOINT_VERSION = 2
+STRUCTURE_REASONING_EFFORT: ReasoningEffort = "none"
+STRUCTURE_SCHEMA_MODE: StructuredOutputMode = "json-schema"
+
+
+def _response_schema_hash() -> str:
+    """Response schema変更時に旧page checkpointを無効化する。"""
+
+    encoded = json.dumps(
+        StructureResponse.model_json_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _bound_image(path: Path) -> Path:
@@ -106,6 +126,9 @@ def _page_key(page: Page, source_hash: str, rules: str, settings: Settings) -> s
         "output_tokens": settings.output_tokens,
         "image_tokens": settings.image_tokens,
         "max_vision_pixels": MAX_VISION_PIXELS,
+        "reasoning_effort": STRUCTURE_REASONING_EFFORT,
+        "schema_mode": STRUCTURE_SCHEMA_MODE,
+        "response_schema_hash": _response_schema_hash(),
     }
     encoded = json.dumps(values, ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -294,7 +317,8 @@ def _run_into(
                             StructureResponse,
                             rules,
                             user,
-                            reasoning="low",
+                            reasoning=STRUCTURE_REASONING_EFFORT,
+                            schema_mode=STRUCTURE_SCHEMA_MODE,
                             image=image,
                         )
                     except LLMError:
@@ -308,7 +332,8 @@ def _run_into(
                         StructureResponse,
                         rules,
                         user,
-                        reasoning="low",
+                        reasoning=STRUCTURE_REASONING_EFFORT,
+                        schema_mode=STRUCTURE_SCHEMA_MODE,
                     )
             except LLMError as error:
                 raise StructurePageError(

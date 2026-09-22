@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from translate.common.settings import Settings
 
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
+ReasoningEffort = Literal["none", "low", "medium", "high"]
+StructuredOutputMode = Literal["prompt", "json-schema"]
 LLMStage = Literal[
     "vision-invoke",
     "vision-output",
@@ -207,7 +209,33 @@ def _response_diagnostics(
     )
 
 
-def _model(settings: Settings, model: str, reasoning: str) -> ChatOpenAI:
+def _sdk_length_diagnostics(
+    error: Exception,
+) -> tuple[LLMFinishReason, int | None, int | None, int | None] | None:
+    """OpenAI SDKがparse前に投げるlength Errorからallowlist値だけを得る。"""
+
+    error_type = type(error)
+    if (
+        error_type.__name__ != "LengthFinishReasonError"
+        or _module_origin(error_type.__module__) != "openai-sdk"
+    ):
+        return None
+    completion = getattr(error, "completion", None)
+    choices = getattr(completion, "choices", None)
+    if not isinstance(choices, (list, tuple)) or not choices:
+        return None
+    if getattr(choices[0], "finish_reason", None) != "length":
+        return None
+    usage = getattr(completion, "usage", None)
+    return (
+        "length",
+        _safe_token_count(getattr(usage, "prompt_tokens", None)),
+        _safe_token_count(getattr(usage, "completion_tokens", None)),
+        _safe_token_count(getattr(usage, "total_tokens", None)),
+    )
+
+
+def _model(settings: Settings, model: str, reasoning: ReasoningEffort) -> ChatOpenAI:
     return ChatOpenAI(
         model=model,
         base_url=settings.openai_base_url,
@@ -271,13 +299,18 @@ def structured[ResponseT: BaseModel](
     system: str,
     user: str,
     *,
-    reasoning: str,
+    reasoning: ReasoningEffort,
+    schema_mode: StructuredOutputMode = "prompt",
     image: Path | None = None,
 ) -> ResponseT:
     """Pydantic schemaに従う応答をLangChain経由で取得する。"""
 
     parser = PydanticOutputParser(pydantic_object=response_type)
-    system_text = f"{system}\n\n{parser.get_format_instructions()}"
+    system_text = (
+        system
+        if schema_mode == "json-schema"
+        else f"{system}\n\n{parser.get_format_instructions()}"
+    )
     content: str | list[str | dict[Any, Any]] = user
     if image is not None:
         mime = mimetypes.guess_type(image.name)[0] or "image/png"
@@ -289,7 +322,21 @@ def structured[ResponseT: BaseModel](
                 "image_url": {"url": f"data:{mime};base64,{encoded}"},
             },
         ]
-    client = _model(settings, model, reasoning)
+    base_client = _model(settings, model, reasoning)
+    client = (
+        base_client.bind(
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_type.__name__,
+                    "strict": True,
+                    "schema": response_type.model_json_schema(),
+                },
+            }
+        )
+        if schema_mode == "json-schema"
+        else base_client
+    )
     mode: Literal["vision", "text"] = "vision" if image is not None else "text"
     messages = [SystemMessage(content=system_text), HumanMessage(content=content)]
 
@@ -298,6 +345,22 @@ def structured[ResponseT: BaseModel](
         try:
             response = client.invoke(messages)
         except Exception as error:  # noqa: BLE001
+            length = _sdk_length_diagnostics(error)
+            if length is not None:
+                finish_reason, input_tokens, output_tokens, total_tokens = length
+                output_stage: LLMStage = (
+                    "vision-output" if mode == "vision" else "text-output"
+                )
+                raise _LLMAttemptError(
+                    output_stage,
+                    LLMOutputTruncatedError(),
+                    retryable=False,
+                    failure_kind="output-truncated",
+                    finish_reason=finish_reason,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    total_tokens=total_tokens,
+                ) from None
             status = _status_code(error)
             retryable = (
                 isinstance(error, (httpx.TransportError, TypeError))

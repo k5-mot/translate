@@ -48,6 +48,46 @@ def _page_from_user(args: tuple[object, ...]) -> int:
     return 2 if "PAGE-2" in user else 3
 
 
+def test_structure_page_key_tracks_generation_policy_and_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """生成policyまたはResponse schemaが違う旧pageを再利用しない。"""
+
+    page = _document().pages[0]
+    settings = settings_factory(structure_model="model-a")
+    baseline = structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
+
+    assert structure.PAGE_CHECKPOINT_VERSION == 2
+    with monkeypatch.context() as scoped:
+        scoped.setattr(structure, "STRUCTURE_REASONING_EFFORT", "low", raising=False)
+        assert (
+            structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
+            != baseline
+        )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(structure, "STRUCTURE_SCHEMA_MODE", "prompt", raising=False)
+        assert (
+            structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
+            != baseline
+        )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            structure.StructureResponse,
+            "model_json_schema",
+            classmethod(
+                lambda _cls: {
+                    "type": "object",
+                    "properties": {"changed": {"type": "boolean"}},
+                }
+            ),
+        )
+        assert (
+            structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
+            != baseline
+        )
+
+
 def test_structure_resume_reuses_only_completed_page_checkpoints(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
