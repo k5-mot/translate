@@ -93,3 +93,29 @@
 - 最終Gateは`ruff check .`成功、`ruff format --check .` 185 files、`ty check`成功、全pytest 208 passed／1 skipped、strict OpenSpec validation成功だった。Dependency追加とOS固有製品分岐はない。
 - Changed files、Run metadata、Failure、workflow metadata、Run logsおよびpage 2 checkpointの17 filesをCredential／endpoint／page本文／prompt／画像data URIの18 sentinelで走査し、漏えいは0件だった。`git diff --check`も成功した。
 - Non-current観測階層、fail-open cleanup、offline回帰、short probeおよび単独page 3は期待どおり機能した。しかし、公開Workflowは同じpage 3で`text-invoke`／`TypeError`を再現したため、本Changeの公開Resume受入は未達である。Apply tasksは実証と停止条件を含め23/23完了とするが、verifyはCRITICAL、archive不可と判定し、公開Workflow固有差分を次の独立Changeへ引き渡す。
+
+## Verification Report: isolate-model-invocation-from-workflow-observation
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | PASS — 23/23 tasks complete、delta requirements 0件（`skip_specs: true`） |
+| Correctness | FAIL — non-current観測契約はTestと単独pageで成立したが、公開Resume受入は未達 |
+| Coherence | PASS — 設計した逐次Gate、一回限りのResume、Failure保持および次Changeへの引渡しに適合 |
+
+### CRITICAL
+
+1. 公開Workflowは、単独page 3がVision 1 requestでschema-validに成功した直後でも、同じRunの明示ResumeではSTRUCTURE page 3の`text-invoke`／`TypeError`で停止した。提案のQ-FUNC「公開ResumeがSTRUCTUREの応答後境界を通過する」を満たしていない（`proposal.md:43`、`verification.md:79`）。Archive前に、実LangGraph node／checkpoint／Task wrapperを通る公開Workflow固有境界をNetworkなしの失敗先行Testで再現し、TypeErrorの発生元を安全な型・stage・call countへ限定してから、実証された境界だけを次の独立Changeで修正すること。
+
+### WARNING
+
+なし。
+
+### SUGGESTION
+
+なし。
+
+### Final Assessment
+
+CRITICAL 1件。23件のApply taskとnon-current観測実装は完了しているが、公開Resume受入が未達のためarchiveしてはならない。保存Runへ追加Resumeを行わず、公開Workflow固有差分を診断・修正する独立Changeを提案する。
