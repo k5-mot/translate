@@ -58,7 +58,7 @@ def test_structure_page_key_tracks_generation_policy_and_schema(
     settings = settings_factory(structure_model="model-a")
     baseline = structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
 
-    assert structure.PAGE_CHECKPOINT_VERSION == 2
+    assert structure.PAGE_CHECKPOINT_VERSION == 3
     with monkeypatch.context() as scoped:
         scoped.setattr(structure, "STRUCTURE_REASONING_EFFORT", "low", raising=False)
         assert (
@@ -67,6 +67,14 @@ def test_structure_page_key_tracks_generation_policy_and_schema(
         )
     with monkeypatch.context() as scoped:
         scoped.setattr(structure, "STRUCTURE_SCHEMA_MODE", "prompt", raising=False)
+        assert (
+            structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
+            != baseline
+        )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            structure, "STRUCTURE_THINKING_POLICY", "provider-default", raising=False
+        )
         assert (
             structure._page_key(page, "source-hash", "rules", settings)  # noqa: SLF001
             != baseline

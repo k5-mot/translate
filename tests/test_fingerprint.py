@@ -113,6 +113,9 @@ def test_structure_generation_policy_stays_out_of_public_run_fingerprint(
         structure, "STRUCTURE_REASONING_EFFORT", "changed", raising=False
     )
     monkeypatch.setattr(structure, "STRUCTURE_SCHEMA_MODE", "changed", raising=False)
+    monkeypatch.setattr(
+        structure, "STRUCTURE_THINKING_POLICY", "changed", raising=False
+    )
 
     after = _fingerprint(settings, tmp_path)
 

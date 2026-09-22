@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 ReasoningEffort = Literal["none", "low", "medium", "high"]
 StructuredOutputMode = Literal["prompt", "json-schema"]
+ThinkingPolicy = Literal["provider-default", "disabled"]
 LLMStage = Literal[
     "vision-invoke",
     "vision-output",
@@ -235,7 +236,17 @@ def _sdk_length_diagnostics(
     )
 
 
-def _model(settings: Settings, model: str, reasoning: ReasoningEffort) -> ChatOpenAI:
+def _model(
+    settings: Settings,
+    model: str,
+    reasoning: ReasoningEffort,
+    thinking: ThinkingPolicy,
+) -> ChatOpenAI:
+    extra_body: dict[str, object] = {"reasoning_effort": reasoning}
+    if thinking == "disabled":
+        # Gemma's local template uses this JSON boolean independently of the
+        # OpenAI-compatible reasoning effort field.
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
     return ChatOpenAI(
         model=model,
         base_url=settings.openai_base_url,
@@ -244,7 +255,7 @@ def _model(settings: Settings, model: str, reasoning: ReasoningEffort) -> ChatOp
         temperature=0,
         max_retries=0,
         timeout=settings.request_timeout_seconds,
-        extra_body={"reasoning_effort": reasoning},
+        extra_body=extra_body,
     )
 
 
@@ -301,6 +312,7 @@ def structured[ResponseT: BaseModel](
     *,
     reasoning: ReasoningEffort,
     schema_mode: StructuredOutputMode = "prompt",
+    thinking: ThinkingPolicy = "provider-default",
     image: Path | None = None,
 ) -> ResponseT:
     """Pydantic schemaに従う応答をLangChain経由で取得する。"""
@@ -322,7 +334,7 @@ def structured[ResponseT: BaseModel](
                 "image_url": {"url": f"data:{mime};base64,{encoded}"},
             },
         ]
-    base_client = _model(settings, model, reasoning)
+    base_client = _model(settings, model, reasoning, thinking)
     client = (
         base_client.bind(
             response_format={

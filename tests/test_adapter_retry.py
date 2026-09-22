@@ -106,6 +106,31 @@ class RetryResponse(BaseModel):
     value: str
 
 
+def test_llm_model_applies_template_control_only_when_thinking_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Thinking抑制時だけModel固有のJSON booleanをrequestへ追加する。"""
+
+    calls: list[dict[str, object]] = []
+
+    def client(**kwargs: object) -> SimpleNamespace:
+        calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(llm, "ChatOpenAI", client)
+    settings = settings_factory()
+
+    llm._model(settings, "model", "none", "disabled")  # noqa: SLF001
+    llm._model(settings, "model", "high", "provider-default")  # noqa: SLF001
+
+    assert calls[0]["extra_body"] == {
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert calls[1]["extra_body"] == {"reasoning_effort": "high"}
+
+
 def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
@@ -123,9 +148,10 @@ def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication
             seen["messages"] = messages
             return AIMessage(content='{"value":"ok"}')
 
-    def model(_settings: Settings, name: str, reasoning: str) -> Client:
+    def model(_settings: Settings, name: str, reasoning: str, thinking: str) -> Client:
         seen["model"] = name
         seen["reasoning"] = reasoning
+        seen["thinking"] = thinking
         return Client()
 
     format_calls = 0
@@ -148,11 +174,13 @@ def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication
         "user payload",
         reasoning="none",
         schema_mode="json-schema",
+        thinking="disabled",
     )
 
     assert result == RetryResponse(value="ok")
     assert seen["model"] == "structure-model"
     assert seen["reasoning"] == "none"
+    assert seen["thinking"] == "disabled"
     assert seen["bind"] == {
         "response_format": {
             "type": "json_schema",
@@ -251,6 +279,7 @@ def test_llm_schema_mode_classifies_length_before_parse(
             "user",
             reasoning="none",
             schema_mode="json-schema",
+            thinking="disabled",
         )
 
     assert calls == 1
@@ -344,6 +373,7 @@ def test_llm_schema_mode_does_not_retry_permanent_400(
             "user",
             reasoning="none",
             schema_mode="json-schema",
+            thinking="disabled",
         )
 
     assert calls == 1

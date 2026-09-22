@@ -139,7 +139,7 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
 ) -> None:
     """Visionの安全な最終失敗後だけTextへ逐次fallbackする。"""
 
-    calls: list[tuple[bool, object, object]] = []
+    calls: list[tuple[bool, object, object, object]] = []
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
         calls.append(
@@ -147,6 +147,7 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
                 kwargs.get("image") is not None,
                 kwargs.get("reasoning"),
                 kwargs.get("schema_mode"),
+                kwargs.get("thinking"),
             )
         )
         if kwargs.get("image") is not None:
@@ -168,8 +169,8 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
 
     assert result.pages[0].number == 2
     assert calls == [
-        (True, "none", "json-schema"),
-        (False, "none", "json-schema"),
+        (True, "none", "json-schema", "disabled"),
+        (False, "none", "json-schema", "disabled"),
     ]
     assert (output / "page-0002.json").is_file()
     assert (output / ".complete.json").is_file()
