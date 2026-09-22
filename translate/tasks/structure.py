@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import time
 from typing import TYPE_CHECKING, Literal
 
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from translate.adapters import pdf
 from translate.adapters.llm import LLMError, LLMStage, structured
 from translate.common.workspace import (
     atomic_directory,
+    atomic_write_bytes,
     atomic_write_json,
-    atomic_write_text,
+    sha256_file,
 )
 from translate.document import BlockKind, Document, Page, inline_text
 
@@ -57,6 +61,117 @@ class StructurePageError(RuntimeError):
             f"STRUCTURE page failed: page={page} "
             f"stage={self.stage} cause={self.cause_type}"
         )
+
+
+# Keep Gemma4 vision input below the local runtime's observed high-resolution
+# failure boundary. This is a pixel count, not a PDF rendering DPI.
+MAX_VISION_PIXELS = 1_000_000
+# Bump this version whenever the meaning of a persisted page changes.
+PAGE_CHECKPOINT_VERSION = 1
+
+
+def _bound_image(path: Path) -> Path:
+    """STRUCTUREの画像全域を縦横比を保って安全な画素数へ縮小する。"""
+
+    with Image.open(path) as source:
+        width, height = source.size
+        if width * height <= MAX_VISION_PIXELS:
+            return path
+        scale = math.sqrt(MAX_VISION_PIXELS / (width * height))
+        resized = source.resize(
+            (max(1, math.floor(width * scale)), max(1, math.floor(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    try:
+        if resized.width * resized.height > MAX_VISION_PIXELS:
+            msg = "STRUCTURE image cannot fit pixel limit"
+            raise ValueError(msg)
+        resized.save(path, format="PNG")
+    finally:
+        resized.close()
+    return path
+
+
+def _page_key(page: Page, source_hash: str, rules: str, settings: Settings) -> str:
+    """入力pageと出力に影響する設定だけをprivate checkpointへ結び付ける。"""
+
+    values = {
+        "version": PAGE_CHECKPOINT_VERSION,
+        "source_hash": source_hash,
+        "page": page.model_dump(mode="json"),
+        "rules_hash": hashlib.sha256(rules.encode()).hexdigest(),
+        "model": settings.structure_model,
+        "base_url": settings.openai_base_url,
+        "context_tokens": settings.context_tokens,
+        "output_tokens": settings.output_tokens,
+        "image_tokens": settings.image_tokens,
+        "max_vision_pixels": MAX_VISION_PIXELS,
+    }
+    encoded = json.dumps(values, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _read_page_checkpoint(
+    directory: Path, key: str, number: int
+) -> tuple[Page, bytes, bytes] | None:
+    """完全性と入力一致を確認し、信用できないprogressは再計算へ回す。"""
+
+    files = [
+        directory / name
+        for name in (".complete.json", "meta.json", "page.json", "audit.json")
+    ]
+    if (
+        directory.is_symlink()
+        or not directory.is_dir()
+        or any(path.is_symlink() or not path.is_file() for path in files)
+    ):
+        return None
+    try:
+        if files[0].read_bytes() != b'{"complete":true}\n':
+            return None
+        meta = json.loads(files[1].read_text(encoding="utf-8"))
+        page_bytes = files[2].read_bytes()
+        audit_bytes = files[3].read_bytes()
+        page = Page.model_validate_json(page_bytes)
+        audit = json.loads(audit_bytes)
+        if (
+            not isinstance(meta, dict)
+            or meta.get("key") != key
+            or meta.get("page") != number
+            or meta.get("page_sha256") != hashlib.sha256(page_bytes).hexdigest()
+            or meta.get("audit_sha256") != hashlib.sha256(audit_bytes).hexdigest()
+            or page.number != number
+            or not isinstance(audit, list)
+            or any(not isinstance(item, dict) for item in audit)
+        ):
+            return None
+    except (OSError, ValueError, TypeError):
+        return None
+    return page, page_bytes, audit_bytes
+
+
+def _save_page_checkpoint(
+    directory: Path, key: str, page: Page, audit: list[dict[str, object]]
+) -> tuple[bytes, bytes]:
+    """完全な補正pageだけをatomicなprivate directoryへ保存する。"""
+
+    page_bytes = (page.model_dump_json(indent=2) + "\n").encode("utf-8")
+    audit_bytes = (json.dumps(audit, ensure_ascii=False, indent=2) + "\n").encode(
+        "utf-8"
+    )
+    with atomic_directory(directory) as temporary:
+        atomic_write_bytes(temporary / "page.json", page_bytes)
+        atomic_write_bytes(temporary / "audit.json", audit_bytes)
+        atomic_write_json(
+            temporary / "meta.json",
+            {
+                "key": key,
+                "page": page.number,
+                "page_sha256": hashlib.sha256(page_bytes).hexdigest(),
+                "audit_sha256": hashlib.sha256(audit_bytes).hexdigest(),
+            },
+        )
+    return page_bytes, audit_bytes
 
 
 def _heading_jumps(page: Page) -> None:
@@ -125,18 +240,28 @@ def _run_into(
     rules: str,
     settings: Settings,
     output_dir: Path,
+    progress_dir: Path,
 ) -> Document:
     """本文ページをVLMで構造補正しpage別Artifactを保存する。"""
 
     start = time.perf_counter()
     result = document.model_copy(deep=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    for page in result.pages:
+    source_hash = sha256_file(source_pdf)
+    for index, page in enumerate(result.pages):
         if page.number == 1:
             continue
-        image = pdf.render_page(
-            source_pdf, page.number, output_dir / f"page-{page.number:04d}.png"
+        key = _page_key(page, source_hash, rules, settings)
+        cached = _read_page_checkpoint(
+            progress_dir / f"page-{page.number:04d}", key, page.number
         )
+        if cached is not None:
+            result.pages[index], page_bytes, audit_bytes = cached
+            atomic_write_bytes(output_dir / f"page-{page.number:04d}.json", page_bytes)
+            atomic_write_bytes(
+                output_dir / f"audit-{page.number:04d}.json", audit_bytes
+            )
+            continue
         payload = [
             {
                 "id": block.id,
@@ -149,27 +274,34 @@ def _run_into(
         if not payload:
             response = StructureResponse()
         else:
-            # Note 1: The image lets the VLM distinguish layout from plain OCR text.
             user = "次のblock構造を補正してください。\n" + json.dumps(
                 payload, ensure_ascii=False
             )
+            image_path = output_dir / f"page-{page.number:04d}.png"
             try:
-                response = structured(
-                    settings,
-                    settings.structure_model or "",
-                    StructureResponse,
-                    rules,
-                    user,
-                    reasoning="low",
-                    image=image,
+                image = _bound_image(
+                    pdf.render_page(source_pdf, page.number, image_path)
                 )
-            except LLMError as error:
-                if error.failure_kind == "output-truncated":
-                    raise StructurePageError(
-                        page.number, f"page/{page.number}", error
-                    ) from None
-                # Note 2: Text-only fallback keeps the Task usable on non-vision models.
-                try:
+            except (OSError, ValueError):
+                image = None
+            try:
+                if image is not None:
+                    # Note 1: Vision may repair layout that text alone cannot infer.
+                    try:
+                        response = structured(
+                            settings,
+                            settings.structure_model or "",
+                            StructureResponse,
+                            rules,
+                            user,
+                            reasoning="low",
+                            image=image,
+                        )
+                    except LLMError:
+                        # Note 2: A complete text response may replace a failed or
+                        # truncated vision response, never the partial response.
+                        image = None
+                if image is None:
                     response = structured(
                         settings,
                         settings.structure_model or "",
@@ -178,17 +310,18 @@ def _run_into(
                         user,
                         reasoning="low",
                     )
-                except LLMError as error:
-                    raise StructurePageError(
-                        page.number, f"page/{page.number}", error
-                    ) from None
+            except LLMError as error:
+                raise StructurePageError(
+                    page.number, f"page/{page.number}", error
+                ) from None
+            finally:
+                image_path.unlink(missing_ok=True)
         audit = _apply(page, response)
-        atomic_write_text(
-            output_dir / f"page-{page.number:04d}.json",
-            page.model_dump_json(indent=2) + "\n",
+        page_bytes, audit_bytes = _save_page_checkpoint(
+            progress_dir / f"page-{page.number:04d}", key, page, audit
         )
-        atomic_write_json(output_dir / f"audit-{page.number:04d}.json", audit)
-        image.unlink(missing_ok=True)
+        atomic_write_bytes(output_dir / f"page-{page.number:04d}.json", page_bytes)
+        atomic_write_bytes(output_dir / f"audit-{page.number:04d}.json", audit_bytes)
     end = time.perf_counter()
     print(f"[TIME] STRUCTURE page=- group=-: {end - start:.3f} s")  # noqa: T201
     return result
@@ -203,5 +336,18 @@ def run(
 ) -> Document:
     """Task directory全体を検証後に公開する。"""
 
+    progress_dir = output_dir.parent / "structure-pages"
+    if progress_dir.is_symlink() or progress_dir.is_junction():
+        msg = "linked STRUCTURE progress directory is not allowed"
+        raise ValueError(msg)
     with atomic_directory(output_dir) as temporary:
-        return _run_into(document, source_pdf, rules, settings, temporary)
+        result = _run_into(
+            document,
+            source_pdf,
+            rules,
+            settings,
+            temporary,
+            progress_dir,
+        )
+        atomic_write_json(temporary / "document.json", result.model_dump(mode="json"))
+        return result

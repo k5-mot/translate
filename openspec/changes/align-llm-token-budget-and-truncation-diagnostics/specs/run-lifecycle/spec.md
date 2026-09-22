@@ -21,8 +21,8 @@ Systemは、対象Modelのcontext windowを30,208 tokensとして扱い、既定
 - **WHEN** 最大出力と画像予約の合計が有効contextから1,024 tokensの入力領域を確保できない値である
 - **THEN** Systemは値を暗黙変更せず設定ErrorとしてModel request前に拒否する
 
-### Requirement: LLM出力枯渇を安全に分類して停止する
-Systemは、LLM応答をparseする前に終了理由と数値token usageを検査し、出力上限到達を`output-truncated`として分類しなければならない（MUST）。出力枯渇は同じrequestおよびtoken予算によるretry対象にせず、Task、page、target、mode、stage、終了理由ならびにinput、outputおよびtotal token数だけをFailureへ保存して、途中成果物を公開せずWorkflowをResume可能な状態で停止しなければならない（MUST）。Q-REL、Q-USEおよびQ-SEC（ISO/IEC 25010）として、同条件retry 0件、truncated response採用0件、秘密または文書内容の診断漏えい0件をAdapter、Failure contract、redactionおよびAtomic Artifact Testで検証しなければならない（MUST）。
+### Requirement: LLM出力枯渇を安全に分類し未回復時に停止する
+Systemは、LLM応答をparseする前に終了理由と数値token usageを検査し、出力上限到達を`output-truncated`として分類しなければならない（MUST）。出力枯渇は同じrequestおよびtoken予算によるretry対象にせず、truncated responseを採用してはならない（MUST NOT）。STRUCTUREのvision出力枯渇後に異なるtext-only入力で完全なschema適合応答を得た場合だけTaskを継続し、それ以外ではTask、page、target、mode、stage、終了理由ならびにinput、outputおよびtotal token数だけをFailureへ保存して、途中成果物を公開せずWorkflowをResume可能な状態で停止しなければならない（MUST）。Q-REL、Q-USEおよびQ-SEC（ISO/IEC 25010）として、同条件retry 0件、truncated response採用0件、秘密または文書内容の診断漏えい0件をAdapter、Failure contract、redactionおよびAtomic Artifact Testで検証しなければならない（MUST）。
 
 #### Scenario: 出力上限で空応答が返る
 - **WHEN** LLMが`finish_reason=length`と空の応答本文を返す
@@ -33,8 +33,12 @@ Systemは、LLM応答をparseする前に終了理由と数値token usageを検�
 - **THEN** Systemは本文をparseまたは成果物へ採用せず、同じtoken予算でretryしない
 
 #### Scenario: 出力枯渇でWorkflowが停止する
-- **WHEN** page処理で`output-truncated`が発生する
+- **WHEN** page処理で`output-truncated`が発生し、STRUCTUREの異なるtext-only入力でも完全なschema適合応答を得られない
 - **THEN** Systemは失敗したTaskとpageから再開できるcheckpointを保持し、対応する途中Artifactを公開しない
+
+#### Scenario: STRUCTUREのvision出力枯渇から回復する
+- **WHEN** STRUCTUREのvision応答が出力枯渇し、異なるtext-only入力が完全なschema適合応答を返す
+- **THEN** Systemは切れたvision応答を採用せず、text-onlyの結果だけでTaskを継続する
 
 #### Scenario: 安全な診断を保存する
 - **WHEN** Systemが出力枯渇のFailureと運用logを生成する

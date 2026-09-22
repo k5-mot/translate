@@ -8,7 +8,7 @@
 
 - `google/gemma4:12b`の実context window 30,208を設定上限と既定値へ反映し、入力、画像、安全余白および最大出力の合計がcontextを越えないよう検証する。
 - STRUCTUREを含むLLM requestで、応答本文をparseする前に`finish_reason=length`とtoken usageを検査し、出力枯渇を安全な`output-truncated`診断へ分類する。
-- 同一token予算で結果が変わらない出力枯渇は一時障害retryの対象外とし、Task、page、target、mode、stage、finish reasonおよび数値token usageだけを保存してResume可能に停止する。
+- 同一token予算で結果が変わらない出力枯渇は一時障害retryの対象外とし、未回復時はTask、page、target、mode、stage、finish reasonおよび数値token usageだけを保存してResume可能に停止する。STRUCTUREのvisionだけは異なるtext-only入力が完全に成功した場合に限り継続する。
 - 30,208 context内でSTRUCTUREの小さいJSON応答を完了できる既定出力予算を設定し、page 3の逐次probeで非空かつschema適合することを確認する。新規Dependencyと並行Model requestは追加しない。
 - ContextおよびToken設定は既存どおりfingerprint対象とする。修正前Run `01a0c138-0e5f-7e62-b0a8-8f9fd1e5bfa5`は書換えず、設定差分によるResume拒否を確認して、新設定では新しいUUIDv7 Runを作成する。
 - Unit／Integration Testでcontext境界、token予算、truncation分類、非retry、redaction、fingerprint差分およびAtomic Artifactを検証する。
@@ -49,7 +49,7 @@
 - Q-PERF（性能効率性）: context 30,208以内の有限出力予算、request timeoutおよびTask deadlineを維持し、同時Model requestを1件以下にする。probeと実Runのwall timeおよびtoken usageを記録する。
 - Q-COMP（互換性）: Token設定差分をfingerprintで検出し、旧Runの誤Resumeを0件にする。旧Failure JSONはoptional診断fieldなしでも読取り可能にする。
 - Q-USE（使用性）: 公開Failureへpage、target、stage、`finish_reason=length`および数値token usageを表示し、本文やraw responseを要求せず原因を識別できるようにする。
-- Q-REL（信頼性）: 出力枯渇を同条件で反復せずResume可能に停止し、途中STRUCTURE Artifactを0件にする。新設定の新規Runで正常完了を検証する。
+- Q-REL（信頼性）: 出力枯渇を同条件で反復せず、完全な代替応答を得られない場合はResume可能に停止し、途中STRUCTURE Artifactを0件にする。新設定の新規Runで正常完了を検証する。
 - Q-SEC（セキュリティ）: prompt、文書本文、reasoning content、raw応答、Credential、endpointおよび画像binaryのlog／Failure／Evidence漏えいを0件にする。
 - Q-MAIN（保守性）: context計算、truncation分類、retry判定、fingerprint境界をfocused Testへ一対一で対応付け、Ruff、Format、ty、pytestおよびOpenSpec strict validationを成功させる。
 - Q-PORT（移植性）: 標準Pythonと既存Dependencyだけを使用し、OS固有のtoken処理を追加しない。

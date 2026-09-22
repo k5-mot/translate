@@ -132,8 +132,15 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         )
         return document
 
-    def fake_structure(value: Document, *_args: object) -> Document:
+    def fake_structure(
+        value: Document,
+        _source: Path,
+        _rules: str,
+        _settings: Settings,
+        output_dir: Path,
+    ) -> Document:
         counts["structure"] += 1
+        atomic_write_json(output_dir / "document.json", value.model_dump(mode="json"))
         return value
 
     def fake_translate(value: Document, *_args: object) -> Document:

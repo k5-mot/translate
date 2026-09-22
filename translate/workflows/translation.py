@@ -219,16 +219,14 @@ def build_graph(
 
     def structure_node(state: TranslationState) -> dict[str, Any]:
         work = _workspace(state)
-        value = structure.run(
+        structure.run(
             _document(state),
             Path(state["source"]),
             read_rules(settings, "structure"),
             settings,
             work / "structure",
         )
-        return {
-            "document_path": _save_document(work / "structure" / "document.json", value)
-        }
+        return {"document_path": str(work / "structure" / "document.json")}
 
     def translate_node(state: TranslationState) -> dict[str, Any]:
         work = _workspace(state)

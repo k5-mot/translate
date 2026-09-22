@@ -46,6 +46,8 @@ Adapterは一回のinvoke成功後、LangChain messageの`response_metadata`お�
 
 終了理由が`length`なら同一token予算での再試行では完全な応答にならないためnon-retryableとする。HTTP 408／429／5xx、transport Errorおよび明示的に対応するProvider互換Errorの有限retry規則は維持する。
 
+STRUCTUREのvisionでのみ、切れた応答を捨てて画像なしのtext-only入力へ切り替える。これは同一requestのretryではなく既存の別mode fallbackであり、完全なschema適合応答を得た場合に限りpageを確定する。text-onlyも失敗した場合と他Taskの出力枯渇は従来どおり停止する。
+
 代替として空本文だけを検出する案は、途中JSONを伴うtruncationを見逃すため採用しない。parse失敗後に終了理由を調べる案も、parserへ文書断片を渡し原因を曖昧にするため採用しない。
 
 ### 3. 安全な診断値をoptional fieldでLifecycleへ伝播する
@@ -64,7 +66,7 @@ fingerprint schemaを増やさず、既存の`tokens.context`、`tokens.output`�
 
 Unit／Integration Testに合格した後、保存済みDocling documentからpage 3と同等のrequestを新設定で一回だけ実行し、非空かつschema適合、`finish_reason`が`length`ではないこと、およびcontext内の数値usageを記録する。probeは本文、prompt、raw responseおよびendpointをEvidenceへ残さない。probe成功後に旧RunのResume拒否を確認し、その後だけ同じ入力の新規Translation Runを開始する。すべてを同時実行数1で行う。
 
-probeが再びtruncationした場合は最大出力を自動増加せず、Failure Evidenceを保持してChangeを未完了とする。これにより実Model挙動を推測で製品既定へ反映することを防ぐ。
+probeが再びtruncationし完全な別mode応答を得られない場合は最大出力を自動増加せず、Failure Evidenceを保持してChangeを未完了とする。これにより実Model挙動を推測で製品既定へ反映することを防ぐ。
 
 ## Quality Attribute Design
 
@@ -83,7 +85,7 @@ probeが再びtruncationした場合は最大出力を自動増加せず、Failu
 
 - **取得・供給:** 新規Package、ServiceおよびModelを追加しない。既存OpenAI互換Serverが返すLangChain metadataだけを入力にする。
 - **移行:** 保存済みRunとFailureは変換しない。token設定差分はResume拒否として明示し、新設定では新しいUUIDv7 Runを作る。
-- **運用:** probe、Translation、ReviewおよびEmbeddingを逐次実行する。request timeout、Task deadlineおよび有限retryを維持し、truncationだけを即時停止へ分類する。
+- **運用:** probe、Translation、ReviewおよびEmbeddingを逐次実行する。request timeout、Task deadlineおよび有限retryを維持し、truncationを同条件非retryとし、STRUCTUREの完全な別mode回復がない場合だけ停止する。
 - **Support:** Failure表示とrun-local logには安全な分類と数値usageだけを残す。保守者はpage、mode、stageおよびusageからtoken枯渇とtransport障害を区別する。
 - **保守:** Model context、既定出力または安全余白を変更するときは、設定境界、chunk計算、fingerprintおよび実probeを同じChangeで更新する。
 - **廃止:** 旧Run、新Run、外部exportおよびQdrant Collectionを自動削除しない。利用者の明示削除まで診断Evidenceを保持する。

@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from PIL import Image, ImageDraw
 
 from translate.adapters.llm import LLMError
 from translate.document import Block, Document, Inline, Page
-from translate.tasks import structure
+from translate.tasks import cover, structure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,8 +38,98 @@ def _document() -> Document:
 
 def _render(_source: Path, page: int, output: Path) -> Path:
     assert page == 2
-    output.write_bytes(b"image")
+    Image.new("RGB", (8, 8), "white").save(output)
     return output
+
+
+def _source(tmp_path: Path) -> Path:
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"PDF-FIXTURE")
+    return source
+
+
+def test_structure_bounds_vision_image_without_cropping(tmp_path: Path) -> None:
+    """大きな画像だけを全page保持のまま上限内へ縮小する。"""
+
+    image = tmp_path / "page.png"
+    with Image.new("RGB", (2000, 1000), "white") as original:
+        draw = ImageDraw.Draw(original)
+        for box, color in (
+            ((0, 0, 100, 100), "red"),
+            ((1899, 0, 1999, 100), "green"),
+            ((0, 899, 100, 999), "blue"),
+            ((1899, 899, 1999, 999), "yellow"),
+        ):
+            draw.rectangle(box, fill=color)
+        original.save(image)
+
+    structure._bound_image(image)  # noqa: SLF001
+
+    with Image.open(image) as bounded:
+        assert bounded.width * bounded.height <= 1_000_000
+        assert abs(bounded.width / bounded.height - 2) < 0.01
+        assert [
+            bounded.getpixel(point)
+            for point in (
+                (0, 0),
+                (bounded.width - 1, 0),
+                (0, bounded.height - 1),
+                (bounded.width - 1, bounded.height - 1),
+            )
+        ] == [(255, 0, 0), (0, 128, 0), (0, 0, 255), (255, 255, 0)]
+
+
+def test_structure_leaves_small_image_and_cover_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """STRUCTUREの上限は既存の小画像とCOVERの150 DPIへ影響しない。"""
+
+    image = tmp_path / "small.png"
+    Image.new("RGB", (500, 600), "white").save(image)
+    before = image.read_bytes()
+    structure._bound_image(image)  # noqa: SLF001
+    assert image.read_bytes() == before
+
+    seen_dpi: list[int] = []
+
+    def render_cover(_source: Path, _page: int, output: Path, *, dpi: int) -> Path:
+        seen_dpi.append(dpi)
+        Image.new("RGB", (8, 8), "white").save(output)
+        return output
+
+    monkeypatch.setattr(cover, "render_page", render_cover)
+    cover.run(tmp_path / "source.pdf", tmp_path / "cover" / "cover.png")
+    assert seen_dpi == [150]
+
+
+def test_structure_uses_text_when_image_cannot_be_prepared(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """画像化できないpageは本文だけの完全応答で回復する。"""
+
+    calls: list[bool] = []
+
+    def fail_render(_source: Path, _page: int, output: Path) -> Path:
+        output.write_bytes(b"partial")
+        message = "image unavailable"
+        raise OSError(message)
+
+    def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        calls.append(kwargs.get("image") is not None)
+        return structure.StructureResponse()
+
+    monkeypatch.setattr(structure.pdf, "render_page", fail_render)
+    monkeypatch.setattr(structure, "structured", respond)
+    output = tmp_path / "structure"
+
+    structure.run(_document(), _source(tmp_path), "rules", settings_factory(), output)
+
+    assert calls == [False]
+    assert not list(output.glob("*.png"))
+    assert (output / "document.json").is_file()
 
 
 def test_structure_falls_back_to_text_after_finite_vision_failure(
@@ -63,7 +154,7 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
 
     result = structure.run(
         _document(),
-        tmp_path / "source.pdf",
+        _source(tmp_path),
         "rules",
         settings_factory(),
         output,
@@ -98,7 +189,7 @@ def test_structure_final_llm_failure_has_safe_page_context_and_no_artifact(
     with pytest.raises(structure.StructurePageError) as captured:
         structure.run(
             _document(),
-            tmp_path / "source.pdf",
+            _source(tmp_path),
             "rules",
             settings_factory(),
             output,
@@ -136,7 +227,7 @@ def test_structure_does_not_hide_task_programming_type_error_with_fallback(
     with pytest.raises(TypeError, match="application programming error"):
         structure.run(
             _document(),
-            tmp_path / "source.pdf",
+            _source(tmp_path),
             "rules",
             settings_factory(),
             tmp_path / "structure",
@@ -146,29 +237,66 @@ def test_structure_does_not_hide_task_programming_type_error_with_fallback(
     assert not (tmp_path / "structure").exists()
 
 
-def test_structure_does_not_fallback_after_output_truncation(
+def test_structure_uses_text_only_after_vision_output_truncation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """出力枯渇は別modeへ進まずpage checkpointで停止する。"""
+    """切れたVision結果を捨て、一度だけTextの完全応答へ切り替える。"""
 
-    calls = 0
+    calls: list[bool] = []
 
-    def fail(*_args: object, **_kwargs: object) -> structure.StructureResponse:
-        nonlocal calls
-        calls += 1
-        error = RuntimeError("safe")
-        llm_error = LLMError(
-            "vision-output",
-            error,
+    def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        vision = kwargs.get("image") is not None
+        calls.append(vision)
+        if vision:
+            stage = "vision-output"
+            raise LLMError(
+                stage,
+                RuntimeError("RAW-TRUNCATED-SENTINEL"),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        return structure.StructureResponse()
+
+    monkeypatch.setattr(structure.pdf, "render_page", _render)
+    monkeypatch.setattr(structure, "structured", respond)
+    output = tmp_path / "structure"
+
+    result = structure.run(
+        _document(),
+        _source(tmp_path),
+        "rules",
+        settings_factory(),
+        output,
+    )
+
+    assert result.pages[0].number == 2
+    assert calls == [True, False]
+    assert (output / ".complete.json").is_file()
+
+
+def test_structure_stops_when_vision_and_text_both_truncate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """両modeの出力枯渇では最終stageだけを安全に公開する。"""
+
+    calls: list[bool] = []
+
+    def fail(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        vision = kwargs.get("image") is not None
+        calls.append(vision)
+        raise LLMError(
+            "vision-output" if vision else "text-output",
+            RuntimeError("RAW-TRUNCATED-SENTINEL"),
             failure_kind="output-truncated",
             finish_reason="length",
             input_tokens=10,
             output_tokens=20,
             total_tokens=30,
         )
-        raise llm_error
 
     monkeypatch.setattr(structure.pdf, "render_page", _render)
     monkeypatch.setattr(structure, "structured", fail)
@@ -176,13 +304,15 @@ def test_structure_does_not_fallback_after_output_truncation(
     with pytest.raises(structure.StructurePageError) as captured:
         structure.run(
             _document(),
-            tmp_path / "source.pdf",
+            _source(tmp_path),
             "rules",
             settings_factory(),
             tmp_path / "structure",
         )
 
-    assert calls == 1
+    assert calls == [True, False]
+    assert captured.value.stage == "text-output"
     assert captured.value.failure_kind == "output-truncated"
     assert captured.value.finish_reason == "length"
+    assert "RAW-TRUNCATED-SENTINEL" not in str(captured.value)
     assert not (tmp_path / "structure").exists()
