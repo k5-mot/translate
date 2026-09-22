@@ -48,6 +48,11 @@ class StructurePageError(RuntimeError):
         self.target_id = target_id
         self.stage: LLMStage = cause.stage
         self.cause_type = cause.cause_type
+        self.failure_kind = cause.failure_kind
+        self.finish_reason = cause.finish_reason
+        self.input_tokens = cause.input_tokens
+        self.output_tokens = cause.output_tokens
+        self.total_tokens = cause.total_tokens
         super().__init__(
             f"STRUCTURE page failed: page={page} "
             f"stage={self.stage} cause={self.cause_type}"
@@ -158,7 +163,11 @@ def _run_into(
                     reasoning="low",
                     image=image,
                 )
-            except LLMError:
+            except LLMError as error:
+                if error.failure_kind == "output-truncated":
+                    raise StructurePageError(
+                        page.number, f"page/{page.number}", error
+                    ) from None
                 # Note 2: Text-only fallback keeps the Task usable on non-vision models.
                 try:
                     response = structured(

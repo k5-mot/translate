@@ -27,38 +27,123 @@ if TYPE_CHECKING:
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 LLMStage = Literal[
     "vision-invoke",
+    "vision-output",
     "vision-parse",
     "text-invoke",
+    "text-output",
     "text-parse",
 ]
 LLM_STAGES: tuple[LLMStage, ...] = (
     "vision-invoke",
+    "vision-output",
     "vision-parse",
     "text-invoke",
+    "text-output",
     "text-parse",
 )
+LLMFailureKind = Literal["output-truncated"]
+LLMFinishReason = Literal["length"]
+
+
+class LLMOutputTruncatedError(RuntimeError):
+    """Modelが最大出力へ到達したことだけを表す安全な原因型。"""
 
 
 class LLMError(RuntimeError):
     """LLM境界のstageと安全な下位例外型だけを公開する。"""
 
-    def __init__(self, stage: LLMStage, cause: BaseException) -> None:
+    def __init__(
+        self,
+        stage: LLMStage,
+        cause: BaseException,
+        *,
+        failure_kind: LLMFailureKind | None = None,
+        finish_reason: LLMFinishReason | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+    ) -> None:
         if stage not in LLM_STAGES:
             msg = "invalid LLM stage"
             raise ValueError(msg)
         self.stage = stage
         self.cause_type = type(cause).__name__
+        self.failure_kind = failure_kind
+        self.finish_reason = finish_reason
+        self.input_tokens = _safe_token_count(input_tokens)
+        self.output_tokens = _safe_token_count(output_tokens)
+        self.total_tokens = _safe_token_count(total_tokens)
         super().__init__(f"LLM request failed during {stage}: {self.cause_type}")
 
 
 class _LLMAttemptError(Exception):
     """一回の試行結果をraw messageなしでretry loopへ渡す。"""
 
-    def __init__(self, stage: LLMStage, cause: Exception, *, retryable: bool) -> None:
+    def __init__(
+        self,
+        stage: LLMStage,
+        cause: Exception,
+        *,
+        retryable: bool,
+        failure_kind: LLMFailureKind | None = None,
+        finish_reason: LLMFinishReason | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+    ) -> None:
         self.stage = stage
         self.cause = cause
         self.retryable = retryable
+        self.failure_kind = failure_kind
+        self.finish_reason = finish_reason
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.total_tokens = total_tokens
         super().__init__("LLM attempt failed")
+
+
+def _safe_token_count(value: object) -> int | None:
+    """Provider metadataからnon-negative integerだけを許可する。"""
+
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else None
+    )
+
+
+def _response_diagnostics(
+    response: object,
+) -> tuple[LLMFinishReason | None, int | None, int | None, int | None]:
+    """LangChainの既知metadata形からallowlist値だけを取り出す。"""
+
+    response_metadata = getattr(response, "response_metadata", {})
+    usage_metadata = getattr(response, "usage_metadata", {})
+    if not isinstance(response_metadata, dict):
+        response_metadata = {}
+    if not isinstance(usage_metadata, dict):
+        usage_metadata = {}
+    token_usage = response_metadata.get("token_usage", {})
+    if not isinstance(token_usage, dict):
+        token_usage = {}
+    finish_reason: LLMFinishReason | None = (
+        "length" if response_metadata.get("finish_reason") == "length" else None
+    )
+    input_tokens = _safe_token_count(usage_metadata.get("input_tokens"))
+    output_tokens = _safe_token_count(usage_metadata.get("output_tokens"))
+    total_tokens = _safe_token_count(usage_metadata.get("total_tokens"))
+    return (
+        finish_reason,
+        input_tokens
+        if input_tokens is not None
+        else _safe_token_count(token_usage.get("prompt_tokens")),
+        output_tokens
+        if output_tokens is not None
+        else _safe_token_count(token_usage.get("completion_tokens")),
+        total_tokens
+        if total_tokens is not None
+        else _safe_token_count(token_usage.get("total_tokens")),
+    )
 
 
 def _model(settings: Settings, model: str, reasoning: str) -> ChatOpenAI:
@@ -96,7 +181,15 @@ def _invoke_with_retry[ResultT](
                 or attempt >= settings.retry_attempts
                 or time.monotonic() >= deadline
             ):
-                raise LLMError(error.stage, error.cause) from None
+                raise LLMError(
+                    error.stage,
+                    error.cause,
+                    failure_kind=error.failure_kind,
+                    finish_reason=error.finish_reason,
+                    input_tokens=error.input_tokens,
+                    output_tokens=error.output_tokens,
+                    total_tokens=error.total_tokens,
+                ) from None
             delay = min(
                 settings.retry_base_seconds * (2 ** (attempt - 1)),
                 settings.retry_max_seconds,
@@ -151,6 +244,24 @@ def structured[ResponseT: BaseModel](
                 or (status is not None and status >= 500)
             )
             raise _LLMAttemptError(invoke_stage, error, retryable=retryable) from None
+
+        finish_reason, input_tokens, output_tokens, total_tokens = (
+            _response_diagnostics(response)
+        )
+        if finish_reason == "length":
+            output_stage: LLMStage = (
+                "vision-output" if mode == "vision" else "text-output"
+            )
+            raise _LLMAttemptError(
+                output_stage,
+                LLMOutputTruncatedError(),
+                retryable=False,
+                failure_kind="output-truncated",
+                finish_reason=finish_reason,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+            )
 
         parse_stage: LLMStage = "vision-parse" if mode == "vision" else "text-parse"
         try:

@@ -64,10 +64,8 @@ def apply_translations(page: Page, mapping: dict[str, str]) -> None:
 def _chunks(
     values: list[tuple[str, str]], settings: Settings
 ) -> list[list[tuple[str, str]]]:
-    # Note 1: Reserve model output before estimating the safe input character count.
-    max_chars = min(
-        4_000, max(1_000, (settings.context_tokens - settings.output_tokens) * 2)
-    )
+    # Note 1: The shared budget includes output, image, and tokenizer safety reserves.
+    max_chars = min(4_000, max(1_000, settings.available_input_tokens * 2))
     result: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
     size = 0

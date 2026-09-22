@@ -14,7 +14,7 @@ from langchain_core.exceptions import OutputParserException
 from typer.testing import CliRunner
 
 import cli
-from translate.adapters.llm import LLMError
+from translate.adapters.llm import LLMError, LLMOutputTruncatedError
 from translate.adapters.qdrant import RegistrationError, RegistrationStage
 from translate.common.lifecycle import (
     FailureRecord,
@@ -255,6 +255,84 @@ def test_legacy_failure_json_remains_readable() -> None:
 
     assert failure.stage is None
     assert failure.cause_type is None
+    assert failure.failure_kind is None
+    assert failure.finish_reason is None
+    assert failure.input_tokens is None
+    assert failure.output_tokens is None
+    assert failure.total_tokens is None
+
+
+@pytest.mark.integration
+def test_output_truncation_is_safe_atomic_and_backward_compatible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """出力枯渇のallowlist診断だけを保存し、途中成果物を公開しない。"""
+
+    settings = settings_factory(
+        runs_dir=tmp_path / "runs",
+        templates_dir=_templates(tmp_path / "templates"),
+    )
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"fixture")
+    repository = RunRepository(settings.runs_dir)
+    prepared = prepare_run(repository, "translate", {"source": source}, settings)
+
+    def workflow(*_args: object, **_kwargs: object) -> Path:
+        llm_error = LLMError(
+            "text-output",
+            LLMOutputTruncatedError(),
+            failure_kind="output-truncated",
+            finish_reason="length",
+            input_tokens=1_328,
+            output_tokens=4_096,
+            total_tokens=5_424,
+        )
+        error = StructurePageError(3, "page/3", llm_error)
+        report_task_status(
+            TaskStatusEvent(
+                "STRUCTURE",
+                "failed",
+                page=error.page,
+                target_id=error.target_id,
+                stage=error.stage,
+                cause_type=error.cause_type,
+                failure_kind=error.failure_kind,
+                finish_reason=error.finish_reason,
+                input_tokens=error.input_tokens,
+                output_tokens=error.output_tokens,
+                total_tokens=error.total_tokens,
+                error=error,
+            )
+        )
+        raise error
+
+    monkeypatch.setattr("translate.common.lifecycle.run_translation", workflow)
+
+    with pytest.raises(PublicRunError) as captured:
+        execute_public_run(repository, prepared, settings)
+
+    failure = captured.value.failure
+    diagnostic = (
+        str(captured.value)
+        + (prepared.paths.workspace / "failure.json").read_text(encoding="utf-8")
+        + (prepared.paths.workspace / "logs" / "run.log").read_text(encoding="utf-8")
+    )
+    assert failure.stage == "text-output"
+    assert failure.cause_type == "LLMOutputTruncatedError"
+    assert failure.failure_kind == "output-truncated"
+    assert failure.finish_reason == "length"
+    assert (failure.input_tokens, failure.output_tokens, failure.total_tokens) == (
+        1_328,
+        4_096,
+        5_424,
+    )
+    assert "kind=output-truncated" in str(captured.value)
+    assert "finish_reason=length" in str(captured.value)
+    assert not any(prepared.paths.outputs.iterdir())
+    for forbidden in ("prompt", "DOCUMENT", "raw=", "reasoning"):
+        assert forbidden not in diagnostic
 
 
 @pytest.mark.integration
@@ -340,6 +418,11 @@ def test_failure_diagnostics_reject_values_outside_allowlist(
                 "failed",
                 stage="prompt=SECRET",
                 cause_type="Not Valid",
+                failure_kind="SECRET-kind",
+                finish_reason="SECRET-finish",
+                input_tokens=-1,
+                output_tokens=-2,
+                total_tokens=-3,
                 error=error,
             )
         )
@@ -355,6 +438,11 @@ def test_failure_diagnostics_reject_values_outside_allowlist(
     )
     assert failure.stage is None
     assert failure.cause_type is None
+    assert failure.failure_kind is None
+    assert failure.finish_reason is None
+    assert failure.input_tokens is None
+    assert failure.output_tokens is None
+    assert failure.total_tokens is None
 
 
 @pytest.mark.parametrize("stage", ["extract", "write", "verify", "replace"])

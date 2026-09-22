@@ -144,3 +144,45 @@ def test_structure_does_not_hide_task_programming_type_error_with_fallback(
 
     assert calls == 1
     assert not (tmp_path / "structure").exists()
+
+
+def test_structure_does_not_fallback_after_output_truncation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """出力枯渇は別modeへ進まずpage checkpointで停止する。"""
+
+    calls = 0
+
+    def fail(*_args: object, **_kwargs: object) -> structure.StructureResponse:
+        nonlocal calls
+        calls += 1
+        error = RuntimeError("safe")
+        llm_error = LLMError(
+            "vision-output",
+            error,
+            failure_kind="output-truncated",
+            finish_reason="length",
+            input_tokens=10,
+            output_tokens=20,
+            total_tokens=30,
+        )
+        raise llm_error
+
+    monkeypatch.setattr(structure.pdf, "render_page", _render)
+    monkeypatch.setattr(structure, "structured", fail)
+
+    with pytest.raises(structure.StructurePageError) as captured:
+        structure.run(
+            _document(),
+            tmp_path / "source.pdf",
+            "rules",
+            settings_factory(),
+            tmp_path / "structure",
+        )
+
+    assert calls == 1
+    assert captured.value.failure_kind == "output-truncated"
+    assert captured.value.finish_reason == "length"
+    assert not (tmp_path / "structure").exists()

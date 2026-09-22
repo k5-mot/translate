@@ -311,3 +311,117 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
         )
     assert prompt_calls == 1
     assert model_calls == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "",
+            {
+                "finish_reason": "length",
+                "token_usage": {
+                    "prompt_tokens": 1_328,
+                    "completion_tokens": 4_096,
+                    "total_tokens": 5_424,
+                },
+            },
+            None,
+            (1_328, 4_096, 5_424),
+        ),
+        (
+            'SECRET-PARTIAL-RAW {"value":',
+            {"finish_reason": "length", "raw": "SECRET-METADATA"},
+            {"input_tokens": 12, "output_tokens": 34, "total_tokens": 46},
+            (12, 34, 46),
+        ),
+    ],
+    ids=["response-metadata", "usage-metadata"],
+)
+def test_llm_classifies_length_before_parse_without_retry_or_leak(
+    case: tuple[
+        str,
+        dict[str, object],
+        dict[str, int] | None,
+        tuple[int, int, int],
+    ],
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """空または途中のlength応答をparseせず安全に一回で停止する。"""
+
+    content, response_metadata, usage_metadata, expected = case
+    calls = 0
+
+    class Client:
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            return AIMessage(
+                content=content,
+                response_metadata=response_metadata,
+                usage_metadata=usage_metadata,
+            )
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=4, retry_base_seconds=0),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-output"
+    assert captured.value.cause_type == "LLMOutputTruncatedError"
+    assert captured.value.failure_kind == "output-truncated"
+    assert captured.value.finish_reason == "length"
+    assert (
+        captured.value.input_tokens,
+        captured.value.output_tokens,
+        captured.value.total_tokens,
+    ) == expected
+    for forbidden in (content, "SECRET-METADATA"):
+        if forbidden:
+            assert forbidden not in str(captured.value)
+
+
+def test_llm_token_usage_rejects_non_integer_or_negative_values(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """診断にはnon-negative integerだけを許可する。"""
+
+    class Client:
+        def invoke(self, _messages: object) -> AIMessage:
+            return AIMessage(
+                content="",
+                response_metadata={
+                    "finish_reason": "length",
+                    "token_usage": {
+                        "prompt_tokens": -1,
+                        "completion_tokens": True,
+                        "total_tokens": "5",
+                    },
+                },
+            )
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="low",
+        )
+
+    assert captured.value.input_tokens is None
+    assert captured.value.output_tokens is None
+    assert captured.value.total_tokens is None

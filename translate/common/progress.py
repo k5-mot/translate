@@ -40,6 +40,11 @@ class TaskStatusEvent:
     target_id: str | None = None
     stage: str | None = None
     cause_type: str | None = None
+    failure_kind: str | None = None
+    finish_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
     error: BaseException | None = None
 
 

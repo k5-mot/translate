@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from translate.common.fingerprint import (
     Fingerprint,
@@ -157,7 +158,7 @@ def test_resume_rejects_changed_settings_with_itemized_reason(
             translation_model="model-b",
             split_pages=20,
             docling_ocr_lang="jpn",
-            context_tokens=8_000,
+            context_tokens=20_500,
         ),
         tmp_path,
     )
@@ -172,3 +173,45 @@ def test_resume_rejects_changed_settings_with_itemized_reason(
         "tokens.context",
     }
     assert any("models.translation" in reason for reason in compatibility.reasons)
+
+
+def test_token_default_change_rejects_old_run_without_mutating_it(
+    settings_factory: Callable[..., Settings], tmp_path: Path
+) -> None:
+    """旧token予算Runを拒否し、新設定は別のUUIDv7 Runにする。"""
+
+    old = settings_factory(
+        context_tokens=16_384,
+        output_tokens=4_096,
+        image_tokens=2_048,
+    )
+    current = settings_factory()
+    old_fingerprint = _fingerprint(old, tmp_path)
+    current_fingerprint = _fingerprint(current, tmp_path)
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"source")
+    repository = RunRepository(tmp_path / "runs")
+    saved = repository.create(
+        "translate",
+        {"source": source},
+        old_fingerprint.snapshot,
+        old_fingerprint.value,
+    )
+    old_metadata = repository.paths(saved.run_id).metadata.read_bytes()
+
+    compatibility = check_resume_compatibility(saved, current_fingerprint)
+    created = repository.create(
+        "translate",
+        {"source": source},
+        current_fingerprint.snapshot,
+        current_fingerprint.value,
+    )
+
+    assert not compatibility.compatible
+    assert {item.path for item in compatibility.differences} == {
+        "tokens.context",
+        "tokens.output",
+    }
+    assert created.run_id != saved.run_id
+    assert UUID(created.run_id).version == 7
+    assert repository.paths(saved.run_id).metadata.read_bytes() == old_metadata

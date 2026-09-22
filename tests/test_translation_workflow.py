@@ -62,6 +62,11 @@ def test_failed_status_copies_safe_structure_diagnostics() -> None:
     error.target_id = "page/7"  # type: ignore[attr-defined]
     error.stage = "vision-invoke"  # type: ignore[attr-defined]
     error.cause_type = "TypeError"  # type: ignore[attr-defined]
+    error.failure_kind = "output-truncated"  # type: ignore[attr-defined]
+    error.finish_reason = "length"  # type: ignore[attr-defined]
+    error.input_tokens = 10  # type: ignore[attr-defined]
+    error.output_tokens = 20  # type: ignore[attr-defined]
+    error.total_tokens = 30  # type: ignore[attr-defined]
 
     status = translation._failed_status("STRUCTURE", error)  # noqa: SLF001
 
@@ -69,6 +74,11 @@ def test_failed_status_copies_safe_structure_diagnostics() -> None:
     assert status.target_id == "page/7"
     assert status.stage == "vision-invoke"
     assert status.cause_type == "TypeError"
+    assert status.failure_kind == "output-truncated"
+    assert status.finish_reason == "length"
+    assert status.input_tokens == 10
+    assert status.output_tokens == 20
+    assert status.total_tokens == 30
 
 
 def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915

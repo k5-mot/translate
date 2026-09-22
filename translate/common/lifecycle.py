@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from translate.adapters.langfuse import bind_observation_context
 from translate.adapters.llm import LLM_STAGES, LLMStage
@@ -80,6 +80,11 @@ class FailureRecord(BaseModel):
     reason: str
     stage: FailureStage | None = None
     cause_type: str | None = None
+    failure_kind: Literal["output-truncated"] | None = None
+    finish_reason: Literal["length"] | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
     failed_at: datetime
 
 
@@ -258,6 +263,7 @@ def execute_run(
             return
         error = event.error or RuntimeError("task failed")
         stage, cause_type = _safe_diagnostics(event.stage, event.cause_type, error)
+        output_diagnostics = _safe_output_diagnostics(event, error, stage)
         failure = FailureRecord(
             run_id=record.run_id,
             task=event.task,
@@ -268,6 +274,11 @@ def execute_run(
             reason=safe_failure_reason(error),
             stage=stage,
             cause_type=cause_type,
+            failure_kind=output_diagnostics[0],
+            finish_reason=output_diagnostics[1],
+            input_tokens=output_diagnostics[2],
+            output_tokens=output_diagnostics[3],
+            total_tokens=output_diagnostics[4],
             failed_at=datetime.now(UTC),
         )
         atomic_write_json(failure_path, failure.model_dump(mode="json"))
@@ -337,6 +348,7 @@ def execute_public_run(
         failure = load_failure(repository, prepared.record.run_id)
         if failure is None:
             stage, cause_type = _safe_diagnostics(None, None, error)
+            output_diagnostics = _safe_output_diagnostics(None, error, stage)
             failure = FailureRecord(
                 run_id=prepared.record.run_id,
                 task=prepared.record.last_task or prepared.record.operation.upper(),
@@ -344,6 +356,11 @@ def execute_public_run(
                 reason=safe_failure_reason(error),
                 stage=stage,
                 cause_type=cause_type,
+                failure_kind=output_diagnostics[0],
+                finish_reason=output_diagnostics[1],
+                input_tokens=output_diagnostics[2],
+                output_tokens=output_diagnostics[3],
+                total_tokens=output_diagnostics[4],
                 failed_at=datetime.now(UTC),
             )
         raise PublicRunError(failure) from None
@@ -394,6 +411,27 @@ def format_failure(failure: FailureRecord) -> str:
         f"group={failure.group}" if failure.group is not None else None,
         f"target={failure.target_id}" if failure.target_id is not None else None,
         f"stage={failure.stage}" if failure.stage is not None else None,
+        (f"kind={failure.failure_kind}" if failure.failure_kind is not None else None),
+        (
+            f"finish_reason={failure.finish_reason}"
+            if failure.finish_reason is not None
+            else None
+        ),
+        (
+            f"input_tokens={failure.input_tokens}"
+            if failure.input_tokens is not None
+            else None
+        ),
+        (
+            f"output_tokens={failure.output_tokens}"
+            if failure.output_tokens is not None
+            else None
+        ),
+        (
+            f"total_tokens={failure.total_tokens}"
+            if failure.total_tokens is not None
+            else None
+        ),
     ]
     suffix = " ".join(item for item in targets if item)
     prefix = f"run_id={failure.run_id} task={failure.task}"
@@ -421,6 +459,53 @@ def _safe_diagnostics(
         else None
     )
     return safe_stage, safe_cause
+
+
+def _safe_output_diagnostics(
+    event: TaskStatusEvent | None,
+    error: BaseException,
+    stage: FailureStage | None,
+) -> tuple[
+    Literal["output-truncated"] | None,
+    Literal["length"] | None,
+    int | None,
+    int | None,
+    int | None,
+]:
+    """出力枯渇stageに対する固定分類と数値usageだけを許可する。"""
+
+    if stage not in {"text-output", "vision-output"}:
+        return None, None, None, None, None
+    kind = (
+        event.failure_kind
+        if event is not None and event.failure_kind is not None
+        else getattr(error, "failure_kind", None)
+    )
+    reason = (
+        event.finish_reason
+        if event is not None and event.finish_reason is not None
+        else getattr(error, "finish_reason", None)
+    )
+    if kind != "output-truncated" or reason != "length":
+        return None, None, None, None, None
+
+    def count(name: str) -> int | None:
+        value = getattr(event, name) if event is not None else None
+        if value is None:
+            value = getattr(error, name, None)
+        return (
+            value
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            else None
+        )
+
+    return (
+        "output-truncated",
+        "length",
+        count("input_tokens"),
+        count("output_tokens"),
+        count("total_tokens"),
+    )
 
 
 def _copied_inputs(repository: RunRepository, record: RunRecord) -> dict[str, Path]:

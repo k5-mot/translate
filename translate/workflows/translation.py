@@ -390,6 +390,11 @@ def _failed_status(name: str, error: BaseException) -> TaskStatusEvent:
         target_id=getattr(error, "target_id", None),
         stage=getattr(error, "stage", None),
         cause_type=getattr(error, "cause_type", None),
+        failure_kind=getattr(error, "failure_kind", None),
+        finish_reason=getattr(error, "finish_reason", None),
+        input_tokens=getattr(error, "input_tokens", None),
+        output_tokens=getattr(error, "output_tokens", None),
+        total_tokens=getattr(error, "total_tokens", None),
         error=error,
     )
 
