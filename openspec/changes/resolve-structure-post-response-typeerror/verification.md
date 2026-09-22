@@ -79,3 +79,34 @@
 - 「外側current chainあり」が、成功した直接page 3と失敗した公開Resumeの残る主要差分である。Providerは6件ともstop／reasoning 0／strict schema応答を返し、server側TypeErrorは0件なので、次Changeでは実Langfuse／OpenTelemetry outer span内のactual SDK response processingを再現し、Model invoke中だけcurrent contextを安全に隔離するか、workflow観測をnon-current lifecycleへ移す必要がある。
 - 本Changeの23 tasksは、定義した失敗時停止・保存・引渡しを含め完了した。一方、Q-FUNCの公開Resume通過は未達であり、verifyはCRITICAL失敗、archive不可と判定する。
 - Translation、最終Markdown／DOCX、Word-to-PDF利用者操作、目視比較およびComparison Reviewは未完了であり、完了扱いにしない。
+
+## Verification Report: resolve-structure-post-response-typeerror
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | PASS — 23/23 tasks complete。`skip_specs: true`のためdelta requirementsは0件 |
+| Correctness | FAIL — 自動Gateは成功したが、公開CLI ResumeはSTRUCTURE page 3の応答後`TypeError`で停止 |
+| Coherence | FAIL — detached generationだけでは外側のcurrent workflow observationからModel invokeを隔離できていない |
+
+### CRITICAL
+
+1. 公開Translation Workflowが、schema-validなProvider応答を受領した後も`text-invoke`の`TypeError`で停止する。
+   - Evidence: `verification.md:66-80`、`runs/01a0c97c-f5cf-7031-b808-4ad545133925/run.json`。
+   - `translate/adapters/llm.py:417-425`はgeneration観測だけをdetachedにする一方、`translate/workflows/translation.py:480-487`の`workflow.pdf-translation` chainはcurrent observationのままである。
+   - Recommendation: 本Changeをarchiveしない。次の独立Changeで、実Langfuse／OpenTelemetryの外側current chainを含むactual OpenAI SDK response stackを再現し、Model invoke中のcurrent contextを安全に隔離するか、workflow観測をnon-current lifecycleへ変更する。その後、自動Gateを通して同じRunを一度だけ明示Resumeする。
+
+### WARNING
+
+1. offline differentialは実OpenAI SDKを通るが、観測current状態をTest専用`ContextVar`で模擬しており、実Langfuse／OpenTelemetryのouter workflow contextを再現していない。
+   - Evidence: `tests/test_langfuse.py:34-43`、`tests/test_langfuse.py:195-266`。
+   - Recommendation: 実Langfuse clientが作るouter current observationの内側で、Networkなしのstrict-schema responseを処理する回帰Testを追加し、Provider call count 1、schema適合、current contextの隔離および秘密非出力を確認する。
+
+### SUGGESTION
+
+なし。
+
+### Final Assessment
+
+CRITICAL 1件、WARNING 1件。Ruff、Format、ty、全pytest 203 passed／1 skippedおよびOpenSpec strict validationは成功したが、Q-FUNCの公開Resume通過と読取り可能なPDFからの最終成果物生成を満たしていない。修正前のarchiveは禁止する。
