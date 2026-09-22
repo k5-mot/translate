@@ -89,3 +89,38 @@
 - Apply checklistは失敗時の安全な停止、保存状態監査および引渡しまで完了したが、製品受入は失敗である。Verifyはこの残存不具合をCRITICALとして扱い、本Change単独をarchive可能と判定しない。
 - 後続Changeでは、Langfuse有効／無効差分とProvider response後の例外originをraw値なしで再現し、観測障害が製品処理を失敗させない境界をfailing-first Testで固定する。保存済みRunへの追加Resumeは、その修正と実page gateが成功するまで行わない。
 - Word-to-PDF変換、利用者の目視比較およびComparison Reviewは未完了であり、本Changeでは完了扱いにしない。
+
+## Verification Report: enforce-structure-zero-thinking-budget
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | PASS — 22/22 tasks complete、delta requirements 0件（`skip_specs: true`） |
+| Correctness | FAIL — zero-budget contractは実証済みだが、公開WorkflowはSTRUCTUREで停止 |
+| Coherence | PASS — request policy、checkpoint v4、逐次gate、一回Resumeおよび失敗時保存はDesignどおり |
+
+### CRITICAL
+
+1. 公開CLIの同一Run Resumeが、6件のProvider responseすべてでbudget 0、`finish_reason=stop`、reasoning 0およびschema適合を得た後にも、page 3の`text-invoke`／`TypeError`で停止した（`verification.md:75`、`verification.md:78`、`verification.md:80`）。既存`pdf-translation` capabilityの検証済みDOCX生成まで到達していないため、本Changeをarchiveしてはならない。
+   - Recommendation: 別ChangeでLangfuse有効／無効差分とProvider response後の例外originをraw値なしのfailing-first Testへ固定し、`translate/adapters/llm.py:417`の観測境界がschema-valid resultを失敗へ変換しないよう最小修正する。自動品質gate、観測有効の短いprobe、実page 3を順に成功させた後だけ、保存済みRunを公開CLIから一度Resumeする。
+
+### WARNING
+
+なし。
+
+### SUGGESTION
+
+なし。
+
+### Verification Evidence
+
+- Request実装: `translate/adapters/llm.py:245-250`。`disabled` policyだけにtemplate hintとJSON integer budget 0を追加している。
+- Private migration boundary: `translate/tasks/structure.py:77-82`および`translate/tasks/structure.py:118-139`。checkpoint version 4とbudget値をkeyへ含めている。
+- Contract Test: `tests/test_adapter_retry.py:109-133`および`tests/test_structure_checkpoints.py:52-90`。
+- 現HEADの`ruff check`、`ruff format --check`（177 files）、`ty check`、全pytest（196 passed、1 skipped）およびstrict validationは成功した。
+- Dependency、公開CLI、公開Run fingerprintおよび並列度は変更していない。ユーザー変更の`AGENTS.md`と`openspec/config.yaml`は検証対象commitへ含めていない。
+
+### Final Assessment
+
+CRITICAL 1件。zero-budget修正自体は正しいが、公開Workflowが完了していない。Provider response後の`TypeError`を別Changeで解消し、実Run成功を確認するまでarchive不可である。
