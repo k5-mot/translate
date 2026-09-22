@@ -32,4 +32,18 @@
 
 ## Lifecycle and Handoff
 
-既存Run、外部exportおよびQdrantには変更を加えていない。Data migrationは不要で、旧Failure readerを維持する。Rollbackは本ChangeのGraph edge、role fallbackおよびTest差分を通常のGit操作で戻す。Apply commit後にOpenSpec verifyを実行し、CRITICAL 0件なら本Changeをarchiveする。その後、保留中の`resolve-translate-contract-verification-gaps`を現行Gateで再verifyしてarchive判定する。
+既存Run、外部exportおよびQdrantには変更を加えていない。Data migrationは不要で、旧Failure readerを維持する。Rollbackは本ChangeのGraph edge、role fallbackおよびTest差分を通常のGit操作で戻す。保留中の`resolve-translate-contract-verification-gaps`も現行Gateで再verifyし、両Changeをarchive可能と判定した。
+
+## OpenSpec Verify Report
+
+| Dimension | Result |
+| --- | --- |
+| Completeness | 8/8 tasks。Spec deltaは契約変更なしの宣言どおりskip |
+| Correctness | 逐次Graph、source／target role、Resume、旧Failureおよびredactionを実装・Testへ対応 |
+| Coherence | Proposalと更新済みDesignに一致。既存のnode、checkpoint、Atomic Artifact patternを維持 |
+
+- CRITICAL: 0件
+- WARNING: 0件
+- SUGGESTION: 0件
+
+全検査に合格し、archive可能と判定する。

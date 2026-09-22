@@ -15,4 +15,4 @@
 
 - [x] 3.1 `ruff check`、`ruff format --check`、`ty check`、focused／順序依存／全pytestおよびOpenSpec strict validationを成功させ、新規Dependency 0件、Model／Embedding並列処理0件を確認する（Q-MAIN／Q-PERF／Q-PORT）
 - [x] 3.2 Test出力、Failure、Run logおよびEvidenceをCredential、endpoint、文書本文、raw response、traceback、reasoningおよび画像binaryのsentinelで走査し、漏えい0件を記録する（Q-SEC、Support）
-- [ ] 3.3 現行Gate結果を`verification.md`へ記録して本Changeをverify／archiveし、`resolve-translate-contract-verification-gaps`を再verifyしてCRITICAL 0件の場合だけarchiveする（Q-REL、保守・廃止）
+- [x] 3.3 現行Gate結果を`verification.md`へ記録して本Changeをverifyし、`resolve-translate-contract-verification-gaps`を再verifyしてCRITICAL 0件の場合だけ両Changeをarchive workflowへ引き渡す（Q-REL、保守・廃止）

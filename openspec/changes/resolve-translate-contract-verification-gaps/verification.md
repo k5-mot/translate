@@ -105,3 +105,20 @@ Ubuntu標準のPandoc 3.1.3では要求optionが不足することを実行時�
 0件。
 
 Requirement未対応0件、Scenario未対応0件、Harness名不一致0件である。両Changeともstrict validationに合格し、Archive可能と判定する。
+
+## 2026-09-23 Reverification
+
+`stabilize-comparison-task-failure-attribution`で比較Workflowのsource／target競合を完全逐次化した後、現行worktreeを再検証した。
+
+| Dimension | Result |
+| --- | --- |
+| Completeness | 30/30 tasks。Spec deltaは宣言どおりskip |
+| Correctness | 5 Capability／30 Requirements／48 ScenariosのTraceabilityを維持。記載された62件のTest参照は現行pytest collectionに全件存在 |
+| Coherence | canonical manifest、Failure／redaction、公開process、Run layoutおよび逐次Workflowの設計に一致 |
+
+- Ruff、Format、ty: PASS
+- Full pytest: 181 passed、1 skippedを5回連続で確認
+- 本Changeと`establish-translate-ja-contracts`のOpenSpec strict validation: PASS
+- CRITICAL／WARNING／SUGGESTION: 0件
+
+回帰修正後もRequirement未対応0件、Scenario未対応0件、Harness名不一致0件であり、Archive可能と再判定する。
