@@ -12,6 +12,12 @@ import httpx2
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
+from langfuse import Langfuse
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 from pydantic import BaseModel
 
 from translate.adapters import langfuse, llm
@@ -36,11 +42,15 @@ _OBSERVATION_CURRENT: ContextVar[bool] = ContextVar(
 )
 
 
-def _offline_chat_model(calls: list[bool]) -> tuple[ChatOpenAI, httpx2.Client]:
+def _offline_chat_model(
+    calls: list[bool], current_probe: Callable[[], bool] | None = None
+) -> tuple[ChatOpenAI, httpx2.Client]:
     """実OpenAI SDK response stackをNetworkなしで構成する。"""
 
     def handler(_request: object) -> httpx2.Response:
-        calls.append(_OBSERVATION_CURRENT.get())
+        calls.append(
+            current_probe() if current_probe is not None else _OBSERVATION_CURRENT.get()
+        )
         return httpx2.Response(
             200,
             json={
@@ -75,6 +85,22 @@ def _offline_chat_model(calls: list[bool]) -> tuple[ChatOpenAI, httpx2.Client]:
         ),
         http_client,
     )
+
+
+def _real_langfuse_client(
+    public_key: str, credential: str
+) -> tuple[Langfuse, InMemorySpanExporter]:
+    """Network exporterを使わない実Langfuse clientを返す。"""
+
+    exporter = InMemorySpanExporter()
+    client = Langfuse(
+        public_key=public_key,
+        secret_key=credential,
+        base_url="http://offline.invalid",
+        span_exporter=exporter,
+        tracer_provider=TracerProvider(),
+    )
+    return client, exporter
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure"])
@@ -266,6 +292,208 @@ def test_actual_openai_response_stack_distinguishes_observation_context(
     assert calls == [mode == "current"]
     assert "SECRET-OFFLINE-RAW-RESPONSE" not in caplog.text
     assert credential_value not in caplog.text
+
+
+def test_translation_workflow_keeps_model_outside_real_langfuse_current_span(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """公開Workflowの実Langfuse spanをModel処理中のcurrentにしない。"""
+
+    calls: list[bool] = []
+    credential = "lf-offline-workflow-credential"
+    model, http_client = _offline_chat_model(
+        calls,
+        lambda: trace.get_current_span().get_span_context().is_valid,
+    )
+    client, exporter = _real_langfuse_client("pk-lf-workflow", credential)
+    settings = settings_factory(
+        langfuse_public_key="pk-lf-workflow",
+        langfuse_secret_key=credential,
+    )
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: client)
+    monkeypatch.setattr(llm, "_model", lambda *_args: model)
+
+    def model_run(*_args: object, **_kwargs: object) -> Path:
+        result = llm.structured(
+            settings,
+            "offline-model",
+            _Response,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+        )
+        assert result.value == "ok"
+        return Path("result.docx")
+
+    monkeypatch.setattr(translation_workflow, "_run", model_run)
+    caplog.set_level(logging.WARNING)
+
+    try:
+        assert translation_workflow.run(
+            Path("source.pdf"), Path("output"), "llm", settings
+        ) == Path("result.docx")
+        client.flush()
+    finally:
+        http_client.close()
+        client.shutdown()
+
+    spans = exporter.get_finished_spans()
+    assert calls == [False]
+    assert {span.name for span in spans} >= {
+        "workflow.pdf-translation",
+        "llm.request",
+    }
+    assert "SECRET-OFFLINE-RAW-RESPONSE" not in repr(spans)
+    assert credential not in caplog.text
+
+
+def test_real_langfuse_detached_hierarchy_preserves_parents_without_current_span(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """non-current三層観測で親子関係とModel context隔離を両立する。"""
+
+    calls: list[bool] = []
+    credential = "lf-offline-hierarchy-credential"
+    model, http_client = _offline_chat_model(
+        calls,
+        lambda: trace.get_current_span().get_span_context().is_valid,
+    )
+    client, exporter = _real_langfuse_client("pk-lf-hierarchy", credential)
+    settings = settings_factory(
+        langfuse_public_key="pk-lf-hierarchy",
+        langfuse_secret_key=credential,
+    )
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: client)
+    monkeypatch.setattr(llm, "_model", lambda *_args: model)
+    caplog.set_level(logging.WARNING)
+
+    try:
+        with (
+            langfuse.observe(
+                settings, "workflow.offline", as_type="chain", detached=True
+            ),
+            langfuse.observe(settings, "task.structure", detached=True),
+        ):
+            result = llm.structured(
+                settings,
+                "offline-model",
+                _Response,
+                "system",
+                "user",
+                reasoning="none",
+                schema_mode="json-schema",
+            )
+        client.flush()
+    finally:
+        http_client.close()
+        client.shutdown()
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    workflow = spans["workflow.offline"]
+    task = spans["task.structure"]
+    generation = spans["llm.request"]
+    assert result.value == "ok"
+    assert calls == [False]
+    assert {span.context.trace_id for span in spans.values()} == {
+        workflow.context.trace_id
+    }
+    assert task.parent is not None
+    assert task.parent.span_id == workflow.context.span_id
+    assert generation.parent is not None
+    assert generation.parent.span_id == task.context.span_id
+    assert "SECRET-OFFLINE-RAW-RESPONSE" not in repr(tuple(spans.values()))
+    assert credential not in caplog.text
+
+
+@pytest.mark.parametrize("failure_stage", ["child-start", "child-update", "child-end"])
+def test_detached_child_failure_resets_parent_before_next_root(  # noqa: C901
+    failure_stage: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """子観測障害後の独立Runが以前の親観測を再利用しない。"""
+
+    sentinel = "SECRET-DETACHED-CHILD"
+    events: list[str] = []
+    warnings: list[str] = []
+
+    class Observation:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def start_observation(self, **kwargs: object) -> Observation:
+            child_name = str(kwargs["name"])
+            events.append(f"child:{self.name}:{child_name}")
+            if failure_stage == "child-start":
+                raise OSError(sentinel)
+            return Observation(child_name)
+
+        def update(self, **_kwargs: object) -> None:
+            if failure_stage == "child-update" and self.name == "task.structure":
+                raise OSError(sentinel)
+
+        def end(self) -> None:
+            events.append(f"end:{self.name}")
+            if failure_stage == "child-end" and self.name == "task.structure":
+                raise OSError(sentinel)
+
+    class Client:
+        def start_observation(self, **kwargs: object) -> Observation:
+            name = str(kwargs["name"])
+            events.append(f"root:{name}")
+            return Observation(name)
+
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: Client())
+    settings = settings_factory(
+        langfuse_public_key="public",
+        langfuse_secret_key=sentinel,
+    )
+    caplog.set_level(logging.WARNING)
+
+    def business_failure() -> None:
+        message = "business failure"
+        raise ValueError(message)
+
+    with langfuse.bind_observation_context((sentinel,), warnings.append, "STRUCTURE"):
+        with langfuse.observe(
+            settings, "workflow.first", as_type="chain", detached=True
+        ):
+            if failure_stage == "child-start":
+                with langfuse.observe(settings, "task.structure", detached=True):
+                    pass
+            else:
+                with (
+                    pytest.raises(ValueError, match="business failure"),
+                    langfuse.observe(settings, "task.structure", detached=True),
+                ):
+                    business_failure()
+        with langfuse.observe(
+            settings, "workflow.next", as_type="chain", detached=True
+        ):
+            pass
+
+    assert "root:workflow.next" in events
+    assert not any(
+        event.endswith(":workflow.next")
+        for event in events
+        if event.startswith("child:")
+    )
+    assert len(warnings) == 1
+    action = {
+        "child-start": "start",
+        "child-update": "update",
+        "child-end": "finish",
+    }[failure_stage]
+    assert action in warnings[0]
+    assert "task=STRUCTURE" in warnings[0]
+    assert sentinel not in warnings[0]
+    assert sentinel not in caplog.text
 
 
 def test_llm_detached_finish_failure_keeps_success_without_retry_or_leak(

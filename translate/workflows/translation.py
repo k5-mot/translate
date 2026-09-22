@@ -144,7 +144,10 @@ def build_graph(
                 with (
                     bind_observation_task(name),
                     observe(
-                        settings, f"task.{name.casefold()}", metadata={"task": name}
+                        settings,
+                        f"task.{name.casefold()}",
+                        detached=True,
+                        metadata={"task": name},
                     ),
                 ):
                     completed = [name]
@@ -482,6 +485,7 @@ def run(
             settings,
             "workflow.pdf-translation",
             as_type="chain",
+            detached=True,
             metadata={"backend": backend},
         ):
             return _run(source, output_dir, backend, settings, callback, workspace_dir)

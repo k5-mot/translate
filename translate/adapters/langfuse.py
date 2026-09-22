@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from langfuse import Langfuse
 
@@ -38,6 +38,21 @@ ObservationType = Literal[
     "generation",
     "embedding",
 ]
+
+
+class _Observation(Protocol):
+    """親子付けと終了に必要なLangfuse observationの最小境界。"""
+
+    def start_observation(self, **kwargs: object) -> _Observation: ...
+
+    def update(self, **kwargs: object) -> object: ...
+
+    def end(self) -> object: ...
+
+
+_PARENT_OBSERVATION: ContextVar[_Observation | None] = ContextVar(
+    "translate_parent_observation", default=None
+)
 
 
 @lru_cache(maxsize=4)
@@ -123,9 +138,6 @@ def observe(
 ) -> Iterator[object | None]:
     """秘密や本文を送らず、観測障害時はuntracedで本処理を続ける。"""
 
-    if detached and as_type not in {"generation", "embedding"}:
-        msg = "detached observations require a model observation type"
-        raise ValueError(msg)
     client = _get_client(settings)
     if client is None:
         yield None
@@ -137,20 +149,22 @@ def observe(
             redact_value(metadata, secrets) if metadata is not None else None
         )
         manager = None
-        if detached and as_type == "generation":
-            observation = client.start_observation(
-                name=safe_name,
-                as_type="generation",
-                metadata=safe_metadata,
-                model=redact_text(model, secrets) if model is not None else None,
-            )
-        elif detached:
-            observation = client.start_observation(
-                name=safe_name,
-                as_type="embedding",
-                metadata=safe_metadata,
-                model=redact_text(model, secrets) if model is not None else None,
-            )
+        if detached:
+            parent = _PARENT_OBSERVATION.get()
+            starter = cast("_Observation", client) if parent is None else parent
+            if as_type in {"generation", "embedding"}:
+                observation = starter.start_observation(
+                    name=safe_name,
+                    as_type=as_type,
+                    metadata=safe_metadata,
+                    model=(redact_text(model, secrets) if model is not None else None),
+                )
+            else:
+                observation = starter.start_observation(
+                    name=safe_name,
+                    as_type=as_type,
+                    metadata=safe_metadata,
+                )
         elif as_type in {"generation", "embedding"}:
             manager = client.start_as_current_observation(
                 name=safe_name,
@@ -171,6 +185,16 @@ def observe(
         yield None
         return
 
+    parent_token = (
+        _PARENT_OBSERVATION.set(cast("_Observation", observation)) if detached else None
+    )
+
+    def reset_parent() -> None:
+        nonlocal parent_token
+        if parent_token is not None:
+            _PARENT_OBSERVATION.reset(parent_token)
+            parent_token = None
+
     try:
         yield observation
     except Exception as processing_error:
@@ -181,6 +205,7 @@ def observe(
             )
         except Exception as error:  # noqa: BLE001
             _warning("update", error)
+        reset_parent()
         try:
             if manager is None:
                 observation.end()
@@ -194,6 +219,7 @@ def observe(
             _warning("finish", error)
         raise
     else:
+        reset_parent()
         try:
             if manager is None:
                 observation.end()
@@ -201,6 +227,8 @@ def observe(
                 manager.__exit__(None, None, None)
         except Exception as error:  # noqa: BLE001
             _warning("finish", error)
+    finally:
+        reset_parent()
 
 
 def flush(settings: Settings) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
@@ -17,7 +18,7 @@ from translate.document import Document, Finding, Page
 from translate.workflows import translation
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from translate.common.progress import ProgressEvent, TaskStatusEvent
@@ -92,8 +93,20 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     llm_events: list[ProgressEvent] = []
     libre_events: list[ProgressEvent] = []
     statuses: list[TaskStatusEvent] = []
+    observations: list[tuple[str, bool]] = []
     cover_failed = False
     document = Document(pages=[Page(number=2)])
+
+    @contextmanager
+    def fake_observe(
+        _settings: Settings,
+        name: str,
+        *,
+        detached: bool = False,
+        **_kwargs: object,
+    ) -> Iterator[None]:
+        observations.append((name, detached))
+        yield
 
     def fake_split(
         _source: Path, output_dir: Path, _pages: int, *, role: str
@@ -198,6 +211,7 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         return output
 
     monkeypatch.setattr(translation.split, "run", fake_split)
+    monkeypatch.setattr(translation, "observe", fake_observe)
     monkeypatch.setattr(translation.docling, "run", fake_docling)
     monkeypatch.setattr(translation.unpack, "run", fake_unpack)
     monkeypatch.setattr(translation.merge, "run", fake_merge)
@@ -271,3 +285,9 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         "FIX",
         "VERIFY",
     }
+    assert {name for name, _detached in observations} >= {
+        "workflow.pdf-translation",
+        "task.structure",
+        "task.docx",
+    }
+    assert all(detached for _name, detached in observations)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,7 +19,7 @@ from translate.document import Document, Page
 from translate.workflows import comparison_review
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     from translate.common.progress import ProgressEvent, TaskStatusEvent
@@ -107,7 +108,19 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     counts: Counter[str] = Counter()
     events: list[ProgressEvent] = []
     statuses: list[TaskStatusEvent] = []
+    observations: list[tuple[str, bool]] = []
     failed_once = False
+
+    @contextmanager
+    def fake_observe(
+        _settings: Settings,
+        name: str,
+        *,
+        detached: bool = False,
+        **_kwargs: object,
+    ) -> Iterator[None]:
+        observations.append((name, detached))
+        yield
 
     def side(path: Path) -> str:
         return "source" if "source" in path.parts else "target"
@@ -198,6 +211,7 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         return output
 
     monkeypatch.setattr(comparison_review.split, "run", fake_split)
+    monkeypatch.setattr(comparison_review, "observe", fake_observe)
     monkeypatch.setattr(comparison_review.docling, "run", fake_docling)
     monkeypatch.setattr(comparison_review.unpack, "run", fake_unpack)
     monkeypatch.setattr(comparison_review.merge, "run", fake_merge)
@@ -255,3 +269,9 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         event.current for event in events
     )
     assert events[-1].current == events[-1].total == 18
+    assert {name for name, _detached in observations} >= {
+        "workflow.comparison-review",
+        "task.source-split",
+        "task.report",
+    }
+    assert all(detached for _name, detached in observations)

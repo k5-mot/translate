@@ -157,7 +157,10 @@ def build_graph(
                 with (
                     bind_observation_task(name),
                     observe(
-                        settings, f"task.{name.casefold()}", metadata={"task": name}
+                        settings,
+                        f"task.{name.casefold()}",
+                        detached=True,
+                        metadata={"task": name},
                     ),
                 ):
                     result = {**function(state), "completed_tasks": [name]}
@@ -425,6 +428,7 @@ def run(
             settings,
             "workflow.comparison-review",
             as_type="chain",
+            detached=True,
         ):
             return _run(source, target, output, settings, callback, workspace_dir)
     finally:
