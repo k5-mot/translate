@@ -96,3 +96,7 @@
 ## Blocker
 
 page 3相当の単発テキストprobeは成功したが、実Workflowの画像付きrequestとtext fallbackの経路で`TypeError`が記録された。現行Failureは安全な例外型だけを保持し、元の例外内容やvision側の失敗理由を保持しないため、根本原因は特定できない。timeout不足またはtoken枯渇と断定するEvidenceもない。task 5.3のTranslation完了とtask 6.2の受入Changeへの成果物引き渡しは未完了とし、同Runを自動Resumeしない。Word-to-PDF変換と目視受入は本Changeの範囲外である。
+
+## 2026-09-23 Handoff Update
+
+後続の有界vision／page checkpoint修正後、context 30,208、parallel 1、fingerprint一致、900秒request timeoutで新Run `01a0c97c-f5cf-7031-b808-4ad545133925`を一度だけ明示Resumeした。page 2 checkpointは成功したが、page 3のtext fallbackが1,645.108秒後に`text-invoke`／`TypeError`で停止した。成功済みSPLIT〜LOAD 313 filesは不変、公開STRUCTURE／Run output／外部exportは0件、Security scanの漏えいは0件である。受入ChangeへRun ID、失敗結果および残存制約を引き渡したためTask 6.2は完了したが、Translation完了を要求するTask 5.3は未完了のままである。Word-to-PDF変換と目視受入は代替していない。

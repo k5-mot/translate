@@ -14,15 +14,15 @@
 ## 3. Cause-Specific Correction
 
 - [ ] 3.1 製品原因なら再現する失敗TestをAdapterまたはSTRUCTUREへ追加してから最小修正し、そのTestと既存retry／truncation Testを通す。環境原因なら製品コードを変更せず必要なLM Studio設定処置を記録し、同条件のprobeで解消を確認する（Q-FUNC／Q-MAIN、保守）
-- [ ] 3.2 vision成功、vision失敗後text成功、両方失敗の各経路で有限retry、安全なTask／page／target／stage／cause type、旧Failure読取り、Atomic Artifact、fingerprint不変をfocused Testで確認する（Q-COMP／Q-REL／Q-SEC）
+- [x] 3.2 vision成功、vision失敗後text成功、両方失敗の各経路で有限retry、安全なTask／page／target／stage／cause type、旧Failure読取り、Atomic Artifact、fingerprint不変をfocused Testで確認する（Q-COMP／Q-REL／Q-SEC）
 
 ## 4. Quality and Security Gate
 
-- [ ] 4.1 `ruff check`、`ruff format --check`、`ty check`、focused pytest、全pytestおよび`openspec validate resolve-structure-model-invocation-typeerror --strict`を成功させ、Dependency差分0件と逐次Model呼出しを確認する（Q-MAIN／Q-PORT）
-- [ ] 4.2 probe出力、Test、Failure、Run logおよびChange EvidenceをCredential、endpoint、prompt、文書本文、reasoning、raw response、画像binaryのsentinelで走査し、漏えい0件を記録する（Q-SEC、Support）
+- [x] 4.1 `ruff check`、`ruff format --check`、`ty check`、focused pytest、全pytestおよび`openspec validate resolve-structure-model-invocation-typeerror --strict`を成功させ、Dependency差分0件と逐次Model呼出しを確認する（Q-MAIN／Q-PORT）
+- [x] 4.2 probe出力、Test、Failure、Run logおよびChange EvidenceをCredential、endpoint、prompt、文書本文、reasoning、raw response、画像binaryのsentinelで走査し、漏えい0件を記録する（Q-SEC、Support）
 
 ## 5. Resume and Handoff
 
-- [ ] 5.1 他のModel／Embedding requestがないこと、LM Studioの実効contextが必要値を満たすこと、Run fingerprintが現在設定と一致することを確認し、条件が揃わなければ同RunをResumeせず理由を記録する（Q-COMP／Q-PERF、運用）
-- [ ] 5.2 条件が揃った場合に限り900秒request timeoutで同じRun IDをCLIから一度だけ明示Resumeし、成功済みTaskのhash／mtime不変、STRUCTURE以降のcheckpoint、Failure、途中Artifactおよび外部exportの有無を記録する。再失敗時はRunを保持して停止する（Q-FUNC／Q-REL、移行・廃止）
-- [ ] 5.3 実結果と残存制約を`align-llm-token-budget-and-truncation-diagnostics`および`complete-sample-pdf-acceptance-verification`へ引き渡すEvidenceとしてまとめ、Word-to-PDF変換と目視受入を本Changeで完了扱いにしない（Q-USE、Support・保守）
+- [x] 5.1 他のModel／Embedding requestがないこと、LM Studioの実効contextが必要値を満たすこと、Run fingerprintが現在設定と一致することを確認し、条件が揃わなければ同RunをResumeせず理由を記録する（Q-COMP／Q-PERF、運用）
+- [x] 5.2 条件が揃った場合に限り900秒request timeoutで同じRun IDをCLIから一度だけ明示Resumeし、成功済みTaskのhash／mtime不変、STRUCTURE以降のcheckpoint、Failure、途中Artifactおよび外部exportの有無を記録する。再失敗時はRunを保持して停止する（Q-FUNC／Q-REL、移行・廃止）
+- [x] 5.3 実結果と残存制約を`align-llm-token-budget-and-truncation-diagnostics`および`complete-sample-pdf-acceptance-verification`へ引き渡すEvidenceとしてまとめ、Word-to-PDF変換と目視受入を本Changeで完了扱いにしない（Q-USE、Support・保守）

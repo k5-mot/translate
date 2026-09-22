@@ -32,3 +32,9 @@
 page 3だけをOS一時領域で処理する有界画像probeは、約221.9秒で完全なschema適合応答とprivate page checkpointを得て成功した。mode別回数はこのprobeで計測していない。続く注入probeではvisionの`output-truncated`を一度だけ模擬し、text-onlyに実Modelを呼び出した。mode列は`vision,text`で同時実行なし、結果は約424.75秒後に`text-output`／`LLMOutputTruncatedError`で停止した。以前の同page text-only単発成功は再現性を保証しない。
 
 Task 4.1の完全な別mode回復は実Modelで確認できず未完了とする。設計のgateに従って同RunをResumeしていない。probe後もRunは`failed`／`STRUCTURE`、既完了313 filesのaggregate SHA-256は不変で、公開STRUCTUREとprivate page progressは存在せず、Modelはidle／queued 0である。text-onlyの出力枯渇を解消する追加設計なしに、Task 4.2と4.3を完了扱いにしない。
+
+## Explicit Resume Result
+
+2026-09-23、context 30,208、parallel 1、queued 0／idle、fingerprint完全一致を確認し、900秒request timeoutでRun `01a0c97c-f5cf-7031-b808-4ad545133925`を公開CLIから一度だけ明示Resumeした。別Runと並列requestは作成していない。1,645.108秒後、page 3のtext fallbackが`text-invoke`／`TypeError`で再失敗した。page 2のprivate checkpointだけがAtomic確定し、page 3 checkpoint、公開STRUCTURE、Run outputおよび外部exportは0件である。SPLIT〜LOAD 313 filesのhash／mtimeは不変、RunはResume可能な`failed`状態を保持し、追加Resumeは行っていない。
+
+これによりTask 4.2の実行・観測要件は完了した。実Modelでの完全なvision→text回復を要求するTask 4.1と、STRUCTURE以降の完了成果物を要求するTask 4.3は未完了である。

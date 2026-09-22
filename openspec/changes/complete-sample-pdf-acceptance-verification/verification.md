@@ -71,6 +71,13 @@
 2. STRUCTURE failureはTask名だけを保持し、対象page、target IDおよびstageが欠落する。失敗したpageとvision／text fallbackのどちらが原因かを公開Evidenceから特定できない。
 3. 障害後の短いtext-only構造化probeはPASSしたため、LLM Service全体の継続停止は確認されない。再Resumeだけで成功する可能性はあるが、上記のretry・診断性gapを解消または明示的に受容するまでTask 3.2を完了扱いにしない。
 
+### 2026-09-23 Corrected Run Handoff
+
+- 後続修正を含むRun `01a0c97c-f5cf-7031-b808-4ad545133925`を、context 30,208、parallel 1、fingerprint一致、900秒request timeoutで一度だけ明示Resumeした。
+- Result: exit code 1、1,645.108秒。page 2のprivate STRUCTURE checkpointはAtomic確定したが、page 3のtext fallbackが`text-invoke`／`TypeError`で停止した。
+- 成功済みSPLIT〜LOAD 313 filesのhash／mtimeは不変。page 3 checkpoint、公開STRUCTURE、Run outputおよび外部DOCX exportは0件。Failure／log／metadataのCredential、endpointおよびraw sentinel漏えいは0件。
+- RunはResume可能な`failed`状態で保持し、追加Resumeは行っていない。したがってTask 3.2以降、Word-to-PDF変換、目視比較およびComparison Reviewは引き続き未完了である。
+
 ## Disposal Candidates
 
 - Predecessor Register Run: `runs/01a0bf06-60d8-7446-a63c-7f22e8ee698a/`

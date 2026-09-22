@@ -33,4 +33,4 @@
 ## 6. Lifecycle and Handoff
 
 - [x] 6.1 新旧Run、Failure、checkpoint、入力copy、成果物および外部exportが自動削除・書換えされていないことを確認し、ISO/IEC/IEEE 12207の移行、運用、Support、保守、rollbackおよび廃止Evidenceをまとめる
-- [ ] 6.2 `complete-sample-pdf-acceptance-verification`へ引き渡す新Run ID、Translation結果、残存制約および安全な診断を記録し、本ChangeがWord-to-PDF変換や目視受入を代替しないことを確認する
+- [x] 6.2 `complete-sample-pdf-acceptance-verification`へ引き渡す新Run ID、Translation結果、残存制約および安全な診断を記録し、本ChangeがWord-to-PDF変換や目視受入を代替しないことを確認する

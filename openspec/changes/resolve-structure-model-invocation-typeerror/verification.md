@@ -3,8 +3,8 @@
 ## Status
 
 - Date: 2026-09-23
-- Progress: 5/12 tasks complete
-- State: text-only probe passed; original-size vision exposed local inference-runtime failure; reduced-size vision reached output truncation
+- Progress: 11/12 tasks complete
+- State: bounded vision and page checkpoint correction passed automated gates, but the one allowed real Run Resume reproduced `text-invoke`／`TypeError`; task 3.1 remains incomplete
 
 ## Preserved Run Baseline
 
@@ -65,3 +65,23 @@ Text-onlyの`structured()`は成功した一方、visionではlocal推論process
 - page 3画像だけを108 DPIのOS一時directoryへ描画した。1,090,584 pixels（約1.09 megapixels）。入力文書、RunのArtifact、製品コードは変更していない。
 - 同じpage 3 payload、rules、`structured()` vision経路を逐次1 request／1 attempt、900秒timeoutで実行した。結果は`vision-output`／`LLMOutputTruncatedError`、約414.36秒。高解像度probeの即時runtime終了は再現せず、Model応答までは進んだがschema-valid outputは得られなかった。
 - よって、画像サイズとruntime assertionの関連は強まったが、画像解像度を下げるだけではSTRUCTURE完了を保証できない。製品が出力上限で停止する既存契約を維持したまま成功させるには、入力分割、出力を簡潔にする設計、または安全なfallback条件などの追加設計が必要となる可能性がある。現Changeの「環境原因なら製品コードを変更せず設定処置で解消」というTask 3.1を満たせないため、変更範囲の判断待ちとしてRun Resumeを行わない。
+
+## Subsequent Correction and Automated Gate
+
+- 後続Change `bound-structure-vision-and-recover-truncation`で、vision入力を1,000,000 pixels以下へ有界化し、vision出力枯渇後の完全なtext-only回復、非公開page checkpointおよびTask全体のAtomic公開を実装した。公開CLI、fingerprint、Model、Dependencyおよび逐次実行契約は変更していない。
+- vision成功、vision失敗後text成功、両方失敗、旧Failure読取り、Atomic Artifactおよびfingerprint不変を含むfocused Testは37 passed。
+- `ruff check .`、`ruff format --check .`（157 files）、`ty check`は成功。archive後の固定pathを修正した後の全pytestは181 passed、1 skipped。Change strict validationは成功し、Dependency差分は0件。
+- Resume前後のRun診断File scanはCredential、endpointおよびraw sentinel検出0件。Model／Embedding呼出しはparallel 1で逐次実行した。
+
+## One Allowed Explicit Resume
+
+- Preflight: LM Studio管理値と推論processのcontextはいずれも30,208、parallel 1、queued 0／idle、Modelは`google/gemma4:12b`。900秒request timeoutを設定した現在fingerprintは保存値`fdd0ce952338a28d78dc2d99e976c812f8bce23f85e79e250ecc1f54b3cece96`と一致した。
+- Sanitized operation: 公開CLIの`translate inputs/sample.pdf --output-dir outputs/sample-translation --resume <run-id>`を一度だけ実行。別Runは作成していない。
+- Result: exit code 1、total 1,645.108秒。Runは`failed`／`STRUCTURE`を保持し、page 3、target `page/3`、stage `text-invoke`、cause type `TypeError`で停止した。finish reason、usageおよびfailure kindは取得されなかった。
+- Resume境界: page 2だけが検証済み非公開checkpointとしてAtomic確定し、page 3のcheckpoint、公開STRUCTURE Artifact、Run outputおよび外部exportは0件。
+- 成功済みSPLIT〜LOADは313 files、同じ算出方法によるaggregate SHA-256 `E70724F50CF1C24D12E339D135488D8C4513009F99F24EE6F46C5BB47F1DDF64`、latest mtime `2026-09-22T14:48:35.1483938Z`でResume前後不変。
+- 終了後、LM Studioはidle、queued 0、parallel 1へ戻った。追加Resumeは実行していない。
+
+## Remaining Blocker and Handoff
+
+有界visionとpage checkpointは実Runで機能したが、page 3のtext fallbackは再び`TypeError`で失敗した。安全なFailureからは`invoke`境界より下位のoriginと、vision側の終了理由を特定できず、原因特定と同条件での解消確認を要求するTask 3.1は未完了である。残りの自動Gate、単発Resume、Artifact不変、Security scanおよび下流Changeへの引き渡しは完了した。Word-to-PDF変換、目視比較およびComparison Reviewは完了扱いにしない。

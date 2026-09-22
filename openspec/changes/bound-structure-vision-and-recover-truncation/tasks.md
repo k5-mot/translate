@@ -21,5 +21,5 @@
 ## 4. Real Run and Handoff
 
 - [ ] 4.1 Model context 30,208、parallel 1、他request 0件、Run fingerprint一致、旧Artifact hash／mtimeを確認し、page 3相当の有界vision→text回復probeが完全なschema応答を返すことを記録する（Q-FUNC／Q-PERF、運用）
-- [ ] 4.2 条件が揃った場合だけ900秒request timeoutで既存Run `01a0c97c-f5cf-7031-b808-4ad545133925`をCLIから明示Resumeし、page checkpoint、Run Failure、STRUCTURE公開境界および逐次呼出しを観測する。中断・再失敗時はRunを保持し、同じRunの互換checkpointだけを再利用する（Q-REL／Q-COMP、移行・廃止）
+- [x] 4.2 条件が揃った場合だけ900秒request timeoutで既存Run `01a0c97c-f5cf-7031-b808-4ad545133925`をCLIから明示Resumeし、page checkpoint、Run Failure、STRUCTURE公開境界および逐次呼出しを観測する。中断・再失敗時はRunを保持し、同じRunの互換checkpointだけを再利用する（Q-REL／Q-COMP、移行・廃止）
 - [ ] 4.3 STRUCTURE以降の完了、既完了Artifact不変、最終成果物および外部exportを実測し、残存制約を`resolve-structure-model-invocation-typeerror`、`align-llm-token-budget-and-truncation-diagnostics`および受入Changeへ引き渡す。Word-to-PDF変換と目視比較は利用者作業として未完了なら明記する（Q-USE、Support）
