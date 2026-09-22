@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import httpx2
 import pytest
 from langchain_core.messages import AIMessage
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from translate.adapters import langfuse, llm
@@ -26,6 +29,52 @@ if TYPE_CHECKING:
 
 class _Response(BaseModel):
     value: str
+
+
+_OBSERVATION_CURRENT: ContextVar[bool] = ContextVar(
+    "test_langfuse_observation_current", default=False
+)
+
+
+def _offline_chat_model(calls: list[bool]) -> tuple[ChatOpenAI, httpx2.Client]:
+    """実OpenAI SDK response stackをNetworkなしで構成する。"""
+
+    def handler(_request: object) -> httpx2.Response:
+        calls.append(_OBSERVATION_CURRENT.get())
+        return httpx2.Response(
+            200,
+            json={
+                "id": "chatcmpl-offline",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "offline-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": '{"value":"ok"}'},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 5,
+                    "total_tokens": 8,
+                },
+                "provider_private": "SECRET-OFFLINE-RAW-RESPONSE",
+            },
+        )
+
+    http_client = httpx2.Client(transport=httpx2.MockTransport(handler))
+    return (
+        ChatOpenAI(
+            model="offline-model",
+            base_url="http://offline.invalid/v1",
+            api_key="offline-key",
+            max_retries=0,
+            http_client=http_client,
+        ),
+        http_client,
+    )
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure"])
@@ -105,10 +154,273 @@ def test_llm_call_is_observed_without_sending_prompt_body(
     assert result.value == "ok"
     assert captured == {
         "as_type": "generation",
+        "detached": True,
         "metadata": {"reasoning": "low", "response_type": "_Response"},
         "model": "safe-model-name",
     }
     assert "secret" not in repr(captured)
+
+
+def test_actual_openai_response_stack_parses_offline_completion(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """実SDK response変換とstrict-schema parseをNetworkなしで通す。"""
+
+    calls: list[bool] = []
+    sentinel = "SECRET-OFFLINE-RAW-RESPONSE"
+    model, http_client = _offline_chat_model(calls)
+    monkeypatch.setattr(llm, "_model", lambda *_args: model)
+    caplog.set_level(logging.WARNING)
+
+    try:
+        result = llm.structured(
+            settings_factory(),
+            "offline-model",
+            _Response,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+        )
+    finally:
+        http_client.close()
+
+    assert result.value == "ok"
+    assert calls == [False]
+    assert sentinel not in caplog.text
+
+
+@pytest.mark.parametrize("mode", ["current", "detached"])
+def test_actual_openai_response_stack_distinguishes_observation_context(
+    mode: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """detached観測だけが実SDK呼出しのcurrent contextを変更しない。"""
+
+    calls: list[bool] = []
+    model, http_client = _offline_chat_model(calls)
+
+    class Observation:
+        def update(self, **_kwargs: object) -> None:
+            return None
+
+        def end(self) -> None:
+            return None
+
+    class Manager:
+        token: Token[bool] | None = None
+
+        def __enter__(self) -> Observation:
+            self.token = _OBSERVATION_CURRENT.set(True)
+            return Observation()
+
+        def __exit__(self, *_args: object) -> None:
+            assert self.token is not None
+            _OBSERVATION_CURRENT.reset(self.token)
+
+    class LangfuseClient:
+        def start_as_current_observation(self, **_kwargs: object) -> Manager:
+            return Manager()
+
+        def start_observation(self, **_kwargs: object) -> Observation:
+            return Observation()
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: model)
+    monkeypatch.setattr(
+        langfuse,
+        "_get_client",
+        lambda settings: LangfuseClient() if settings.langfuse_enabled else None,
+    )
+    model_settings = settings_factory()
+    credential_value = "SECRET-OFFLINE-KEY"
+    observation_settings = settings_factory(
+        langfuse_public_key="public",
+        langfuse_secret_key=credential_value,
+    )
+    caplog.set_level(logging.WARNING)
+
+    try:
+        with langfuse.observe(
+            observation_settings,
+            "offline.generation",
+            as_type="generation",
+            detached=mode == "detached",
+        ):
+            result = llm.structured(
+                model_settings,
+                "offline-model",
+                _Response,
+                "system",
+                "user",
+                reasoning="none",
+                schema_mode="json-schema",
+            )
+    finally:
+        http_client.close()
+
+    assert result.value == "ok"
+    assert calls == [mode == "current"]
+    assert "SECRET-OFFLINE-RAW-RESPONSE" not in caplog.text
+    assert credential_value not in caplog.text
+
+
+def test_llm_detached_finish_failure_keeps_success_without_retry_or_leak(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """応答後の観測終了失敗は成功値を変えずProviderへ再送しない。"""
+
+    credential = "SECRET-DETACHED-ENDPOINT"
+    calls = 0
+    starts: list[str] = []
+
+    class Observation:
+        def end(self) -> None:
+            message = f"finish failed at {credential}"
+            raise OSError(message)
+
+        def update(self, **_kwargs: object) -> None:
+            return None
+
+    class LangfuseClient:
+        def start_observation(self, **_kwargs: object) -> Observation:
+            starts.append("detached")
+            return Observation()
+
+        def start_as_current_observation(self, **_kwargs: object) -> object:
+            starts.append("current")
+            message = "generation must not attach a current observation"
+            raise AssertionError(message)
+
+    class ModelClient:
+        def bind(self, **_kwargs: object) -> ModelClient:
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            nonlocal calls
+            calls += 1
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: LangfuseClient())
+    monkeypatch.setattr(llm, "_model", lambda *_args: ModelClient())
+    settings = settings_factory(
+        langfuse_public_key="public",
+        langfuse_secret_key=credential,
+    )
+    caplog.set_level(logging.WARNING)
+
+    result = llm.structured(
+        settings,
+        "model",
+        _Response,
+        "system",
+        "user",
+        reasoning="none",
+        schema_mode="json-schema",
+    )
+
+    assert result.value == "ok"
+    assert calls == 1
+    assert starts == ["detached"]
+    assert "Langfuse finish failed (OSError)" in caplog.text
+    assert credential not in caplog.text
+
+
+@pytest.mark.parametrize("failure_stage", ["start", "finish"])
+def test_detached_observation_boundary_failures_preserve_success(
+    failure_stage: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """detached観測の作成・終了障害を一回のwarningへ縮退する。"""
+
+    sentinel = "SECRET-OBSERVATION-FAILURE"
+    warnings: list[str] = []
+
+    class Observation:
+        def end(self) -> None:
+            if failure_stage == "finish":
+                raise OSError(sentinel)
+
+        def update(self, **_kwargs: object) -> None:
+            return None
+
+    class Client:
+        def start_observation(self, **_kwargs: object) -> Observation:
+            if failure_stage == "start":
+                raise OSError(sentinel)
+            return Observation()
+
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: Client())
+    settings = settings_factory(
+        langfuse_public_key="public",
+        langfuse_secret_key=sentinel,
+    )
+    caplog.set_level(logging.WARNING)
+
+    with (
+        langfuse.bind_observation_context((sentinel,), warnings.append, "STRUCTURE"),
+        langfuse.observe(settings, "llm.request", as_type="generation", detached=True),
+    ):
+        result = "ok"
+
+    assert result == "ok"
+    assert len(warnings) == 1
+    assert failure_stage in warnings[0]
+    assert "task=STRUCTURE" in warnings[0]
+    assert sentinel not in warnings[0]
+    assert sentinel not in caplog.text
+
+
+def test_detached_update_failure_preserves_business_error(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """detached観測更新失敗より本来の処理Errorを優先する。"""
+
+    sentinel = "SECRET-DETACHED-UPDATE"
+    warnings: list[str] = []
+
+    class Observation:
+        def update(self, **_kwargs: object) -> None:
+            raise OSError(sentinel)
+
+        def end(self) -> None:
+            return None
+
+    class Client:
+        def start_observation(self, **_kwargs: object) -> Observation:
+            return Observation()
+
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: Client())
+    settings = settings_factory(
+        langfuse_public_key="public",
+        langfuse_secret_key=sentinel,
+    )
+    caplog.set_level(logging.WARNING)
+
+    def processing_failure() -> None:
+        message = "business failure"
+        raise ValueError(message)
+
+    with (
+        pytest.raises(ValueError, match="business failure"),
+        langfuse.bind_observation_context((sentinel,), warnings.append, "STRUCTURE"),
+        langfuse.observe(settings, "llm.request", as_type="generation", detached=True),
+    ):
+        processing_failure()
+
+    assert len(warnings) == 1
+    assert "Langfuse update failed (OSError)" in warnings[0]
+    assert sentinel not in warnings[0]
+    assert sentinel not in caplog.text
 
 
 def test_observation_and_flush_failures_warn_without_blocking_or_leaking(

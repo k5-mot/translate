@@ -117,11 +117,15 @@ def observe(
     name: str,
     *,
     as_type: ObservationType = "span",
+    detached: bool = False,
     metadata: dict[str, str] | None = None,
     model: str | None = None,
 ) -> Iterator[object | None]:
     """秘密や本文を送らず、観測障害時はuntracedで本処理を続ける。"""
 
+    if detached and as_type not in {"generation", "embedding"}:
+        msg = "detached observations require a model observation type"
+        raise ValueError(msg)
     client = _get_client(settings)
     if client is None:
         yield None
@@ -132,7 +136,22 @@ def observe(
         safe_metadata = (
             redact_value(metadata, secrets) if metadata is not None else None
         )
-        if as_type in {"generation", "embedding"}:
+        manager = None
+        if detached and as_type == "generation":
+            observation = client.start_observation(
+                name=safe_name,
+                as_type="generation",
+                metadata=safe_metadata,
+                model=redact_text(model, secrets) if model is not None else None,
+            )
+        elif detached:
+            observation = client.start_observation(
+                name=safe_name,
+                as_type="embedding",
+                metadata=safe_metadata,
+                model=redact_text(model, secrets) if model is not None else None,
+            )
+        elif as_type in {"generation", "embedding"}:
             manager = client.start_as_current_observation(
                 name=safe_name,
                 as_type=as_type,
@@ -145,7 +164,8 @@ def observe(
                 as_type=as_type,
                 metadata=safe_metadata,
             )
-        observation = manager.__enter__()
+        if manager is not None:
+            observation = manager.__enter__()
     except Exception as error:  # noqa: BLE001
         _warning("start", error)
         yield None
@@ -162,15 +182,23 @@ def observe(
         except Exception as error:  # noqa: BLE001
             _warning("update", error)
         try:
-            manager.__exit__(
-                type(processing_error), processing_error, processing_error.__traceback__
-            )
+            if manager is None:
+                observation.end()
+            else:
+                manager.__exit__(
+                    type(processing_error),
+                    processing_error,
+                    processing_error.__traceback__,
+                )
         except Exception as error:  # noqa: BLE001
             _warning("finish", error)
         raise
     else:
         try:
-            manager.__exit__(None, None, None)
+            if manager is None:
+                observation.end()
+            else:
+                manager.__exit__(None, None, None)
         except Exception as error:  # noqa: BLE001
             _warning("finish", error)
 

@@ -16,7 +16,7 @@
 
 ### 1. 実response stackをNetworkなしで差分検証する
 
-`httpx.MockTransport`からOpenAI Chat Completions互換のstrict-schema responseを一件返し、実`ChatOpenAI.bind(...).invoke()`と既存Pydantic parseを通すTest harnessを作る。観測なし、current observationあり、detached observationありの順に同じfixtureを実行し、HTTP call count、result、例外型chainおよび固定module originだけを比較する。
+OpenAI SDK 3.16.2が実際に使用する`httpx2.MockTransport`からOpenAI Chat Completions互換のstrict-schema responseを一件返し、実`ChatOpenAI.bind(...).invoke()`と既存Pydantic parseを通すTest harnessを作る。`httpx2`はOpenAI SDKのlock済みruntime Dependencyであり追加Dependencyではない。観測なし、current observationあり、detached observationありの順に同じfixtureを実行し、HTTP call count、result、例外型chainおよび固定module originだけを比較する。
 
 単純なMock clientだけを使う案は、今回疑われるLangChain／OpenAI応答変換とOpenTelemetry contextの相互作用を通らないため採用しない。実Providerを最初の診断に使う案も、再現ごとにlocal GPU時間を消費し、6回再送を招くため採用しない。
 

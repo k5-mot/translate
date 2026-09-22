@@ -418,6 +418,7 @@ def structured[ResponseT: BaseModel](
         settings,
         "llm.request",
         as_type="generation",
+        detached=True,
         metadata={"reasoning": reasoning, "response_type": response_type.__name__},
         model=model,
     ):
