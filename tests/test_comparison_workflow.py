@@ -6,6 +6,7 @@ from collections import Counter
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.graph import START
 
 from translate.common.progress import bind_task_status
 from translate.common.workspace import (
@@ -39,6 +40,61 @@ def test_comparison_graph_has_independent_branch_nodes(
     graph = comparison_review.build_graph(settings_factory())
 
     assert set(graph.nodes) == EXPECTED_NODES
+    assert (START, "source_split") in graph.edges
+    assert (START, "target_split") not in graph.edges
+    assert ("source_split", "target_split") in graph.edges
+    assert ("target_split", "source_docling") in graph.edges
+    assert ("source_load", "target_docling") in graph.edges
+    assert ("target_load", "align") in graph.edges
+    assert not graph.waiting_edges
+
+
+@pytest.mark.parametrize(
+    ("failed_role", "failed_task"),
+    [("source_en", "SOURCE-SPLIT"), ("translation_ja", "TARGET-SPLIT")],
+)
+def test_comparison_split_failure_defaults_to_its_input_role(
+    failed_role: str,
+    failed_task: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """下位Errorに対象がなくてもSPLITは対応する入力roleへ帰属する。"""
+
+    statuses: list[TaskStatusEvent] = []
+
+    def fake_split(
+        _source: Path, output_dir: Path, _pages: int, *, role: str
+    ) -> dict[str, list[dict[str, str]]]:
+        if role == failed_role:
+            message = "private input body"
+            raise RuntimeError(message)
+        part = output_dir / "part.pdf"
+        atomic_write_bytes(part, b"part")
+        return {"parts": [{"path": str(part)}]}
+
+    monkeypatch.setattr(comparison_review.split, "run", fake_split)
+    source = tmp_path / "source.pdf"
+    target = tmp_path / "target.pdf"
+    source.write_bytes(b"source")
+    target.write_bytes(b"target")
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    (templates / "review-rules.md").write_text("rules", encoding="utf-8")
+
+    with bind_task_status(statuses.append), pytest.raises(RuntimeError):
+        comparison_review.run(
+            source,
+            target,
+            tmp_path / "review.md",
+            settings_factory(templates_dir=templates),
+        )
+
+    failed = [event for event in statuses if event.phase == "failed"]
+    assert [(event.task, event.target_id) for event in failed] == [
+        (failed_task, failed_role)
+    ]
 
 
 def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915

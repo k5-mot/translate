@@ -162,13 +162,19 @@ def build_graph(
                 ):
                     result = {**function(state), "completed_tasks": [name]}
             except BaseException as error:
+                target_id = getattr(error, "target_id", None)
+                if target_id is None:
+                    target_id = {
+                        "SOURCE-SPLIT": "source_en",
+                        "TARGET-SPLIT": "translation_ja",
+                    }.get(name)
                 report_task_status(
                     TaskStatusEvent(
                         name,
                         "failed",
                         page=getattr(error, "page", None),
                         group=getattr(error, "group", None),
-                        target_id=getattr(error, "target_id", None),
+                        target_id=target_id,
                         stage=getattr(error, "stage", None),
                         cause_type=getattr(error, "cause_type", None),
                         failure_kind=getattr(error, "failure_kind", None),
@@ -327,16 +333,21 @@ def build_graph(
     tracked("CHECK", check_node)
     tracked("REVIEW", review_node)
     tracked("REPORT", report_node)
-    # Note 2: Both PDF branches resume independently until both LOAD tasks complete.
+    # Validate both PDFs before calling an external service, then keep the two
+    # independently checkpointed branches strictly sequential. Local Docling and
+    # model services are capacity-one resources, and concurrent status callbacks
+    # would contend for the same Run metadata artifact.
     for side in ("source", "target"):
-        graph.add_edge(START, f"{side}_split")
-        graph.add_edge(f"{side}_split", f"{side}_docling")
         graph.add_edge(f"{side}_docling", f"{side}_unpack")
         graph.add_edge(f"{side}_unpack", f"{side}_merge")
         graph.add_edge(f"{side}_merge", f"{side}_position")
         graph.add_edge(f"{side}_position", f"{side}_normalize")
         graph.add_edge(f"{side}_normalize", f"{side}_load")
-    graph.add_edge(["source_load", "target_load"], "align")
+    graph.add_edge(START, "source_split")
+    graph.add_edge("source_split", "target_split")
+    graph.add_edge("target_split", "source_docling")
+    graph.add_edge("source_load", "target_docling")
+    graph.add_edge("target_load", "align")
     graph.add_edge("align", "check")
     graph.add_edge("check", "review")
     graph.add_edge("review", "report")

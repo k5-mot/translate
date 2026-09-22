@@ -46,6 +46,7 @@ def _valid_pdf(path: Path) -> Path:
         ("translate", "empty", "source"),
         ("translate", "corrupt", "source"),
         ("translate", "encrypted", "source"),
+        ("review", "unreadable", "source_en"),
         ("review", "unreadable", "translation_ja"),
     ],
 )
@@ -75,8 +76,16 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
         inputs = {"source": invalid}
     else:
         inputs = {
-            "source_en": _valid_pdf(tmp_path / "source.pdf"),
-            "translation_ja": invalid,
+            "source_en": (
+                invalid
+                if expected_role == "source_en"
+                else _valid_pdf(tmp_path / "source.pdf")
+            ),
+            "translation_ja": (
+                invalid
+                if expected_role == "translation_ja"
+                else _valid_pdf(tmp_path / "translation.pdf")
+            ),
         }
 
     if invalid_kind in {"encrypted", "unreadable"}:

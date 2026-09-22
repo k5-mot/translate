@@ -16,11 +16,11 @@
 
 既存Testの個別成功を根拠にせず、全suiteの前半を二分し、原因となるTestまたは共有状態を絞る。縮約したTestでは一つの比較Runに対して失敗event列と最終Failureだけを安全なenum／IDで観測し、例外本文、path、Credentialおよび文書内容は記録しない。random sleepやTestの並び替えで隠す案は採用しない。
 
-### 2. Task wrapperで入力roleをTask定義へ固定する
+### 2. 比較branchをcheckpointを保ったまま完全逐次化する
 
-原因が失敗event欠落または外側fallbackである場合、比較Workflowのtracked nodeはTask名から確定できるinput roleをfailed eventへ明示する。下位例外がより具体的な`target_id`を持つ場合はそれを優先し、SPLITでは`SOURCE-*`を`source_en`、`TARGET-*`を`translation_ja`へ対応させる。Lifecycleが`last_task`だけからroleを推測する案は、他Taskのtarget概念と混同するため採用しない。
+原因はsource／target branchの`started`通知が別workerから同じ`run.json`を更新し、Windowsのatomic replaceが競合することだった。Graphを`START → SOURCE-SPLIT → TARGET-SPLIT → source残Task → target残Task → ALIGN`へ接続し、両PDFを外部Service呼出し前に検証しながら、独立nodeとcheckpointを維持して実行順を一意にする。これによりRun metadata、Doclingおよび後続Model呼出しを一つずつ実行する。
 
-原因が別の共有状態である場合は、その状態の実行scope化またはcleanupを最小修正し、role補完を不要に広げない。いずれの場合も最初のfailed eventを正本とし、外側fallbackはactive Failureが書かれていない場合にだけ使用する既存境界を維持する。
+Lifecycleへlockを追加する案はmetadata競合だけを隠し、local Serviceの逐次要件とGraphの実行順を保証しないため採用しない。SPLIT wrapperは下位Errorの具体的な`target_id`を優先し、欠落時だけTask定義済みの`source_en`／`translation_ja`を補う。最初のfailed eventを正本とし、外側fallbackはactive Failureが書かれていない場合だけ使う既存境界を維持する。
 
 ### 3. archive判定を現行全Gateで更新する
 
@@ -30,7 +30,7 @@ focused Test、縮約した順序Test、全pytestを同じprocess条件で成功
 
 | ID | Approachとtrade-off | Evidence |
 | --- | --- | --- |
-| Q-FUNC／Q-USE | nodeの実失敗とTask／roleを一対一にする。補完値は比較入力roleだけに限定する | source／target失敗注入、公開Error |
+| Q-FUNC／Q-USE | branch実行順を固定し、nodeの実失敗とTask／roleを一対一にする | source／target失敗注入、公開Error |
 | Q-REL／Q-COMP | event列とfirst failureを決定的にし、旧Failure readerを維持する | 単独、順序Test、全pytest、Resume Test |
 | Q-PERF | Model／Embedding逐次性と既存Graph構成を維持する | concurrency設定、Model呼出し差分0 |
 | Q-SEC | raw例外をprocess内だけで扱い、allowlist IDだけを保存する | sentinel scan、Failure schema Test |
@@ -43,8 +43,8 @@ Data migrationはない。既存FailureとRunは読取り可能なまま保持�
 ## Risks / Trade-offs
 
 - [Risk] 全suiteのタイミングに依存して再現が不安定になる → Test groupを二分して共有状態を特定し、time待ちではなくevent／scope境界を固定する。
-- [Risk] role補完が下位の具体的な対象IDを上書きする → 下位`target_id`を常に優先し、SPLITの欠落時だけinput roleを使用する。
-- [Risk] sourceとtarget branchを逐次化すると既存checkpoint挙動が変わる → Graphのbranch構成を変更せず、Model／Embeddingの逐次制約とFailure帰属だけを検証する。
+- [Risk] sourceとtargetの接続変更でtarget失敗後のResumeがsourceを再実行する → nodeは分離したまま維持し、checkpointからtargetの失敗Taskだけを再開するIntegration Testで確認する。
+- [Risk] 逐次化で比較処理時間が延びる → local Serviceは同時実行に耐えないという運用制約を優先し、処理時間より再現性とRun整合性を選ぶ。
 - [Risk] 過去Evidenceが現行Test件数と食い違う → 現行Gate結果を新しいEvidenceとして記録し、archive前verifyをやり直す。
 
 ## Migration Plan
