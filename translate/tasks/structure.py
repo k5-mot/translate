@@ -74,10 +74,12 @@ class StructurePageError(RuntimeError):
 # failure boundary. This is a pixel count, not a PDF rendering DPI.
 MAX_VISION_PIXELS = 1_000_000
 # Bump this version whenever the meaning of a persisted page changes.
-PAGE_CHECKPOINT_VERSION = 3
+PAGE_CHECKPOINT_VERSION = 4
 STRUCTURE_REASONING_EFFORT: ReasoningEffort = "none"
 STRUCTURE_SCHEMA_MODE: StructuredOutputMode = "json-schema"
 STRUCTURE_THINKING_POLICY: ThinkingPolicy = "disabled"
+# Keep private page reuse tied to the Adapter's fixed per-request policy.
+STRUCTURE_THINKING_BUDGET_TOKENS = 0
 
 
 def _response_schema_hash() -> str:
@@ -131,6 +133,7 @@ def _page_key(page: Page, source_hash: str, rules: str, settings: Settings) -> s
         "reasoning_effort": STRUCTURE_REASONING_EFFORT,
         "schema_mode": STRUCTURE_SCHEMA_MODE,
         "thinking_policy": STRUCTURE_THINKING_POLICY,
+        "thinking_budget_tokens": STRUCTURE_THINKING_BUDGET_TOKENS,
         "response_schema_hash": _response_schema_hash(),
     }
     encoded = json.dumps(values, ensure_ascii=False, sort_keys=True).encode("utf-8")

@@ -106,11 +106,11 @@ class RetryResponse(BaseModel):
     value: str
 
 
-def test_llm_model_applies_template_control_only_when_thinking_is_disabled(
+def test_llm_model_applies_zero_budget_only_when_thinking_is_disabled(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Thinking抑制時だけModel固有のJSON booleanをrequestへ追加する。"""
+    """Thinking抑制時だけtemplate hintと数値budgetをrequestへ追加する。"""
 
     calls: list[dict[str, object]] = []
 
@@ -127,7 +127,9 @@ def test_llm_model_applies_template_control_only_when_thinking_is_disabled(
     assert calls[0]["extra_body"] == {
         "reasoning_effort": "none",
         "chat_template_kwargs": {"enable_thinking": False},
+        "thinking_budget_tokens": 0,
     }
+    assert type(calls[0]["extra_body"]["thinking_budget_tokens"]) is int  # type: ignore[index]
     assert calls[1]["extra_body"] == {"reasoning_effort": "high"}
 
 

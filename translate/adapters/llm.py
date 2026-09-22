@@ -244,9 +244,10 @@ def _model(
 ) -> ChatOpenAI:
     extra_body: dict[str, object] = {"reasoning_effort": reasoning}
     if thinking == "disabled":
-        # Gemma's local template uses this JSON boolean independently of the
-        # OpenAI-compatible reasoning effort field.
+        # The local template hint alone does not prevent Gemma from reopening
+        # its thought channel. llama.cpp applies this numeric budget per request.
         extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+        extra_body["thinking_budget_tokens"] = 0
     return ChatOpenAI(
         model=model,
         base_url=settings.openai_base_url,
