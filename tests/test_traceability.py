@@ -7,19 +7,26 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CHANGE_ROOT = PROJECT_ROOT / "openspec" / "changes"
+ARCHIVE_ROOT = CHANGE_ROOT / "archive"
 
 
 def test_all_capability_scenarios_have_existing_test_ids() -> None:
     """30 Requirement/48 Scenarioを実在するTest名へ一対一で対応付ける。"""
 
-    specs_root = CHANGE_ROOT / "establish-translate-ja-contracts" / "specs"
-    specifications = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(specs_root.glob("*/spec.md"))
+    specification_paths = sorted(
+        ARCHIVE_ROOT.glob("*-establish-translate-ja-contracts/specs/*/spec.md")
     )
-    verification = (
-        CHANGE_ROOT / "resolve-translate-contract-verification-gaps" / "verification.md"
-    ).read_text(encoding="utf-8")
+    assert len(specification_paths) == 5
+    specifications = "\n".join(
+        path.read_text(encoding="utf-8") for path in specification_paths
+    )
+    verification_paths = sorted(
+        ARCHIVE_ROOT.glob(
+            "*-resolve-translate-contract-verification-gaps/verification.md"
+        )
+    )
+    assert len(verification_paths) == 1
+    verification = verification_paths[0].read_text(encoding="utf-8")
 
     assert specifications.count("### Requirement:") == 30
     assert specifications.count("#### Scenario:") == 48
