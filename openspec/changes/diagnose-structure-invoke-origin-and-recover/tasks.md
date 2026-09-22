@@ -2,13 +2,13 @@
 
 ## 1. Safe Baseline and Runtime Evidence
 
-- [ ] 1.1 Run `01a0c97c-f5cf-7031-b808-4ad545133925`のstatus、Failure、fingerprint、page checkpoint、SPLIT〜LOADのfile数／aggregate hash／latest mtime、公開Artifactおよび外部exportを読取り専用で再取得し、前回Evidenceとの差分0件を`verification.md`へ記録する（Q-COMP／Q-REL、移行・廃止Evidence）
-- [ ] 1.2 LM StudioのModel、管理context、推論process context、parallel、queued／statusおよび再失敗時刻周辺のruntime logを確認し、生logを転記せずprocess終了、HTTP status有無、finish reason、既知exception型、assertion有無の固定値だけを記録する。Credential、endpoint、本文、response、pathおよびline textの保存0件をscanする（Q-PERF／Q-SEC、運用・Support Evidence）
+- [x] 1.1 Run `01a0c97c-f5cf-7031-b808-4ad545133925`のstatus、Failure、fingerprint、page checkpoint、SPLIT〜LOADのfile数／aggregate hash／latest mtime、公開Artifactおよび外部exportを読取り専用で再取得し、前回Evidenceとの差分0件を`verification.md`へ記録する（Q-COMP／Q-REL、移行・廃止Evidence）
+- [x] 1.2 LM StudioのModel、管理context、推論process context、parallel、queued／statusおよび再失敗時刻周辺のruntime logを確認し、生logを転記せずprocess終了、HTTP status有無、finish reason、既知exception型、assertion有無の固定値だけを記録する。Credential、endpoint、本文、response、pathおよびline textの保存0件をscanする（Q-PERF／Q-SEC、運用・Support Evidence）
 
 ## 2. Sequential Root-Cause Classification
 
-- [ ] 2.1 例外chain型とtraceback moduleをmemory内だけで確認し、`application`／`langchain`／`openai-sdk`／`transport`／`local-runtime`／`unknown`へ正規化する診断wrapperをTestまたは一時probe境界に用意する。raw message、function、path、line、prompt、本文、responseおよび画像がconsole／Fileへ出ないことをsentinel Testで確認する（Q-USE／Q-SEC）
-- [ ] 2.2 1.2だけでoriginを確定できない場合、保存済みpage 3 payloadをRun外一時directoryで有界vision→textの順に各一回、同時request 1、timeout 900秒、既存Task deadlineで実行し、mode、stage、origin、chain type、attempt、status有無、finish reason、数値usage、wall timeおよびschema適合だけを記録する。確定できる場合は追加Model requestを行わず`NOT NEEDED`と理由を記録する（Q-FUNC／Q-PERF／Q-SEC）
+- [x] 2.1 例外chain型とtraceback moduleをmemory内だけで確認し、`application`／`langchain`／`openai-sdk`／`transport`／`local-runtime`／`unknown`へ正規化する診断wrapperをTestまたは一時probe境界に用意する。raw message、function、path、line、prompt、本文、responseおよび画像がconsole／Fileへ出ないことをsentinel Testで確認する（Q-USE／Q-SEC）
+- [x] 2.2 1.2だけでoriginを確定できない場合、保存済みpage 3 payloadをRun外一時directoryで有界vision→textの順に各一回、同時request 1、timeout 900秒、既存Task deadlineで実行し、mode、stage、origin、chain type、attempt、status有無、finish reason、数値usage、wall timeおよびschema適合だけを記録する。確定できる場合は追加Model requestを行わず`NOT NEEDED`と理由を記録する（Q-FUNC／Q-PERF／Q-SEC）
 - [ ] 2.3 1.2／2.2を現行Adapter、lock済みLangChain／OpenAI SDKおよびLM Studio境界と照合して再現可能な原因を一つに分類する。`unknown`または非再現の場合は推測修正とfull Run Resumeを行わず未完了で停止し、追加権限やSpec変更が必要なら別Change条件を記録する（Q-MAIN／Q-USE、保守Evidence）
 
 ## 3. Failing-First Correction

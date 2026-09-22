@@ -43,6 +43,21 @@ LLM_STAGES: tuple[LLMStage, ...] = (
 )
 LLMFailureKind = Literal["output-truncated"]
 LLMFinishReason = Literal["length"]
+LLMOrigin = Literal[
+    "application",
+    "langchain",
+    "openai-sdk",
+    "transport",
+    "local-runtime",
+    "unknown",
+]
+_ORIGIN_MODULE_PREFIXES: tuple[tuple[tuple[str, ...], LLMOrigin], ...] = (
+    (("openai",), "openai-sdk"),
+    (("httpx", "httpcore"), "transport"),
+    (("llama_cpp", "lmstudio", "lms"), "local-runtime"),
+    (("langchain", "langchain_core", "langchain_openai"), "langchain"),
+    (("translate",), "application"),
+)
 
 
 class LLMOutputTruncatedError(RuntimeError):
@@ -110,6 +125,52 @@ def _safe_token_count(value: object) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
         else None
     )
+
+
+def _exception_chain_types(error: BaseException) -> tuple[str, ...]:
+    """例外chainから安全な型名だけを有限件数返す。"""
+
+    names: list[str] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(names) < 8:
+        seen.add(id(current))
+        name = type(current).__name__
+        names.append(name if name.isidentifier() else "Exception")
+        current = current.__cause__ or current.__context__
+    return tuple(names)
+
+
+def _module_origin(module: str) -> LLMOrigin | None:
+    """module名を固定prefixだけでoriginへ分類する。"""
+
+    for prefixes, origin in _ORIGIN_MODULE_PREFIXES:
+        if any(
+            module == prefix or module.startswith(f"{prefix}.") for prefix in prefixes
+        ):
+            return origin
+    return None
+
+
+def _exception_origin(error: BaseException) -> LLMOrigin:
+    """tracebackのmodule名を固定分類へ縮約し、生のframe情報を返さない。"""
+
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        frames = []
+        traceback = current.__traceback__
+        while traceback is not None:
+            frames.append(traceback.tb_frame)
+            traceback = traceback.tb_next
+        for frame in reversed(frames):
+            module = str(frame.f_globals.get("__name__", ""))
+            origin = _module_origin(module)
+            if origin is not None:
+                return origin
+        current = current.__cause__ or current.__context__
+    return "unknown"
 
 
 def _response_diagnostics(

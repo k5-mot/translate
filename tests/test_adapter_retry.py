@@ -105,6 +105,64 @@ class RetryResponse(BaseModel):
     value: str
 
 
+@pytest.mark.parametrize(
+    ("module", "expected"),
+    [
+        ("translate.fake", "application"),
+        ("langchain_openai.fake", "langchain"),
+        ("openai.fake", "openai-sdk"),
+        ("httpx.fake", "transport"),
+        ("lmstudio.fake", "local-runtime"),
+        ("unrelated.fake", "unknown"),
+    ],
+)
+def test_llm_origin_diagnostic_reduces_traceback_without_raw_values(
+    module: str, expected: str
+) -> None:
+    """診断wrapperはframeを固定originへ縮約しraw値を返さない。"""
+
+    sentinel = "SECRET-PATH-PROMPT-RESPONSE"
+    namespace: dict[str, object] = {"__name__": module, "sentinel": sentinel}
+    exec("def fail():\n    raise TypeError(sentinel)", namespace)  # noqa: S102
+    fail = namespace["fail"]
+
+    try:
+        fail()  # type: ignore[operator]
+    except TypeError as error:
+        origin = llm._exception_origin(error)  # noqa: SLF001
+        chain = llm._exception_chain_types(error)  # noqa: SLF001
+    else:  # pragma: no cover - helper always raises
+        pytest.fail("diagnostic fixture did not raise")
+
+    assert origin == expected
+    assert chain == ("TypeError",)
+    assert sentinel not in origin
+    assert all(sentinel not in item for item in chain)
+
+
+def test_llm_origin_diagnostic_follows_exception_chain_once() -> None:
+    """cause chainを循環せず調べ、安全な型名だけを返す。"""
+
+    namespace: dict[str, object] = {"__name__": "openai._base_client"}
+    exec(  # noqa: S102
+        "def fail():\n"
+        "    try:\n"
+        "        raise TypeError('SECRET-INNER')\n"
+        "    except TypeError as error:\n"
+        "        raise RuntimeError('SECRET-OUTER') from error",
+        namespace,
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        namespace["fail"]()  # type: ignore[operator]
+
+    assert llm._exception_origin(captured.value) == "openai-sdk"  # noqa: SLF001
+    assert llm._exception_chain_types(captured.value) == (  # noqa: SLF001
+        "RuntimeError",
+        "TypeError",
+    )
+
+
 def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
