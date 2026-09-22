@@ -27,10 +27,10 @@
 ## 5. Sequential Real-Model Verification
 
 - [x] 5.1 旧Run `01a0c138-0e5f-7e62-b0a8-8f9fd1e5bfa5`の更新時刻またはdirectory hashを取得し、新設定での明示Resumeが`tokens.context`と`tokens.output`を理由に拒否され、前後で旧Runが不変であることをLifecycle Evidenceへ記録する
-- [ ] 5.2 保存済みDocling documentのpage 3相当payloadを最大同時request 1で一回probeし、Q-FUNC／Q-PERFとして非空かつschema適合、`finish_reason`非`length`、context内の数値usageおよびwall timeだけを安全なEvidenceへ記録する
+- [x] 5.2 保存済みDocling documentのpage 3相当payloadを最大同時request 1で一回probeし、Q-FUNC／Q-PERFとして非空かつschema適合、`finish_reason`非`length`、context内の数値usageおよびwall timeだけを安全なEvidenceへ記録する
 - [ ] 5.3 5.2成功後に同じ実PDFを新しいUUIDv7 Runとして逐次Translationし、STRUCTURE以降のcheckpoint、Artifact、Failure有無およびRun metadataを確認する。再truncation時は自動増額せずFailureを保持してTaskを未完了とする
 
 ## 6. Lifecycle and Handoff
 
-- [ ] 6.1 新旧Run、Failure、checkpoint、入力copy、成果物および外部exportが自動削除・書換えされていないことを確認し、ISO/IEC/IEEE 12207の移行、運用、Support、保守、rollbackおよび廃止Evidenceをまとめる
+- [x] 6.1 新旧Run、Failure、checkpoint、入力copy、成果物および外部exportが自動削除・書換えされていないことを確認し、ISO/IEC/IEEE 12207の移行、運用、Support、保守、rollbackおよび廃止Evidenceをまとめる
 - [ ] 6.2 `complete-sample-pdf-acceptance-verification`へ引き渡す新Run ID、Translation結果、残存制約および安全な診断を記録し、本ChangeがWord-to-PDF変換や目視受入を代替しないことを確認する

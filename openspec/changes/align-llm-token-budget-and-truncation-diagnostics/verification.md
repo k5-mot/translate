@@ -3,8 +3,8 @@
 ## Verification Status
 
 - Date: 2026-09-22
-- Progress: 13/17 tasks complete
-- State: blocked at task 5.2 by single-request timeout after server context change
+- Progress: 15/17 tasks complete
+- State: task 5.2 passed; task 5.3 blocked by new Run STRUCTURE failure
 - Model／Embedding concurrency: 1
 
 ## Automated Evidence
@@ -56,8 +56,43 @@
 - Finish reason、token usage、response本文およびschema成否: timeoutのため取得不可
 - Raw prompt、document body、reasoning content、raw response、Credential、endpointおよびimage binaryをEvidenceへ保存していない
 
+### 2026-09-22: request timeout 900 seconds
+
+- Requests: 1、retryなし、同時実行数1
+- LM Studio管理情報の`contextLength`: 30,208
+- 推論processの`--ctx-size`: 30,000（application contextより208少ない）
+- Requested application context: 30,208
+- Requested maximum output: 16,384
+- Input tokens: 1,328
+- Output tokens: 8,414
+- Total tokens: 9,742（推論process context以内）
+- Finish reason: `stop`
+- Response body: 非空、282文字
+- Schema-valid response: yes、patch 1件
+- Wall time: 243.265 seconds
+- Raw prompt、document body、reasoning content、raw response、Credential、endpointおよびimage binaryをEvidenceへ保存していない
+
+## New Translation Run
+
+- Run ID: `01a0c97c-f5cf-7031-b808-4ad545133925`（UUIDv7）
+- Input: `inputs/sample.pdf`、Run入力copyのSHA-256一致
+- Model／Embedding concurrency: 1
+- Request timeout: 900 seconds（この実行processの環境設定。製品既定300秒は変更していない）
+- Total wall time: 2,099.347 seconds
+- Completed checkpoints: SPLIT、DOCLING、UNPACK、MERGE、POSITION、NORMALIZE、LOAD
+- DOCLING wall time: 1,705.733 seconds
+- STRUCTURE page 2: 一時監査成果物を生成
+- STRUCTURE page 3: 画像付きrequest後、text fallbackの`text-invoke`で`TypeError`となり停止
+- Run status: `failed`、checkpoint 9件、write 51件
+- Failure record: task=`STRUCTURE`、page=3、target=`page/3`、stage=`text-invoke`、cause=`TypeError`。finish reasonとtoken usageは取得されていない
+- Atomic Artifact: 失敗したSTRUCTUREの公開directoryなし。一時directoryもcleanup済み
+- Run output／外部export: なし
+- Raw prompt、document body、reasoning content、raw response、Credential、endpointおよびimage binaryをEvidenceへ保存していない
+
+## Lifecycle and Handoff
+
+旧Runの最終file更新は2026-09-21 10:10:51のままであり、今回の実行では書換え・削除していない。新Runの入力copy、完了済みTask Artifact、Failure、checkpointおよびmetadataは保持されている。失敗したSTRUCTUREの途中成果物は公開されず、`--output-dir`先も作成されていない。移行時は既存token fingerprintに従って旧Runを拒否し、rollback時も新旧Runを変換・削除しない。運用とSupportでは新Runの安全なFailure診断を使用し、保守作業は新たなOpenSpec Changeで原因を特定する。廃止は利用者による明示削除まで行わない。
+
 ## Blocker
 
-最初のprobeでは`llama-server.exe --ctx-size 8192`が出力を切った。server contextを変更した後の起動optionは`--ctx-size 30000`であり、仕様の30,208と一致しない。2回目の単発probeは設定済みrequest timeoutの300秒で終了したため、非空かつschema適合する応答を確認できていない。
-
-task 5.2の合格には、LM Studio側の実効contextを30,208へ合わせ、単発requestがtimeout内にschema適合応答を返す運用条件の確認が必要である。設計どおり自動的なtoken増額や同条件retryは行わず、task 5.3の新規Translation Runも開始していない。
+page 3相当の単発テキストprobeは成功したが、実Workflowの画像付きrequestとtext fallbackの経路で`TypeError`が記録された。現行Failureは安全な例外型だけを保持し、元の例外内容やvision側の失敗理由を保持しないため、根本原因は特定できない。timeout不足またはtoken枯渇と断定するEvidenceもない。task 5.3のTranslation完了とtask 6.2の受入Changeへの成果物引き渡しは未完了とし、同Runを自動Resumeしない。Word-to-PDF変換と目視受入は本Changeの範囲外である。
