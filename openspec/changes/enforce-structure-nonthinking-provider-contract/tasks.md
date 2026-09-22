@@ -2,7 +2,7 @@
 
 ## 1. Provider and Run Preconditions
 
-- [ ] 1.1 Run `01a0c97c-f5cf-7031-b808-4ad545133925`のinput hash、fingerprint、Failure、SPLIT～LOAD file count／aggregate hash／latest mtime、private checkpoint、公開STRUCTUREおよび外部outputをread-onlyでbaseline化し、LM Studioが対象Gemma 4、context 30,208、parallel 1、queued 0／idleで他Model／Embedding request 0件であることを確認する（Q-COMP／Q-PERF／Q-SEC、運用・移行）
+- [x] 1.1 Run `01a0c97c-f5cf-7031-b808-4ad545133925`のinput hash、fingerprint、Failure、SPLIT～LOAD file count／aggregate hash／latest mtime、private checkpoint、公開STRUCTUREおよび外部outputをread-onlyでbaseline化し、LM Studioが対象Gemma 4、context 30,208、parallel 1、queued 0／idleで他Model／Embedding request 0件であることを確認する（Q-COMP／Q-PERF／Q-SEC、運用・移行）
 - [ ] 1.2 現行OpenAI互換endpointへ、短い入力、実`StructureResponse` strict schema、`reasoning_effort=none`および`chat_template_kwargs.enable_thinking=false`を一回だけ逐次送信し、HTTP成功、`finish_reason=stop`、reasoning 0、schema-valid、attempt 1および有限wall timeを安全なmetadataだけで記録する。失敗時は以後の実装、Model requestおよびRun Resumeを行わず停止する（Q-FUNC／Q-PERF／Q-SEC、取得／供給）
 
 ## 2. Failing-First Request and Checkpoint Contracts
