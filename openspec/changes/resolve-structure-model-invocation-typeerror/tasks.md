@@ -13,7 +13,7 @@
 
 ## 3. Cause-Specific Correction
 
-- [ ] 3.1 製品原因なら再現する失敗TestをAdapterまたはSTRUCTUREへ追加してから最小修正し、そのTestと既存retry／truncation Testを通す。環境原因なら製品コードを変更せず必要なLM Studio設定処置を記録し、同条件のprobeで解消を確認する（Q-FUNC／Q-MAIN、保守）
+- [x] 3.1 製品原因なら再現する失敗TestをAdapterまたはSTRUCTUREへ追加してから最小修正し、そのTestと既存retry／truncation Testを通す。環境原因なら製品コードを変更せず必要なLM Studio設定処置を記録し、同条件のprobeで解消を確認する（Q-FUNC／Q-MAIN、保守）
 - [x] 3.2 vision成功、vision失敗後text成功、両方失敗の各経路で有限retry、安全なTask／page／target／stage／cause type、旧Failure読取り、Atomic Artifact、fingerprint不変をfocused Testで確認する（Q-COMP／Q-REL／Q-SEC）
 
 ## 4. Quality and Security Gate

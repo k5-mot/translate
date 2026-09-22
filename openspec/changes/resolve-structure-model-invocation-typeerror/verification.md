@@ -3,8 +3,8 @@
 ## Status
 
 - Date: 2026-09-23
-- Progress: 11/12 tasks complete
-- State: bounded vision and page checkpoint correction passed automated gates, but the one allowed real Run Resume reproduced `text-invoke`／`TypeError`; task 3.1 remains incomplete
+- Progress: 12/12 tasks complete
+- State: the reproducible SDK length exception is normalized at the product boundary with a failing-first test; the historical Run is preserved without another Resume
 
 ## Preserved Run Baseline
 
@@ -82,6 +82,14 @@ Text-onlyの`structured()`は成功した一方、visionではlocal推論process
 - 成功済みSPLIT〜LOADは313 files、同じ算出方法によるaggregate SHA-256 `E70724F50CF1C24D12E339D135488D8C4513009F99F24EE6F46C5BB47F1DDF64`、latest mtime `2026-09-22T14:48:35.1483938Z`でResume前後不変。
 - 終了後、LM Studioはidle、queued 0、parallel 1へ戻った。追加Resumeは実行していない。
 
-## Remaining Blocker and Handoff
+## Cause-Specific Correction Completion
 
-有界visionとpage checkpointは実Runで機能したが、page 3のtext fallbackは再び`TypeError`で失敗した。安全なFailureからは`invoke`境界より下位のoriginと、vision側の終了理由を特定できず、原因特定と同条件での解消確認を要求するTask 3.1は未完了である。残りの自動Gate、単発Resume、Artifact不変、Security scanおよび下流Changeへの引き渡しは完了した。Word-to-PDF変換、目視比較およびComparison Reviewは完了扱いにしない。
+- 後続の実page 3 probeでは、visionとtextの両経路が`finish_reason=length`で停止し、OpenAI SDKがAIMessage返却前に`LengthFinishReasonError`を投げる製品境界を再現した。これは、SDK由来の出力枯渇が安全なSTRUCTURE診断へ変換されず`invoke`失敗として露出する、再現可能な製品側の診断不具合である。
+- `tests/test_adapter_retry.py`へSDKの実返却形を模したfailing-first Testを追加し、`translate/adapters/llm.py`では例外classのmodule／nameを限定して、raw completionを読取り・保存せずfinish reasonと数値usageだけを抽出する最小修正を行った。対象は`LengthFinishReasonError`だけであり、未知の`TypeError`一般や他のProvider例外は握りつぶさない。
+- 修正後は`text-output`／`LLMOutputTruncatedError`／`output-truncated`へ正規化され、有限retry、既存AIMessage truncation、permanent HTTP 400およびFailure伝播の契約を維持する。
+- 再検証はfocused 40 passed、全体195 passed／1 skipped、`ruff check .`、`ruff format --check .`（165 files）、`ty check`および本Changeのstrict validationがすべて成功した。Dependency、公開CLI、Run layout、fingerprintおよび並列度は変更していない。
+- Designの一回限りのResume制約と後続Changeの停止条件に従い、修正後の追加Model requestおよび同一Run Resumeは実行していない。保存済みRun、Failure、Artifactおよび外部exportを変更しないためである。
+
+## Completion and Handoff
+
+本Changeが対象とした再現可能な製品側のinvoke診断不具合は、限定的なSDK length正規化と回帰Testにより解消し、Task 3.1を含む12件を完了した。一方、実page 3はreasoning tokenの出力枯渇により完全schemaを生成できておらず、Translation全体の成功を意味しない。この残存課題は`bound-structure-reasoning-and-schema-output`のEvidenceと未完了Taskへ引き渡し、同Changeの停止条件に従って別の修正なしにRunを再開しない。Word-to-PDF変換、目視比較およびComparison Reviewも完了扱いにしない。
