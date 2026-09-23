@@ -25,6 +25,7 @@ from qdrant_client.http import models
 
 from translate.adapters import pdf
 from translate.adapters.docling import DoclingClient
+from translate.common.terminal_evidence import count_external_call
 from translate.common.workspace import (
     atomic_write_bytes,
     atomic_write_json,
@@ -149,6 +150,7 @@ def _ensure_time(deadline: float) -> float:
 def _registration_client(settings: Settings, deadline: float) -> QdrantClient:
     """現在の残時間を上限にした登録用Clientを生成する。"""
 
+    count_external_call("qdrant")
     return QdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key,
@@ -167,6 +169,7 @@ def _qdrant_timeout(settings: Settings, deadline: float) -> int:
 
 
 def _embeddings(settings: Settings) -> OpenAIEmbeddings:
+    count_external_call("embedding")
     return OpenAIEmbeddings(
         model=settings.embedding_model or "",
         base_url=settings.openai_base_url,
@@ -193,6 +196,7 @@ def search(
 
     if not settings.qdrant_enabled or not query.strip():
         return []
+    count_external_call("qdrant")
     results = _retry(
         settings,
         lambda: [

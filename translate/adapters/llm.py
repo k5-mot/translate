@@ -17,6 +17,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
 from translate.adapters.langfuse import observe
+from translate.common.terminal_evidence import count_external_call
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -356,6 +357,7 @@ def structured[ResponseT: BaseModel](
     def invoke_and_parse() -> ResponseT:
         invoke_stage: LLMStage = "vision-invoke" if mode == "vision" else "text-invoke"
         try:
+            count_external_call("llm")
             response = client.invoke(messages)
         except Exception as error:  # noqa: BLE001
             length = _sdk_length_diagnostics(error)
