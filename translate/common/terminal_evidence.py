@@ -459,7 +459,19 @@ def run_detached(
         heartbeat = _read_heartbeat(heartbeat_path, store)
         current = store.read()
         if heartbeat is not None and (current is None or current.status == "running"):
-            store.write(heartbeat.with_update(child_pid=process.pid))
+            if (
+                current is None
+                or current.heartbeat_at is None
+                or heartbeat.heartbeat_at is None
+                or heartbeat.heartbeat_at > current.heartbeat_at
+            ):
+                store.write(heartbeat.with_update(child_pid=process.pid))
+            elif current is not None:
+                store.write(
+                    current.with_update(
+                        heartbeat_at=datetime.now(UTC), child_pid=process.pid
+                    )
+                )
         elif current is not None and current.status == "running":
             store.write(
                 current.with_update(
