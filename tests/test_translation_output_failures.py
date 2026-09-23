@@ -32,6 +32,23 @@ def _page(text: str = "Source") -> Page:
     )
 
 
+def _page_with_units(count: int) -> Page:
+    return Page(
+        number=8,
+        blocks=[
+            Block(
+                id="body",
+                order=0,
+                kind="paragraph",
+                source=[
+                    Inline(id=f"inline-{index}", text=f"Source {index}")
+                    for index in range(count)
+                ],
+            )
+        ],
+    )
+
+
 def test_translation_output_mismatch_retries_same_chunk_then_succeeds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -157,6 +174,66 @@ def test_translation_output_truncation_fallback_is_bounded_and_safe(
     assert captured.value.finish_reason == "length"
     assert captured.value.output_tokens == 16_384
     assert "PRIVATE" not in str(captured.value)
+
+
+def test_translation_output_truncation_splits_chunk_sequentially(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """同じchunkのfallbackも枯渇したときはsub-chunkを順番に処理する。"""
+
+    calls: list[tuple[str, str | None]] = []
+
+    def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
+        if len(calls) <= 2:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+                input_tokens=2_144,
+                output_tokens=16_384,
+                total_tokens=18_528,
+            )
+        prompt = str(_args[-1])
+        ids = [f'"id": "inline-{index}"' for index in range(4)]
+        translations = [
+            translate.TranslationItem(id=f"inline-{index}", text=f"Translated {index}")
+            for index in range(4)
+            if f'"id": "inline-{index}"' in prompt
+        ]
+        assert ids
+        return translate.TranslationResponse(translations=translations)
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page_with_units(4)
+    translate._translate_page(  # noqa: SLF001
+        page,
+        "",
+        "",
+        "rules",
+        [],
+        settings_factory(translation_model="translation", retry_attempts=3),
+        tmp_path / "qdrant",
+    )
+
+    assert calls == [
+        ("high", None),
+        ("none", "disabled"),
+        ("none", "disabled"),
+        ("none", "disabled"),
+    ]
+    assert page.blocks[0].translated is not None
+    assert [item.text for item in page.blocks[0].translated] == [
+        "Translated 0",
+        "Translated 1",
+        "Translated 2",
+        "Translated 3",
+    ]
 
 
 def test_translation_output_mismatch_exhaustion_is_safe_and_classified(

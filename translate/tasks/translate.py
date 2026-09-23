@@ -35,6 +35,8 @@ class TranslationResponse(BaseModel):
 
 TranslationFailureCause = Literal["TranslationIdMismatch", "ProtectedFragmentMissing"]
 
+_MAX_TRUNCATION_SPLIT_DEPTH = 2
+
 
 def _is_text_output_truncated(error: LLMError) -> bool:
     """翻訳の代替経路へ切り替えられる出力枯渇だけを判定する。"""
@@ -150,10 +152,17 @@ def _translate_page(
     qdrant_artifact_dir: Path,
 ) -> None:
     mapping: dict[str, str] = {}
-    for chunk_number, chunk in enumerate(_chunks(units(page), settings), start=1):
+
+    def translate_chunk(
+        chunk: list[tuple[str, str]],
+        chunk_label: str,
+        *,
+        split_depth: int = 0,
+        force_no_reasoning: bool = False,
+    ) -> dict[str, str]:
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
-        target_id = f"page-{page.number:04d}-chunk-{chunk_number:04d}"
+        target_id = f"page-{page.number:04d}-chunk-{chunk_label}"
         evidence = search(
             settings,
             source[:2_000],
@@ -169,35 +178,74 @@ def _translate_page(
             },
             ensure_ascii=False,
         )
+
+        def split_after_truncation(error: LLMError) -> dict[str, str]:
+            if (
+                not _is_text_output_truncated(error)
+                or split_depth >= _MAX_TRUNCATION_SPLIT_DEPTH
+                or len(chunk) <= 1
+            ):
+                raise error
+            midpoint = len(chunk) // 2
+            left = translate_chunk(
+                chunk[:midpoint],
+                f"{chunk_label}.0",
+                split_depth=split_depth + 1,
+                force_no_reasoning=True,
+            )
+            right = translate_chunk(
+                chunk[midpoint:],
+                f"{chunk_label}.1",
+                split_depth=split_depth + 1,
+                force_no_reasoning=True,
+            )
+            return left | right
+
         attempts = max(1, settings.retry_attempts)
         truncation_fallback_used = False
         for attempt in range(attempts):
             try:
-                response = structured(
-                    settings,
-                    settings.translation_model or "",
-                    TranslationResponse,
-                    rules,
-                    prompt,
-                    reasoning="high",
-                )
+                if force_no_reasoning:
+                    response = structured(
+                        settings,
+                        settings.translation_model or "",
+                        TranslationResponse,
+                        rules,
+                        prompt,
+                        reasoning="none",
+                        thinking="disabled",
+                    )
+                else:
+                    response = structured(
+                        settings,
+                        settings.translation_model or "",
+                        TranslationResponse,
+                        rules,
+                        prompt,
+                        reasoning="high",
+                    )
             except LLMError as error:
-                if truncation_fallback_used or not _is_text_output_truncated(error):
+                if force_no_reasoning or truncation_fallback_used:
+                    return split_after_truncation(error)
+                if not _is_text_output_truncated(error):
                     raise
                 truncation_fallback_used = True
                 # A local reasoning model may consume the whole generation budget
                 # before emitting the translation JSON. Retry this chunk once with
                 # both reasoning and provider thinking disabled; never parallelize
                 # or retain the partial response.
-                response = structured(
-                    settings,
-                    settings.translation_model or "",
-                    TranslationResponse,
-                    rules,
-                    prompt,
-                    reasoning="none",
-                    thinking="disabled",
-                )
+                try:
+                    response = structured(
+                        settings,
+                        settings.translation_model or "",
+                        TranslationResponse,
+                        rules,
+                        prompt,
+                        reasoning="none",
+                        thinking="disabled",
+                    )
+                except LLMError as fallback_error:
+                    return split_after_truncation(fallback_error)
             try:
                 # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
                 received = _validated_mapping(
@@ -213,8 +261,11 @@ def _translate_page(
                 if delay > 0:
                     time.sleep(delay)
             else:
-                break
-        mapping.update(received)
+                return received
+        raise AssertionError("translation retry loop exhausted without a result")
+
+    for chunk_number, chunk in enumerate(_chunks(units(page), settings), start=1):
+        mapping.update(translate_chunk(chunk, f"{chunk_number:04d}"))
     apply_translations(page, mapping)
 
 
