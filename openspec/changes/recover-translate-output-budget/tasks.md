@@ -8,8 +8,8 @@
 
 ## 2. Regression and lifecycle evidence
 
-- [ ] 2.1 TRANSLATE/LLM/Failure focused test、全pytest、Ruff、formatおよびty baselineを実行し、同時Model requestが1件以下であることを記録する
-- [ ] 2.2 `npx --yes --offline --package=@fission-ai/openspec@1.13.1 openspec validate recover-translate-output-budget --strict`を実行する
+- [x] 2.1 TRANSLATE/LLM/Failure focused test、全pytest、Ruff、formatおよびty baselineを実行し、同時Model requestが1件以下であることを記録する（pytest 242 passed, 1 skipped、tyは既存terminal_evidence.pyの5件baseline）
+- [x] 2.2 `npx --yes --offline --package=@fission-ai/openspec@1.13.1 openspec validate recover-translate-output-budget --strict`を実行する
 - [ ] 2.3 構造fallback後に失敗した同じRun IDをdetached GateでResumeし、TRANSLATEが代替要求後に進行または安全に停止すること、source SQLite hash不変、temp cleanup、秘密・本文非出力を証跡化する
 - [ ] 2.4 Gateが進行または完了した場合、同じRun IDを明示Resumeし、完了済みTask/chunkを再実行せず未完了単位から継続できることを記録する。再度失敗した場合は次のChangeの根拠を記録する
 
