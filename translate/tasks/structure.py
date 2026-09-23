@@ -226,6 +226,16 @@ def _merge_code(page: Page) -> None:
         block.order = order
 
 
+def _is_text_output_truncated(error: LLMError) -> bool:
+    """Textの出力枯渇だけをSTRUCTUREのprompt fallback対象にする。"""
+
+    return (
+        error.stage == "text-output"
+        and error.failure_kind == "output-truncated"
+        and error.finish_reason == "length"
+    )
+
+
 def _apply(page: Page, response: StructureResponse) -> list[dict[str, object]]:
     blocks = {block.id: block for block in page.blocks}
     audit: list[dict[str, object]] = []
@@ -333,16 +343,34 @@ def _run_into(
                         # truncated vision response, never the partial response.
                         image = None
                 if image is None:
-                    response = structured(
-                        settings,
-                        settings.structure_model or "",
-                        StructureResponse,
-                        rules,
-                        user,
-                        reasoning=STRUCTURE_REASONING_EFFORT,
-                        schema_mode=STRUCTURE_SCHEMA_MODE,
-                        thinking=STRUCTURE_THINKING_POLICY,
-                    )
+                    try:
+                        response = structured(
+                            settings,
+                            settings.structure_model or "",
+                            StructureResponse,
+                            rules,
+                            user,
+                            reasoning=STRUCTURE_REASONING_EFFORT,
+                            schema_mode=STRUCTURE_SCHEMA_MODE,
+                            thinking=STRUCTURE_THINKING_POLICY,
+                        )
+                    except LLMError as error:
+                        if not _is_text_output_truncated(error):
+                            raise
+                        # A local provider may spend the JSON-schema budget on
+                        # generation. Prompt-mode format instructions are a
+                        # bounded, sequential recovery path; never retry the
+                        # same exhausted request.
+                        response = structured(
+                            settings,
+                            settings.structure_model or "",
+                            StructureResponse,
+                            rules,
+                            user,
+                            reasoning=STRUCTURE_REASONING_EFFORT,
+                            schema_mode="prompt",
+                            thinking=STRUCTURE_THINKING_POLICY,
+                        )
             except LLMError as error:
                 raise StructurePageError(
                     page.number, f"page/{page.number}", error

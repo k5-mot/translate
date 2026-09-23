@@ -2,9 +2,9 @@
 
 ## 1. Adapter and STRUCTURE fallback
 
-- [ ] 1.1 `translate/tasks/structure.py`へText `output-truncated`専用のprompt-mode fallbackを最大1回・逐次で実装し、通常のVision→Text fallback、最後の`StructurePageError`およびatomic cleanupを維持することをfocused testで確認する（Q-FUNC／Q-REL）。
-- [ ] 1.2 fallback成功時に完全なPydantic responseだけが`_apply`、page JSON、auditおよびcheckpointへ進み、partial response・raw本文・原文・画像binaryが公開されないことを`tests/test_structure_diagnostics.py`で確認する（Q-SEC／Q-COMP）。
-- [ ] 1.3 fallbackでも枯渇した場合に最終stage、`output-truncated`、`finish_reason=length`、token usageだけを保存し、既存のResume可能Failure契約を維持することをFailure/Lifecycle testで確認する。
+- [x] 1.1 `translate/tasks/structure.py`へText `output-truncated`専用のprompt-mode fallbackを最大1回・逐次で実装し、通常のVision→Text fallback、最後の`StructurePageError`およびatomic cleanupを維持することをfocused testで確認する（Q-FUNC／Q-REL）。
+- [x] 1.2 fallback成功時に完全なPydantic responseだけが`_apply`、page JSON、auditおよびcheckpointへ進み、partial response・raw本文・原文・画像binaryが公開されないことを`tests/test_structure_diagnostics.py`で確認する（Q-SEC／Q-COMP）。
+- [x] 1.3 fallbackでも枯渇した場合に最終stage、`output-truncated`、`finish_reason=length`、token usageだけを保存し、既存のResume可能Failure契約を維持することをFailure/Lifecycle testで確認する。
 
 ## 2. Regression and lifecycle evidence
 

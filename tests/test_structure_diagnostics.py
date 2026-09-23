@@ -293,11 +293,11 @@ def test_structure_stops_when_vision_and_text_both_truncate(
 ) -> None:
     """両modeの出力枯渇では最終stageだけを安全に公開する。"""
 
-    calls: list[bool] = []
+    calls: list[tuple[bool, object]] = []
 
     def fail(*_args: object, **kwargs: object) -> structure.StructureResponse:
         vision = kwargs.get("image") is not None
-        calls.append(vision)
+        calls.append((vision, kwargs.get("schema_mode")))
         raise LLMError(
             "vision-output" if vision else "text-output",
             RuntimeError("RAW-TRUNCATED-SENTINEL"),
@@ -320,9 +320,66 @@ def test_structure_stops_when_vision_and_text_both_truncate(
             tmp_path / "structure",
         )
 
-    assert calls == [True, False]
+    assert calls == [
+        (True, "json-schema"),
+        (False, "json-schema"),
+        (False, "prompt"),
+    ]
     assert captured.value.stage == "text-output"
     assert captured.value.failure_kind == "output-truncated"
     assert captured.value.finish_reason == "length"
     assert "RAW-TRUNCATED-SENTINEL" not in str(captured.value)
     assert not (tmp_path / "structure").exists()
+
+
+def test_structure_recovers_text_truncation_with_prompt_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Text json-schema枯渇後だけprompt modeへ一度切り替える。"""
+
+    calls: list[tuple[bool, object]] = []
+
+    def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        vision = kwargs.get("image") is not None
+        schema_mode = kwargs.get("schema_mode")
+        calls.append((vision, schema_mode))
+        if vision:
+            stage = "vision-output"
+            raise LLMError(
+                stage,
+                RuntimeError("VISION-TRUNCATED"),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        if schema_mode == "json-schema":
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                RuntimeError("SCHEMA-TRUNCATED"),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        return structure.StructureResponse()
+
+    monkeypatch.setattr(structure.pdf, "render_page", _render)
+    monkeypatch.setattr(structure, "structured", respond)
+    output = tmp_path / "structure"
+
+    result = structure.run(
+        _document(),
+        _source(tmp_path),
+        "rules",
+        settings_factory(),
+        output,
+    )
+
+    assert result.pages[0].number == 2
+    assert calls == [
+        (True, "json-schema"),
+        (False, "json-schema"),
+        (False, "prompt"),
+    ]
+    assert (output / "page-0002.json").is_file()
+    assert (output / ".complete.json").is_file()
