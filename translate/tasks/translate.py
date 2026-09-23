@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -37,6 +39,12 @@ TranslationFailureCause = Literal["TranslationIdMismatch", "ProtectedFragmentMis
 
 _MAX_TRUNCATION_SPLIT_DEPTH = 2
 
+_PROTECTED_PLACEHOLDER_RE = re.compile(
+    r"__\s*protected\s*[_\-\s]+(?P<unit>\d+)\s*[_\-\s]+"
+    r"(?P<fragment>\d+)\s*__",
+    re.IGNORECASE,
+)
+
 
 def _is_text_output_truncated(error: LLMError) -> bool:
     """翻訳の代替経路へ切り替えられる出力枯渇だけを判定する。"""
@@ -66,12 +74,60 @@ def _protect_chunk_for_prompt(
 
 
 def _restore_chunk_placeholders(
-    response: TranslationResponse, protected: dict[str, str]
+    response: TranslationResponse,
+    protected: dict[str, str],
+    *,
+    page: int,
+    target_id: str,
 ) -> TranslationResponse:
-    """LLM応答内のplaceholderを原文fragmentへ戻す。"""
+    """LLM応答内のplaceholderを正規化して原文fragmentへ戻す。
+
+    LLMが区切り文字、空白または大小文字を揺らしても、期待したtokenと
+    一対一に対応する場合だけ受理する。原文値や生応答は例外へ含めない。
+    """
 
     if not protected:
         return response
+
+    expected = set(protected)
+    normalized: list[TranslationItem] = []
+    occurrences: dict[str, int] = dict.fromkeys(expected, 0)
+    for item in response.translations:
+        text = unicodedata.normalize("NFKC", item.text)
+        pieces: list[str] = []
+        cursor = 0
+        for match in _PROTECTED_PLACEHOLDER_RE.finditer(text):
+            unit = int(match.group("unit"))
+            fragment = int(match.group("fragment"))
+            token = f"__PROTECTED_{unit}_{fragment}__"
+            if token not in expected:
+                raise TranslationOutputError(
+                    "ProtectedFragmentMissing", page=page, target_id=target_id
+                )
+            occurrences[token] += 1
+            if occurrences[token] > 1:
+                raise TranslationOutputError(
+                    "ProtectedFragmentMissing", page=page, target_id=target_id
+                )
+            pieces.append(text[cursor : match.start()])
+            pieces.append(token)
+            cursor = match.end()
+        pieces.append(text[cursor:])
+        normalized.append(item.model_copy(update={"text": "".join(pieces)}))
+
+    missing = [token for token, count in occurrences.items() if count == 0]
+    if missing:
+        # A model may return a protected value verbatim instead of echoing its
+        # placeholder. Accept exactly one such occurrence; never invent or
+        # append a value that was absent from the response.
+        for token in missing:
+            fragment = protected[token]
+            matches = sum(item.text.count(fragment) for item in normalized)
+            if matches != 1:
+                raise TranslationOutputError(
+                    "ProtectedFragmentMissing", page=page, target_id=target_id
+                )
+
     return response.model_copy(
         update={
             "translations": [
@@ -80,7 +136,7 @@ def _restore_chunk_placeholders(
                         "text": _restore_placeholders(item.text, protected),
                     }
                 )
-                for item in response.translations
+                for item in normalized
             ]
         }
     )
@@ -272,7 +328,6 @@ def _translate_page(
                         prompt,
                         reasoning="high",
                     )
-                response = _restore_chunk_placeholders(response, protected)
             except LLMError as error:
                 if force_no_reasoning or truncation_fallback_used:
                     return split_after_truncation(error)
@@ -293,11 +348,13 @@ def _translate_page(
                         reasoning="none",
                         thinking="disabled",
                     )
-                    response = _restore_chunk_placeholders(response, protected)
                 except LLMError as fallback_error:
                     return split_after_truncation(fallback_error)
             try:
                 # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
+                response = _restore_chunk_placeholders(
+                    response, protected, page=page.number, target_id=target_id
+                )
                 received = _validated_mapping(
                     response, chunk, page=page.number, target_id=target_id
                 )

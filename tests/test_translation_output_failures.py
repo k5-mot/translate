@@ -290,6 +290,115 @@ def test_split_fallback_restores_protected_placeholders(
     assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
 
 
+def test_placeholder_variants_are_canonicalized_before_restoration() -> None:
+    response = translate.TranslationResponse(
+        translations=[
+            translate.TranslationItem(
+                id="inline-1",
+                text="Translated __ protected - 0 - 0 __",
+            )
+        ]
+    )
+
+    restored = translate._restore_chunk_placeholders(  # noqa: SLF001
+        response,
+        {"__PROTECTED_0_0__": "https://example.com/path"},
+        page=8,
+        target_id="page-0008-chunk-0001.0",
+    )
+
+    assert restored.translations[0].text == "Translated https://example.com/path"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Translated __PROTECTED_0_0__ __PROTECTED_0_0__",
+        "Translated __PROTECTED_9_9__",
+        "Translated without a protected value",
+    ],
+)
+def test_placeholder_cardinality_and_unknown_tokens_fail_safely(
+    text: str,
+) -> None:
+    response = translate.TranslationResponse(
+        translations=[translate.TranslationItem(id="inline-1", text=text)]
+    )
+
+    with pytest.raises(translate.TranslationOutputError) as captured:
+        translate._restore_chunk_placeholders(  # noqa: SLF001
+            response,
+            {"__PROTECTED_0_0__": "https://example.com/path"},
+            page=8,
+            target_id="page-0008-chunk-0001.0",
+        )
+
+    assert captured.value.cause_type == "ProtectedFragmentMissing"
+    assert "example.com" not in str(captured.value)
+
+
+def test_missing_placeholder_retries_before_failing_the_split_unit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    calls = 0
+
+    def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise LLMError(
+                "text-output",
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+                input_tokens=2_144,
+                output_tokens=16_384,
+                total_tokens=18_528,
+            )
+        prompt = str(_args[-1])
+        if calls == 3:
+            return translate.TranslationResponse(
+                translations=[
+                    translate.TranslationItem(id="inline-0", text="欠落")
+                ]
+            )
+        if calls == 4:
+            return translate.TranslationResponse(
+                translations=[
+                    translate.TranslationItem(
+                        id="inline-0",
+                        text="Translated __PROTECTED_0_0__",
+                    )
+                ]
+            )
+        assert '"id": "inline-1"' in prompt
+        return translate.TranslationResponse(
+            translations=[
+                translate.TranslationItem(id="inline-1", text="Translated")
+            ]
+        )
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page_with_units(2)
+    page.blocks[0].source[0].text = "See https://example.com/path"
+    translate._translate_page(  # noqa: SLF001
+        page,
+        "",
+        "",
+        "rules",
+        [],
+        settings_factory(translation_model="translation", retry_attempts=2),
+        tmp_path / "qdrant",
+    )
+
+    assert calls == 5
+    assert page.blocks[0].translated is not None
+    assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
+
+
 def test_translation_output_mismatch_exhaustion_is_safe_and_classified(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

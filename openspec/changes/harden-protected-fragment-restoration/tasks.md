@@ -2,14 +2,14 @@
 
 ## 1. Placeholder復元契約
 
-- [ ] 1.1 分割翻訳のplaceholderをcanonical tokenへ正規化する処理を実装し、大小文字・区切り文字・空白の許容表記と未知tokenをunit testで検証する
-- [ ] 1.2 tokenの一対一対応を検査して原文fragmentを復元し、重複・合流・欠落を`ProtectedFragmentMissing`へ分類するunit testを追加する
-- [ ] 1.3 復元処理を既存のID検証・retryループへ接続し、保護値を無条件追記せず有限回で停止することをテストする
+- [x] 1.1 分割翻訳のplaceholderをcanonical tokenへ正規化する処理を実装し、大小文字・区切り文字・空白の許容表記と未知tokenをunit testで検証する
+- [x] 1.2 tokenの一対一対応を検査して原文fragmentを復元し、重複・合流・欠落を`ProtectedFragmentMissing`へ分類するunit testを追加する
+- [x] 1.3 復元処理を既存のID検証・retryループへ接続し、保護値を無条件追記せず有限回で停止することをテストする
 
 ## 2. 診断安全性とRun連携
 
-- [ ] 2.1 復元失敗のFailureRecord/Evidenceがtask、page、target ID、stage、cause typeだけを保持し、URL・Path・生LLM応答を含まないことをテストする（Q-SEC）
-- [ ] 2.2 復元不能時にTRANSLATEが成果物を公開せず、Runが同じ入力とcheckpointを保持したResume可能な失敗状態になることを既存Lifecycleテストで確認する（Q-REL/Q-REC、12207運用・保守）
+- [x] 2.1 復元失敗のFailureRecord/Evidenceがtask、page、target ID、stage、cause typeだけを保持し、URL・Path・生LLM応答を含まないことをテストする（Q-SEC）
+- [x] 2.2 復元不能時にTRANSLATEが成果物を公開せず、Runが同じ入力とcheckpointを保持したResume可能な失敗状態になることを既存Lifecycleテストで確認する（Q-REL/Q-REC、12207運用・保守）
 
 ## 3. 実サンプル受入検証
 
@@ -22,4 +22,3 @@
 - [ ] 4.1 `uv run pytest -q`、Ruff、format、strict type validationを実行し、結果をChangeのEvidenceへ記録する（Q-MNT）
 - [ ] 4.2 `openspec validate harden-protected-fragment-restoration --strict`を実行し、全ArtifactとSpec Deltaが検証済みであることを確認する
 - [ ] 4.3 実サンプル受入、品質・Security・Lifecycle判定を反映してTasksを完了し、Changeをarchiveする（12207移行・廃止）
-
