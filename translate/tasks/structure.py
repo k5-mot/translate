@@ -70,6 +70,17 @@ class StructurePageError(RuntimeError):
         )
 
 
+def _structure_request(*args: object, **kwargs: object) -> StructureResponse:
+    """一時的な接続断だけを一回、逐次再送する。"""
+
+    try:
+        return structured(*args, **kwargs)
+    except LLMError as error:
+        if "ConnectionError" not in error.cause_type:
+            raise
+        return structured(*args, **kwargs)
+
+
 # Keep Gemma4 vision input below the local runtime's observed high-resolution
 # failure boundary. This is a pixel count, not a PDF rendering DPI.
 MAX_VISION_PIXELS = 1_000_000
@@ -327,7 +338,7 @@ def _run_into(
                 if image is not None:
                     # Note 1: Vision may repair layout that text alone cannot infer.
                     try:
-                        response = structured(
+                        response = _structure_request(
                             settings,
                             settings.structure_model or "",
                             StructureResponse,
@@ -344,7 +355,7 @@ def _run_into(
                         image = None
                 if image is None:
                     try:
-                        response = structured(
+                        response = _structure_request(
                             settings,
                             settings.structure_model or "",
                             StructureResponse,
@@ -361,7 +372,7 @@ def _run_into(
                         # generation. Prompt-mode format instructions are a
                         # bounded, sequential recovery path; never retry the
                         # same exhausted request.
-                        response = structured(
+                        response = _structure_request(
                             settings,
                             settings.structure_model or "",
                             StructureResponse,
