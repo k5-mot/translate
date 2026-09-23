@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from translate.adapters.llm import LLMError, LLMOutputTruncatedError
 from translate.common.lifecycle import FailureRecord, _safe_diagnostics
 from translate.common.terminal_evidence import evidence_from_failure
 from translate.document import Block, Inline, Page
@@ -69,6 +70,93 @@ def test_translation_output_mismatch_retries_same_chunk_then_succeeds(
     assert calls == ["llm", "llm"]
     assert page.blocks[0].translated is not None
     assert page.blocks[0].translated[0].text == "Translated"
+
+
+def test_translation_output_truncation_retries_once_with_thinking_disabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """出力枯渇時は同じchunkを推論無効化で一回だけ逐次再送する。"""
+
+    calls: list[tuple[str, str | None]] = []
+
+    def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
+        if len(calls) == 1:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+                input_tokens=2_144,
+                output_tokens=16_384,
+                total_tokens=18_528,
+            )
+        return translate.TranslationResponse(
+            translations=[translate.TranslationItem(id="inline-1", text="Translated")]
+        )
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page()
+    translate._translate_page(  # noqa: SLF001
+        page,
+        "",
+        "",
+        "rules",
+        [],
+        settings_factory(translation_model="translation", retry_attempts=3),
+        tmp_path / "qdrant",
+    )
+
+    assert calls == [("high", None), ("none", "disabled")]
+    assert page.blocks[0].translated is not None
+    assert page.blocks[0].translated[0].text == "Translated"
+
+
+def test_translation_output_truncation_fallback_is_bounded_and_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """fallbackの再枯渇は追加要求せず、本文なしの診断へ伝播する。"""
+
+    calls: list[tuple[str, str | None]] = []
+
+    def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
+        stage = "text-output"
+        raise LLMError(
+            stage,
+            LLMOutputTruncatedError(),
+            failure_kind="output-truncated",
+            finish_reason="length",
+            input_tokens=2_144,
+            output_tokens=16_384,
+            total_tokens=18_528,
+        )
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    with pytest.raises(LLMError) as captured:
+        translate._translate_page(  # noqa: SLF001
+            _page("PRIVATE source"),
+            "",
+            "",
+            "rules",
+            [],
+            settings_factory(translation_model="translation", retry_attempts=3),
+            tmp_path / "qdrant",
+        )
+
+    assert calls == [("high", None), ("none", "disabled")]
+    assert captured.value.stage == "text-output"
+    assert captured.value.failure_kind == "output-truncated"
+    assert captured.value.finish_reason == "length"
+    assert captured.value.output_tokens == 16_384
+    assert "PRIVATE" not in str(captured.value)
 
 
 def test_translation_output_mismatch_exhaustion_is_safe_and_classified(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
-from translate.adapters.llm import structured
+from translate.adapters.llm import LLMError, structured
 from translate.adapters.qdrant import search
 from translate.common.workspace import atomic_directory, atomic_write_json
 from translate.document import Document, Inline, Page, page_text
@@ -34,6 +34,16 @@ class TranslationResponse(BaseModel):
 
 
 TranslationFailureCause = Literal["TranslationIdMismatch", "ProtectedFragmentMissing"]
+
+
+def _is_text_output_truncated(error: LLMError) -> bool:
+    """翻訳の代替経路へ切り替えられる出力枯渇だけを判定する。"""
+
+    return (
+        error.stage == "text-output"
+        and error.failure_kind == "output-truncated"
+        and error.finish_reason == "length"
+    )
 
 
 class TranslationOutputError(ValueError):
@@ -160,15 +170,34 @@ def _translate_page(
             ensure_ascii=False,
         )
         attempts = max(1, settings.retry_attempts)
+        truncation_fallback_used = False
         for attempt in range(attempts):
-            response = structured(
-                settings,
-                settings.translation_model or "",
-                TranslationResponse,
-                rules,
-                prompt,
-                reasoning="high",
-            )
+            try:
+                response = structured(
+                    settings,
+                    settings.translation_model or "",
+                    TranslationResponse,
+                    rules,
+                    prompt,
+                    reasoning="high",
+                )
+            except LLMError as error:
+                if truncation_fallback_used or not _is_text_output_truncated(error):
+                    raise
+                truncation_fallback_used = True
+                # A local reasoning model may consume the whole generation budget
+                # before emitting the translation JSON. Retry this chunk once with
+                # both reasoning and provider thinking disabled; never parallelize
+                # or retain the partial response.
+                response = structured(
+                    settings,
+                    settings.translation_model or "",
+                    TranslationResponse,
+                    rules,
+                    prompt,
+                    reasoning="none",
+                    thinking="disabled",
+                )
             try:
                 # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
                 received = _validated_mapping(

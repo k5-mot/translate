@@ -2,9 +2,9 @@
 
 ## 1. TRANSLATE fallback
 
-- [ ] 1.1 `translate/tasks/translate.py`へ`text-output`の`output-truncated`専用fallbackを最大1回・逐次で実装し、`reasoning="none"`および`thinking="disabled"`を指定して同じchunkを再送する
-- [ ] 1.2 fallback結果を既存のID一致・protected fragment検証へ通し、完全応答だけをmappingへ適用し、部分訳・raw response・原文を保存しないことをunit testで確認する
-- [ ] 1.3 fallback枯渇時にstage、cause、`output-truncated`、finish reasonおよびtoken usageだけを保持し、atomic cleanupとResume可能Failureを回帰testで確認する
+- [x] 1.1 `translate/tasks/translate.py`へ`text-output`の`output-truncated`専用fallbackを最大1回・逐次で実装し、`reasoning="none"`および`thinking="disabled"`を指定して同じchunkを再送する
+- [x] 1.2 fallback結果を既存のID一致・protected fragment検証へ通し、完全応答だけをmappingへ適用し、部分訳・raw response・原文を保存しないことをunit testで確認する
+- [x] 1.3 fallback枯渇時にstage、cause、`output-truncated`、finish reasonおよびtoken usageだけを保持し、atomic cleanupとResume可能Failureを回帰testで確認する
 
 ## 2. Regression and lifecycle evidence
 
