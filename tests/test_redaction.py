@@ -51,6 +51,11 @@ def test_log_and_error_redact_credentials_bodies_and_binary(
             b"PNG-BINARY-SENTINEL",
             "data:image/png;base64,SU1BR0UtQklOQVJZ",
         )
+    logger.info("HTTP status=%d bytes=%d", 200, 42)
+    logging.getLogger("httpx2").info(
+        "HTTP Request: POST %s",
+        "http://endpoint-sentinel.invalid/v1",
+    )
 
     raw = log_file.read_text(encoding="utf-8")
     assert credential_value not in raw
@@ -58,6 +63,8 @@ def test_log_and_error_redact_credentials_bodies_and_binary(
     assert "SU1BR0UtQklOQVJZ" not in raw
     assert OMITTED in raw
     assert "Traceback" not in raw
+    assert "HTTP status=200 bytes=42" in raw
+    assert "endpoint-sentinel" not in raw
 
     displayed = safe_error(
         RuntimeError(f"authorization=Bearer {credential_value}"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from translate.common.redaction import redact_text
+from translate.common.redaction import OMITTED, redact_text
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -22,11 +22,24 @@ class RedactionFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         """LogRecordを安全な完成messageへ置換する。"""
 
+        # Preserve numeric values for logging placeholders such as `%d`. Converting
+        # every argument to text makes standard HTTP client logs raise TypeError.
         if isinstance(record.args, tuple):
-            record.args = tuple(redact_text(item, self.secrets) for item in record.args)
+            record.args = tuple(
+                OMITTED
+                if isinstance(item, (bytes, bytearray, memoryview))
+                else redact_text(item, self.secrets)
+                if isinstance(item, str)
+                else item
+                for item in record.args
+            )
         elif isinstance(record.args, dict):
             record.args = {
-                key: redact_text(item, self.secrets)
+                key: OMITTED
+                if isinstance(item, (bytes, bytearray, memoryview))
+                else redact_text(item, self.secrets)
+                if isinstance(item, str)
+                else item
                 for key, item in record.args.items()
             }
         message = redact_text(record.getMessage(), self.secrets)
@@ -59,3 +72,6 @@ def configure_logging(
         handlers=handlers,
         force=True,
     )
+    # HTTP client INFO records include endpoint URLs but add no actionable Run state.
+    for name in ("httpx", "httpx2", "httpcore", "openai"):
+        logging.getLogger(name).setLevel(logging.WARNING)

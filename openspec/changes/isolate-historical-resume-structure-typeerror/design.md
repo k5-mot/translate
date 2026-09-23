@@ -22,7 +22,7 @@ Preflightで実行processとModel queueがidleであること、Run lockを他pr
 
 ### 2. Historical lineageを残したtemp forkでpathをrebaseする
 
-複製したDatabaseを実`SqliteSaver`で開き、`workflow.json`の保存済みthread IDから最新snapshotとpending nodeを読み取る。Stateのpath-valued fieldをallowlistし、正本Run root配下の`source`、`output_dir`、`workspace_dir`およびArtifact pathだけをtemp Runの対応pathへ写像する。root外path、不明field、本文またはbinaryがcheckpointに含まれる場合は実行前に失敗させる。
+複製したDatabaseを実`SqliteSaver`で開き、`workflow.json`の保存済みthread IDから最新snapshotとpending nodeを読み取る。Stateのpath-valued fieldをallowlistし、正本Run root配下の`source`、`output_dir`、`workspace_dir`、scalar Artifact path、および`archives`／`documents`／`parts`のpath listだけをtemp Runの対応pathへ写像する。root外path、不明field、本文またはbinaryがcheckpointに含まれる場合は実行前に失敗させる。
 
 LangGraph内部のSQLite blobを直接書き換えず、public `update_state()`で複製Databaseにだけrebased stateを追加し、元のcheckpoint lineage／writesを保持したtemp forkを作る。更新前後でpending nodeがSTRUCTUREだけであり、SPLIT～LOADが再実行されないことを検査する。直接blob置換はversion依存で移植性と整合性を損なうため採用しない。
 
