@@ -99,3 +99,29 @@
 - Changed Evidence、Run metadata、Failure、workflow metadata、Run logsおよびpage 2 checkpointの11 filesをCredential／endpoint／page本文／prompt／画像data URIの20 sentinelで走査し、漏えい0件だった。`git diff --check`も成功した。
 - 実Graph／SQLite／Langfuse／ChatOpenAIのoffline TestとRun外page 3 graph probeは成功したが、正本公開Resumeは同じpage 3で`text-invoke`／`TypeError`を再現した。本Changeの23 tasksは診断、条件付き修正、停止および引渡しを含め完了したが、公開Resume受入は未達であるためverifyはCRITICAL、archive不可と判定する。
 - Translation、最終DOCX、Word-to-PDF、目視比較およびComparison Reviewは完了扱いにしない。次Changeはhistorical checkpointとfull-document条件をRun外へ複製し、正本へ追加ResumeせずFailureを再現する。
+
+## Verification Report: resolve-public-workflow-structure-typeerror
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | PASS — 23/23 tasks complete、delta requirements 0件（`skip_specs: true`） |
+| Correctness | FAIL — offline実GraphとRun外page 3 graphは成功したが、公開ResumeはSTRUCTUREを通過しない |
+| Coherence | PASS — Cause Gate、原因未再現時の製品差分0件、一方向Gateおよび一回限りのResume制約に適合 |
+
+### CRITICAL
+
+1. 正本公開ResumeはSTRUCTURE page 3の`text-invoke`／`TypeError`で停止し、ProposalのQ-FUNC「公開ResumeがSTRUCTUREを通過する」を満たしていない（`proposal.md:43`、`verification.md:83`）。Archive前に、historical `checkpoints.sqlite`、full Document、page 2 private checkpoint、`OutputLock`、loggingおよび公開Lifecycleを正本Run外へ複製したprobeを追加し、正本へ追加Resumeせず同じFailureを安全なboundary／origin／call countで再現すること。原因が一意になった場合だけ該当境界を修正し、Run外probe成功後に新Changeで一度だけ公開Resumeすること。
+
+### WARNING
+
+なし。
+
+### SUGGESTION
+
+なし。
+
+### Final Assessment
+
+CRITICAL 1件。実Graphの回帰Testと診断Tasksは完了しているが、公開Resume受入が未達のためarchiveしてはならない。保存Runへ追加Resumeせず、historical Run条件を複製する独立Changeを提案する。
