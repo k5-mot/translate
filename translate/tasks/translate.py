@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,32 @@ class TranslationResponse(BaseModel):
     """一回のLLM応答。"""
 
     translations: list[TranslationItem] = Field(default_factory=list)
+
+
+TranslationFailureCause = Literal["TranslationIdMismatch", "ProtectedFragmentMissing"]
+
+
+class TranslationOutputError(ValueError):
+    """翻訳応答の形状だけを安全に分類する失敗。"""
+
+    stage: Literal["text-parse"] = "text-parse"
+    cause_type: TranslationFailureCause
+    page: int
+    target_id: str
+
+    def __init__(
+        self,
+        cause_type: TranslationFailureCause,
+        *,
+        page: int,
+        target_id: str,
+    ) -> None:
+        self.cause_type = cause_type
+        self.page = page
+        self.target_id = target_id
+        # Keep raw response, prompt, source text, and protected values out of
+        # the exception and every downstream failure artifact.
+        super().__init__("translation output validation failed")
 
 
 def units(page: Page) -> list[tuple[str, str]]:
@@ -81,6 +107,29 @@ def _chunks(
     return result
 
 
+def _validated_mapping(
+    response: TranslationResponse,
+    chunk: list[tuple[str, str]],
+    *,
+    page: int,
+    target_id: str,
+) -> dict[str, str]:
+    """応答を検証し、成功した場合だけ翻訳mappingを返す。"""
+
+    received = {item.id: item.text.strip() for item in response.translations}
+    expected = {key for key, _ in chunk}
+    if set(received) != expected or any(not value for value in received.values()):
+        raise TranslationOutputError(
+            "TranslationIdMismatch", page=page, target_id=target_id
+        )
+    for key, original in chunk:
+        if any(value not in received[key] for value in protected_fragments(original)):
+            raise TranslationOutputError(
+                "ProtectedFragmentMissing", page=page, target_id=target_id
+            )
+    return received
+
+
 def _translate_page(
     page: Page,
     previous: str,
@@ -94,46 +143,48 @@ def _translate_page(
     for chunk_number, chunk in enumerate(_chunks(units(page), settings), start=1):
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
+        target_id = f"page-{page.number:04d}-chunk-{chunk_number:04d}"
         evidence = search(
             settings,
             source[:2_000],
-            artifact_path=(
-                qdrant_artifact_dir
-                / f"page-{page.number:04d}-chunk-{chunk_number:04d}.json"
-            ),
+            artifact_path=(qdrant_artifact_dir / f"{target_id}.json"),
         )
-        response = structured(
-            settings,
-            settings.translation_model or "",
-            TranslationResponse,
-            rules,
-            json.dumps(
-                {
-                    "previous_context": previous[-2_000:],
-                    "target": [{"id": key, "text": text} for key, text in chunk],
-                    "following_context": following[:2_000],
-                    "glossary": terms,
-                    "references": evidence,
-                },
-                ensure_ascii=False,
-            ),
-            reasoning="high",
+        prompt = json.dumps(
+            {
+                "previous_context": previous[-2_000:],
+                "target": [{"id": key, "text": text} for key, text in chunk],
+                "following_context": following[:2_000],
+                "glossary": terms,
+                "references": evidence,
+            },
+            ensure_ascii=False,
         )
-        # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
-        received = {item.id: item.text.strip() for item in response.translations}
-        expected = {key for key, _ in chunk}
-        if set(received) != expected or any(not value for value in received.values()):
-            msg = f"translation IDs do not match: page {page.number}"
-            raise ValueError(msg)
-        for key, original in chunk:
-            missing = [
-                value
-                for value in protected_fragments(original)
-                if value not in received[key]
-            ]
-            if missing:
-                msg = f"protected text missing for {key}: {missing}"
-                raise ValueError(msg)
+        attempts = max(1, settings.retry_attempts)
+        for attempt in range(attempts):
+            response = structured(
+                settings,
+                settings.translation_model or "",
+                TranslationResponse,
+                rules,
+                prompt,
+                reasoning="high",
+            )
+            try:
+                # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
+                received = _validated_mapping(
+                    response, chunk, page=page.number, target_id=target_id
+                )
+            except TranslationOutputError:
+                if attempt + 1 >= attempts:
+                    raise
+                delay = min(
+                    settings.retry_max_seconds,
+                    settings.retry_base_seconds * (2**attempt),
+                )
+                if delay > 0:
+                    time.sleep(delay)
+            else:
+                break
         mapping.update(received)
     apply_translations(page, mapping)
 

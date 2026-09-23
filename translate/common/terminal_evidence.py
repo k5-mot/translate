@@ -45,8 +45,10 @@ TerminalStage = Literal[
     "structure-output",
     "text-input",
     "text-output",
+    "text-parse",
     "vision-input",
     "vision-output",
+    "vision-parse",
     "watchdog",
 ]
 FailureKind = Literal["output-truncated"]
@@ -174,6 +176,15 @@ class EvidenceStore:
     def write(self, evidence: TerminalEvidence) -> TerminalEvidence:
         """検証済みEvidenceをatomic writeする。"""
 
+        existing = self.read()
+        if (
+            existing is not None
+            and existing.status not in {"running", "unknown"}
+            and evidence.status == "running"
+        ):
+            # A stale parent heartbeat must never overwrite a terminal child
+            # result when both processes race on the external evidence file.
+            return existing
         atomic_write_json(self.path, evidence.model_dump(mode="json"))
         return evidence
 
@@ -230,7 +241,9 @@ def evidence_from_progress(
         total=_nonnegative_int(getattr(event, "total", 0)),
         started_at=started_at,
         heartbeat_at=now,
-        child_pid=child_pid if child_pid is not None else getattr(previous, "child_pid", None),
+        child_pid=child_pid
+        if child_pid is not None
+        else getattr(previous, "child_pid", None),
         checkpoint_count=getattr(previous, "checkpoint_count", 0),
         artifact_count=getattr(previous, "artifact_count", 0),
         llm_calls=getattr(previous, "llm_calls", 0),
@@ -263,7 +276,9 @@ def evidence_from_failure(
         failure_kind=getattr(failure, "failure_kind", None),
         finish_reason=getattr(failure, "finish_reason", None),
         input_tokens=_optional_nonnegative_int(getattr(failure, "input_tokens", None)),
-        output_tokens=_optional_nonnegative_int(getattr(failure, "output_tokens", None)),
+        output_tokens=_optional_nonnegative_int(
+            getattr(failure, "output_tokens", None)
+        ),
         total_tokens=_optional_nonnegative_int(getattr(failure, "total_tokens", None)),
         started_at=started_at,
         heartbeat_at=datetime.now(UTC),
@@ -288,16 +303,24 @@ def workspace_counts(root: Path) -> dict[str, int]:
         return {"checkpoint_count": 0, "artifact_count": 0}
     workspace = resolved / ".workspace"
     outputs = resolved / "outputs"
-    checkpoint_count = sum(
-        1
-        for path in workspace.rglob("*")
-        if path.is_file() and path.resolve().is_relative_to(resolved)
-    ) if workspace.exists() else 0
-    artifact_count = sum(
-        1
-        for path in outputs.rglob("*")
-        if path.is_file() and path.resolve().is_relative_to(resolved)
-    ) if outputs.exists() else 0
+    checkpoint_count = (
+        sum(
+            1
+            for path in workspace.rglob("*")
+            if path.is_file() and path.resolve().is_relative_to(resolved)
+        )
+        if workspace.exists()
+        else 0
+    )
+    artifact_count = (
+        sum(
+            1
+            for path in outputs.rglob("*")
+            if path.is_file() and path.resolve().is_relative_to(resolved)
+        )
+        if outputs.exists()
+        else 0
+    )
     return {
         "checkpoint_count": checkpoint_count,
         "artifact_count": artifact_count,
@@ -349,7 +372,13 @@ def run_public_run_detached(
     )
     try:
         return run_detached(
-            [sys.executable, "-m", "translate.common.terminal_evidence", "--child", str(request_path)],
+            [
+                sys.executable,
+                "-m",
+                "translate.common.terminal_evidence",
+                "--child",
+                str(request_path),
+            ],
             run_id=run_id,
             operation=operation,
             evidence_path=evidence_path,
@@ -406,6 +435,16 @@ def run_detached(
     store = EvidenceStore(evidence_path, temp_root=temp_root)
     started_at = datetime.now(UTC)
     _canonical_run_id(run_id)
+    base = TerminalEvidence(
+        run_id=run_id,
+        operation=operation,
+        status="running",
+        started_at=started_at,
+        heartbeat_at=started_at,
+    )
+    store.write(base)
+    # Publish the running marker before spawning the child.  Otherwise a very
+    # short child can write terminal evidence which the parent then overwrites.
     process = subprocess.Popen(
         list(command),
         stdin=subprocess.DEVNULL,
@@ -414,15 +453,6 @@ def run_detached(
         cwd=str(cwd) if cwd is not None else None,
         env=dict(env) if env is not None else None,
     )
-    base = TerminalEvidence(
-        run_id=run_id,
-        operation=operation,
-        status="running",
-        started_at=started_at,
-        heartbeat_at=started_at,
-        child_pid=process.pid,
-    )
-    store.write(base)
     deadline = time.monotonic() + timeout_seconds
     timed_out = False
     while process.poll() is None:
@@ -476,9 +506,7 @@ def run_detached(
         child_pid=process.pid,
         exit_code=exit_code,
         cause_type=(
-            current.cause_type
-            if status != "unexpected-exit"
-            else "child-exit"
+            current.cause_type if status != "unexpected-exit" else "child-exit"
         ),
     )
     store.write(result)
@@ -511,7 +539,9 @@ def _read_heartbeat(
         return TerminalEvidence.model_validate(value).with_update(
             status="running",
             run_id=previous.run_id if previous is not None else value["run_id"],
-            operation=previous.operation if previous is not None else value["operation"],
+            operation=previous.operation
+            if previous is not None
+            else value["operation"],
         )
     except (TypeError, ValueError):
         return None
@@ -535,7 +565,11 @@ def _safe_stage(value: object) -> TerminalStage | None:
 
 
 def _nonnegative_int(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+    return (
+        value
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        else 0
+    )
 
 
 def _optional_nonnegative_int(value: object) -> int | None:
@@ -562,7 +596,9 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
         backend = value["backend"]
         evidence_path = Path(value["evidence_path"])
         heartbeat_path = Path(value["heartbeat_path"])
-        if operation not in get_args(Literal["translate", "review", "register", "convert"]):
+        if operation not in get_args(
+            Literal["translate", "review", "register", "convert"]
+        ):
             return 2
         if backend not in get_args(Literal["llm", "libretranslate"]):
             return 2
@@ -577,9 +613,7 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
         repository = RunRepository(repository_root)
         record = repository.load(run_id)
         paths = repository.paths(run_id)
-        inputs = {
-            item.role: paths.root / item.relative_path for item in record.inputs
-        }
+        inputs = {item.role: paths.root / item.relative_path for item in record.inputs}
         prepared = PreparedRun(record, paths, inputs, True)
         settings = load_settings(operation, backend)
         started_at = datetime.now(UTC)

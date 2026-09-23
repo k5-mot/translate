@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
+import pytest
+
+from translate.common.lifecycle import FailureRecord, _safe_diagnostics
+from translate.common.terminal_evidence import evidence_from_failure
+from translate.document import Block, Inline, Page
+from translate.tasks import translate
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from translate.common.settings import Settings
+
+
+def _page(text: str = "Source") -> Page:
+    return Page(
+        number=8,
+        blocks=[
+            Block(
+                id="body",
+                order=0,
+                kind="paragraph",
+                source=[Inline(id="inline-1", text=text)],
+            )
+        ],
+    )
+
+
+def test_translation_output_mismatch_retries_same_chunk_then_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """一時的なID不一致だけを同じchunkで再試行する。"""
+
+    responses = iter(
+        [
+            translate.TranslationResponse(
+                translations=[translate.TranslationItem(id="wrong", text="x")]
+            ),
+            translate.TranslationResponse(
+                translations=[
+                    translate.TranslationItem(id="inline-1", text="Translated")
+                ]
+            ),
+        ]
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+
+    def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        calls.append("llm")
+        return next(responses)
+
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page()
+    settings = settings_factory(
+        translation_model="translation", retry_attempts=2, retry_base_seconds=0
+    )
+    translate._translate_page(  # noqa: SLF001
+        page, "", "", "rules", [], settings, tmp_path / "qdrant"
+    )
+
+    assert calls == ["llm", "llm"]
+    assert page.blocks[0].translated is not None
+    assert page.blocks[0].translated[0].text == "Translated"
+
+
+def test_translation_output_mismatch_exhaustion_is_safe_and_classified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """ID不一致の上限到達時は本文なしの固定診断になる。"""
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        translate,
+        "structured",
+        lambda *_args, **_kwargs: translate.TranslationResponse(
+            translations=[translate.TranslationItem(id="wrong", text="SECRET")]
+        ),
+    )
+    settings = settings_factory(
+        translation_model="translation", retry_attempts=2, retry_base_seconds=0
+    )
+
+    with pytest.raises(translate.TranslationOutputError) as captured:
+        translate._translate_page(  # noqa: SLF001
+            _page("PRIVATE source"),
+            "",
+            "",
+            "rules",
+            [],
+            settings,
+            tmp_path / "qdrant",
+        )
+
+    error = captured.value
+    assert error.stage == "text-parse"
+    assert error.cause_type == "TranslationIdMismatch"
+    assert (error.page, error.target_id) == (8, "page-0008-chunk-0001")
+    assert "SECRET" not in str(error)
+    assert "PRIVATE" not in str(error)
+
+
+def test_protected_fragment_failure_is_distinct_and_terminal_evidence_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """protected fragment欠落は別causeでEvidenceへ安全に伝播する。"""
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        translate,
+        "structured",
+        lambda *_args, **_kwargs: translate.TranslationResponse(
+            translations=[translate.TranslationItem(id="inline-1", text="参照")]
+        ),
+    )
+    settings = settings_factory(
+        translation_model="translation", retry_attempts=1, retry_base_seconds=0
+    )
+
+    with pytest.raises(translate.TranslationOutputError) as captured:
+        translate._translate_page(  # noqa: SLF001
+            _page("See https://example.com"),
+            "",
+            "",
+            "rules",
+            [],
+            settings,
+            tmp_path / "qdrant",
+        )
+
+    error = captured.value
+    assert error.cause_type == "ProtectedFragmentMissing"
+    stage, cause = _safe_diagnostics(None, None, error)
+    assert (stage, cause) == ("text-parse", "ProtectedFragmentMissing")
+
+    failure = FailureRecord(
+        run_id="01a0c97c-f5cf-7031-b808-4ad545133925",
+        task="TRANSLATE",
+        page=error.page,
+        target_id=error.target_id,
+        error_type=type(error).__name__,
+        reason="TranslationOutputError",
+        stage=stage,
+        cause_type=cause,
+        failed_at=datetime.now(UTC),
+    )
+    evidence = evidence_from_failure(failure, started_at=datetime.now(UTC))
+    assert evidence.stage == "text-parse"
+    assert evidence.cause_type == "ProtectedFragmentMissing"
+    assert "example.com" not in evidence.model_dump_json()
