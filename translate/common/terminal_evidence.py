@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
@@ -18,6 +19,37 @@ from uuid import RFC_4122, UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from translate.common.workspace import atomic_write_json, load_json
+
+
+@contextmanager
+def _evidence_lock(path: Path) -> Iterator[None]:
+    """複数processのEvidence更新を一つずつ実行する。"""
+
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        handle.seek(0)
+        handle.write(b"0")
+        handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt  # noqa: PLC0415
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl  # noqa: PLC0415
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
 
 TerminalStatus = Literal[
     "running", "completed", "failed", "unexpected-exit", "timeout", "unknown"
@@ -176,16 +208,17 @@ class EvidenceStore:
     def write(self, evidence: TerminalEvidence) -> TerminalEvidence:
         """検証済みEvidenceをatomic writeする。"""
 
-        existing = self.read()
-        if (
-            existing is not None
-            and existing.status not in {"running", "unknown"}
-            and evidence.status == "running"
-        ):
-            # A stale parent heartbeat must never overwrite a terminal child
-            # result when both processes race on the external evidence file.
-            return existing
-        atomic_write_json(self.path, evidence.model_dump(mode="json"))
+        with _evidence_lock(self.path):
+            existing = self.read()
+            if (
+                existing is not None
+                and existing.status not in {"running", "unknown"}
+                and evidence.status == "running"
+            ):
+                # A stale parent heartbeat must never overwrite a terminal
+                # child result when both processes race on the evidence file.
+                return existing
+            atomic_write_json(self.path, evidence.model_dump(mode="json"))
         return evidence
 
     def read(self) -> TerminalEvidence | None:
