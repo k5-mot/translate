@@ -59,3 +59,40 @@
 - SPLIT～LOADは313 files、aggregate SHA-256 `2267ecb3b65434e6352914e90b18e44bf4b5c734888b6b9445e4017ecf073a93`、latest mtime `2026-09-22T14:48:35.1483938Z`でbaselineと一致した。
 - Docling `/health`はHTTP 200、Qdrant Collectionは読取り可能でpoints 1,009だった。Qdrant状態はfingerprintまたはResume拒否へ使用していない。
 - Temp実機GateはSDK retry 0、Application retry 1、request timeout 900秒、Task deadline 21,600秒、全Model／Embedding同時request最大1とする。
+
+### Sequential Temp-run Attempt
+
+- 正本のread-only snapshotを一時Runへ複製し、path-rebase後の公開Lifecycleを実Modelで一度だけ開始した。STRUCTUREはpage 2のprivate checkpointを再利用し、未完351ページを完了した（所要5236.664秒）。TypeError、STRUCTURE Failureおよび正本書込みは発生しなかった。
+- TRANSLATEへ進んだ後、Qdrant検索とLLM chunk処理を逐次実行し、atomic temp directoryへ7件のchunk Artifactが生成された。その後の実行セッションは終了し、finally cleanupにより一時Run rootは削除された。
+- 終了時PTYから安全なsummary／Failure recordを回収できず、TRANSLATEの完了・失敗原因、最終Run status、usage、call countおよびwall timeの完全なEvidenceは得られなかった。このためTask 6.2および6.3を成功扱いにせず、正本公開Resume（Task 6.4）は実行しなかった。
+- 正本Runのcheckpoint DB size／mtime、SPLIT～LOAD Artifact、公開STRUCTURE、Run outputおよび外部exportは実行前後で不変だった。追加Model request、同一Runの公開Resumeおよびtemp再実行は行わない。
+
+## Verification Report: isolate-historical-resume-structure-typeerror
+
+### Summary
+
+| Dimension | Status |
+| --- | --- |
+| Completeness | FAIL — 20/25 tasks complete; temp実Model Gateの終端Evidence不足により6.2〜6.6未完了 |
+| Correctness | FAIL — STRUCTURE TypeErrorはtemp public lifecycleで再発しなかったが、TRANSLATE終端と最終成果物を確認できていない |
+| Coherence | PASS — read-only clone、path rebase、逐次実行、Atomic公開および一回限りGateの停止条件に適合 |
+
+### CRITICAL
+
+1. Task 6.2: temp public ResumeはSTRUCTURE 351ページ完了後にTRANSLATEへ進んだが、PTYから最終summary／Failure／usage／call countを回収できず、全Workflowの実Model Gate成功を証明できない。終了状態を安全な永続Evidenceへ記録できる実行境界を追加し、同じChangeでの追加Model requestは行わない。
+2. Task 6.3: temp ResumeのTRANSLATE完了、Atomic最終Artifact、Qdrant write 0件および最終statusを確認できないため、正本公開Resume条件を満たしていない。
+3. Task 6.4: Task 6.3が未達のため、同一Runへの公開CLI Resumeを実行していない。公開Resumeを行わない判断は正しいが、Changeは未完了である。
+4. Task 6.5: 正本Resumeを行っていないため、進捗100%、最終Markdown／DOCX、表紙画像一回、本文1ページ目除外および外部exportのEvidenceがない。
+5. Task 6.6: 最終受入判定は未完了であり、本Changeはarchiveしてはならない。TRANSLATE終端の診断性改善を次の独立Changeへ引き渡す。
+
+### WARNING
+
+- temp実行の標準出力をPTYだけへ依存したため、終了時の安全なResultが失われた。実行前にtemp外の秘密非含有status sinkまたは永続Eventを用意し、終了時に必ず状態を確定できるようにする。
+
+### SUGGESTION
+
+なし。
+
+### Final Assessment
+
+CRITICAL 5件。STRUCTUREでの元TypeErrorはloggerの数値argument型保持修正により回避でき、351ページの実Model処理を完了した。しかしTRANSLATE中にtemp実行が終了し、完全な終端Evidenceがないため、正本公開Resumeおよびarchiveは許可しない。
