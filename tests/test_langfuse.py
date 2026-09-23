@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
@@ -13,17 +14,22 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 from langfuse import Langfuse
+from langgraph.checkpoint.sqlite import SqliteSaver
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
+from PIL import Image
 from pydantic import BaseModel
 
 from translate.adapters import langfuse, llm
 from translate.common.lifecycle import execute_run, prepare_run
+from translate.common.progress import bind_task_status
 from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_write_bytes
+from translate.common.workspace import atomic_write_bytes, atomic_write_json
+from translate.document import Block, Document, Inline, Page
+from translate.tasks import structure
 from translate.workflows import translation as translation_workflow
 
 if TYPE_CHECKING:
@@ -408,6 +414,243 @@ def test_real_langfuse_detached_hierarchy_preserves_parents_without_current_span
     assert generation.parent.span_id == task.context.span_id
     assert "SECRET-OFFLINE-RAW-RESPONSE" not in repr(tuple(spans.values()))
     assert credential not in caplog.text
+
+
+def test_pending_structure_resume_crosses_real_graph_and_sdk_once(  # noqa: C901, PLR0915
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """実Graph workerのpending STRUCTUREが応答を一度だけ確定する。"""
+
+    credential = "lf-offline-graph-credential"
+    calls: list[dict[str, object]] = []
+    boundaries: list[tuple[str, int]] = []
+    statuses: list[object] = []
+    warnings: list[str] = []
+    main_thread = threading.get_ident()
+
+    def handler(_request: object) -> httpx2.Response:
+        calls.append(
+            {
+                "thread": threading.get_ident(),
+                "parent_bound": langfuse._PARENT_OBSERVATION.get() is not None,  # noqa: SLF001
+                "current_span": trace.get_current_span().get_span_context().is_valid,
+            }
+        )
+        return httpx2.Response(
+            200,
+            json={
+                "id": "chatcmpl-offline-graph",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "offline-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"patches":[]}',
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                },
+                "provider_private": "SECRET-GRAPH-RAW-RESPONSE",
+            },
+        )
+
+    http_client = httpx2.Client(transport=httpx2.MockTransport(handler))
+    model = ChatOpenAI(
+        model="offline-model",
+        base_url="http://offline.invalid/v1",
+        api_key="offline-key",
+        max_retries=0,
+        http_client=http_client,
+    )
+
+    class BoundModelProbe:
+        def __init__(self, inner: object) -> None:
+            self.inner = inner
+
+        def invoke(self, messages: object, *args: object, **kwargs: object) -> object:
+            boundaries.append(("invoke", threading.get_ident()))
+            result = self.inner.invoke(  # type: ignore[attr-defined]
+                messages, *args, **kwargs
+            )
+            boundaries.append(("response", threading.get_ident()))
+            return result
+
+    class ModelProbe:
+        def bind(self, *args: object, **kwargs: object) -> BoundModelProbe:
+            boundaries.append(("bind", threading.get_ident()))
+            return BoundModelProbe(model.bind(*args, **kwargs))
+
+    def model_factory(*_args: object, **_kwargs: object) -> ModelProbe:
+        boundaries.append(("build", threading.get_ident()))
+        return ModelProbe()
+
+    real_parse = llm.PydanticOutputParser.parse
+
+    def parse_once(parser: object, value: str) -> object:
+        boundaries.append(("parse", threading.get_ident()))
+        return real_parse(parser, value)  # type: ignore[arg-type]
+
+    def render_page(_source: Path, _page: int, output: Path, _dpi: int = 120) -> Path:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with Image.new("RGB", (32, 32), "white") as image:
+            image.save(output, format="PNG")
+        return output
+
+    def unexpected(*_args: object, **_kwargs: object) -> object:
+        msg = "completed task was replayed"
+        raise AssertionError(msg)
+
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    for name in ("structure", "translation", "review"):
+        (templates / f"{name}-rules.md").write_text("rules", encoding="utf-8")
+    settings = settings_factory(
+        templates_dir=templates,
+        retry_attempts=1,
+        openai_base_url="http://offline.invalid/v1",
+        openai_api_key="offline-key",
+        structure_model="offline-model",
+        translation_model="offline-model",
+        review_model="offline-model",
+        fix_model="offline-model",
+        langfuse_public_key="pk-lf-graph-boundary",
+        langfuse_secret_key=credential,
+    )
+    client, exporter = _real_langfuse_client("pk-lf-graph-boundary", credential)
+    monkeypatch.setattr(langfuse, "_get_client", lambda _settings: client)
+    monkeypatch.setattr(llm, "_model", model_factory)
+    monkeypatch.setattr(llm.PydanticOutputParser, "parse", parse_once)
+    monkeypatch.setattr(structure.pdf, "render_page", render_page)
+    for task in (
+        translation_workflow.split,
+        translation_workflow.docling,
+        translation_workflow.unpack,
+        translation_workflow.merge,
+        translation_workflow.position,
+        translation_workflow.normalize,
+        translation_workflow.load,
+    ):
+        monkeypatch.setattr(task, "run", unexpected)
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"offline-pdf")
+    output_dir = tmp_path / "outputs"
+    workspace = tmp_path / "workspace"
+    loaded = workspace / "load" / "document.json"
+    document = Document(
+        pages=[
+            Page(
+                number=3,
+                blocks=[
+                    Block(
+                        id="page-3-block-1",
+                        order=0,
+                        kind="paragraph",
+                        source=[Inline(id="page-3-inline-1", text="offline text")],
+                    )
+                ],
+            )
+        ]
+    )
+    atomic_write_json(loaded, document.model_dump(mode="json"))
+    config = {
+        "configurable": {"thread_id": "offline-structure-resume"},
+        "max_concurrency": 1,
+    }
+    state = {
+        "source": str(source.resolve()),
+        "output_dir": str(output_dir.resolve()),
+        "workspace_dir": str(workspace.resolve()),
+        "backend": "llm",
+        "document_path": str(loaded.resolve()),
+        "current_task": "LOAD",
+        "current": 7,
+        "total": 17,
+        "completed_tasks": [
+            "SPLIT",
+            "DOCLING",
+            "UNPACK",
+            "MERGE",
+            "POSITION",
+            "NORMALIZE",
+            "LOAD",
+        ],
+    }
+    caplog.set_level(logging.WARNING)
+
+    try:
+        checkpoint_path = workspace / "checkpoints.sqlite"
+        with SqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
+            compiled = translation_workflow.build_graph(settings).compile(
+                checkpointer=saver,
+                interrupt_after=["structure"],
+            )
+            compiled.update_state(config, state, as_node="load")
+            assert compiled.get_state(config).next == ("structure",)
+            with (
+                bind_task_status(statuses.append),
+                langfuse.bind_observation_context(
+                    [credential], warnings.append, "TRANSLATE"
+                ),
+                langfuse.observe(
+                    settings,
+                    "workflow.pdf-translation",
+                    as_type="chain",
+                    detached=True,
+                ),
+            ):
+                updates = list(compiled.stream(None, config, stream_mode="values"))
+            snapshot = compiled.get_state(config)
+            assert snapshot.next == ("translate",)
+        client.flush()
+    finally:
+        http_client.close()
+        client.shutdown()
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert len(calls) == 1
+    # Locked LangGraph's synchronous stream keeps this node on the caller thread.
+    # This guards against attributing the real-run failure to a nonexistent hop.
+    assert calls[0]["thread"] == main_thread
+    assert calls[0]["parent_bound"] is True
+    assert calls[0]["current_span"] is False
+    assert [name for name, _thread in boundaries] == [
+        "build",
+        "bind",
+        "invoke",
+        "response",
+        "parse",
+    ]
+    assert len({thread for _name, thread in boundaries}) == 1
+    assert sum(update.get("current_task") == "STRUCTURE" for update in updates) == 1
+    assert [(event.task, event.phase) for event in statuses] == [
+        ("STRUCTURE", "started"),
+        ("STRUCTURE", "completed"),
+    ]
+    assert warnings == []
+    assert (workspace / "structure" / "document.json").is_file()
+    assert (workspace / "structure-pages" / "page-0003" / ".complete.json").is_file()
+    workflow = spans["workflow.pdf-translation"]
+    task = spans["task.structure"]
+    generation = spans["llm.request"]
+    assert task.parent is not None
+    assert task.parent.span_id == workflow.context.span_id
+    assert generation.parent is not None
+    assert generation.parent.span_id == task.context.span_id
+    assert credential not in caplog.text
+    assert "SECRET-GRAPH-RAW-RESPONSE" not in caplog.text
+    assert "SECRET-GRAPH-RAW-RESPONSE" not in repr(tuple(spans.values()))
 
 
 @pytest.mark.parametrize("failure_stage", ["child-start", "child-update", "child-end"])

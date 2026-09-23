@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
+from translate.common.workspace import atomic_directory, atomic_write_bytes
 from translate.workflows.comparison_review import ComparisonState
 from translate.workflows.translation import TranslationState
 
@@ -93,3 +95,52 @@ def test_comparison_checkpoint_contains_paths_not_alignment_or_documents(
         "reviews",
     }
     assert not forbidden & ComparisonState.__annotations__.keys()
+
+
+def test_checkpoint_commit_failure_keeps_single_task_result_without_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task後のcheckpoint障害はTask再実行や部分Artifactを生まない。"""
+
+    database = tmp_path / "failure.sqlite"
+    output = tmp_path / "artifact"
+    task_calls = 0
+
+    def task(_state: TranslationState) -> dict[str, object]:
+        nonlocal task_calls
+        task_calls += 1
+        with atomic_directory(output) as temporary:
+            atomic_write_bytes(temporary / "result.bin", b"complete")
+        return {"current_task": "STRUCTURE"}
+
+    graph = StateGraph(TranslationState)
+    graph.add_node("structure", task)
+    graph.add_edge(START, "structure")
+    graph.add_edge("structure", END)
+
+    class CheckpointCommitError(OSError):
+        pass
+
+    with SqliteSaver.from_conn_string(str(database)) as saver:
+        real_put = saver.put
+        put_calls = 0
+
+        def fail_after_task(*args: object, **kwargs: object) -> object:
+            nonlocal put_calls
+            put_calls += 1
+            if put_calls == 2:
+                raise CheckpointCommitError
+            return real_put(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(saver, "put", fail_after_task)
+        compiled = graph.compile(checkpointer=saver)
+        with pytest.raises(CheckpointCommitError):
+            compiled.invoke(
+                {"source": "source.pdf"},
+                {"configurable": {"thread_id": "checkpoint-failure"}},
+            )
+
+    assert task_calls == 1
+    assert (output / "result.bin").read_bytes() == b"complete"
+    assert not list(tmp_path.glob(".artifact.*"))
