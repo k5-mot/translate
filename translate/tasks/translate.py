@@ -48,6 +48,50 @@ def _is_text_output_truncated(error: LLMError) -> bool:
     )
 
 
+def _protect_chunk_for_prompt(
+    chunk: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], dict[str, str]]:
+    """split fallbackのpromptだけ保護fragmentをplaceholder化する。"""
+
+    protected: dict[str, str] = {}
+    result: list[tuple[str, str]] = []
+    for unit_number, (key, text) in enumerate(chunk):
+        value = text
+        for fragment_number, fragment in enumerate(protected_fragments(text)):
+            token = f"__PROTECTED_{unit_number}_{fragment_number}__"
+            value = value.replace(fragment, token, 1)
+            protected[token] = fragment
+        result.append((key, value))
+    return result, protected
+
+
+def _restore_chunk_placeholders(
+    response: TranslationResponse, protected: dict[str, str]
+) -> TranslationResponse:
+    """LLM応答内のplaceholderを原文fragmentへ戻す。"""
+
+    if not protected:
+        return response
+    return response.model_copy(
+        update={
+            "translations": [
+                item.model_copy(
+                    update={
+                        "text": _restore_placeholders(item.text, protected),
+                    }
+                )
+                for item in response.translations
+            ]
+        }
+    )
+
+
+def _restore_placeholders(text: str, protected: dict[str, str]) -> str:
+    for token, fragment in protected.items():
+        text = text.replace(token, fragment)
+    return text
+
+
 class TranslationOutputError(ValueError):
     """翻訳応答の形状だけを安全に分類する失敗。"""
 
@@ -163,6 +207,9 @@ def _translate_page(
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
         target_id = f"page-{page.number:04d}-chunk-{chunk_label}"
+        prompt_chunk, protected = (
+            _protect_chunk_for_prompt(chunk) if force_no_reasoning else (chunk, {})
+        )
         evidence = search(
             settings,
             source[:2_000],
@@ -171,7 +218,8 @@ def _translate_page(
         prompt = json.dumps(
             {
                 "previous_context": previous[-2_000:],
-                "target": [{"id": key, "text": text} for key, text in chunk],
+                "target": [{"id": key, "text": text} for key, text in prompt_chunk],
+                "protected_placeholders": sorted(protected),
                 "following_context": following[:2_000],
                 "glossary": terms,
                 "references": evidence,
@@ -224,6 +272,7 @@ def _translate_page(
                         prompt,
                         reasoning="high",
                     )
+                response = _restore_chunk_placeholders(response, protected)
             except LLMError as error:
                 if force_no_reasoning or truncation_fallback_used:
                     return split_after_truncation(error)
@@ -244,6 +293,7 @@ def _translate_page(
                         reasoning="none",
                         thinking="disabled",
                     )
+                    response = _restore_chunk_placeholders(response, protected)
                 except LLMError as fallback_error:
                     return split_after_truncation(fallback_error)
             try:

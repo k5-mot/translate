@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -234,6 +235,59 @@ def test_translation_output_truncation_splits_chunk_sequentially(
         "Translated 2",
         "Translated 3",
     ]
+
+
+def test_split_fallback_restores_protected_placeholders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """split sub-chunkのplaceholderは応答後に元fragmentへ復元する。"""
+
+    calls = 0
+
+    def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+                input_tokens=2_144,
+                output_tokens=16_384,
+                total_tokens=18_528,
+            )
+        prompt = str(_args[-1])
+        match = re.search(r'"id": "(inline-[01])"', prompt)
+        assert match is not None
+        expected_placeholder = "__PROTECTED_0_0__"
+        return translate.TranslationResponse(
+            translations=[
+                translate.TranslationItem(
+                    id=match.group(1), text=f"Translated {expected_placeholder}"
+                )
+            ]
+        )
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page_with_units(2)
+    page.blocks[0].source[0].text = "See https://example.com/path"
+    translate._translate_page(  # noqa: SLF001
+        page,
+        "",
+        "",
+        "rules",
+        [],
+        settings_factory(translation_model="translation", retry_attempts=2),
+        tmp_path / "qdrant",
+    )
+
+    assert page.blocks[0].translated is not None
+    assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
 
 
 def test_translation_output_mismatch_exhaustion_is_safe_and_classified(
