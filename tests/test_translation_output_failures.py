@@ -159,3 +159,20 @@ def test_protected_fragment_failure_is_distinct_and_terminal_evidence_safe(
     assert evidence.stage == "text-parse"
     assert evidence.cause_type == "ProtectedFragmentMissing"
     assert "example.com" not in evidence.model_dump_json()
+
+
+def test_llm_invoke_stage_is_preserved_in_terminal_evidence() -> None:
+    """LLM timeoutなどのinvoke段階もEvidenceから欠落させない。"""
+
+    failure = FailureRecord(
+        run_id="01a0c97c-f5cf-7031-b808-4ad545133925",
+        task="TRANSLATE",
+        error_type="LLMError",
+        reason="LLMError",
+        stage="text-invoke",
+        cause_type="OpenAITimeoutError",
+        failed_at=datetime.now(UTC),
+    )
+    evidence = evidence_from_failure(failure, started_at=datetime.now(UTC))
+    assert evidence.stage == "text-invoke"
+    assert evidence.cause_type == "OpenAITimeoutError"
