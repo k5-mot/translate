@@ -8,8 +8,8 @@
 
 ## 2. Regression and lifecycle evidence
 
-- [ ] 2.1 focused STRUCTURE／LLM／Lifecycle testとRuff、format、tyを実行し、同時Model requestが1件以下であることと既存契約の回帰0件を記録する。
-- [ ] 2.2 `npx --yes --offline --package=@fission-ai/openspec@1.13.1 openspec validate recover-structure-output-budget --strict`を実行し、proposal・spec・design・tasksの整合を確認する。
+- [x] 2.1 focused STRUCTURE／LLM／Lifecycle testとRuff、format、tyを実行し、同時Model requestが1件以下であることと既存契約の回帰0件を記録する。
+- [x] 2.2 `npx --yes --offline --package=@fission-ai/openspec@1.13.1 openspec validate recover-structure-output-budget --strict`を実行し、proposal・spec・design・tasksの整合を確認する。
 - [ ] 2.3 実PDF detached Gateを同じRun IDで再実行し、STRUCTUREからTRANSLATEへ進むか、安全な終端Failureとstage／cause／token usageを`openspec/changes/recover-structure-output-budget/verification.md`へ記録する。source SQLite hash不変、temp cleanup、秘密・本文非出力を確認する。
 - [ ] 2.4 Gateが成功した場合、同じRun IDを明示Resumeし、完了済みTaskを再実行せず未完了Taskから再開できること、成果物とsource SQLiteが不変であることを記録する。失敗した場合はResumeせず、次のChangeが必要な根拠を記録する（ISO/IEC/IEEE 12207運用・保守）。
 
