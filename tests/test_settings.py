@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from translate.common.settings import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
     GEMMA_MAX_CONTEXT,
     LLM_SAFETY_TOKENS,
     PROJECT_ROOT,
@@ -76,6 +77,9 @@ def test_default_llm_budget_matches_deployed_model_context() -> None:
     assert settings.image_tokens == 2_048
     assert LLM_SAFETY_TOKENS == 1_024
     assert settings.available_input_tokens == 10_752
+    assert (
+        settings.request_timeout_seconds == DEFAULT_REQUEST_TIMEOUT_SECONDS == 1_800.0
+    )
 
 
 def test_context_is_capped_at_model_limit_without_reducing_exact_limit() -> None:

@@ -19,6 +19,7 @@ GEMMA_MAX_CONTEXT = 30_208
 # Keep generation finite while leaving room for input, schema instructions, and images.
 DEFAULT_OUTPUT_TOKENS = 16_384
 DEFAULT_IMAGE_TOKENS = 2_048
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 1_800.0
 # A fixed reserve absorbs tokenizer estimation and provider framing overhead.
 LLM_SAFETY_TOKENS = 1_024
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -34,7 +35,7 @@ class Settings(BaseModel):
     retry_attempts: int = 3
     retry_base_seconds: float = 1.0
     retry_max_seconds: float = 30.0
-    request_timeout_seconds: float = 300.0
+    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     task_deadline_seconds: float = 21_600.0
 
     # Docling transport and OCR accuracy controls.
@@ -171,7 +172,7 @@ def load_settings(
         retry_base_seconds=_positive_float(env, "TRANSLATE_RETRY_BASE_SECONDS", 1.0),
         retry_max_seconds=_positive_float(env, "TRANSLATE_RETRY_MAX_SECONDS", 30.0),
         request_timeout_seconds=_positive_float(
-            env, "TRANSLATE_REQUEST_TIMEOUT_SECONDS", 300.0
+            env, "TRANSLATE_REQUEST_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT_SECONDS
         ),
         task_deadline_seconds=_positive_float(
             env, "TRANSLATE_TASK_DEADLINE_SECONDS", 21_600.0

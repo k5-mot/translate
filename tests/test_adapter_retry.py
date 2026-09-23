@@ -131,6 +131,8 @@ def test_llm_model_applies_zero_budget_only_when_thinking_is_disabled(
     }
     assert type(calls[0]["extra_body"]["thinking_budget_tokens"]) is int  # type: ignore[index]
     assert calls[1]["extra_body"] == {"reasoning_effort": "high"}
+    assert calls[0]["timeout"] == settings.request_timeout_seconds
+    assert calls[1]["timeout"] == settings.request_timeout_seconds
 
 
 def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication(
