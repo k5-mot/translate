@@ -1,17 +1,21 @@
 """Markdown/DOCXの構造保持とatomic公開を検証する。"""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import subprocess
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from PIL import Image
 
 from translate.adapters import pandoc
 from translate.document import Block, Document, Inline, Page, TableCell
-from translate.tasks.markdown import render_document
+from translate.tasks.markdown import render_block, render_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -74,8 +78,10 @@ def test_markdown_preserves_heading_code_table_and_figure_structure() -> None:
     assert "## 見出し" in rendered
     assert "```python" in rendered
     assert "print(1)" in rendered
-    assert "<th>列</th>" in rendered
-    assert "<td>値</td>" in rendered
+    assert "列" in rendered
+    assert "値" in rendered
+    assert "<table>" not in rendered
+    assert "+=" in rendered
     assert "assets/figure\\.png" in rendered
     assert 'fig-alt="図"' in rendered
 
@@ -143,6 +149,95 @@ def test_valid_docx_is_structurally_verified_before_publish(
 
     with zipfile.ZipFile(output) as archive:
         assert {"[Content_Types].xml", "word/document.xml"} <= set(archive.namelist())
+
+
+def _write_front_matter_docx(path: Path, *, external_file: bool = False) -> None:
+    """Create a minimal OOXML package that exercises DOCX normalization."""
+
+    document = """<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+ xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+<w:body>
+<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj></w:sdtPr>
+<w:sdtContent><w:p><w:r><w:fldChar w:fldCharType="begin" w:dirty="true"/></w:r></w:p></w:sdtContent></w:sdt>
+<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="List of Figures"/></w:docPartObj></w:sdtPr>
+<w:sdtContent><w:p/></w:sdtContent></w:sdt>
+<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="List of Tables"/></w:docPartObj></w:sdtPr>
+<w:sdtContent><w:p/></w:sdtContent></w:sdt>
+<w:p><w:r><w:drawing><wp:docPr descr="表紙"/></w:drawing></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="ImageCaption"/></w:pPr><w:r><w:t>表紙</w:t></w:r></w:p>
+<w:p><w:r><w:br w:type="page"/></w:r></w:p>
+<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>本文</w:t></w:r></w:p>
+<w:sectPr/>
+</w:body></w:document>"""
+    if external_file:
+        rels = (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="x" '
+            'Target="file:///outside.docx" TargetMode="External"/>'
+            "</Relationships>"
+        )
+    else:
+        rels = (
+            "<Relationships "
+            'xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>'
+        )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/_rels/document.xml.rels", rels)
+
+
+def test_docx_normalization_puts_cover_before_lists_and_removes_prompt_flags(
+    tmp_path: Path,
+) -> None:
+    """表紙・一覧順序、表紙Captionおよびdirty fieldを正規化する。"""
+
+    path = tmp_path / "layout.docx"
+    _write_front_matter_docx(path)
+
+    pandoc._normalize_docx(path)  # noqa: SLF001
+
+    with zipfile.ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))  # noqa: S314
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    body = root.find("w:body", ns)
+    assert body is not None
+    children = list(body)
+    wp_ns = {
+        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    }
+    assert children[0].find(".//wp:docPr", wp_ns).get("descr") == "表紙"
+    assert [
+        child.find(".//w:docPartGallery", ns).get(f"{{{ns['w']}}}val")
+        for child in children[2:8:2]
+    ] == ["Table of Contents", "List of Figures", "List of Tables"]
+    assert not any(
+        child.find(".//w:pStyle[@w:val='ImageCaption']", ns) is not None
+        for child in children
+    )
+    assert not root.findall(".//*[@w:dirty]", ns)
+    assert [
+        "".join(node.itertext()) for node in children[2].findall("w:sdtContent/w:p", ns)
+    ] == ["目次", "本文"]
+    for index in (3, 5, 7):
+        assert children[index].find(".//w:br[@w:type='page']", ns) is not None
+    assert not root.findall(".//w:sdt//w:fldChar", ns)
+    # 正規化の再実行が空欄や余分な改ページを作らないことも保証する。
+    before = ET.tostring(root)
+    pandoc._normalize_docx(path)  # noqa: SLF001
+    with zipfile.ZipFile(path) as archive:
+        assert ET.tostring(ET.fromstring(archive.read("word/document.xml"))) == before  # noqa: S314
+
+
+def test_docx_normalization_rejects_external_file_relationship(tmp_path: Path) -> None:
+    """Wordの外部ファイル参照は公開前に拒否する。"""
+
+    path = tmp_path / "external.docx"
+    _write_front_matter_docx(path, external_file=True)
+
+    with pytest.raises(RuntimeError, match="external file relationship"):
+        pandoc._normalize_docx(path)  # noqa: SLF001
 
 
 @pytest.mark.parametrize("failure", ["markdown", "template", "output"])
@@ -278,3 +373,121 @@ print(1)
         assert "w:footnoteReference" in document
         assert "word/footnotes.xml" in names
         assert any(name.startswith("word/media/") for name in names)
+
+
+def test_generated_table_and_indexes_survive_real_docx_conversion(
+    tmp_path: Path,
+) -> None:
+    """製品rendererから結合表、明示改行、一覧および表紙を実変換する。"""
+
+    picture = tmp_path / "picture.png"
+    Image.new("RGB", (10, 10), "white").save(picture)
+    table = Block(
+        id="merged-table",
+        kind="table",
+        order=2,
+        caption=[Inline(id="caption", text="表の題名")],
+        cells=[
+            TableCell(
+                row=0,
+                column=0,
+                colspan=2,
+                header=True,
+                source=[Inline(id="a", text="結合見出し")],
+            ),
+            TableCell(
+                row=1, column=0, rowspan=2, source=[Inline(id="b", text="縦結合")]
+            ),
+            TableCell(
+                row=1,
+                column=1,
+                source=[
+                    Inline(id="c", text="第一行"),
+                    Inline(id="br", kind="line_break"),
+                    Inline(id="d", text="第二行"),
+                ],
+            ),
+            TableCell(
+                row=2,
+                column=1,
+                source=[Inline(id="e", text="1,234.5 & <tag> | [値] ... --")],
+            ),
+        ],
+    )
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="h",
+                        kind="heading",
+                        order=0,
+                        level=2,
+                        source=[Inline(id="title", text="1. 見出し")],
+                    ),
+                    Block(
+                        id="f",
+                        kind="figure",
+                        order=1,
+                        asset_path="picture.png",
+                        caption=[Inline(id="fc", text="図の題名")],
+                    ),
+                    table,
+                    Block(
+                        id="code",
+                        kind="code",
+                        order=3,
+                        source=[Inline(id="code-text", text="# 偽の見出し")],
+                    ),
+                ],
+            )
+        ]
+    )
+    markdown = tmp_path / "document.md"
+    markdown.write_text(render_document(document, picture), encoding="utf-8")
+    template = Path(__file__).parents[1] / "translate/templates/template.docx"
+    output = tmp_path / "document.docx"
+    pandoc.create_docx(markdown, output, template)
+    with zipfile.ZipFile(output) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))  # noqa: S314
+        styles = ET.fromstring(archive.read("word/styles.xml"))  # noqa: S314
+        settings = ET.fromstring(archive.read("word/settings.xml"))  # noqa: S314
+    ns = {"w": pandoc.W_NS}
+    tables = root.findall(".//w:tbl", ns)
+    assert len(tables) == 1
+    assert tables[0].find(".//w:gridSpan[@w:val='2']", ns) is not None
+    assert tables[0].find(".//w:vMerge[@w:val='restart']", ns) is not None
+    assert tables[0].find(".//w:br", ns) is not None
+    assert "1,234.5 & <tag> | [値] ... --" in "".join(tables[0].itertext())
+    indexes = root.findall(".//w:sdtContent", ns)
+    assert [
+        ["".join(p.itertext()) for p in index.findall("w:p", ns)] for index in indexes
+    ] == [
+        ["目次", "1. 見出し"],
+        ["図一覧", "Figure\u00a02: 図の題名"],
+        ["表一覧", "Table\u00a01: 表の題名"],
+    ]
+    for level in range(1, 10):
+        style = styles.find(f"w:style[@w:styleId='Heading{level}']", ns)
+        assert style is not None
+        assert style.find("w:pPr/w:numPr", ns) is None
+        assert style.find("w:pPr/w:outlineLvl", ns) is not None
+    assert settings.find("w:updateFields", ns) is None
+    assert not root.findall(".//*[@w:dirty]", ns)
+
+
+@pytest.mark.parametrize(
+    "cells",
+    [
+        [],
+        [TableCell(row=-1, column=0)],
+        [TableCell(row=0, column=0, rowspan=0)],
+        [TableCell(row=0, column=0, colspan=2), TableCell(row=0, column=1)],
+    ],
+)
+def test_invalid_table_shape_is_rejected(cells: list[TableCell]) -> None:
+    """負座標、空表、不正span、結合領域の重なりを黙って変換しない。"""
+
+    with pytest.raises(ValueError, match="invalid table shape"):
+        render_block(Block(id="bad", kind="table", order=0, cells=cells))

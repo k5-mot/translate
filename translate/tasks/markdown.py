@@ -10,6 +10,7 @@ import shutil
 import time
 from typing import TYPE_CHECKING
 
+from translate.adapters.pandoc import table_to_markdown
 from translate.common.workspace import atomic_directory, atomic_write_text
 from translate.document import Block, Document, Inline, TableCell, inline_text
 
@@ -143,38 +144,88 @@ def _caption_current(block: Block) -> list[Inline]:
 
 
 def _render_table(block: Block) -> str:
-    """Table Blockをrowspan対応HTML tableへ変換する。
+    """Table Blockを結合セル対応のPandoc grid tableへ変換する。
 
     Args:
         block: table種別のBlock。
 
     Returns:
-        Pandocが読めるHTML table。
+        PandocがWordの表として出力できるgrid table。
     """
 
-    # Markdown pipe tableではcell結合を表せないため、Pandocが読めるHTMLを用いる。
-    rows: dict[int, list[TableCell]] = {}
-    for cell in block.cells:
-        rows.setdefault(cell.row, []).append(cell)
-    parts = ["<table>"]
-    caption = _caption_current(block)
-    if caption:
-        parts.append(f"<caption>{html.escape(inline_text(caption))}</caption>")
-    for row in sorted(rows):
-        parts.append("<tr>")
-        for cell in sorted(rows[row], key=lambda value: value.column):
-            tag = "th" if cell.header else "td"
-            attributes = ""
-            if cell.rowspan > 1:
-                attributes += f' rowspan="{cell.rowspan}"'
-            if cell.colspan > 1:
-                attributes += f' colspan="{cell.colspan}"'
-            parts.append(
-                f"<{tag}{attributes}>{html.escape(inline_text(_cell_current(cell)))}</{tag}>"
-            )
-        parts.append("</tr>")
-    parts.append("</table>")
-    return "\n".join(parts)
+    _validate_table(block)
+    columns = max(cell.column + cell.colspan for cell in block.cells)
+    rows = [
+        _table_row(block.cells, row, columns)
+        for row in range(max(cell.row + cell.rowspan for cell in block.cells))
+    ]
+    has_header = all(cell.header for cell in block.cells if cell.row == 0)
+    caption = _table_inlines(_caption_current(block))
+    # Pandocの構文木へセルを直接対応付ける。HTMLや独自の表解析は介在させず、
+    # 幅計算・Unicodeの折返し・結合境界は導入済みPandocのwriterへ委譲する。
+    return table_to_markdown(
+        {
+            "t": "Table",
+            "c": [
+                ["", [], []],
+                [None, [{"t": "Plain", "c": caption}] if caption else []],
+                [
+                    [{"t": "AlignDefault"}, {"t": "ColWidthDefault"}]
+                    for _ in range(columns)
+                ],
+                [["", [], []], rows[:1] if has_header else []],
+                [[["", [], []], 0, [], rows[1:] if has_header else rows]],
+                [["", [], []], []],
+            ],
+        }
+    )
+
+
+def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
+    result: list[object] = []
+    occupied = {
+        column
+        for cell in cells
+        if cell.row <= row < cell.row + cell.rowspan
+        for column in range(cell.column, cell.column + cell.colspan)
+    }
+    starts = {cell.column: cell for cell in cells if cell.row == row}
+    for column in range(columns):
+        cell = starts.get(column)
+        if cell is None and column in occupied:
+            continue
+        result.append(
+            [
+                ["", [], []],
+                {"t": "AlignDefault"},
+                cell.rowspan if cell else 1,
+                cell.colspan if cell else 1,
+                [{"t": "Plain", "c": _table_inlines(_cell_current(cell))}]
+                if cell
+                else [],
+            ]
+        )
+    return [["", [], []], result]
+
+
+def _table_inlines(values: list[Inline]) -> list[dict[str, object]]:
+    """表内の文字列と明示改行をPandoc inlineへ対応付ける。"""
+
+    result: list[dict[str, object]] = []
+    for item in values:
+        if item.kind == "line_break":
+            result.append({"t": "LineBreak"})
+            continue
+        result.extend(
+            {"t": "LineBreak"}
+            if part == "\n"
+            else {"t": "Space"}
+            if part.isspace()
+            else {"t": "Str", "c": part}
+            for part in re.split(r"(\n|[^\S\n]+)", item.text)
+            if part
+        )
+    return result
 
 
 def _render_structural_block(block: Block, text: str) -> str | None:
@@ -300,12 +351,23 @@ def _validate_table(block: Block) -> None:
     """
 
     positions: set[tuple[int, int]] = set()
+    if not block.cells:
+        msg = f"invalid table shape: {block.id}"
+        raise ValueError(msg)
     for cell in block.cells:
-        position = (cell.row, cell.column)
-        if position in positions or min(cell.rowspan, cell.colspan) < 1:
+        occupied = {
+            (row, column)
+            for row in range(cell.row, cell.row + cell.rowspan)
+            for column in range(cell.column, cell.column + cell.colspan)
+        }
+        if (
+            positions & occupied
+            or min(cell.rowspan, cell.colspan) < 1
+            or min(cell.row, cell.column) < 0
+        ):
             msg = f"invalid table shape: {block.id}"
             raise ValueError(msg)
-        positions.add(position)
+        positions.update(occupied)
 
 
 def _validate_links(block: Block, anchors: set[str]) -> None:
