@@ -25,6 +25,7 @@
 3. **Bounded repair retry**: placeholderを含むsplit sub-chunkでは、正規化後も保護対象が欠落または曖昧な場合に限り、同じ単位を既存retry設定の範囲内で再要求する。再試行では保護対象の推測・自動追記をせず、規定回数後は`ProtectedFragmentMissing`として停止する。
 4. **Evidence minimization**: 失敗証跡はtask、page、target ID、stage、cause typeおよび時刻だけを保存し、prompt、LLM生応答、原文fragment、URLを保存・ログ出力しない。実行は既存のシーケンシャル呼出しを維持する。
 5. **Verification layers**: unit testで正常なtoken、大小文字・区切り揺らぎ、欠落、重複、未知tokenを検証し、`sample3.pdf`の少ページ実Runで実LLMの公開拒否とResume状態を確認する。
+6. **Empty protection map**: 保護対象が0件でも、既存の正規表現とUnicode正規化を使って未知markerを検査する。正常応答は元のObjectと表記を維持し、検査用正規化を本文へ適用しない。通常・分割Chunkの既存retry境界へ同じ`ProtectedFragmentMissing`を伝播し、別のretry機構を追加しない。
 
 ## Quality Attribute Design
 
@@ -51,4 +52,3 @@
 2. `inputs/sample3.pdf`でregister/translate/reviewの少ページ検証を実行する。
 3. 失敗時は同じRunのResume結果、成功時はDOCX/Markdownと保護値検査を記録する。
 4. 問題がある場合はコードコミットをrollbackし、Runディレクトリは保持する。
-

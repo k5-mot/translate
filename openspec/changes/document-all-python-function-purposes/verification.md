@@ -241,3 +241,7 @@
 - Ruff、Format（307 files）、ty、diff checkは合格。pytestは**401 passed, 1 skipped（26.51秒）**。skipはWindowsのPOSIX PTY Test。OpenSpec strict validationも再実行しvalidを確認した。
 - 進捗は**7/8**。task 2.3の実translation→Microsoft Word PDF化→Comparison Reviewと利用者目視が残る。記載した製品不具合、common整理、独自再開記録と依存API再利用の指摘は別途是正が必要であり、説明監査完了を製品全体の適合としない。
 - 同じtranslation session 40709のlive handleを再pollした。翻訳Workflow内REVIEWを継続中で、03:59:32 JSTの中間領域更新を確認した。最終DOCXは未確認。Word PDF化とComparison Reviewは未開始。旧実行中Processへ後から加えた実装修正は反映されないため、その結果だけで新実装のE2Eを合格にしない。
+
+### 指摘の後続対応
+
+CONTENT-PROTECTED-001は既存Change [harden-protected-fragment-restoration](../harden-protected-fragment-restoration/verification.md)で実装修正し、通常・分割Chunkの回帰Testを追加した（全体409 passed, 1 skipped）。本説明Changeへ機能変更を混ぜず別commitで扱う。実E2E受入は未完了であり、ほかの指摘を解消扱いにしない。

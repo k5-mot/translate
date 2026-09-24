@@ -83,12 +83,20 @@ def _restore_chunk_placeholders(
 ) -> TranslationResponse:
     """LLM応答内のplaceholderを正規化して原文fragmentへ戻す。
 
-    保護対象が空なら検査せず応答をそのまま返す。対象がある場合はmarkerの
-    表記揺れを正規化し、Chunk全体で個数と未知tokenを確認する。marker欠落時は
-    原文断片が一度だけ現れる応答も認める。原文値や生応答は例外へ含めない。
+    保護対象が空でも未知markerを拒否し、正常応答の表記は変更しない。
+    対象がある場合はmarkerの表記揺れを正規化し、Chunk全体で個数と未知tokenを
+    確認する。marker欠落時は原文断片が一度だけ現れる応答も認める。
+    原文値や生応答は例外へ含めない。
     """
 
     if not protected:
+        if any(
+            _PROTECTED_PLACEHOLDER_RE.search(unicodedata.normalize("NFKC", item.text))
+            for item in response.translations
+        ):
+            raise TranslationOutputError(
+                "ProtectedFragmentMissing", page=page, target_id=target_id
+            )
         return response
 
     expected = set(protected)

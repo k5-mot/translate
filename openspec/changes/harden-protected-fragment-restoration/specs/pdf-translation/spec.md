@@ -28,3 +28,10 @@ Systemは、決定的検査と意味Reviewを行い、指摘がある翻訳単�
 - **WHEN** 分割翻訳応答から保護対象を復元できず、規定回数の再試行も失敗する
 - **THEN** SystemはTRANSLATEを停止し、RunをResume可能な失敗状態に保持し、失敗証跡には`ProtectedFragmentMissing`と対象IDだけを記録する
 
+#### Scenario: 保護対象のないChunkに未知markerが混入する
+- **WHEN** 通常または分割後のChunkに保護対象がなく、LLM応答が未知の保護markerを含む
+- **THEN** Systemは表記揺らぎを含めその応答を拒否して有限回だけ再試行し、回復しなければTRANSLATEを停止して不正な訳文を公開しない
+
+#### Scenario: 保護対象とmarkerがともにない応答を受け取る
+- **WHEN** 保護対象のないChunkへの応答に保護markerが含まれない
+- **THEN** Systemはmarker検査のために正常な応答本文をUnicode正規化せず、他の翻訳検査へ元の表記を渡す

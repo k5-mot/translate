@@ -5,6 +5,7 @@
 - [x] 1.1 分割翻訳のplaceholderをcanonical tokenへ正規化する処理を実装し、大小文字・区切り文字・空白の許容表記と未知tokenをunit testで検証する
 - [x] 1.2 tokenの一対一対応を検査して原文fragmentを復元し、重複・合流・欠落を`ProtectedFragmentMissing`へ分類するunit testを追加する
 - [x] 1.3 復元処理を既存のID検証・retryループへ接続し、保護値を無条件追記せず有限回で停止することをテストする
+- [x] 1.4 CONTENT-PROTECTED-001を是正し、対応表が空の通常・分割Chunkでも未知markerを拒否する。正常な応答の表記を維持し、有限retry・公開拒否・既存Artifact保持を回帰Testで確認する
 
 ## 2. 診断安全性とRun連携
 
@@ -19,6 +20,6 @@
 
 ## 4. 品質ゲートと完了
 
-- [ ] 4.1 `uv run pytest -q`、Ruff、format、strict type validationを実行し、結果をChangeのEvidenceへ記録する（Q-MNT）
-- [ ] 4.2 `openspec validate harden-protected-fragment-restoration --strict`を実行し、全ArtifactとSpec Deltaが検証済みであることを確認する
+- [x] 4.1 `uv run pytest -q`、Ruff、format、strict type validationを実行し、結果をChangeのEvidenceへ記録する（Q-MNT）
+- [x] 4.2 `openspec validate harden-protected-fragment-restoration --strict`を実行し、全ArtifactとSpec Deltaが検証済みであることを確認する
 - [ ] 4.3 実サンプル受入、品質・Security・Lifecycle判定を反映してTasksを完了し、Changeをarchiveする（12207移行・廃止）

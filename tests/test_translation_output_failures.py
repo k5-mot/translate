@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -9,7 +10,7 @@ import pytest
 from translate.adapters.llm import LLMError, LLMOutputTruncatedError
 from translate.common.lifecycle import FailureRecord, _safe_diagnostics
 from translate.common.terminal_evidence import evidence_from_failure
-from translate.document import Block, Inline, Page
+from translate.document import Block, Document, Inline, Page
 from translate.tasks import translate
 
 if TYPE_CHECKING:
@@ -279,13 +280,13 @@ def test_split_fallback_restores_protected_placeholders(
         prompt = str(_args[-1])
         match = re.search(r'"id": "(inline-[01])"', prompt)
         assert match is not None
-        expected_placeholder = "__PROTECTED_0_0__"
+        text = (
+            "Translated __PROTECTED_0_0__"
+            if match.group(1) == "inline-0"
+            else "Translated"
+        )
         return translate.TranslationResponse(
-            translations=[
-                translate.TranslationItem(
-                    id=match.group(1), text=f"Translated {expected_placeholder}"
-                )
-            ]
+            translations=[translate.TranslationItem(id=match.group(1), text=text)]
         )
 
     monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
@@ -304,6 +305,8 @@ def test_split_fallback_restores_protected_placeholders(
 
     assert page.blocks[0].translated is not None
     assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
+    assert page.blocks[0].translated[1].text == "Translated"
+    assert calls == 4
 
 
 def test_normal_chunk_protects_and_restores_protected_fragments(
@@ -405,6 +408,138 @@ def test_placeholder_cardinality_and_unknown_tokens_fail_safely(
 
     assert captured.value.cause_type == "ProtectedFragmentMissing"
     assert "example.com" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "__PROTECTED_9_9__",
+        "__ protected - 9 - 9 __",
+        # NFKCでcanonical markerになる全角英数字と下線を検査する。
+        (
+            "\uff3f\uff3f\uff30\uff32\uff2f\uff34\uff25\uff23\uff34\uff25\uff24"
+            "\uff3f\uff19\uff3f\uff19\uff3f\uff3f"
+        ),
+    ],
+)
+def test_empty_protection_map_rejects_unknown_marker(marker: str) -> None:
+    """保護対象のない応答でも、許容表記の未知markerを固定診断で拒否する。"""
+
+    response = translate.TranslationResponse(
+        translations=[
+            translate.TranslationItem(id="inline-1", text=f"PRIVATE {marker}")
+        ]
+    )
+    with pytest.raises(translate.TranslationOutputError) as captured:
+        translate._restore_chunk_placeholders(  # noqa: SLF001
+            response, {}, page=8, target_id="page-0008-chunk-0001"
+        )
+
+    error = captured.value
+    assert (error.stage, error.cause_type) == ("text-parse", "ProtectedFragmentMissing")
+    assert (error.page, error.target_id) == (8, "page-0008-chunk-0001")
+    assert "PRIVATE" not in str(error)
+    assert marker not in str(error)
+
+
+def test_empty_protection_map_preserves_valid_response_without_normalization() -> None:
+    """markerのない正常応答は全角文字・結合文字を含め変更せず返す。"""
+
+    response = translate.TranslationResponse(
+        translations=[
+            translate.TranslationItem(
+                id="inline-1", text="\uff21\uff22\uff23 \u2460 e\u0301"
+            )
+        ]
+    )
+    result = translate._restore_chunk_placeholders(  # noqa: SLF001
+        response, {}, page=8, target_id="page-0008-chunk-0001"
+    )
+    assert result is response
+    assert result.translations[0].text == "\uff21\uff22\uff23 \u2460 e\u0301"
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("recover", [False, True])
+def test_unknown_marker_retries_and_publishes_only_valid_translation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    *,
+    split: bool,
+    recover: bool,
+) -> None:
+    """通常・分割Chunkの未知markerを有限retryし、失敗時は既存Artifactを保持する。"""
+
+    calls: list[list[str]] = []
+
+    def structured(*args: object, **_kwargs: object) -> translate.TranslationResponse:
+        """分割用切断と未知markerを順に返し、対象Chunkだけの逐次再送を記録する。"""
+
+        target = json.loads(str(args[-1]))["target"]
+        ids = [item["id"] for item in target]
+        calls.append(ids)
+        if split and len(calls) <= 2:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        invalid = "inline-1" in ids and (not recover or calls.count(ids) == 1)
+        return translate.TranslationResponse(
+            translations=[
+                translate.TranslationItem(
+                    id=key,
+                    text="PRIVATE __PROTECTED_9_9__" if invalid else "翻訳済み",
+                )
+                for key in ids
+            ]
+        )
+
+    monkeypatch.setattr(translate, "structured", structured)
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    page = _page_with_units(2) if split else _page()
+    for inline in page.blocks[0].source:
+        inline.text = "Plain source"
+    document = Document(pages=[page])
+    settings = settings_factory(
+        translation_model="translation", retry_attempts=2, retry_base_seconds=0
+    )
+    output = tmp_path / "translate"
+    output.mkdir()
+    previous = output / "previous.json"
+    previous.write_text("previous artifact", encoding="utf-8")
+
+    if recover:
+        result = translate.run(document, "rules", [], settings, output)
+        assert not previous.exists()
+        translated = result.pages[0].blocks[0].translated
+        assert translated is not None
+        assert [item.text for item in translated] == ["翻訳済み"] * len(
+            page.blocks[0].source
+        )
+        assert (output / "page-0008.json").is_file()
+    else:
+        with pytest.raises(translate.TranslationOutputError) as captured:
+            translate.run(document, "rules", [], settings, output)
+        error = captured.value
+        assert error.cause_type == "ProtectedFragmentMissing"
+        assert error.target_id == (
+            "page-0008-chunk-0001.1" if split else "page-0008-chunk-0001"
+        )
+        assert "PRIVATE" not in str(error)
+        assert previous.read_text(encoding="utf-8") == "previous artifact"
+        assert list(output.iterdir()) == [previous]
+
+    assert calls == (
+        [["inline-0", "inline-1"]] * 2 + [["inline-0"], ["inline-1"], ["inline-1"]]
+        if split
+        else [["inline-1"], ["inline-1"]]
+    )
+    assert document.pages[0].blocks[0].translated is None
+    assert not list(tmp_path.glob(".translate.*"))
 
 
 def test_missing_placeholder_retries_before_failing_the_split_unit(
