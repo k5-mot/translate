@@ -254,3 +254,50 @@ openspec-verify-changeで本Changeのproposal/specs/design/tasksを読み直し�
 - 表内画像のセル外配置、本文図採番、テンプレートの仮ヘッダー/フッター、ARCH-001/ARCH-002等の最終解決は保留。今回は機能修正を行っていない。
 - Review結果が出た後、原本・DOCX・PDFとの代表Finding照合を行い、誤検出と実不具合を区別する。異なるrevisionの証拠だけで最新CodeのGateを完了にしない。
 - 記録更新後の文書Testは21 passed（0.25秒）。本ChangeとCheckpoint ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。製品Code未変更のため全製品suiteは再実行せず、実Reviewは同じsession 12758のlive handleで継続を確認した。文書品質の合格を正式verifyの成功とは扱わない。
+
+## 比較の意味的整合性と公開reportの追加検証（2026-09-25）
+
+対象は同じReview Run `01a0d534-b9c9-7e60-9edf-7541d26b6e05`。session 12758を同じhandleでpollしてliveを確認し、外部要求を追加せず、完了済みALIGN Artifactと製品関数を読取り・メモリ内で検査した。終了コード・最終reportはまだ取得していない。以下は比較Capabilityの既存要求に対する不適合であり、表出力Changeの仕様を勝手に拡張して修正しない。
+
+### COMPARE-ALIGN-001: 対応の意味が不正でも後続Reviewへ進む（CRITICAL・未解決）
+
+- `comparison-review`の「文書要素を多対多で対応付ける」は順序だけでなく見出し・番号・URL・固有名詞・前後関係に基づく対応を要求する。IDの網羅性だけでは正しい対応の証拠にならない。
+- 実Artifactは原文264単位、訳文289単位、291 Group。matched 262、source_only 2、target_only 27。confidence 0.95が96組、0.6が166組、1.0が29組。1対多・多対1は0組。全IDの一意・完全包含は`align._valid`でTrueだったが、次の内容照合では不一致を検出した。
+- 先行translationの`verify/document.json`に保存された原文と最終採用訳を基準に、比較側sourceと原文が一致し、比較側targetに最終採用訳が一意に存在する組だけを抽出した。照合は空白文字だけを除去した完全一致で、双方40文字以上、先行原文・比較原文・比較訳文の三者で候補が一意という条件を使った。類似度推測やモデル要求は使用していない。
+- この条件を満たす87組のうち51組で、実Groupのtargetが既知の最終採用訳とは別の要素だった。48組はconfidence 0.6、3組は0.95。残りの対象はこの照合方法では判定しておらず、全291 Groupの誤対応数とは報告しない。
+
+| Group（0始まり） | 原文ID・page | 実target ID・page | 一意に一致する最終採用訳のID・page |
+| --- | --- | --- | --- |
+| 27 | `#/texts/30`・2 | `#/texts/87`・7 | `#/texts/99`・8 |
+| 35 | `#/texts/34`・3 | `#/texts/115`・9 | `#/texts/107`・8 |
+| 36 | `#/texts/39`・3 | `#/texts/116`・9 | `#/texts/112`・9 |
+
+- 実行時にはALIGNのモデルfallback失敗警告があったが、原因分類が保存されていないため、その失敗原因は断定しない。`align.py`の広いexceptが失敗を警告だけに変え、順序による対応を公開することはsourceで確認した。
+- メモリ内の別の合成試験で、アンカーを持たない各1 Blockの文書に対し、`structured`が`LLMError('text-invoke', TimeoutError(...))`を投げるよう注入した。既存AlignTaskは例外を伝播せず、confidence 0.6のGroupを返し、alignment保存を1回呼んだ。保存関数とatomic directoryをdoubleにしたため実Fileは作成していない。LLM adapterの有限retry自体を試験したものではなく、adapterからの終端例外をTaskが握りつぶす境界の再現である。
+- この継続は`run-lifecycle`の「外部障害を分類して処理する」にある、回復しないLLM障害ではResume可能に停止する契約と不整合。推薦対応: 別Changeで安全な失敗伝播・原因分類を回復し、有限context内で1対多・多対1を含む正しい対応を得る実装と回帰Testを用意する。停止させるだけ、またはID数だけを検証する修正で意味的対応の指摘を解決済みにしない。
+- `tests/test_align_contract.py`の多対多Testは正解Groupを返すmodel doubleを採用できることを確認する。実文書の長さ、モデル失敗、上記の誤対応を検出するTestではない。
+
+### COMPARE-REPORT-001: 公開MarkdownからFindingの対象・根拠・修正方針が落ちる（CRITICAL・未解決）
+
+- `comparison-review`の「問題と根拠をReportする」は重大度・種別に加え、対象、根拠、修正方針を公開reportへ記載する契約である。
+- `report.ReportTask.run`へ、target_ids・evidence・suggestionにそれぞれ異なる合成markerを持つFindingを渡した。atomic_write_text/jsonをメモリ内captureへ置換して製品REPORTを実行したところ、公開Markdownには三つのmarkerがすべてなく、内部JSONには全fieldが一致して保存されていた。
+- 現実装はMarkdownの指摘行へseverity/kind/messageしか渡さない。CLIの`--output`はこのMarkdownをexportするため、内部JSONの保持を公開契約の充足とはみなせない。
+- `test_comparison_capability_reports_findings_or_explicit_zero_without_mutation`は根拠・修正方針付きFindingを入力するが、Markdownの重大度/種別とJSON集計だけをassertし、三fieldの公開を検査していない。
+- 推薦対応: 別Changeで、既存Findingの対象ID・根拠・修正方針を公開Markdownへ保持し、対応Groupを辿れる表示と欠落fieldの扱いを明示する。全field・複数Finding・指摘0件の公開report回帰Testを追加する。新たな進捗台帳や外部要求は不要。Findingの内容を生成し直して不足を隠さない。
+
+### 調査対象Artifactの同一性
+
+| Artifact | bytes | SHA-256 |
+| --- | ---: | --- |
+| Review/source/load/document.json | 295,054 | `b477679632211a310e8d6708cfb07136bc0bd52c16e6cf6abfb6dd268bd52722` |
+| Review/target/load/document.json | 345,654 | `fe2473ada901875e77d77f320e895aee6d48e83b8dd5a9a55f669f26143134ec` |
+| Review/align/alignment.json | 44,743 | `2c57dc94f1187045cedd7bb3f47b336fe7beb6670ab676b498e181f1dd640295` |
+| Translation/verify/document.json | 600,814 | `4f60482ab67ab6d6e593eee05747f7b49bdb77324bfd0371a89a8fe3eb28efff` |
+
+Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節冒頭のRun。Fileは読取りのみで、本文・raw応答・認証値はこの記録へ転載しない。
+
+### 判定
+
+比較受入は新規CRITICAL 2件により不合格。14/16 tasksは変更せず、利用者目視・既知の表品質・配置/再開管理などの指摘も継続する。実行中Reviewが後で終了コード0となっても、上記の誤対応に基づくFindingを翻訳不具合と即断せず、正式verify・archive・main merge・pushの成功条件とは扱わない。
+
+記録後、`tests/test_documentation.py`・`tests/test_align_contract.py`・`tests/test_comparison_capability.py`は計26 passed（1.94秒）。本ChangeとCheckpoint Changeのstrict validationはvalid、git diff --checkは指摘なし。既存Testが新しい不適合を検出しないことは上記のassert点検と分けて記録する。全製品suiteと外部モデルの再実行はせず、session 12758の同一live handleでREVIEW継続を確認した。製品・Test Fileの編集、Runの停止・再起動・削除は行っていない。
