@@ -328,3 +328,58 @@ diagnostics.pyはredactionをそのまま改名する案ではない。Run別の
 ### 移行の単位
 
 まず未使用API・重複hash・UUIDの単独module・製品診断hookを縮小し、次にRun保存/再開判定/実行境界を分離する。進捗通知と安全な診断出力の変更はそれぞれ回帰検証できる単位に分ける。commonが空に近づくことではなく、公開API、重複状態、逆依存が減り、既存要件のTestが保持されることを完了基準とする。今回は設計検討の記録のみで、製品code・保存済みRun・既存成果物を変更していない。
+
+## outputs配下のRun layoutを基準とした再整理（利用者指定、2026-09-25）
+
+前節の「新規packageを外す」という制限は撤回する。利用者は新設の一律除外を求めておらず、機能のまとまりに応じて既存配置と新設を比較することを求めている。直近の対話で示したrun/・artifacts/・diagnostics/新設候補を、以下の保存構成へ対応付ける。directory新設だけで機能削減を完了とみなさない。
+
+利用者指定の翻訳Runは次の構成。input.pdf・output.ja.docx・output.ja.pdf・manifest.jsonは、すべてUUIDv7 directoryの直下と解釈する。
+
+```text
+outputs/
+└─ sample3/
+   └─ <uuidv7>/
+      ├─ .state/
+      │  ├─ check/
+      │  ├─ cover/
+      │  └─ ...
+      ├─ input.pdf
+      ├─ output.ja.docx
+      ├─ output.ja.pdf
+      └─ manifest.json
+```
+
+### 必須の設計変更と維持する要件
+
+- 保存layoutは旧runs/<id>/{inputs,outputs,.workspace,run.json}から変更する。既存main specは旧layoutを要求しているため、適用前にrun-lifecycleのdelta specを持つ別Changeへ明記する。これは単なる内部import移動ではない。
+- outputsを正本rootとする。環境変数TRANSLATE_RUNS_DIRは名称を維持し、未設定時の既定値をoutputsへ変える案。明示設定の扱いと既存Runの移行は未決定で、現時点で.envやRunを変更しない。
+- sample3は入力stemから作る安全な表示用group名とする案。Runの識別はUUIDv7、同一入力判定はSHA-256、互換性判定はfingerprintのまま。ファイル名一致をResume許可条件にしない。group名はpath traversal・Windows予約名等を検証する。
+- 一覧・--resume <id>の解決はroot直下のgroupをまたいで行う。初期案では永続indexを増やさず、<group>/<uuid>/manifest.jsonの固定深さを走査する。同じUUIDが複数箇所に見つかれば曖昧なまま選ばず拒否する。走査/操作対象はroot内の実directoryと検証済みmanifestに限定する。
+- manifest.jsonをRun識別・操作種別・状態・入力原名/相対path/SHA-256・設定snapshot/fingerprint・最終成果物一覧の正本とする案。checkpointはTaskの再開位置とArtifact参照を持ち、manifestへ全文や二重のTask状態機械を追加しない。
+- .stateはTaskごとの中間成果物、checkpoint、失敗診断、log等の内部保存先。既存の逐次処理、完了Task再利用、Qdrant状態のfingerprint除外は維持する。
+- Taskは.state/<task>内で成果物を完成・検証し、最終公開時だけRun直下の個別fileへatomic copyする。現在のcover/markdown等はoutput.parent全体をatomic_directoryで置換するため、引数をRun rootへ変更するだけではinput/manifestまで巻き込み得る。Run root全体のdirectory置換は禁止する。
+- export/downloadはmanifestにある公開成果物のallowlistを用い、input.pdf・manifest.json・.stateを再帰copyしない。Markdownが相対参照する画像等は成果物の依存物として明示する。任意のRun内fileを公開対象にしない。
+- output.ja.pdfは利用者のWord操作、または承認済みの検証時のWord操作で作成する任意成果物。製品のPDF変換機能は追加しない。PDF不在を翻訳失敗としない。手動追加PDFをexport対象にする場合の明示登録/検証方法は設計事項で、自動的に任意PDFを採用しない。
+- 明示削除は選択したUUIDv7 directoryだけを対象とし、同名入力group・他Run・root外exportは削除しない。inputと利用者追加PDFを含め対象Run全体が削除対象になることを確認画面へ示す。
+- 既存仕様のMarkdown成果物は利用者の図で省略されているが、廃止指示とは解釈しない。output.ja.mdと必要assetの公開配置を別途確定する。
+
+### 保存layoutに対応するsource責務の候補
+
+| 現行module | 整理先候補 | 新layoutで担当すること・含めないこと |
+| --- | --- | --- |
+| runs.py・identifiers.py | translate/run/repository.py | group/UUIDの安全な解決、input正本copy、manifest保存/走査、排他、成果物export、Run削除。UUID生成は非公開関数に統合。Workflow処理は実装しない |
+| fingerprint.pyとlifecycle内のsnapshot構築 | translate/run/compatibility.py | 保存manifestと現在条件の比較。group名ではなく入力内容を比較。hash処理重複と汎用diff公開を縮小 |
+| lifecycle.py | translate/run/lifecycle.py | 新規/Resume準備、Workflow実行、一度だけの成功/失敗記録、完成成果物の公開指示。path生成・実copy・hashはRepository/Artifact I/Oへ委譲 |
+| workspace.py | translate/artifacts/io.py | 任意の完成file・Task内部directoryの安全な保存、検証、hash。Run一覧、UUID、Resume判断は持たない。Run専用lockはrun側へ、未使用APIは廃止 |
+| redaction.pyと安全な原因抽出 | translate/diagnostics/failure.py・redaction.py | 小さい安全な診断値と秘密除去のみ。manifestの永続化・Run状態・child/watchdogは持たない |
+| progress.py | translate/workflows/progress.py | node状態通知と進捗集計。表示・ファイル保存・BaseTask計測と分離 |
+| terminal_evidence.py | tests/support/evidence.py・detached_runner.py | 検証証拠と監視だけ。製品からのcounter hook依存を撤去。既存診断I/O不具合は別途検証 |
+
+run/・artifacts/・diagnostics/は新設候補であり承認済みではない。複数の小moduleへ機械的に分割するのではなく、共有される責務の境界として採否を決める。commonにはlogger/settingsとpackage markerのみを残す。CLI/UI新設はこの保存変更に必要ではなく、必須作業には含めない。
+
+### 適用前の確認事項
+
+1. 既存UUIDv7 Runを新layoutへ移行するか、旧layoutは読まず新規Runから適用するか。以前のUUIDv4互換不要という回答は、この判断の代わりにはしない。既存Runを勝手に移動・削除しない。
+2. この図は翻訳の例とし、Reviewの2入力・登録の複数入力・Markdown変換にもgroup/UUID/.state/manifestの共通外枠を使う案でよいか。入力のrole/pathはmanifestへ記録し、複数入力をinput.pdfに上書き統合しない。
+
+未決定事項があるため、この時点では設計メモのみを更新し、正式Change作成・製品実装・データ移行は行っていない。
