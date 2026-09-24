@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 
 
 def _templates(root: Path) -> Path:
+    """
+    Run準備に必要なTemplate群を隔離領域へ用意し、失敗契約の検証を設定不足から切り離す。
+    """
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -78,6 +82,11 @@ def test_failure_record_is_safe_and_removed_after_resume(  # noqa: PLR0915
         _callback: ProgressCallback | None,
         _workspace: Path | None,
     ) -> Path:
+        """
+        初回は機密値入りのTask障害を通知し、再開時は成果物と完了通知を返して失敗記録の解
+        消を検証する。
+        """
+
         nonlocal attempts
         attempts += 1
         report_task_status(TaskStatusEvent("TRANSLATE", "started"))
@@ -160,6 +169,8 @@ def test_cli_failure_boundary_does_not_render_traceback(
     monkeypatch.setattr(cli, "_prepare", lambda *_args: (object(), object()))
 
     def fail(*_args: object, **_kwargs: object) -> object:
+        """安全なFailureRecordを持つ公開例外を投げ、CLIの表示と終了codeを検査する。"""
+
         raise PublicRunError(failure)
 
     monkeypatch.setattr(cli, "execute_public_run", fail)
@@ -280,6 +291,10 @@ def test_output_truncation_is_safe_atomic_and_backward_compatible(
     prepared = prepare_run(repository, "translate", {"source": source}, settings)
 
     def workflow(*_args: object, **_kwargs: object) -> Path:
+        """
+        STRUCTUREの出力切断とusageを通知し、公開診断への伝播と成果物未公開を検証する。
+        """
+
         llm_error = LLMError(
             "text-output",
             LLMOutputTruncatedError(),
@@ -354,6 +369,10 @@ def test_structure_diagnostics_reach_failure_log_and_public_error(
     prepared = prepare_run(repository, "translate", {"source": source}, settings)
 
     def workflow(*_args: object, **_kwargs: object) -> Path:
+        """
+        機密本文付き解析例外をSTRUCTURE障害に包み、公開・保存境界での秘匿を検証する。
+        """
+
         error = StructurePageError(
             2, "page/2", LLMError("text-parse", OutputParserException(sentinel))
         )
@@ -411,6 +430,10 @@ def test_failure_diagnostics_reject_values_outside_allowlist(
     prepared = prepare_run(repository, "translate", {"source": source}, settings)
 
     def workflow(*_args: object, **_kwargs: object) -> Path:
+        """
+        許可外の分類文字列と負のusageを通知し、失敗Artifactが不正値を排除するか調べる。
+        """
+
         error = RuntimeError("raw")
         report_task_status(
             TaskStatusEvent(
@@ -462,6 +485,10 @@ def test_registration_stage_failure_is_public_safe_and_resumable(
     prepared = prepare_run(repository, "register", {"reference": source}, settings)
 
     def fail_registration(*_args: object, **_kwargs: object) -> int:
+        """
+        指定stageの登録障害を発生させ、診断の秘匿・成果物未公開・Resume準備を検証する。
+        """
+
         raise RegistrationError(stage, RuntimeError(sentinel))
 
     monkeypatch.setattr(

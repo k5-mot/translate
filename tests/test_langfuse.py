@@ -54,6 +54,11 @@ def _offline_chat_model(
     """実OpenAI SDK response stackをNetworkなしで構成する。"""
 
     def handler(_request: object) -> httpx2.Response:
+        """
+        送信時の観測contextを記録し、実ネットワークなしでOpenAI互換の正常JSON応答を返す
+        。
+        """
+
         calls.append(
             current_probe() if current_probe is not None else _OBSERVATION_CURRENT.get()
         )
@@ -121,11 +126,15 @@ def test_workflow_flushes_after_success_and_failure(
 
     @contextmanager
     def fake_observe(*_args: object, **_kwargs: object) -> Iterator[None]:
+        """観測contextの開始と正常終了を記録し、Workflow終了時のflush順序を検証する。"""
+
         events.append("start")
         yield
         events.append("finish")
 
     def fake_run(*_args: object, **_kwargs: object) -> Path:
+        """指定ケースでWorkflowだけを失敗させ、成功・失敗双方のflush経路を検証する。"""
+
         if outcome == "failure":
             message = "workflow failure"
             raise RuntimeError(message)
@@ -163,11 +172,18 @@ def test_llm_call_is_observed_without_sending_prompt_body(
 
     @contextmanager
     def fake_observe(*_args: object, **kwargs: object) -> Iterator[None]:
+        """LLM観測開始の引数を捕捉し、prompt本文が観測metadataへ渡されないか調べる。"""
+
         captured.update(kwargs)
         yield
 
     class Client:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            固定の正常JSONを返し、LLM処理と観測metadataの検査を外部サービスから独立させ
+            る。
+            """
+
             return AIMessage(content='{"value":"ok"}')
 
     monkeypatch.setattr(llm, "observe", fake_observe)
@@ -238,27 +254,46 @@ def test_actual_openai_response_stack_distinguishes_observation_context(
 
     class Observation:
         def update(self, **_kwargs: object) -> None:
+            # 観測の更新を無処理で受け、実応答stackのcurrent context検証に集中する。
             return None
 
         def end(self) -> None:
+            # 観測終了を無処理で受け、current contextの有無と送信経路の関係だけを検証す
+            # る。
             return None
 
     class Manager:
         token: Token[bool] | None = None
 
         def __enter__(self) -> Observation:
+            """
+            現在の観測contextを有効にしてtokenを保持し、SDK送信時のcontext検出を可能にす
+            る。
+            """
+
             self.token = _OBSERVATION_CURRENT.set(True)
             return Observation()
 
         def __exit__(self, *_args: object) -> None:
+            """
+            保持したtokenで観測contextを元に戻し、次の送信Testへ状態を持ち越さない。
+            """
+
             assert self.token is not None
             _OBSERVATION_CURRENT.reset(self.token)
 
     class LangfuseClient:
         def start_as_current_observation(self, **_kwargs: object) -> Manager:
+            """contextを有効化するManagerを返し、current観測を使うSDK経路を模擬する。"""
+
             return Manager()
 
         def start_observation(self, **_kwargs: object) -> Observation:
+            """
+            current contextを変更しない観測doubleを返し、detached観測との違いを検証する
+            。
+            """
+
             return Observation()
 
     monkeypatch.setattr(llm, "_model", lambda *_args: model)
@@ -322,6 +357,10 @@ def test_translation_workflow_keeps_model_outside_real_langfuse_current_span(
     monkeypatch.setattr(llm, "_model", lambda *_args: model)
 
     def model_run(*_args: object, **_kwargs: object) -> Path:
+        """
+        実SDKのオフライン送信経路をWorkflowから呼び、正常解析後に代替DOCX pathを返す。
+        """
+
         result = llm.structured(
             settings,
             "offline-model",
@@ -432,6 +471,11 @@ def test_pending_structure_resume_crosses_real_graph_and_sdk_once(  # noqa: C901
     main_thread = threading.get_ident()
 
     def handler(_request: object) -> httpx2.Response:
+        """
+        送信thread・親観測・current spanを記録し、再開Graphからの実SDK経路へ空patch応答
+        を返す。
+        """
+
         calls.append(
             {
                 "thread": threading.get_ident(),
@@ -476,9 +520,18 @@ def test_pending_structure_resume_crosses_real_graph_and_sdk_once(  # noqa: C901
 
     class BoundModelProbe:
         def __init__(self, inner: object) -> None:
+            """
+            bind済みModelを保持し、処理を再実装せず送信前後だけ計測できるようにする。
+            """
+
             self.inner = inner
 
         def invoke(self, messages: object, *args: object, **kwargs: object) -> object:
+            """
+            送信前後のthreadを記録して実Modelへ委譲し、応答まで同じ境界を通るか確認する
+            。
+            """
+
             boundaries.append(("invoke", threading.get_ident()))
             result = self.inner.invoke(  # type: ignore[attr-defined]
                 messages, *args, **kwargs
@@ -488,26 +541,43 @@ def test_pending_structure_resume_crosses_real_graph_and_sdk_once(  # noqa: C901
 
     class ModelProbe:
         def bind(self, *args: object, **kwargs: object) -> BoundModelProbe:
+            """
+            bind時のthreadを記録し、実Modelのbind結果を送信境界計測用のprobeへ渡す。
+            """
+
             boundaries.append(("bind", threading.get_ident()))
             return BoundModelProbe(model.bind(*args, **kwargs))
 
     def model_factory(*_args: object, **_kwargs: object) -> ModelProbe:
+        """Model構築境界のthreadを記録し、実Modelへ委譲するprobeを返す。"""
+
         boundaries.append(("build", threading.get_ident()))
         return ModelProbe()
 
     real_parse = llm.PydanticOutputParser.parse
 
     def parse_once(parser: object, value: str) -> object:
+        """
+        解析時のthreadを記録し、既存parserへ委譲して実解析の回数と実行境界を調べる。
+        """
+
         boundaries.append(("parse", threading.get_ident()))
         return real_parse(parser, value)  # type: ignore[arg-type]
 
     def render_page(_source: Path, _page: int, output: Path, _dpi: int = 120) -> Path:
+        """構造推定に必要なPNGを作り、実PDF描画なしでGraphとSDKの再開経路を通す。"""
+
         output.parent.mkdir(parents=True, exist_ok=True)
         with Image.new("RGB", (32, 32), "white") as image:
             image.save(output, format="PNG")
         return output
 
     def unexpected(*_args: object, **_kwargs: object) -> object:
+        """
+        成功済みTaskが呼ばれたら直ちに失敗させ、Checkpoint再開時の意図しない再実行を検出
+        する。
+        """
+
         msg = "completed task was replayed"
         raise AssertionError(msg)
 
@@ -668,9 +738,13 @@ def test_detached_child_failure_resets_parent_before_next_root(  # noqa: C901
 
     class Observation:
         def __init__(self, name: str) -> None:
+            """観測名を保持し、親子関係と特定の子観測での障害を識別できるようにする。"""
+
             self.name = name
 
         def start_observation(self, **kwargs: object) -> Observation:
+            """親子の観測名を記録し、指定ケースだけ子観測の開始を失敗させる。"""
+
             child_name = str(kwargs["name"])
             events.append(f"child:{self.name}:{child_name}")
             if failure_stage == "child-start":
@@ -678,16 +752,28 @@ def test_detached_child_failure_resets_parent_before_next_root(  # noqa: C901
             return Observation(child_name)
 
         def update(self, **_kwargs: object) -> None:
+            """
+            指定されたSTRUCTURE子観測の更新だけを失敗させ、親contextの復元を試験する。
+            """
+
             if failure_stage == "child-update" and self.name == "task.structure":
                 raise OSError(sentinel)
 
         def end(self) -> None:
+            """
+            終了した観測名を記録し、STRUCTURE子観測の終了障害を選択的に発生させる。
+            """
+
             events.append(f"end:{self.name}")
             if failure_stage == "child-end" and self.name == "task.structure":
                 raise OSError(sentinel)
 
     class Client:
         def start_observation(self, **kwargs: object) -> Observation:
+            """
+            root観測の開始を記録し、前の子観測障害が次のrootへ親として残らないか調べる。
+            """
+
             name = str(kwargs["name"])
             events.append(f"root:{name}")
             return Observation(name)
@@ -700,6 +786,10 @@ def test_detached_child_failure_resets_parent_before_next_root(  # noqa: C901
     caplog.set_level(logging.WARNING)
 
     def business_failure() -> None:
+        """
+        製品処理のValueErrorを発生させ、観測の更新・終了障害に上書きされないか検証する。
+        """
+
         message = "business failure"
         raise ValueError(message)
 
@@ -752,27 +842,43 @@ def test_llm_detached_finish_failure_keeps_success_without_retry_or_leak(
 
     class Observation:
         def end(self) -> None:
+            """
+            秘密値を含む観測終了障害を発生させ、成功済みLLMの再送や情報漏洩がないか調べ
+            る。
+            """
+
             message = f"finish failed at {credential}"
             raise OSError(message)
 
         def update(self, **_kwargs: object) -> None:
+            # 観測更新を正常に受け、終了障害だけに検証条件を限定する。
             return None
 
     class LangfuseClient:
         def start_observation(self, **_kwargs: object) -> Observation:
+            """detached観測の開始を記録し、終了障害を持つ観測doubleを返す。"""
+
             starts.append("detached")
             return Observation()
 
         def start_as_current_observation(self, **_kwargs: object) -> object:
+            """
+            current観測の利用を失敗させ、LLM generationがdetached境界を守るか検証する。
+            """
+
             starts.append("current")
             message = "generation must not attach a current observation"
             raise AssertionError(message)
 
     class ModelClient:
         def bind(self, **_kwargs: object) -> ModelClient:
+            """schema指定を受理し、正常応答の送信回数を観測できる同じdoubleを返す。"""
+
             return self
 
         def invoke(self, _messages: object) -> AIMessage:
+            """正常JSONを返して呼出数を記録し、観測終了失敗によるLLM再送を検出する。"""
+
             nonlocal calls
             calls += 1
             return AIMessage(content='{"value":"ok"}')
@@ -816,14 +922,21 @@ def test_detached_observation_boundary_failures_preserve_success(
 
     class Observation:
         def end(self) -> None:
+            """選択ケースだけ観測終了を失敗させ、処理成功が維持されるか検証する。"""
+
             if failure_stage == "finish":
                 raise OSError(sentinel)
 
         def update(self, **_kwargs: object) -> None:
+            # 観測更新を無処理で受け、開始または終了の障害を個別に試験できるようにする。
             return None
 
     class Client:
         def start_observation(self, **_kwargs: object) -> Observation:
+            """
+            選択ケースで観測開始を失敗させ、その他では終了障害を選べる観測doubleを返す。
+            """
+
             if failure_stage == "start":
                 raise OSError(sentinel)
             return Observation()
@@ -861,13 +974,18 @@ def test_detached_update_failure_preserves_business_error(
 
     class Observation:
         def update(self, **_kwargs: object) -> None:
+            """製品例外の記録時に観測更新を失敗させ、元の製品例外が保たれるか調べる。"""
+
             raise OSError(sentinel)
 
         def end(self) -> None:
+            # 観測終了は成功させ、更新障害だけの影響を検証する。
             return None
 
     class Client:
         def start_observation(self, **_kwargs: object) -> Observation:
+            """更新だけが失敗する観測doubleを返し、製品例外の保持を検証する。"""
+
             return Observation()
 
     monkeypatch.setattr(langfuse, "_get_client", lambda _settings: Client())
@@ -878,6 +996,8 @@ def test_detached_update_failure_preserves_business_error(
     caplog.set_level(logging.WARNING)
 
     def processing_failure() -> None:
+        """製品処理のValueErrorを投げ、観測更新失敗がその例外を隠さないか調べる。"""
+
         message = "business failure"
         raise ValueError(message)
 
@@ -905,10 +1025,18 @@ def test_observation_and_flush_failures_warn_without_blocking_or_leaking(
 
     class Client:
         def start_as_current_observation(self, **_kwargs: object) -> object:
+            """
+            秘密値を含む観測開始障害を発生させ、警告だけで製品処理が続くか検証する。
+            """
+
             message = f"endpoint failed with {credential_value}"
             raise OSError(message)
 
         def flush(self) -> None:
+            """
+            秘密値を含むflush障害を発生させ、終了処理が漏洩せず継続するか検証する。
+            """
+
             message = f"flush failed with {credential_value}"
             raise OSError(message)
 
@@ -942,22 +1070,40 @@ def test_each_langfuse_failure_stage_reaches_context_warning_sink_once(
 
     class Observation:
         def update(self, **_kwargs: object) -> None:
+            """
+            観測更新を秘密値付きで失敗させ、contextに束縛した警告先への安全な通知を調べ
+            る。
+            """
+
             message = f"update endpoint contains {credential}"
             raise OSError(message)
 
     class Manager:
         def __enter__(self) -> Observation:
+            """更新障害を持つ観測doubleを返し、観測contextへの進入自体は成功させる。"""
+
             return Observation()
 
         def __exit__(self, *_args: object) -> None:
+            """
+            観測終了を秘密値付きで失敗させ、更新障害とは別の警告として通知されるか調べる
+            。
+            """
+
             message = f"finish endpoint contains {credential}"
             raise OSError(message)
 
     class Client:
         def start_as_current_observation(self, **_kwargs: object) -> Manager:
+            """開始は成功させ、更新と終了の各障害を検証できるManagerを返す。"""
+
             return Manager()
 
         def flush(self) -> None:
+            """
+            flushを秘密値付きで失敗させ、他の観測障害とともに安全に警告されるか調べる。
+            """
+
             message = f"flush endpoint contains {credential}"
             raise OSError(message)
 
@@ -969,6 +1115,10 @@ def test_each_langfuse_failure_stage_reaches_context_warning_sink_once(
     caplog.set_level(logging.WARNING)
 
     def processing_failure() -> None:
+        """
+        観測context内で製品例外を発生させ、更新・終了の警告と元例外の扱いを検証する。
+        """
+
         with langfuse.observe(settings, "workflow.test"):
             message = f"business failure {credential}"
             raise ValueError(message)
@@ -995,10 +1145,16 @@ def test_initialization_and_warning_sink_failures_are_non_blocking(
     credential = "initialization-secret"
 
     def client_failure(*_args: object) -> object:
+        """SDK Client初期化を秘密値付きで失敗させ、観測なしの継続を検証する。"""
+
         message = f"initialization endpoint contains {credential}"
         raise OSError(message)
 
     def sink_failure(_warning: str) -> None:
+        """
+        警告通知先自体を失敗させ、観測障害の通知失敗でも製品処理を妨げないか調べる。
+        """
+
         message = f"sink contains {credential}"
         raise RuntimeError(message)
 
@@ -1046,6 +1202,10 @@ def test_lifecycle_persists_duplicate_langfuse_warning_once(
 
     class Client:
         def start_as_current_observation(self, **_kwargs: object) -> object:
+            """
+            同じ秘密値入りSDK障害を繰り返し発生させ、Run警告の秘匿と重複抑止を検証する。
+            """
+
             message = f"SDK body contains {credential}"
             raise OSError(message)
 
@@ -1059,6 +1219,11 @@ def test_lifecycle_persists_duplicate_langfuse_warning_once(
         _callback: ProgressCallback | None,
         _workspace: Path | None,
     ) -> Path:
+        """
+        同じTask観測を二度失敗させた後に成果物を保存し、Run完了と警告一件への集約を調べ
+        る。
+        """
+
         for _ in range(2):
             with (
                 langfuse.bind_observation_task("DOCLING"),

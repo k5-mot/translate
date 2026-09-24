@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 
 
 def _table(ref: str, top: float, columns: int) -> dict[str, object]:
+    """
+    指定列数の一行表とセル参照を作り、位置・列互換性・結合後offsetを検査可能にする。
+    """
+
     return {
         "self_ref": ref,
         "label": "table",
@@ -49,6 +53,8 @@ def _table(ref: str, top: float, columns: int) -> dict[str, object]:
 def _run(
     tmp_path: Path, first: dict[str, object], second: dict[str, object]
 ) -> tuple[dict[str, object], dict[str, object]]:
+    """二つの表断片をPOSITIONへ渡し、補正文書と結合・警告reportを読んで返す。"""
+
     document = {
         "body": {
             "self_ref": "#/body",

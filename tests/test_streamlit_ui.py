@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 
 def _completed_run(root: Path, source: Path) -> RunRecord:
+    """一覧・ダウンロード・削除のUI検査に使う、固定成果物付きの完了Runを作る。"""
+
     repository = RunRepository(root)
     record = repository.create(
         "translate",
@@ -90,6 +92,10 @@ def test_streamlit_registration_requires_confirmed_source_id(
         name = "guide.md"
 
         def getvalue(self) -> bytes:
+            """
+            登録UIへ渡すUploadの固定本文を返し、実アップロードなしで保存処理を通す。
+            """
+
             return b"guide"
 
     captured: dict[str, object] = {}
@@ -110,6 +116,10 @@ def test_streamlit_registration_requires_confirmed_source_id(
         _key: object,
         source_id: str | None = None,
     ) -> None:
+        """
+        UIが用意した入力pathと確認済み登録元IDを捕捉し、共有実行入口への引渡しを調べる。
+        """
+
         captured["inputs"] = inputs
         captured["source_id"] = source_id
 
@@ -141,6 +151,10 @@ def test_streamlit_failure_boundary_displays_only_safe_run_context(
     monkeypatch.setattr(main.st, "error", shown.append)
 
     def fail(*_args: object, **_kwargs: object) -> object:
+        """
+        構造化失敗を公開例外として返し、UIが安全なRun情報だけを表示するか検査する。
+        """
+
         raise PublicRunError(failure)
 
     monkeypatch.setattr(main, "_run_selected", fail)
@@ -182,6 +196,7 @@ failure = FailureRecord(
 settings = type("Settings", (), {"runs_dir": Path("runs-app-test")})()
 main._resume_choice = lambda *_args, **_kwargs: None
 def fail(*_args, **_kwargs):
+    # Exercise the rendered error boundary without invoking a real workflow.
     raise PublicRunError(failure)
 main._run_selected = fail
 main._execute_ui(

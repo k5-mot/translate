@@ -23,6 +23,10 @@ if TYPE_CHECKING:
 
 
 def _templates(root: Path) -> Path:
+    """
+    CLI/UIが同じfingerprintを作るための規則・用語集・Templateを隔離領域へ用意する。
+    """
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -54,6 +58,11 @@ def test_cli_and_streamlit_resume_each_others_runs(
         _callback: ProgressCallback | None = None,
         workspace_dir: Path | None = None,
     ) -> Path:
+        """
+        共有workspaceの入力Artifactから成果物を作り、入口変更後も同じ保存先を使うか調べ
+        る。
+        """
+
         assert workspace_dir is not None
         artifact = workspace_dir / "translate" / "artifact.bin"
         if not artifact.exists():
@@ -140,6 +149,11 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
         sources: list[qdrant.RegistrationSource],
         _workspace: Path | None = None,
     ) -> int:
+        """
+        登録対象のsource keyとworkspaceを記録し、CLI/UIの一時入力pathへの非依存性を調べ
+        る。
+        """
+
         captured.extend(item.source_key for item in sources)
         workspaces.append(_workspace)
         return len(sources)
@@ -190,6 +204,10 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     )
 
     def fake_docx(markdown: Path, output: Path, template: Path) -> Path:
+        """
+        MarkdownとTemplateのbyte列を結合し、再開時も利用者指定Templateが渡るか検証する。
+        """
+
         atomic_write_bytes(output, markdown.read_bytes() + b":" + template.read_bytes())
         return output
 

@@ -27,6 +27,8 @@ SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
 
 
 def _templates(root: Path) -> Path:
+    """入力manifestの互換性Testに必要な規則・用語集・Templateを固定内容で用意する。"""
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -154,6 +156,10 @@ def test_copy_hashes_in_chunks_without_read_bytes(
     original = Path.read_bytes
 
     def guarded(path: Path) -> bytes:
+        """
+        元入力への全体byte読込みだけを拒否し、Run作成がstreaming copyを使うか検査する。
+        """
+
         if path == source:
             message = "source.read_bytes must not be used"
             raise AssertionError(message)

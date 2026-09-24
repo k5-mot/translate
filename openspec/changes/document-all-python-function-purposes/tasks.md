@@ -10,6 +10,6 @@
 
 ## 2. 再発防止と検証
 
-- [ ] 2.1 既存文書Testへ規約固有の説明存在検査とfixtureを追加し、全対象に欠落がないこと、標準parserへの委譲を確認する
+- [x] 2.1 既存文書Testへ規約固有の説明存在検査とfixtureを追加し、全対象に欠落がないこと、標準parserへの委譲を確認する
 - [ ] 2.2 全体Lint/Format/ty/pytest、strict validation、説明除去後のAST比較を実行し、対象一覧・Ruffとの契約差・意味確認をverification.mdへ記録する
 - [ ] 2.3 実translation→Microsoft Word PDF化→reviewと利用者目視の証拠を対応付け、正式verifyとarchive可否を判定する

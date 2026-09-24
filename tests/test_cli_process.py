@@ -99,7 +99,9 @@ def test_posix_pty_selects_candidate_then_answers_yes_or_no(  # noqa: PLR0915
     existing_ids = _run_ids(first.stdout) + _run_ids(second.stdout)
 
     def interact(answer: bytes, output: Path) -> str:
-        """PTYで候補選択とy/n回答を送り、CLI終了と残存childの後片付けまで行って出力を返す。"""
+        """
+        PTYで候補選択とy/n回答を送り、CLI終了と残存childの後片付けまで行って出力を返す。
+        """
 
         master, slave = pty.openpty()
         process = subprocess.Popen(

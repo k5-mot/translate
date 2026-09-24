@@ -31,6 +31,8 @@ from translate.common.terminal_evidence import (
 
 
 def _evidence(run_id: str, operation: str = "translate") -> TerminalEvidence:
+    """指定Runと操作の実行中Evidenceを作り、終了状態や安全な更新の試験の基準にする。"""
+
     return TerminalEvidence(
         run_id=run_id,
         operation=operation,  # type: ignore[arg-type]
@@ -40,6 +42,8 @@ def _evidence(run_id: str, operation: str = "translate") -> TerminalEvidence:
 
 
 def test_terminal_evidence_forbids_arbitrary_fields_and_unsafe_names() -> None:
+    """任意本文欄・不正Task名・終端から実行中への遷移をEvidenceが拒否するか調べる。"""
+
     run_id = str(uuid7())
     with pytest.raises(ValidationError):
         TerminalEvidence(
@@ -54,6 +58,11 @@ def test_terminal_evidence_forbids_arbitrary_fields_and_unsafe_names() -> None:
 
 
 def test_evidence_store_rejects_temp_root_and_invalid_terminal(tmp_path: Path) -> None:
+    """
+    削除対象内へのEvidence保存と終了記録の欠落を拒否し、有効な完了証拠だけを許可するか調
+    べる。
+    """
+
     run_id = str(uuid7())
     temp_root = Path("temp")
     with pytest.raises(ValueError, match="outside"):
@@ -73,6 +82,10 @@ def test_evidence_store_rejects_temp_root_and_invalid_terminal(tmp_path: Path) -
 
 
 def test_progress_and_failure_are_reduced_to_safe_values() -> None:
+    """
+    進捗と失敗情報から許可された分類・件数・usageをEvidenceへ移せることを確認する。
+    """
+
     run_id = str(uuid7())
     progress = evidence_from_progress(
         SimpleNamespace(task="STRUCTURE", current=3, total=351),
@@ -112,6 +125,8 @@ def test_external_call_counter_restores_nested_and_failed_contexts() -> None:
     failure = RuntimeError("fixture failure")
 
     def fail_in_context() -> None:
+        """入れ子counter内で失敗させ、外側のcounterへcontextが正しく戻るか検証する。"""
+
         with terminal_evidence.bind_call_counts() as inner:
             terminal_evidence.count_external_call("embedding")
             inner_values.append(dict(inner))
@@ -142,6 +157,10 @@ def test_evidence_literal_narrowing_keeps_allowlist(
     expected_phase: str | None,
     expected_stage: str | None,
 ) -> None:
+    """
+    phaseとstageの許可集合を検証し、任意文字列を診断Evidenceへ取り込まないか確認する。
+    """
+
     assert terminal_evidence._safe_phase(phase) == expected_phase  # noqa: SLF001
     assert terminal_evidence._safe_stage(stage) == expected_stage  # noqa: SLF001
 
@@ -149,6 +168,11 @@ def test_evidence_literal_narrowing_keeps_allowlist(
 def test_evidence_and_counts_contain_no_sensitive_or_external_values(
     tmp_path: Path,
 ) -> None:
+    """
+    進捗由来のEvidenceに機密値がなく、workspace集計が本文ではなくFile件数を返すか調べる
+    。
+    """
+
     run_id = str(uuid7())
     root = tmp_path / "run"
     (root / ".workspace").mkdir(parents=True)
@@ -174,6 +198,8 @@ def test_evidence_and_counts_contain_no_sensitive_or_external_values(
 
 
 def test_cleanup_detached_temp_preserves_external_evidence(tmp_path: Path) -> None:
+    """印付きの診断一時領域だけを削除し、領域外のEvidenceは残ることを確認する。"""
+
     root = tmp_path / "temp"
     root.mkdir()
     (root / ".detached-temp-root").write_text(
@@ -189,6 +215,11 @@ def test_cleanup_detached_temp_preserves_external_evidence(tmp_path: Path) -> No
 
 
 def test_detached_watchdog_collects_completion_without_stdout(tmp_path: Path) -> None:
+    """
+    標準出力を使わず終了Evidenceを書くchildを実行し、watchdogが完了と終了codeを回収する
+    か検証する。
+    """
+
     run_id = str(uuid7())
     temp_root = tmp_path / "temp"
     evidence_path = tmp_path / "terminal.json"
@@ -218,6 +249,10 @@ def test_detached_watchdog_collects_completion_without_stdout(tmp_path: Path) ->
 
 
 def test_detached_watchdog_times_out_without_restart(tmp_path: Path) -> None:
+    """
+    終了しないchildを期限で止め、timeout分類とprocess終了を記録することを確認する。
+    """
+
     run_id = str(uuid7())
     temp_root = tmp_path / "temp"
     evidence_path = tmp_path / "terminal.json"
@@ -243,6 +278,8 @@ def test_detached_watchdog_times_out_without_restart(tmp_path: Path) -> None:
 def test_detached_watchdog_never_promotes_missing_terminal(
     tmp_path: Path, code: str, expected: str
 ) -> None:
+    """childが終了しても有効な終了Evidenceがなければ成功へ昇格しないことを検証する。"""
+
     run_id = str(uuid7())
     result = run_detached(
         [sys.executable, "-c", code],
@@ -259,10 +296,17 @@ def test_detached_watchdog_never_promotes_missing_terminal(
 def test_public_detached_runner_uses_existing_lifecycle_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """公開診断runnerがchild起動用要求を渡し、終了後に要求Fileを除去するか検査する。"""
+
     run_id = str(uuid7())
     captured: dict[str, object] = {}
 
     def fake_watchdog(command: list[str], **kwargs: object) -> DetachedResult:
+        """
+        childを起動せずcommandと引数を捕捉し、異常終了結果を返してrunnerの後片付けを調べ
+        る。
+        """
+
         captured["command"] = command
         captured.update(kwargs)
         return DetachedResult(
@@ -295,6 +339,11 @@ def test_public_detached_runner_uses_existing_lifecycle_once(
 def test_public_detached_runner_executes_existing_convert_lifecycle(
     tmp_path: Path,
 ) -> None:
+    """
+    実childから既存convert処理を実行し、完了Evidence・Run状態・DOCX成果物が揃うか検証す
+    る。
+    """
+
     source = tmp_path / "source.md"
     source.write_text("# detached\n\ncontent\n", encoding="utf-8")
     repository = RunRepository(tmp_path / "runs")

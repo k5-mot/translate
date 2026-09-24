@@ -42,7 +42,9 @@ def _fake_translation(
     _callback: ProgressCallback | None = None,
     _workspace_dir: Path | None = None,
 ) -> Path:
-    """外部翻訳を使わず固定byte列の成果物を作り、Run選択・export・削除の検証へ集中する。"""
+    """
+    外部翻訳を使わず固定byte列の成果物を作り、Run選択・export・削除の検証へ集中する。
+    """
 
     result = output_dir / "document.ja.docx"
     atomic_write_bytes(result, b"completed document")

@@ -138,6 +138,8 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
     source_pdf.write_bytes(b"readable fixture")
 
     def render_page(_source: Path, _page: int, output: Path, **_kwargs: object) -> Path:
+        """構造推定と表紙Taskに検証可能なPNGを供給し、実PDF描画への依存を除く。"""
+
         output.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (8, 8), "white").save(output)
         return output
@@ -165,6 +167,10 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
         def translate_response(
             *_args: object, **_kwargs: object
         ) -> translate.TranslationResponse:
+            """
+            URL・数量・codeを保持した固定訳を返し、後続検査とfallbackの基準にする。
+            """
+
             return translate.TranslationResponse(
                 translations=[
                     translate.TranslationItem(id="heading-text", text="インストール"),
@@ -209,6 +215,8 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
     sensitive = "SECRET-BODY-SENTINEL"
 
     def service_failure(*_args: object, **_kwargs: object) -> object:
+        """秘密値を含むFIX/VERIFY障害を発生させ、初回訳の保持と安全な診断を検証する。"""
+
         message = f"token=credential {sensitive}"
         raise OSError(message)
 

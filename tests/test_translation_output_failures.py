@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 
 def _page(text: str = "Source") -> Page:
+    """固定IDのInlineを持つページを作り、翻訳出力と失敗位置を照合可能にする。"""
+
     return Page(
         number=8,
         blocks=[
@@ -34,6 +36,8 @@ def _page(text: str = "Source") -> Page:
 
 
 def _page_with_units(count: int) -> Page:
+    """指定個数のInlineを用意し、Chunk二分と処理順をIDごとに検証できるようにする。"""
+
     return Page(
         number=8,
         blocks=[
@@ -73,6 +77,8 @@ def test_translation_output_mismatch_retries_same_chunk_then_succeeds(
     monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
 
     def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        """不整合応答と成功応答を順に返し、同じ翻訳Chunkの再試行回数を記録する。"""
+
         calls.append("llm")
         return next(responses)
 
@@ -100,6 +106,8 @@ def test_translation_output_truncation_retries_once_with_thinking_disabled(
     calls: list[tuple[str, str | None]] = []
 
     def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        """最初の出力だけを切断させ、thinkingを無効にした一回の回復送信を検証する。"""
+
         calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
         if len(calls) == 1:
             stage = "text-output"
@@ -144,6 +152,8 @@ def test_translation_output_truncation_fallback_is_bounded_and_safe(
     calls: list[tuple[str, str | None]] = []
 
     def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        """常に出力切断を返し、thinking切替による回復回数が有限であることを調べる。"""
+
         calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
         stage = "text-output"
         raise LLMError(
@@ -187,6 +197,10 @@ def test_translation_output_truncation_splits_chunk_sequentially(
     calls: list[tuple[str, str | None]] = []
 
     def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        """
+        二回切断させた後は要求されたIDだけ翻訳し、Chunk二分後の逐次送信を検証する。
+        """
+
         calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
         if len(calls) <= 2:
             stage = "text-output"
@@ -247,6 +261,8 @@ def test_split_fallback_restores_protected_placeholders(
     calls = 0
 
     def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        """二回切断後の分割要求へ保護markerを返し、分割ごとの保護断片復元を検証する。"""
+
         nonlocal calls
         calls += 1
         if calls <= 2:
@@ -295,9 +311,16 @@ def test_normal_chunk_protects_and_restores_protected_fragments(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
+    """通常Chunkでも送信前にURLを保護し、応答後に元のURLが正確に戻ることを検証する。"""
+
     prompts: list[str] = []
 
     def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        """
+        URLがpromptの対象本文からmarkerへ置換されたことを確認し、復元対象のmarkerを返す
+        。
+        """
+
         prompt = str(_args[-1])
         prompts.append(prompt)
         assert "https://example.com/path" not in prompt
@@ -329,6 +352,10 @@ def test_normal_chunk_protects_and_restores_protected_fragments(
 
 
 def test_placeholder_variants_are_canonicalized_before_restoration() -> None:
+    """
+    空白・大小文字・区切りの揺れを含む保護markerが正規化され、原文へ戻ることを検証する。
+    """
+
     response = translate.TranslationResponse(
         translations=[
             translate.TranslationItem(
@@ -359,6 +386,11 @@ def test_placeholder_variants_are_canonicalized_before_restoration() -> None:
 def test_placeholder_cardinality_and_unknown_tokens_fail_safely(
     text: str,
 ) -> None:
+    """
+    保護markerの個数不整合や未知tokenを拒否し、例外に保護対象の原文を含めないことを調べ
+    る。
+    """
+
     response = translate.TranslationResponse(
         translations=[translate.TranslationItem(id="inline-1", text=text)]
     )
@@ -380,9 +412,18 @@ def test_missing_placeholder_retries_before_failing_the_split_unit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
+    """
+    分割後の保護marker欠落を再試行で回復し、元のURLを保持して翻訳を完了するか検証する。
+    """
+
     calls = 0
 
     def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        """
+        切断・分割後のmarker欠落・正常応答を順に返し、同じ分割単位の再試行と次単位への遷
+        移を調べる。
+        """
+
         nonlocal calls
         calls += 1
         if calls <= 2:

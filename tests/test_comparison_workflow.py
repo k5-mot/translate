@@ -68,6 +68,11 @@ def test_comparison_split_failure_defaults_to_its_input_role(
     def fake_split(
         _source: Path, output_dir: Path, _pages: int, *, role: str
     ) -> dict[str, list[dict[str, str]]]:
+        """
+        指定roleのSPLITだけを対象情報なしで失敗させ、他方はpartを保存して失敗帰属を検証
+        する。
+        """
+
         if role == failed_role:
             message = "private input body"
             raise RuntimeError(message)
@@ -119,15 +124,23 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         detached: bool = False,
         **_kwargs: object,
     ) -> Iterator[None]:
+        """
+        観測名とdetached指定を記録し、実SDKを使わずWorkflowとTaskの観測境界を調べる。
+        """
+
         observations.append((name, detached))
         yield
 
     def side(path: Path) -> str:
+        """中間成果物のpathから原文側か訳文側かを判別し、Task呼出数を分けて集計する。"""
+
         return "source" if "source" in path.parts else "target"
 
     def fake_split(
         source: Path, output_dir: Path, _pages: int, *, role: str
     ) -> dict[str, list[dict[str, str]]]:
+        """入力roleを確認して分割回数を数え、後続nodeへ渡すpartのダミーを保存する。"""
+
         name = source.stem
         assert role in {"source_en", "translation_ja"}
         counts[f"{name}_split"] += 1
@@ -138,6 +151,8 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     def fake_docling(
         _parts: list[Path], output_dir: Path, _settings: object
     ) -> list[Path]:
+        """側別にDocling呼出数を数え、外部送信なしで応答ZIPの代替Fileを作る。"""
+
         branch = side(output_dir)
         counts[f"{branch}_docling"] += 1
         archive = output_dir / "result.zip"
@@ -145,6 +160,8 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         return [archive]
 
     def fake_unpack(archives: list[Path]) -> list[Path]:
+        """側別に展開回数を数え、応答ZIPの隣へ文書JSONの代替Fileを作る。"""
+
         branch = side(archives[0])
         counts[f"{branch}_unpack"] += 1
         document = archives[0].parent / "document.json"
@@ -152,7 +169,13 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         return [document]
 
     def passthrough(name: str) -> Callable[..., Path]:
+        """Task名に応じた呼出数の記録と一度だけのPOSITION障害を持つdoubleを返す。"""
+
         def task(_source: Path, output_dir: Path, *_args: object) -> Path:
+            """
+            訳文側POSITIONの初回だけ失敗し、再開時はJSONを返して再実行範囲を検証する。
+            """
+
             nonlocal failed_once
             branch = side(output_dir)
             counts[f"{branch}_{name}"] += 1
@@ -167,6 +190,8 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         return task
 
     def fake_merge(_documents: list[Path], _source: Path, output_dir: Path) -> Path:
+        """側別に統合回数を数え、内容抽出に依存しない文書JSONを保存する。"""
+
         branch = side(output_dir)
         counts[f"{branch}_merge"] += 1
         result = output_dir / "document.json"
@@ -174,6 +199,8 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         return result
 
     def fake_load(_source: Path, output_dir: Path) -> Document:
+        """側別にLOAD回数を数え、後続Graphが読める共通文書Artifactを保存する。"""
+
         branch = side(output_dir)
         counts[f"{branch}_load"] += 1
         document = Document(pages=[Page(number=2)])
@@ -185,6 +212,8 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     def fake_align(
         _source: object, _target: object, output_dir: Path, _settings: object
     ) -> list[object]:
+        """対応付けの呼出数を数え、空のGroup Artifactでreportまで接続する。"""
+
         counts["align"] += 1
         atomic_write_json(output_dir / "alignment.json", [])
         return []
@@ -192,10 +221,14 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     def fake_check(
         _document: object, _glossary: object, _output_dir: Path
     ) -> dict[int, list[object]]:
+        """決定的検査の呼出数を数え、外部要因のない指摘0件を返す。"""
+
         counts["check"] += 1
         return {}
 
     def fake_review(*_args: object) -> dict[int, list[object]]:
+        """モデルを呼ばずReviewの実行数を数え、指摘0件を返す。"""
+
         counts["review"] += 1
         return {}
 
@@ -206,6 +239,10 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
         output: Path,
         _work: Path,
     ) -> Path:
+        """
+        公開reportの出力回数を数え、再開後に生成を確認できる固定Markdownを保存する。
+        """
+
         counts["report"] += 1
         atomic_write_text(output, "# report\n")
         return output

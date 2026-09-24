@@ -96,7 +96,9 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
         original_validate = pdf.validate
 
         def injected_validate(path: Path) -> None:
-            """指定入力だけ暗号化相当または読取り不能の例外を返し、他のPDFは通常検証する。"""
+            """
+            指定入力だけ暗号化相当または読取り不能の例外を返し、他のPDFは通常検証する。
+            """
 
             if path.name == invalid.name:
                 error_type = (

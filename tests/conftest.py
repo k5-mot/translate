@@ -47,7 +47,9 @@ def settings_factory(tmp_path: Path) -> Callable[..., Settings]:
     """Testごとに隔離したSettingsを生成する。"""
 
     def create(**updates: object) -> Settings:
-        """Test専用Template保存先を既定値に、ケース固有の設定を上書きしたSettingsを作る。"""
+        """
+        Test専用Template保存先を既定値に、ケース固有の設定を上書きしたSettingsを作る。
+        """
 
         values: dict[str, object] = {"templates_dir": tmp_path / "templates"}
         values.update(updates)

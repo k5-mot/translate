@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 def _item(
     ref: str, text: str, left: float, top: float, label: str = "text"
 ) -> dict[str, object]:
+    """左上原点の固定寸法bboxを持つ要素を作り、段組・領域・断片間隔の条件を制御する。"""
+
     return {
         "self_ref": ref,
         "label": label,

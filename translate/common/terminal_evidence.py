@@ -572,6 +572,8 @@ def run_detached(
 
 
 def _run_id_from_heartbeat(path: Path | None) -> str | None:
+    """Heartbeat内のRun IDをUUIDv7として検証し、未指定・不正な記録は採用しない。"""
+
     if path is None:
         return None
     value = load_json(path)

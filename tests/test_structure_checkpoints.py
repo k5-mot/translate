@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 
 
 def _document() -> Document:
+    """
+    ページ2・3を本文markerで区別できる文書を作り、再推論したページを追跡可能にする。
+    """
+
     return Document(
         pages=[
             Page(
@@ -38,11 +42,17 @@ def _document() -> Document:
 
 
 def _render(_source: Path, _page: int, output: Path) -> Path:
+    """実PDFを描画せず小さなPNGを用意し、構造推定の再開試験を入力画像から独立させる。"""
+
     Image.new("RGB", (8, 8), "white").save(output)
     return output
 
 
 def _page_from_user(args: tuple[object, ...]) -> int:
+    """
+    構造推定prompt内のfixture markerから対象ページを読み取り、モデル呼出履歴に使う。
+    """
+
     user = args[4]
     assert isinstance(user, str)
     return 2 if "PAGE-2" in user else 3
@@ -117,6 +127,11 @@ def test_structure_resume_reuses_only_completed_page_checkpoints(
     failing = True
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページ3だけを停止条件付きで失敗させ、既存Page Cacheの再利用範囲を呼出履歴で調べ
+        る。
+        """
+
         page = _page_from_user(args)
         calls.append(page)
         if page == 3 and failing:
@@ -165,6 +180,10 @@ def test_structure_reprocesses_incompatible_or_corrupt_page_checkpoint(
     failing = True
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページ2成功後にページ3を失敗させ、条件変更後の再推論を記録できる中断状態を作る。
+        """
+
         page = _page_from_user(args)
         calls.append(page)
         if page == 3 and failing:
@@ -207,6 +226,10 @@ def test_structure_old_run_without_page_progress_starts_normally(
     calls: list[int] = []
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページごとに正常な空patchを返し、既存Page記録なしでの初回処理順を記録する。
+        """
+
         calls.append(_page_from_user(args))
         return structure.StructureResponse()
 

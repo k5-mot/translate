@@ -38,6 +38,17 @@
 - CRITICAL: task 2.2。全対象完了後の最終検査と意味確認の証拠。
 - CRITICAL: task 2.3。実translation→Word PDF→reviewと利用者目視の完了証拠。
 
-## 判定
+## Test説明と再発防止検査の追加
 
-1/8 tasks完了。目的説明の追加だけで再実装・二重状態管理・common配置の指摘は解消しない。未実装と実検証不足を残してarchive・main merge・pushはしない。
+- Test側の残る272関数を確認し、260関数へdocstring、空のdouble 12関数へ説明Commentを追加した。空のdoubleはpass/returnの実行構文を維持した。既存説明の全件の意味確認は別途継続する。
+- 同名の入れ子関数に対する短いpatch contextが曖昧で、目的説明を取り違えた箇所があった。親関数とclassを含む完全名で追加対象を照合して修正した。前回commitのatomic File/directory障害注入の説明も入れ替わっていたため訂正した。AST一致だけでは説明の正しさを証明できないことを検査方針へ反映した。
+- 公開入口・translate・testsを対象とした存在検査は93 files・967関数（未追跡の手動probeを含む）で欠落0件。noqa/type ignore/記号だけのComment、空白docstring、無関係な行のCommentは合格にしない。非公開・async・特殊method・入れ子・decorator前の説明を含む17ケースを追加した。
+- 実行文字列の棚卸しで、adapter診断のexec 2関数とStreamlit AppTestの1関数へ説明を補足した。診断childの文字列には関数定義がないことを確認した。通常のTest文字列fixtureは実行対象と混同しない。lambda全件の意味確認は未完了。
+- 開始時の92 filesとの比較では、docstringおよび上記3つの実行文字列内Commentを除いたASTの変更は、再発防止検査を追加した`tests/test_documentation.py`だけだった。製品の実行ASTは変更していない。
+- 最終検査: Ruff合格、Format 307 files合格、ty合格、pytest **401 passed, 1 skipped（25.70秒）**、OpenSpec strict valid、diff check指摘なし。
+- indexのPython全件も存在検査した。別の未commit診断修正で削除予定の`_run_id_from_heartbeat`がHEAD側にだけ残っていたため、削除は取り込まず旧関数の説明だけをstageして、indexも欠落0件とした。既存の未commit機能差分は維持し、今回のcommitへ混ぜない。
+- 実translation session 40709は引き続きlive。最新の検索Artifactは`page-0016-chunk-0003.json`（03:12:10 JST）。Task完了、Word PDF化、Comparison Reviewの完了証拠にはしない。
+
+## 更新後の残作業と判定
+
+2/8 tasks完了。task 2.1は完了したが、1.1/1.3/1.4の既存説明を含む全件の意味確認、1.5のlambda全件確認、2.2の最終監査、2.3の実E2Eと目視が未完了。目的説明の追加だけで再実装・二重状態管理・common配置の指摘は解消しない。未実装と実検証不足を残してarchive・main merge・pushはしない。

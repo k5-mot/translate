@@ -40,7 +40,10 @@ def _document(prefix: str, texts: list[str]) -> Document:
 def _assert_partition(
     groups: list[AlignmentGroup], source: Document, target: Document
 ) -> None:
-    """対応Groupが両文書の全Blockを過不足なく含み、同じ側のIDを重複使用しないことを確認する。"""
+    """
+    対応Groupが両文書の全Blockを過不足なく含み、同じ側のIDを重複使用しないことを確認する
+    。
+    """
 
     source_ids = [item for group in groups for item in group.source_ids]
     target_ids = [item for group in groups for item in group.target_ids]

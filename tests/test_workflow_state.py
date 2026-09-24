@@ -21,6 +21,11 @@ def _checkpoint(
     initial: dict[str, object],
     database: Path,
 ) -> bytes:
+    """
+    指定stateを持つ最小GraphをSQLiteへ保存し、本文混入を調べるためdatabaseのbyte列を返す
+    。
+    """
+
     graph = StateGraph(state_type)
     graph.add_node("finish", lambda _state: {"current_task": "TEST"})
     graph.add_edge(START, "finish")
@@ -108,6 +113,10 @@ def test_checkpoint_commit_failure_keeps_single_task_result_without_partial(
     task_calls = 0
 
     def task(_state: TranslationState) -> dict[str, object]:
+        """
+        完全なTask成果物を公開して呼出数を数え、直後のcheckpoint保存失敗の影響を調べる。
+        """
+
         nonlocal task_calls
         task_calls += 1
         with atomic_directory(output) as temporary:
@@ -127,6 +136,11 @@ def test_checkpoint_commit_failure_keeps_single_task_result_without_partial(
         put_calls = 0
 
         def fail_after_task(*args: object, **kwargs: object) -> object:
+            """
+            二回目のcheckpoint書込みだけ失敗させ、同一invoke内の再実行と部分公開を検査す
+            る。
+            """
+
             nonlocal put_calls
             put_calls += 1
             if put_calls == 2:

@@ -80,6 +80,10 @@ def _is_link(path: Path) -> bool:
 
 
 def _reject_link(path: Path) -> None:
+    """
+    履歴Artifactがlinkやjunctionなら拒否し、複製・診断が意図しない保存先へ及ぶのを防ぐ。
+    """
+
     if _is_link(path):
         msg = "linked historical artifact is not allowed"
         raise ValueError(msg)
@@ -135,6 +139,8 @@ def _backup_database(source: Path, destination: Path) -> None:
 
 
 def _verify_database(connection: sqlite3.Connection) -> None:
+    """SQLiteの整合性検査に失敗したbackupを拒否し、不正な複製でResume検証を進めない。"""
+
     if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
         msg = "historical checkpoint backup failed integrity check"
         raise sqlite3.DatabaseError(msg)
@@ -188,6 +194,10 @@ def _path_updates(
 
 
 def _table_counts(database: Path) -> dict[str, int]:
+    """
+    Checkpointとpending writeの件数を取得して接続を閉じ、履歴複製前後の比較に使う。
+    """
+
     connection = sqlite3.connect(database)
     try:
         checkpoints = connection.execute("SELECT count(*) FROM checkpoints").fetchone()[
@@ -200,6 +210,8 @@ def _table_counts(database: Path) -> dict[str, int]:
 
 
 def _workflow_config(root: Path) -> dict[str, object]:
+    """保存されたthread IDを読み、単一同時実行で履歴Graphを再開する設定を作る。"""
+
     workflow = json.loads(
         (root / ".workspace" / "workflow.json").read_text(encoding="utf-8")
     )
@@ -239,12 +251,16 @@ def _clone_historical_run(
 
 
 def _ensure_pending_structure(nodes: tuple[str, ...], boundary: str) -> None:
+    """次nodeがSTRUCTUREだけであることを確認し、異なる再開位置のfixtureを誤用しない。"""
+
     if nodes != ("structure",):
         msg = f"{boundary} checkpoint is not pending STRUCTURE"
         raise ValueError(msg)
 
 
 def _page(number: int) -> Page:
+    """番号でIDを区別した小さな文書ページを作り、全ページ入力と推論範囲を検証する。"""
+
     return Page(
         number=number,
         blocks=[
@@ -335,6 +351,8 @@ def _offline_model(
     """Strict-schema応答を返す実ChatOpenAI stackを計測する。"""
 
     def handler(_request: object) -> httpx2.Response:
+        """実HTTP送信なしで構造応答を返し、呼出数と最大同時実行数を記録する。"""
+
         concurrency["active"] += 1
         concurrency["maximum"] = max(concurrency["maximum"], concurrency["active"])
         concurrency["calls"] += 1
@@ -378,9 +396,15 @@ def _offline_model(
 
     class BoundModel:
         def __init__(self, inner: object) -> None:
+            """bind済み実Modelを保持し、送受信境界の観測だけを追加できるようにする。"""
+
             self.inner = inner
 
         def invoke(self, messages: object, *args: object, **kwargs: object) -> object:
+            """
+            実Modelへ委譲して送信・応答の境界を記録し、SDK経路が一回だけ通るか検証する。
+            """
+
             boundaries.append("invoke")
             result = self.inner.invoke(messages, *args, **kwargs)  # type: ignore[attr-defined]
             boundaries.append("response")
@@ -388,6 +412,8 @@ def _offline_model(
 
     class Model:
         def bind(self, *args: object, **kwargs: object) -> BoundModel:
+            """実Modelのbindに委譲し、bind回数と後続送信を追跡するprobeを返す。"""
+
             boundaries.append("bind")
             return BoundModel(model.bind(*args, **kwargs))
 
@@ -395,6 +421,8 @@ def _offline_model(
 
 
 def _render_page(_source: Path, _page: int, output: Path, _dpi: int = 120) -> Path:
+    """実PDF描画を小さなPNGへ置き換え、履歴ResumeのSDK経路を画像内容から独立させる。"""
+
     output.parent.mkdir(parents=True, exist_ok=True)
     with Image.new("RGB", (32, 32), "white") as image:
         image.save(output, format="PNG")
@@ -444,6 +472,10 @@ def historical_settings(
     tmp_path: Path,
     settings_factory: Callable[..., Settings],
 ) -> Settings:
+    """
+    実サービスへ接続しないModel設定と構造規則を用意し、履歴Testの試行条件を固定する。
+    """
+
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "structure-rules.md").write_text("offline rules", encoding="utf-8")
@@ -496,14 +528,20 @@ def test_historical_checkpoint_clone_is_read_only_and_rebased(
 
 
 def _set_outside(values: dict[str, Any], outside: Path) -> None:
+    """文書入力pathを領域外へ改変し、履歴stateのpath検証が拒否するか調べる。"""
+
     values["source"] = str(outside)
 
 
 def _set_unknown_body(values: dict[str, Any], _outside: Path) -> None:
+    """許可されない本文keyを履歴stateへ混ぜ、文書本文の持込み拒否を検証する。"""
+
     values["body"] = "secret text"
 
 
 def _set_binary(values: dict[str, Any], _outside: Path) -> None:
+    """小さなmetadata欄へbinaryを混ぜ、履歴stateの型制約を検証する。"""
+
     values["current"] = b"binary"
 
 
@@ -555,6 +593,8 @@ def test_historical_clone_removes_partial_copy_on_link_or_copy_failure(
     monkeypatch.setattr(f"{__name__}._is_link", lambda _path: False)
 
     def fail_copy(*_args: object, **_kwargs: object) -> None:
+        """履歴Artifactのcopyを失敗させ、不完全な複製が片付けられるか確認する。"""
+
         message = "copy failed"
         raise OSError(message)
 
@@ -596,6 +636,8 @@ def test_fresh_full_document_reuses_page_checkpoint_and_sdk_once(
     model, http_client = _offline_model(boundaries, concurrency)
 
     def model_factory(*_args: object) -> object:
+        """新規実行でのModel構築を記録し、準備済みのオフラインModelへ接続する。"""
+
         boundaries.append("build")
         return model
 
@@ -603,6 +645,8 @@ def test_fresh_full_document_reuses_page_checkpoint_and_sdk_once(
     real_parse = llm.PydanticOutputParser.parse
 
     def parse_once(parser: object, value: str) -> object:
+        """新規実行での解析回数を記録し、実parserへ委譲して結果の意味を変えない。"""
+
         boundaries.append("parse")
         return real_parse(parser, value)  # type: ignore[arg-type]
 
@@ -656,6 +700,8 @@ def test_historical_resume_crosses_full_document_and_wrappers_once(
     model, http_client = _offline_model(boundaries, concurrency)
 
     def model_factory(*_args: object) -> object:
+        """履歴ResumeでのModel構築を記録し、準備済みのオフラインModelへ接続する。"""
+
         boundaries.append("build")
         return model
 
@@ -663,6 +709,10 @@ def test_historical_resume_crosses_full_document_and_wrappers_once(
     real_parse = llm.PydanticOutputParser.parse
 
     def parse_once(parser: object, value: str) -> object:
+        """
+        履歴Resumeでの解析回数を記録し、実parserへ委譲して一回だけ解析するか調べる。
+        """
+
         boundaries.append("parse")
         return real_parse(parser, value)  # type: ignore[arg-type]
 
@@ -750,6 +800,11 @@ def test_public_lifecycle_reaches_post_structure_boundary_without_typeerror(
         _callback: object,
         workspace: Path,
     ) -> Path:
+        """
+        公開LifecycleからSTRUCTURE完了と次のTRANSLATE位置まで進め、意図した例外で境界を
+        止める。
+        """
+
         updates, next_nodes, _statuses = _resume_structure(
             workspace.parent,
             settings,

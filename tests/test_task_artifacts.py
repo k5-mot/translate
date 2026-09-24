@@ -44,6 +44,8 @@ def test_task_directory_is_not_replaced_before_validation(
     (output / "document.json").write_text("old-complete", encoding="utf-8")
 
     def fail(name: str, _path: Path) -> None:
+        """成果物の置換段階だけを失敗させ、Taskが旧完全版を維持するか検証する。"""
+
         if name == "replace":
             msg = "injected replace failure"
             raise RuntimeError(msg)

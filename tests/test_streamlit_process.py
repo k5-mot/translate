@@ -16,6 +16,8 @@ import main
 
 
 def _free_port() -> int:
+    """loopbackで一時bindして空きport候補を得る。返却後のport予約は保持しない。"""
+
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])

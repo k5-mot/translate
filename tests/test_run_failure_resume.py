@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 
 def _templates(root: Path) -> Path:
+    """Runの互換性判定に必要なTemplate群を用意し、外部障害と設定不足を切り離す。"""
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -59,6 +61,11 @@ def test_external_failure_stops_run_and_resumes_after_qdrant_change(
         callback: ProgressCallback | None,
         workspace_dir: Path | None,
     ) -> Path:
+        """
+        初回は中間成果物を残して失敗し、再開時は同じ保存先の成果物から完了する代替Workfl
+        ow。
+        """
+
         nonlocal attempts
         attempts += 1
         assert workspace_dir is not None

@@ -22,14 +22,18 @@ if TYPE_CHECKING:
 
 class _Observation:
     def update(self, **_kwargs: object) -> None:
+        # 観測更新を無処理で受け、秘匿検査をSDKへ渡すmetadataの内容に限定する。
         pass
 
 
 class _Manager:
     def __enter__(self) -> _Observation:
+        """更新を受理する観測doubleを返し、実SDKなしで観測contextを開始する。"""
+
         return _Observation()
 
     def __exit__(self, *_args: object) -> None:
+        # 外部終了処理を行わず観測contextを閉じ、発生した例外も抑止しない。
         pass
 
 
@@ -113,6 +117,10 @@ def test_trace_metadata_is_redacted_before_sdk_call(
 
     class Client:
         def start_as_current_observation(self, **kwargs: object) -> _Manager:
+            """
+            SDKへ渡る引数を捕捉し、観測開始前に秘密値・本文・画像が除去されたか調べる。
+            """
+
             captured.update(kwargs)
             return _Manager()
 
