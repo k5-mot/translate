@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from translate.adapters.llm import LLMError, structured
 from translate.adapters.qdrant import search
 from translate.common.workspace import atomic_directory, atomic_write_json
-from translate.document import Document, Finding, inline_text
+from translate.document import Document, Finding, block_text_units
 from translate.tasks.base import BaseTask
 from translate.tasks.check import GlossaryEntry, matching_glossary
 
@@ -125,14 +125,12 @@ class ReviewTask(BaseTask):
                         continue
                     pairs = [
                         {
-                            "id": block.id,
-                            "source": inline_text(block.source),
-                            "translation": inline_text(
-                                block.translated or block.source
-                            ),
+                            "id": unit.id,
+                            "source": unit.text("source"),
+                            "translation": unit.text("translated"),
                         }
                         for block in page.blocks
-                        if block.source
+                        for unit in block_text_units(block)
                     ]
                     if not pairs:
                         results[page.number] = []

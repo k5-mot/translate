@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 from translate.adapters.llm import structured
 from translate.common.redaction import safe_failure_reason
 from translate.common.workspace import atomic_directory, atomic_write_json
-from translate.document import Document, Page, inline_text
+from translate.document import Document, Page, block_text_units
 from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
@@ -28,6 +28,8 @@ class VerifyResponse(BaseModel):
 
 
 def _revert(page: Page, error: str) -> None:
+    """不承認ページの本文・caption・セルを修正前の訳へ戻す。"""
+
     for block in page.blocks:
         block.final = block.translated
         block.final_caption = block.translated_caption
@@ -62,15 +64,13 @@ class VerifyTask(BaseTask):
                 if findings.get(page.number):
                     pairs = [
                         {
-                            "id": block.id,
-                            "source": inline_text(block.source),
-                            "before": inline_text(block.translated or block.source),
-                            "candidate": inline_text(
-                                block.final or block.translated or block.source
-                            ),
+                            "id": unit.id,
+                            "source": unit.text("source"),
+                            "before": unit.text("translated"),
+                            "candidate": unit.text("final"),
                         }
                         for block in page.blocks
-                        if block.source
+                        for unit in block_text_units(block)
                     ]
                     try:
                         response = structured(

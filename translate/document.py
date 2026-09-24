@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 InlineKind = Literal["text", "code", "link", "line_break"]
 InlineMark = Literal[
@@ -131,6 +135,53 @@ def inline_text(values: list[Inline]) -> str:
     """
 
     return "".join("\n" if item.kind == "line_break" else item.text for item in values)
+
+
+@dataclass(frozen=True)
+class TextUnit:
+    """本文・caption・セルの既存翻訳層を参照する非永続の検査単位。"""
+
+    id: str
+    source: list[Inline]
+    translated: list[Inline] | None
+    final: list[Inline] | None
+
+    def text(self, layer: Literal["source", "translated", "final"]) -> str:
+        """未作成の層だけを前層で補い、空訳や空の修正候補は保持する。"""
+
+        values = self.source
+        if layer != "source" and self.translated is not None:
+            values = self.translated
+        if layer == "final" and self.final is not None:
+            values = self.final
+        return inline_text(values)
+
+
+def block_text_units(block: Block) -> Iterator[TextUnit]:
+    """本文・caption・行列順のセルを、結合セルの起点につき一度列挙する。"""
+
+    units = [
+        TextUnit(block.id, block.source, block.translated, block.final),
+        TextUnit(
+            f"{block.id}/caption",
+            block.caption,
+            block.translated_caption,
+            block.final_caption,
+        ),
+    ]
+    units.extend(
+        TextUnit(
+            f"{block.id}/cell/{cell.row}/{cell.column}",
+            cell.source,
+            cell.translated,
+            cell.final,
+        )
+        # 結合範囲へ展開せず、保存済みの起点セルだけを読む。
+        for cell in sorted(block.cells, key=lambda cell: (cell.row, cell.column))
+    )
+    for unit in units:
+        if unit.source or unit.translated or unit.final:
+            yield unit
 
 
 def block_text(block: Block, *, final: bool = True) -> str:

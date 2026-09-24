@@ -165,6 +165,10 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 ## 実装方針の訂正
 
+### DATA-001の実装修正（2026-09-25）
+
+[include-table-and-caption-content-in-review](../include-table-and-caption-content-in-review/verification.md)で本文/caption/cellの共通列挙をCHECK/REVIEW/VERIFY/ALIGNと比較Documentへ適用した。セル単位の欠落、空訳、候補検証、表/captionだけの比較と片側欠落の追加29 Test、全体366 passed/1 skippedを確認。新実装の実translation→Word PDF→reviewと目視が未完了のためDATA-001は未解決のまま。FIXの指摘対象限定とVERIFYページ単位採否も別途是正が必要であり、今回の対象列挙だけで仕様全体の適合を宣言しない。
+
 ### ARCH-001の再整理要求（2026-09-25）
 
 利用者はcli/uiへの配置誘導ではなく、commonの過剰機能・整理不足そのものの是正を求めた。前のcli/ui新設推奨は今回の整理案から外し、[architecture-audit.mdの最新節](architecture-audit.md)に8moduleの保持・統合・削除候補と責務別配置を再記録した。重複hash、未使用API、製品の検証counter依存、二重の実行/失敗境界、暗黙callbackを縮小対象とする。要件上必要な排他・atomic保存・Resume判定・秘密保護は維持する。**配置・削減方針は未承認、製品変更と解決判定は行っていない。** Task併用と表の承認は維持する。

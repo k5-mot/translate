@@ -28,7 +28,7 @@ from translate.document import (
     Finding,
     Inline,
     Page,
-    inline_text,
+    block_text_units,
 )
 from translate.tasks import (
     align,
@@ -114,19 +114,31 @@ def _load_findings(path: str) -> dict[int, list[Finding]]:
 def _comparison_document(
     source: Document, target: Document, groups: list[AlignmentGroup]
 ) -> Document:
-    source_blocks = {block.id: block for page in source.pages for block in page.blocks}
-    target_blocks = {block.id: block for page in target.pages for block in page.blocks}
+    """対応Group内の本文・caption・セルを同じIDで比較用文書へ渡す。"""
+
+    source_units = {
+        unit.id: unit
+        for page in source.pages
+        for block in page.blocks
+        for unit in block_text_units(block)
+    }
+    target_units = {
+        unit.id: unit
+        for page in target.pages
+        for block in page.blocks
+        for unit in block_text_units(block)
+    }
     blocks: list[Block] = []
     for order, group in enumerate(groups):
         source_text = "\n".join(
-            inline_text(source_blocks[item].source)
+            source_units[item].text("source")
             for item in group.source_ids
-            if item in source_blocks
+            if item in source_units
         )
         target_text = "\n".join(
-            inline_text(target_blocks[item].source)
+            target_units[item].text("source")
             for item in group.target_ids
-            if item in target_blocks
+            if item in target_units
         )
         blocks.append(
             Block(

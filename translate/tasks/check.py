@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from translate.common.workspace import atomic_directory, atomic_write_json
-from translate.document import Document, Finding, inline_text
+from translate.document import Document, Finding, block_text_units
 from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
@@ -313,12 +313,13 @@ class CheckTask(BaseTask):
             for page in document.pages:
                 page_findings: list[Finding] = []
                 for block in page.blocks:
-                    target = block.translated or block.source
-                    page_findings.extend(
-                        deterministic_findings(
-                            inline_text(block.source), inline_text(target), glossary
+                    for unit in block_text_units(block):
+                        findings = deterministic_findings(
+                            unit.text("source"), unit.text("translated"), glossary
                         )
-                    )
+                        for finding in findings:
+                            finding.target_ids = [unit.id]
+                        page_findings.extend(findings)
                 results[page.number] = page_findings
             with atomic_directory(output_dir) as temporary:
                 for number, page_findings in results.items():

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from translate.adapters.llm import structured
 from translate.common.workspace import atomic_directory, atomic_write_json
-from translate.document import AlignmentGroup, Document, inline_text
+from translate.document import AlignmentGroup, Document, block_text_units
 from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
@@ -30,11 +30,14 @@ class AlignmentResponse(BaseModel):
 
 
 def _items(document: Document) -> list[tuple[str, str]]:
+    """原文層に文字のある本文・caption・セルを対応付け対象にする。"""
+
     return [
-        (block.id, inline_text(block.source))
+        (unit.id, text)
         for page in document.pages
         for block in page.blocks
-        if inline_text(block.source).strip()
+        for unit in block_text_units(block)
+        if (text := unit.text("source")).strip()
     ]
 
 
