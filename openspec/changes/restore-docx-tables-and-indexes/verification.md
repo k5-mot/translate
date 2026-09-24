@@ -210,3 +210,47 @@ PDFは28ページ。表紙1ページ、目次2ページ、図一覧3〜4ペー�
 LOADで既存の幾何情報からセルとの対応を確定し、Internal Documentに画像参照を保持して既存Pandocへ渡す案を調査した。割当済み画像の二重出力防止、asset参照検証、表示寸法も必要。commonや別保存Layer、別モデル要求の追加は前提にしない。
 
 `grill-with-docs`の判断確認として、所属セルが一意に決まらない場合に停止・Resume可能とするか、警告して表外へ残すかを利用者へ質問した。**回答待ちのため、新Changeの正式作成・製品実装には進んでいない。** 推奨は誤った表の公開を防ぐ停止だが、承認済みの要求として扱わない。用語の新規合意や採用判断もないため、Glossary/ADRは追加していない。
+
+## 実成果物Comparison Reviewの継続（2026-09-25）
+
+openspec-verify-changeで本Changeのproposal/specs/design/tasksを読み直し、task 5.5の未実施だった公開比較Reviewを開始した。**正式verifyは未完了・archive不可**。過去の実行結果と最新Codeでの検証を混同せず、tasksのチェック状態は変更しない。
+
+| 観点 | 現時点の結果 |
+| --- | --- |
+| Completeness | 14/16。4.3の利用者目視と5.5の実機連鎖完了が残る |
+| Correctness | 4 Requirementの実装・既存Test対応を再点検。実DOCXの一覧・改ページ・見出しstyleと資料110 stylesは再確認済み。表内画像の既知不備と未完了Reviewを残す |
+| Coherence | Markdown表は既存Pandocの構文木・writerへ委譲し、HTML・新依存なし。一覧は静的、ページ番号は生成しない。先行Word操作は製品機能を追加しない検証操作である |
+
+### 入力の同一性と実行順
+
+- 先行translation Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`のrun.jsonを読取り、status=completedを再確認した。実translationの終了コード0と非表示Microsoft WordでのPDF出力は先行節の記録を使用し、今回は再翻訳・再変換していない。
+- 原本`inputs/sample3.pdf`: 16 pages、5,284,914 bytes、SHA-256 `5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`。
+- DOCX `outputs/sample3-acceptance-v2/document.ja.docx`: 3,657,145 bytes、SHA-256 `02670602e0ac7f3edd65a9ee8a549a22f3bcb02dda29a52964124e606c0a6383`、ZIP CRC正常。
+- Word PDF `outputs/sample3-acceptance-v2/document.ja.pdf`: 28 pages、1,538,776 bytes、SHA-256 `c6ddeac815919742b20a95af5882832658261eed797a7732c0635fca543cbab4`。
+- 三つのhashは先行記録と一致した。PDFは導入済みpypdfium2で開いてページ数を確認し、内容の再生成や上書きはしていない。
+- HTTP 500の検索診断session 22682の終了コード0を取得し、ほかのCLI/診断childが実行中でないことを確認した後に比較Reviewを起動した。診断とReviewのモデル要求を並行させていない。
+
+### 公開Review
+
+- Command: `uv run python cli.py review inputs/sample3.pdf outputs/sample3-acceptance-v2/document.ja.pdf --output outputs/sample3-acceptance-v2/comparison-review-20260925.md`。
+- 出力reportは起動前に存在しないことを確認した。既存DOCX/PDFやreportは上書きしていない。
+- 新Run: `01a0d534-b9c9-7e60-9edf-7541d26b6e05`、追跡session `12758`。元PDFと今回検査した翻訳PDFの組を明示し、新規Runとして開始した。
+- 基点commit `d59b9175effbffd74559aa5746ca33410ede2ac3`。既存未コミットの製品4 filesは維持し、起動前hashは[Checkpoint実機記録](../sanitize-workflow-checkpoint-errors/verification.md)のllm.py/lifecycle.py/terminal_evidence.py/review.pyの4値と一致した。HEADだけの実行証拠ではない。今回の製品Code編集は0件。
+- context 30,208、request timeout 1,800秒、Task deadline 21,600秒。SOURCE/TARGETのSPLIT〜LOAD、ALIGN、CHECKの16/18 Taskまで完了し、REVIEWを継続中。SOURCE-DOCLING 26.806秒、TARGET-DOCLING 42.648秒。
+- `ALIGN model fallback failed; using deterministic order`の警告を05:57:49に確認した。対応付け品質の確認事項として保持し、無警告成功と報告しない。Qdrantの非TLS接続警告も継続している。
+- まだ終了コード・完成report・Finding照合は取得していない。5.5を完了にせず、最新翻訳がHTTP 500で失敗した事実もこの旧成果物の比較で相殺しない。
+
+### DOCX・仕様対応の再点検
+
+- 読取り専用XML検査で表3個、drawing 24個、field instruction/dirty属性/updateFieldsはいずれも0件。Heading1〜9のnumPrは9/9で除去、outlineLvlは9/9で保持されている。これは起動時ダイアログの利用者確認を代替しない。
+- 日本語の目次26項目・図一覧13項目・表一覧2項目を確認し、三つすべての直後に明示改ページがある。古い別成果物の表一覧1項目という記録とは対象hashが異なる。
+- `template.docx`のstyles.xmlと`template-style.md`のstyle ID・種別・表示名・継承元を全件比較し、110/110一致、資料内IDも110個で重複なし。
+- 縦結合・空隅セル/複数見出し・Inlineの各Scenarioは、`markdown._render_table/_table_row/_table_inlines`と`test_header_to_body_rowspan_preserves_columns_without_repeated_header`、`test_empty_corner_multiple_headers_and_body_row_headers`、`test_table_inlines_keep_links_code_marks_and_breaks`に対応する。今回はsource/assertを読み直した確認であり、新しい実行件数を主張しない。
+- 一覧・空一覧・番号のScenarioは`pandoc._index_entries/_populate_front_matter/_remove_heading_numbering`と既存`test_generated_table_and_indexes_survive_real_docx_conversion`等に対応する。既存TestはFigure 2開始を期待しており、本文図採番の残課題を検出するTestではない。
+
+### 継続する指摘と判定
+
+- CRITICAL: 4.3は利用者回答待ち、5.5は実Reviewの終端と内容確認待ち。両方の証拠が揃うまでarchiveしない。
+- 表内画像のセル外配置、本文図採番、テンプレートの仮ヘッダー/フッター、ARCH-001/ARCH-002等の最終解決は保留。今回は機能修正を行っていない。
+- Review結果が出た後、原本・DOCX・PDFとの代表Finding照合を行い、誤検出と実不具合を区別する。異なるrevisionの証拠だけで最新CodeのGateを完了にしない。
+- 記録更新後の文書Testは21 passed（0.25秒）。本ChangeとCheckpoint ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。製品Code未変更のため全製品suiteは再実行せず、実Reviewは同じsession 12758のlive handleで継続を確認した。文書品質の合格を正式verifyの成功とは扱わない。
