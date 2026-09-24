@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 
 def _templates(root: Path) -> Path:
+    """fingerprintに必要な規則・用語集・TemplateのダミーFileを隔離領域へ用意する。"""
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -40,6 +42,8 @@ def _fake_translation(
     _callback: ProgressCallback | None = None,
     _workspace_dir: Path | None = None,
 ) -> Path:
+    """外部翻訳を使わず固定byte列の成果物を作り、Run選択・export・削除の検証へ集中する。"""
+
     result = output_dir / "document.ja.docx"
     atomic_write_bytes(result, b"completed document")
     return result

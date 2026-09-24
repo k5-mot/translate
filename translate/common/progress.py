@@ -89,6 +89,8 @@ class WorkflowProgress:
         callback: ProgressCallback | None,
         completed: list[str] | None = None,
     ) -> None:
+        """slot表と通知先を保持し、受け取った完了Taskから通知重複の抑止集合を初期化する。"""
+
         self.slots = slots
         self.callback = callback
         self.completed = set(completed or [])

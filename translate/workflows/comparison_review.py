@@ -89,10 +89,14 @@ COMPARISON_SLOTS = {task: index for index, task in enumerate(COMPARISON_TASKS, s
 
 
 def _load_document(path: str) -> Document:
+    """Checkpointのpathが指す文書Artifactを読み、Document schemaで検証してTaskへ渡す。"""
+
     return Document.model_validate_json(Path(path).read_text(encoding="utf-8"))
 
 
 def _save_findings(path: Path, values: dict[int, list[Finding]]) -> str:
+    """ページ別指摘をJSONへ原子的に保存し、文書本体をGraph stateへ入れず保存pathを返す。"""
+
     atomic_write_json(
         path,
         {
@@ -104,6 +108,8 @@ def _save_findings(path: Path, values: dict[int, list[Finding]]) -> str:
 
 
 def _load_findings(path: str) -> dict[int, list[Finding]]:
+    """保存済みのページ別指摘をschema検証し、JSONのページkeyを整数へ復元する。"""
+
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     return {
         int(page): [Finding.model_validate(item) for item in items]
@@ -114,7 +120,7 @@ def _load_findings(path: str) -> dict[int, list[Finding]]:
 def _comparison_document(
     source: Document, target: Document, groups: list[AlignmentGroup]
 ) -> Document:
-    """対応Group内の本文・caption・セルを同じIDで比較用文書へ渡す。"""
+    """対応GroupのIDで本文・caption・セルを集め、Group単位の比較用Blockへ組み直す。"""
 
     source_units = {
         unit.id: unit
@@ -155,7 +161,7 @@ def _comparison_document(
 def build_graph(
     settings: Settings,
 ) -> StateGraph[ComparisonState]:  # ty: ignore[invalid-type-arguments]
-    """左右parse branchをALIGNへ合流させるgraphを返す。"""
+    """両PDFの検証後に原文・訳文を逐次抽出し、対応付けと検査へ進むGraphを返す。"""
 
     # `ty` does not yet expose TypedDict's runtime key attributes to LangGraph's stub.
     graph = StateGraph(ComparisonState)  # ty: ignore[invalid-argument-type]
@@ -163,7 +169,11 @@ def build_graph(
     def tracked(
         name: str, function: Callable[[ComparisonState], dict[str, Any]]
     ) -> None:
+        """Task通知と観測を付けたnodeを登録し、Task本体とGraphへの接続を分離する。"""
+
         def wrapped(state: ComparisonState) -> dict[str, Any]:
+            """開始・成否を通知してTaskを実行し、成功時だけ完了名をGraph state更新に添える。"""
+
             report_task_status(TaskStatusEvent(name, "started"))
             try:
                 with (
@@ -207,9 +217,13 @@ def build_graph(
         graph.add_node(name.lower().replace("-", "_"), wrapped)
 
     def branch_root(state: ComparisonState, side: str) -> Path:
+        """原文側と訳文側の中間成果物を混在させないよう、それぞれの保存directoryを返す。"""
+
         return Path(state["workspace_dir"]) / side
 
     def split_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側のPDFを検証・分割し、生成partのpathだけを次のnodeへ渡す。"""
+
         root = branch_root(state, side)
         manifest = split.run(
             Path(state[side]),  # ty: ignore[invalid-key]
@@ -220,17 +234,23 @@ def build_graph(
         return {f"{side}_parts": [item["path"] for item in manifest["parts"]]}
 
     def docling_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側のPDF partを逐次Doclingへ送り、応答ZIPのpathをGraph stateへ返す。"""
+
         root = branch_root(state, side)
         parts = state[f"{side}_parts"]  # ty: ignore[invalid-key]
         values = docling.run([Path(item) for item in parts], root / "docling", settings)
         return {f"{side}_archives": [str(item) for item in values]}
 
     def unpack_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側の応答ZIPを安全に展開し、抽出された文書JSONのpathを返す。"""
+
         archives = state[f"{side}_archives"]  # ty: ignore[invalid-key]
         values = unpack.run([Path(item) for item in archives])
         return {f"{side}_documents": [str(item) for item in values]}
 
     def merge_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側の抽出結果を原本PDFに対応させて統合し、統合JSONのpathを返す。"""
+
         root = branch_root(state, side)
         documents = state[f"{side}_documents"]  # ty: ignore[invalid-key]
         value = merge.run(
@@ -241,6 +261,8 @@ def build_graph(
         return {f"{side}_merged": str(value)}
 
     def position_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側の統合文書の座標と読み順を補正し、補正済みArtifactのpathを返す。"""
+
         root = branch_root(state, side)
         source = state[f"{side}_merged"]  # ty: ignore[invalid-key]
         return {
@@ -248,6 +270,8 @@ def build_graph(
         }
 
     def normalize_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側の文書から不要要素を除去・整形し、正規化したJSONのpathを返す。"""
+
         root = branch_root(state, side)
         source = state[f"{side}_positioned"]  # ty: ignore[invalid-key]
         return {
@@ -255,12 +279,16 @@ def build_graph(
         }
 
     def load_node(state: ComparisonState, side: str) -> dict[str, Any]:
+        """指定側の正規化JSONを共通文書Modelへ変換・保存し、そのArtifactのpathを返す。"""
+
         root = branch_root(state, side)
         source = state[f"{side}_normalized"]  # ty: ignore[invalid-key]
         load.run(Path(source), root / "load")
         return {f"{side}_document_path": str(root / "load" / "document.json")}
 
     def align_node(state: ComparisonState) -> dict[str, Any]:
+        """原訳文の対応Groupと比較用文書を保存し、後続検査に必要な二つのpathを返す。"""
+
         work = Path(state["workspace_dir"])
         source = _load_document(state["source_document_path"])
         target = _load_document(state["target_document_path"])
@@ -274,6 +302,8 @@ def build_graph(
         }
 
     def check_node(state: ComparisonState) -> dict[str, Any]:
+        """対応済み原訳文の決定的検査を行い、ページ別指摘を保存してpathを返す。"""
+
         work = Path(state["workspace_dir"])
         values = check.run(
             _load_document(state["comparison_path"]),
@@ -285,6 +315,8 @@ def build_graph(
         }
 
     def review_node(state: ComparisonState) -> dict[str, Any]:
+        """対応済み原訳文・CHECK指摘・規則・用語集をLLM Reviewへ渡し、結果の保存pathを返す。"""
+
         work = Path(state["workspace_dir"])
         checks = _load_findings(state["checks_path"])
         values = review.run(
@@ -300,6 +332,8 @@ def build_graph(
         }
 
     def report_node(state: ComparisonState) -> dict[str, Any]:
+        """保存された対応Groupと両検査結果から、比較reportとその中間成果物を出力する。"""
+
         work = Path(state["workspace_dir"])
         groups = [
             AlignmentGroup.model_validate(item)

@@ -29,10 +29,14 @@ app = typer.Typer(no_args_is_help=True, help="英語PDFを日本語化するユ�
 
 
 def _progress(event: ProgressEvent) -> None:
+    """Workflowから受けた進捗値とTask名を、再計算せず端末へ表示する。"""
+
     typer.echo(f"[{event.current}/{event.total}] {event.task}: {event.message}")
 
 
 def _is_interactive() -> bool:
+    """標準入出力がともに端末のときだけ、確認質問を許可する。"""
+
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
@@ -44,6 +48,8 @@ def _candidate_resume(  # noqa: C901, PLR0912, PLR0913, PLR0917
     backend: Backend,
     source_id: str | None = None,
 ) -> str | None:
+    """対話時のみ同一入力の候補を示し、互換Runの明示確認が得られた場合だけIDを返す。"""
+
     if not _is_interactive():
         return None
     candidates = candidates_for(
@@ -84,6 +90,8 @@ def _prepare(  # noqa: PLR0913, PLR0917
     resume: str | None,
     source_id: str | None = None,
 ) -> tuple[RunRepository, PreparedRun]:
+    """明示Resumeまたは対話選択を共通準備処理へ渡し、拒否理由をCLI引数エラーへ変換する。"""
+
     repository = RunRepository(settings.runs_dir)
     selected = resume or _candidate_resume(
         repository, operation, inputs, settings, backend, source_id

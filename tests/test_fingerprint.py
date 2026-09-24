@@ -29,6 +29,8 @@ def _fingerprint(
     *,
     backend: Backend = "llm",
 ) -> Fingerprint:
+    """規則・用語集・Templateを固定し、設定とbackendの差だけを比較できるfingerprintを作る。"""
+
     rule = tmp_path / "translation-rules.md"
     template = tmp_path / "template.docx"
     glossary = tmp_path / "glossary.csv"

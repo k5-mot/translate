@@ -128,6 +128,8 @@ class RunRepository:
     """Directoryを正本にRunを作成・読込みする。"""
 
     def __init__(self, root: Path) -> None:
+        """保存rootを絶対pathへ固定し、後続操作の基準にする。directoryはまだ作成しない。"""
+
         self.root = root.resolve()
 
     def paths(self, run_id: str) -> RunPaths:
@@ -286,6 +288,8 @@ class RunRepository:
 
 
 def _safe_role(role: str) -> str:
+    """入力roleを保存directory名に使える文字列へ変換し、英数字を含まないroleは拒否する。"""
+
     value = "".join(character if character.isalnum() else "-" for character in role)
     value = value.strip("-")
     if not value:
@@ -364,6 +368,8 @@ def collect_input_sources(
 
 
 def _safe_logical_path(value: str) -> Path:
+    """入力copyの相対配置の区切りを揃え、絶対path・空path・親directory参照を拒否する。"""
+
     logical = Path(value.replace("\\", "/"))
     if logical.is_absolute() or not logical.parts or ".." in logical.parts:
         msg = f"unsafe logical input path: {value}"
@@ -392,6 +398,8 @@ def _copy_verified(source: Path, target: Path) -> tuple[str, int]:
 
 
 def _read_scanned_record(metadata: Path) -> RunRecord:
+    """一覧候補のschemaを検証し、directory名と保存IDが異なるmetadataを拒否する。"""
+
     RunRecord.validate_run_id(metadata.parent.name)
     record = RunRecord.model_validate_json(metadata.read_text(encoding="utf-8"))
     if metadata.parent.name != record.run_id:
@@ -401,5 +409,7 @@ def _read_scanned_record(metadata: Path) -> RunRecord:
 
 
 def _is_link_or_junction(path: Path) -> bool:
+    """入力収集や削除がリンク先へ及ばないよう、symbolic linkとWindows junctionを識別する。"""
+
     is_junction = getattr(path, "is_junction", None)
     return path.is_symlink() or bool(is_junction and is_junction())

@@ -16,6 +16,8 @@ class RedactionFilter(logging.Filter):
     """全Handlerへ渡る前にCredential、binaryおよび例外messageを除去する。"""
 
     def __init__(self, secrets: Sequence[str] = ()) -> None:
+        """後続のLogRecordから除去する、今回の実行で既知の秘密値を保持する。"""
+
         super().__init__()
         self.secrets = tuple(secrets)
 

@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 
 def _templates(root: Path) -> Path:
+    """公開操作の準備に必要なTemplate群を用意し、PDF不正の検証と設定不足を切り離す。"""
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -33,6 +35,8 @@ def _templates(root: Path) -> Path:
 
 
 def _valid_pdf(path: Path) -> Path:
+    """PDFiumで一ページの有効なPDFを作り、不正入力と比較する正常側のfixtureに使う。"""
+
     with pdfium.PdfDocument.new() as document:
         document.new_page(100, 100)
         document.save(path)
@@ -92,6 +96,8 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
         original_validate = pdf.validate
 
         def injected_validate(path: Path) -> None:
+            """指定入力だけ暗号化相当または読取り不能の例外を返し、他のPDFは通常検証する。"""
+
             if path.name == invalid.name:
                 error_type = (
                     PermissionError if invalid_kind == "unreadable" else OSError

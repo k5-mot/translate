@@ -23,6 +23,8 @@ CODE = {"code", "program_listing"}
 
 def _clean(value: str) -> str:
     # Note 1: Cleanup is deterministic; semantic corrections belong to STRUCTURE.
+    """非code本文の制御文字・連続記号・空白を整えるための決定的なtext補正を行う。"""
+
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
     value = re.sub(r"\.{3,}", "...", value)
     value = re.sub(r"・{3,}", "・・・", value)
@@ -41,6 +43,8 @@ def _refs(value: Any) -> set[str]:
 
 
 def _page(item: dict[str, Any]) -> int | None:
+    """先頭の出典情報に整数のページ番号がある場合だけ返し、目次ページの識別に使う。"""
+
     provenance = item.get("prov")
     if isinstance(provenance, list) and provenance and isinstance(provenance[0], dict):
         value = provenance[0].get("page_no")
@@ -49,6 +53,8 @@ def _page(item: dict[str, Any]) -> int | None:
 
 
 def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None:
+    """除外対象への子参照を文書treeから取り除き、解決できる残りの参照先にも再帰適用する。"""
+
     if not isinstance(node, dict):
         return
     children = node.get("children")

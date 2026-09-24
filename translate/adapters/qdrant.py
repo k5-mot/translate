@@ -55,6 +55,8 @@ class RegistrationError(RuntimeError):
     """登録stageと安全な下位例外型だけを公開する。"""
 
     def __init__(self, stage: RegistrationStage, cause: BaseException) -> None:
+        """登録失敗stageと原因型を公開し、文書本文や接続詳細を例外メッセージへ含めない。"""
+
         if stage not in REGISTRATION_STAGES:
             msg = "invalid registration stage"
             raise ValueError(msg)
@@ -87,6 +89,8 @@ class _PreparedSource:
 
 
 def _retryable(error: Exception) -> bool:
+    """通信・I/O障害と一時的なHTTP statusを、Qdrant操作の再試行対象として分類する。"""
+
     status = getattr(error, "status_code", None)
     return (
         isinstance(
@@ -111,6 +115,8 @@ def _retry[T](
     deadline: float | None = None,
     retry_type_error: bool = False,
 ) -> T:
+    """期限内で一時障害を有限回再試行し、TypeErrorは指定された外部書込み境界だけで扱う。"""
+
     expires = deadline or time.monotonic() + settings.task_deadline_seconds
     for attempt in range(1, settings.retry_attempts + 1):
         _ensure_time(expires)
@@ -140,6 +146,8 @@ def _retry[T](
 
 
 def _ensure_time(deadline: float) -> float:
+    """共通期限までの残秒数を返し、期限切れなら次の登録処理へ進めず停止する。"""
+
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         msg = "registration deadline exceeded"
@@ -169,6 +177,8 @@ def _qdrant_timeout(settings: Settings, deadline: float) -> int:
 
 
 def _embeddings(settings: Settings) -> OpenAIEmbeddings:
+    """登録・検索用Embedding Clientを構成し、検証counterへClient生成を通知する。"""
+
     count_external_call("embedding")
     return OpenAIEmbeddings(
         model=settings.embedding_model or "",
@@ -178,6 +188,8 @@ def _embeddings(settings: Settings) -> OpenAIEmbeddings:
 
 
 def _store(settings: Settings) -> QdrantVectorStore:
+    """指定済みcollectionへEmbedding Clientを接続し、類似検索用VectorStoreを得る。"""
+
     return QdrantVectorStore.from_existing_collection(
         collection_name=settings.qdrant_collection or "",
         embedding=_embeddings(settings),
@@ -227,6 +239,8 @@ def search(
 
 
 def _docling_text(path: Path, settings: Settings, deadline: float) -> str:
+    """binary文書を残時間以内の条件でDoclingへ送り、ZIP内の単一JSONから登録textを得る。"""
+
     if not settings.docling_url:
         msg = "DOCLING_SERVER_URL is required for binary reference documents"
         raise ValueError(msg)
@@ -263,6 +277,8 @@ def _docling_text(path: Path, settings: Settings, deadline: float) -> str:
 
 
 def _text(path: Path, settings: Settings, deadline: float) -> str:
+    """参照文書の形式に応じUTF-8読取りかDocling抽出を選び、分割対象textを得る。"""
+
     if path.suffix.casefold() in {".md", ".markdown", ".txt"}:
         _ensure_time(deadline)
         return path.read_text(encoding="utf-8")
@@ -297,6 +313,8 @@ def _register(
     workspace: Path,
     deadline: float,
 ) -> int:
+    """入力を逐次抽出して決定的IDのchunkを書込み・確認し、その後に同じ入力の旧版を削除する。"""
+
     try:
         sources = _registration_sources(paths)
     except ValueError:
@@ -440,7 +458,11 @@ def _write_and_verify(
     ids: list[str],
     deadline: float,
 ) -> None:
+    """全Pointが既存なら省略し、未充足ならbatch書込み後に全IDを確認して失敗stageを区別する。"""
+
     def batch_exists() -> bool:
+        """再実行の重複書込みを避けるため、今回の全Point IDがcollectionに存在するか照合する。"""
+
         client = _registration_client(settings, deadline)
         if not client.collection_exists(collection):
             return False
@@ -460,6 +482,8 @@ def _write_and_verify(
         raise RegistrationError("verify", error) from None
 
     def write_batch() -> None:
+        """Embedding付きbatchをcollectionへ追加し、未作成なら最初のbatchから作成する。"""
+
         client = _registration_client(settings, deadline)
         if client.collection_exists(collection):
             QdrantVectorStore(
@@ -491,6 +515,8 @@ def _write_and_verify(
         raise RegistrationError("write", error) from None
 
     def verify_batch() -> None:
+        """書込み後に全Point IDを再取得し、不足は有限再試行対象の確認未完了例外とする。"""
+
         client = _registration_client(settings, deadline)
         records = client.retrieve(
             collection_name=collection,
@@ -515,6 +541,8 @@ def _registration_revision(
     source_hash: str,
     settings: Settings,
 ) -> str:
+    """同じ入力の旧Pointと区別するため、原文hashと抽出・分割条件から登録revisionを決める。"""
+
     binary = source.path.suffix.casefold() in {".pdf", ".docx", ".pptx"}
     value = {
         "schema": CHUNK_SCHEMA,
@@ -546,6 +574,8 @@ def _source_parts(
     workspace: Path,
     deadline: float,
 ) -> tuple[Path, ...]:
+    """大きなPDFを抽出単位へ分割し、同じ入力hashと分割条件の成果物は検査後に再利用する。"""
+
     if source.path.suffix.casefold() != ".pdf":
         return (source.path,)
     key = hashlib.sha256(
@@ -566,6 +596,8 @@ def _source_parts(
 
 
 def _valid_pdf_parts(root: Path, pages_per_part: int) -> tuple[Path, ...] | None:
+    """分割成果物の印・manifest・ページ範囲・File配置を検査し、再利用不可ならNoneを返す。"""
+
     manifest_path = root / "manifest.json"
     if not (root / ".complete.json").is_file() or not manifest_path.is_file():
         return None

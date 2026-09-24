@@ -23,6 +23,8 @@ class FakeHttpResponse:
         payload: object | None = None,
         content: bytes = b"",
     ) -> None:
+        """通信を行わないHTTP応答doubleへstatus・JSON値・binary本文を設定する。"""
+
         self.status_code = status_code
         self._payload = payload
         self.content = content
@@ -45,6 +47,8 @@ def settings_factory(tmp_path: Path) -> Callable[..., Settings]:
     """Testごとに隔離したSettingsを生成する。"""
 
     def create(**updates: object) -> Settings:
+        """Test専用Template保存先を既定値に、ケース固有の設定を上書きしたSettingsを作る。"""
+
         values: dict[str, object] = {"templates_dir": tmp_path / "templates"}
         values.update(updates)
         return Settings(**values)

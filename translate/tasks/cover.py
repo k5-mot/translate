@@ -42,6 +42,8 @@ def run(source: Path, output: Path) -> Path:
 
 
 def _validate_cover(directory: Path) -> None:
+    """公開前に第1ページの本文除外指定とPNGの完全性を確認し、不正な表紙成果物を拒否する。"""
+
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("excluded_pages") != [1]:
         msg = "COVER manifest must exclude source page 1"

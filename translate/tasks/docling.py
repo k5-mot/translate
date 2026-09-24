@@ -62,6 +62,8 @@ def run(parts: list[Path], output_dir: Path, settings: Settings) -> list[Path]:
 
 
 def _validate_output(directory: Path) -> None:
+    """公開前に応答ZIPが存在することと各ZIPのCRCを確認し、空または破損した結果を拒否する。"""
+
     archives = list(directory.glob("part-*/result.zip"))
     if not archives:
         msg = "Docling produced no ZIP artifacts"

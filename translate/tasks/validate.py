@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 
 def _translation_warnings(document: Document) -> list[dict[str, str]]:
+    """第1ページ以外の修正skip情報を本文・caption・セルから集め、同一Inlineの警告重複を抑える。"""
+
     warnings: list[dict[str, str]] = []
     seen: set[str] = set()
     for page in document.pages:
@@ -42,6 +44,8 @@ def _translation_warnings(document: Document) -> list[dict[str, str]]:
 
 
 def _require_translations(document: Document) -> None:
+    """表紙以外の本文と表セルに訳文層があるか確認し、原文のある未翻訳要素では出力を止める。"""
+
     for page in document.pages:
         if page.number == 1:
             continue

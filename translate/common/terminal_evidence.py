@@ -117,6 +117,8 @@ def count_external_call(kind: Literal["llm", "embedding", "qdrant"]) -> None:
 
 
 def _canonical_run_id(value: str) -> str:
+    """Evidenceの対象を取り違えないよう、IDを標準表記のRFC variant UUIDv7に限定する。"""
+
     try:
         parsed = UUID(value)
     except ValueError as error:
@@ -174,11 +176,15 @@ class TerminalEvidence(BaseModel):
     @field_validator("run_id")
     @classmethod
     def validate_run_id(cls, value: str) -> str:
+        """Evidence読込み時にもUUIDv7の表記制約を適用し、不正な対象IDを受理しない。"""
+
         return _canonical_run_id(value)
 
     @field_validator("task", "cause_type", "error_type")
     @classmethod
     def validate_safe_names(cls, value: str | None) -> str | None:
+        """Task名と原因型を短い識別子へ制限し、本文や自由形式の例外messageの混入を抑止する。"""
+
         safe = _safe_name(value)
         if value is not None and safe is None:
             raise ValueError("Evidence names must be short safe identifiers")
@@ -205,6 +211,8 @@ class EvidenceStore:
     """temp root外へTerminalEvidenceをatomic保存する。"""
 
     def __init__(self, path: Path, *, temp_root: Path | None = None) -> None:
+        """Evidenceの保存先を絶対pathへ固定し、一時領域削除で検証結果まで失われる配置を拒否する。"""
+
         self.path = path.resolve()
         self.temp_root = temp_root.resolve() if temp_root is not None else None
         if self.temp_root is not None and self.path.is_relative_to(self.temp_root):
@@ -579,6 +587,8 @@ def _run_id_from_heartbeat(path: Path | None) -> str | None:
 def _read_heartbeat(
     heartbeat_path: Path | None, store: EvidenceStore
 ) -> TerminalEvidence | None:
+    """child heartbeatのIDと操作を照合し、未作成・不正・再利用不能な値は採用しない。"""
+
     if heartbeat_path is None:
         return None
     value = load_json(heartbeat_path)
@@ -600,10 +610,14 @@ def _read_heartbeat(
 def _operation_from_previous(
     previous: TerminalEvidence | None,
 ) -> Literal["translate", "review", "register", "convert"]:
+    """失敗Evidenceへ直前の操作種別を引き継ぎ、記録がなければtranslateを既定値とする。"""
+
     return previous.operation if previous is not None else "translate"
 
 
 def _safe_phase(value: str | None) -> TerminalPhase | None:
+    """Task名を大文字に揃え、検証Evidenceで許可されたphaseだけを採用する。"""
+
     if value is None:
         return None
     upper = value.upper()
@@ -611,10 +625,14 @@ def _safe_phase(value: str | None) -> TerminalPhase | None:
 
 
 def _safe_stage(value: object) -> TerminalStage | None:
+    """stageを固定の許可集合に限定し、任意の文字列をEvidenceへ載せない。"""
+
     return cast("TerminalStage", value) if value in get_args(TerminalStage) else None
 
 
 def _nonnegative_int(value: object) -> int:
+    """件数からbool・負値・非整数を除き、不正値は0としてEvidenceを構成する。"""
+
     return (
         value
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
@@ -623,10 +641,14 @@ def _nonnegative_int(value: object) -> int:
 
 
 def _optional_nonnegative_int(value: object) -> int | None:
+    """未取得token数はNoneのまま残し、値がある場合は非負整数の診断値へ揃える。"""
+
     return _nonnegative_int(value) if value is not None else None
 
 
 def _child_parser() -> argparse.ArgumentParser:
+    """debug childの起動要求Fileのpathだけを受け取る引数parserを用意する。"""
+
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--child", type=Path)
     return parser
@@ -670,6 +692,8 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
         store = EvidenceStore(evidence_path, temp_root=paths.root)
 
         def callback(event: object) -> None:
+            """製品の進捗を本文なしのheartbeatへ変換し、外部Evidenceと監視用Fileへ保存する。"""
+
             heartbeat = evidence_from_progress(
                 event,
                 run_id=run_id,

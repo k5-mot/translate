@@ -64,6 +64,8 @@ def _chunk_id(page: int, index: str) -> str:
 
 
 def _is_output_truncated(error: LLMError) -> bool:
+    """本文の生成上限による切断だけを識別し、通信・解析・context超過を同じ回復処理へ混ぜない。"""
+
     return (
         error.stage == "text-output"
         and error.failure_kind == "output-truncated"
@@ -93,6 +95,8 @@ def _merge_findings(findings: list[Finding]) -> list[Finding]:
 
 
 def _cache_key(page: int, pairs: list[dict[str, str]]) -> str:
+    """ページ番号と比較対象の原訳文から、既存のChunk応答再利用を照合するhashを作る。"""
+
     payload = json.dumps(
         pairs, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )

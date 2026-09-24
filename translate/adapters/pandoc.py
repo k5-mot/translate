@@ -186,6 +186,8 @@ def _preflight(markdown: Path, output: Path, template: Path) -> None:
 
 
 def _validate_docx(path: Path, message: str) -> None:
+    """Templateと生成物の必須ZIP部品・CRC・配置条件を検査し、不正DOCXの利用や公開を防ぐ。"""
+
     try:
         with zipfile.ZipFile(path) as archive:
             required = {"[Content_Types].xml", "word/document.xml"}
@@ -198,6 +200,8 @@ def _validate_docx(path: Path, message: str) -> None:
 
 
 def _validate_docx_layout(entries: dict[str, bytes]) -> None:
+    """更新要求・二重見出し番号・表紙配置・外部File参照を検査し、不整合なDOCXを拒否する。"""
+
     document_data = entries.get("word/document.xml")
     if document_data is None:
         return
@@ -293,6 +297,8 @@ def _remove_dirty_fields(root: ET.Element) -> None:
 
 
 def _remove_update_fields(data: bytes) -> bytes:
+    """Word起動時の自動field更新要求を除き、不正なsettings XMLは変換失敗として通知する。"""
+
     try:
         root = ET.fromstring(data)  # noqa: S314
     except ET.ParseError as error:
@@ -318,6 +324,8 @@ def _remove_heading_numbering(data: bytes) -> bytes:
 
 
 def _index_paragraph(text: str, style: str) -> ET.Element:
+    """Wordの更新操作なしで一覧を読めるよう、指定した一覧styleで静的項目段落を組み立てる。"""
+
     paragraph = ET.Element(f"{W}p")
     properties = ET.SubElement(paragraph, f"{W}pPr")
     ET.SubElement(properties, f"{W}pStyle", {f"{W}val": style})
@@ -397,18 +405,24 @@ def _populate_front_matter(body: ET.Element) -> None:
 
 
 def _is_cover_paragraph(element: ET.Element) -> bool:
+    """代替説明が「表紙」の画像段落を識別し、本文より前へ配置する対象を選ぶ。"""
+
     if element.tag != f"{W}p":
         return False
     return any(node.get("descr") == "表紙" for node in element.iter(f"{WP}docPr"))
 
 
 def _is_page_break(element: ET.Element) -> bool:
+    """明示的な改ページ段落を識別し、表紙境界の検出と一覧後の重複改ページ防止に使う。"""
+
     return element.tag == f"{W}p" and any(
         br.get(f"{W}type") == "page" for br in element.iter(f"{W}br")
     )
 
 
 def _is_generated_front_matter(element: ET.Element) -> bool:
+    """Pandoc生成の目次・図一覧・表一覧のSDTを識別し、本文を一覧処理へ混ぜない。"""
+
     if element.tag != f"{W}sdt":
         return False
     gallery = element.find(f".//{W}docPartGallery")
@@ -481,6 +495,8 @@ def _reject_external_file_relationships(entries: dict[str, bytes]) -> None:
 
 
 def _validate_output_directory(output: Path) -> None:
+    """親directoryで一時Fileの作成・削除を試し、変換前に書込み不能を通知する。"""
+
     try:
         output.parent.mkdir(parents=True, exist_ok=True)
         descriptor, probe_name = tempfile.mkstemp(

@@ -35,6 +35,8 @@ class DoclingClient:
         timeout_seconds: float = 300.0,
         deadline_seconds: float = 21_600.0,
     ) -> None:
+        """後続の文書変換で使う認証・OCR・通信待機条件を保持し、この時点では送信しない。"""
+
         self.base_url = base_url.rstrip("/")
         self.headers = {"X-Api-Key": api_key} if api_key else {}
         self.ocr_preset = ocr_preset
@@ -49,6 +51,8 @@ class DoclingClient:
     def _request(
         self, method: str, url: str, deadline: float, **kwargs: Any
     ) -> httpx.Response:
+        """再送前にstreamを巻き戻し、一時的なHTTP障害を回数と期限で制限して再試行する。"""
+
         for attempt in range(1, self.retry_attempts + 1):
             try:
                 stream = kwargs.get("files", {}).get("files", (None, None))[1]

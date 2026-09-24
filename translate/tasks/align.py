@@ -44,6 +44,8 @@ def _items(document: Document) -> list[tuple[str, str]]:
 def _valid(
     groups: list[AlignmentGroup], source_ids: set[str], target_ids: set[str]
 ) -> bool:
+    """対応付けが原文・訳文の全IDをそれぞれ重複なく一度だけ含むか確認する。"""
+
     actual_source = [item for group in groups for item in group.source_ids]
     actual_target = [item for group in groups for item in group.target_ids]
     return (

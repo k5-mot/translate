@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 
 def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
+    """先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。"""
+
     provenance = item.get("prov")
     entry = provenance[0] if isinstance(provenance, list) and provenance else None
     if not isinstance(entry, dict):
@@ -33,6 +35,8 @@ def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
 
 
 def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any] | None:
+    """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。"""
+
     value: Any = document
     try:
         for part in ref.removeprefix("#/").split("/"):
@@ -63,6 +67,8 @@ def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | 
 
 
 def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。"""
+
     labels = {str(first.get("label", "")), str(second.get("label", ""))}
     if len(labels) != 1 or not labels <= {
         "text",
@@ -83,6 +89,8 @@ def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
 
 def _rewrite_ref(value: Any, old: str, new: str) -> Any:
+    """結合先へ参照を付け替えるため、各文字列内で最初に現れる旧参照を置換する。"""
+
     if isinstance(value, list):
         return [_rewrite_ref(item, old, new) for item in value]
     if not isinstance(value, dict):
@@ -93,6 +101,8 @@ def _rewrite_ref(value: Any, old: str, new: str) -> Any:
 def _merge_table(  # noqa: PLR0911
     first: dict[str, Any], second: dict[str, Any]
 ) -> bool:
+    """同一ページで近接し列数が一致する表を、セル行位置と参照を補正して先頭の表へ結合する。"""
+
     if first.get("label") != "table" or second.get("label") != "table":
         return False
     first_box, second_box = _geometry(first), _geometry(second)
@@ -118,6 +128,8 @@ def _merge_table(  # noqa: PLR0911
         return False
 
     def dimensions(cells: list[dict[str, Any]]) -> tuple[int, int] | None:
+        """セル終端の最大値から表の行列数を得て、欠落や数値変換失敗では結合不可とする。"""
+
         try:
             rows = max(int(cell["end_row_offset_idx"]) for cell in cells)
             columns = max(int(cell["end_col_offset_idx"]) for cell in cells)
@@ -158,6 +170,8 @@ def _merge_fragments(
     merged: list[dict[str, str]],
     warnings: list[dict[str, str]],
 ) -> None:
+    """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。"""
+
     if not isinstance(node, dict) or not isinstance(node.get("children"), list):
         return
     children = node["children"]
@@ -222,6 +236,8 @@ def _merge_fragments(
 def _reading_order(
     document: dict[str, Any], children: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
+    """座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。"""
+
     positioned: dict[
         int, list[tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]]
     ] = {}
@@ -251,6 +267,8 @@ def _reading_order(
             entry: tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]],
             column_positions: tuple[float, ...] = tuple(columns),
         ) -> tuple[int, int, float, float, float, int]:
+            """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。"""
+
             index, _child, item, geometry = entry
             _page, left, _right, top, bottom = geometry
             label = str(item.get("label", ""))
@@ -276,6 +294,8 @@ def _reading_order(
 def _sort_children(
     document: dict[str, Any], node: Any, report: list[dict[str, Any]]
 ) -> None:
+    """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。"""
+
     if not isinstance(node, dict):
         return
     children = node.get("children")

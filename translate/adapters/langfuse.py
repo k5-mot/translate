@@ -43,11 +43,20 @@ ObservationType = Literal[
 class _Observation(Protocol):
     """親子付けと終了に必要なLangfuse observationの最小境界。"""
 
-    def start_observation(self, **kwargs: object) -> _Observation: ...
+    def start_observation(self, **kwargs: object) -> _Observation:
+        """現在の観測を親とする子観測の開始に必要なSDK境界を定義する。"""
 
-    def update(self, **kwargs: object) -> object: ...
+        ...
 
-    def end(self) -> object: ...
+    def update(self, **kwargs: object) -> object:
+        """処理失敗時のlevelと安全な原因型を観測へ付与するSDK境界を定義する。"""
+
+        ...
+
+    def end(self) -> object:
+        """context managerを使わず開始した観測を終了するSDK境界を定義する。"""
+
+        ...
 
 
 _PARENT_OBSERVATION: ContextVar[_Observation | None] = ContextVar(
@@ -94,6 +103,8 @@ def bind_observation_task(task: str) -> Iterator[None]:
 
 def _warning(action: str, error: Exception) -> None:
     # Never interpolate exception messages because SDK errors can contain endpoints.
+    """SDK例外本文を公開せず観測障害を警告し、警告通知先の失敗でも製品処理を止めない。"""
+
     task = _TASK.get()
     task_suffix = f" task={redact_text(task, _CREDENTIALS.get())}" if task else ""
     warning = (
@@ -113,6 +124,8 @@ def _warning(action: str, error: Exception) -> None:
 
 
 def _get_client(settings: Settings) -> Langfuse | None:
+    """観測有効時だけ共有Clientを取得し、初期化失敗は警告して観測なしで継続する。"""
+
     if not settings.langfuse_enabled:
         return None
     try:
@@ -190,6 +203,8 @@ def observe(
     )
 
     def reset_parent() -> None:
+        """入れ子観測の親contextを復元し、終了経路とfinallyからの二重resetを避ける。"""
+
         nonlocal parent_token
         if parent_token is not None:
             _PARENT_OBSERVATION.reset(parent_token)

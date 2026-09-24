@@ -136,6 +136,8 @@ def _compare(
     current: object,
     differences: list[SnapshotDifference],
 ) -> None:
+    """入れ子のsnapshotを比較し、追加・削除・値変更を項目path付き差分へ追記する。"""
+
     if isinstance(saved, Mapping) and isinstance(current, Mapping):
         for key in sorted(set(saved) | set(current)):
             path = f"{prefix}.{key}" if prefix else str(key)
@@ -151,6 +153,8 @@ def _compare(
 
 
 def _optional_file_hash(path: Path | None) -> str | None:
+    """規則・用語集・Templateの変更検出用hashを返し、未指定だけをNoneとして扱う。"""
+
     if path is None:
         return None
     digest = hashlib.sha256()

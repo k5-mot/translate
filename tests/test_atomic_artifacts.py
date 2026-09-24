@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 
 def _publish_file(kind: str, target: Path) -> None:
+    """同じ公開障害Testをtext・JSON・binaryの三つの保存入口へ適用する。"""
+
     if kind == "text":
         atomic_write_text(target, "new-complete")
     elif kind == "json":
@@ -41,6 +43,8 @@ def test_file_publish_preserves_old_complete_artifact_on_failure(
     target.write_bytes(b"old-complete")
 
     def fail(current: str, _path: Path) -> None:
+        """指定したdirectory公開段階だけで失敗させ、rollbackと一時領域の除去を検証する。"""
+
         if current == phase:
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)
@@ -67,12 +71,18 @@ def test_directory_publish_preserves_old_complete_artifact_on_failure(
     (target / "page.txt").write_text("old-complete", encoding="utf-8")
 
     def build(directory: Path) -> None:
+        """公開待ちの一時directoryに新しい完全版を作り、旧版との区別を可能にする。"""
+
         (directory / "page.txt").write_text("new-complete", encoding="utf-8")
 
     def validate(directory: Path) -> None:
+        """検証callbackが新しい完全版を受け取ったことを確認する。"""
+
         assert (directory / "page.txt").read_text(encoding="utf-8") == "new-complete"
 
     def fail(current: str, _path: Path) -> None:
+        """指定したFile公開段階だけで失敗させ、旧成果物が残るか検証できるようにする。"""
+
         if current == phase:
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)

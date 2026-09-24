@@ -15,6 +15,8 @@ class PdfInputError(ValueError):
     """本文やpathを含めず、無効なPDF入力roleを示す。"""
 
     def __init__(self, role: str, cause: BaseException) -> None:
+        """不正なPDFの入力roleと原因型だけを公開し、原文pathや例外本文を失敗表示へ含めない。"""
+
         self.target_id = role
         self.role = role
         self.error_type = type(cause).__name__

@@ -96,12 +96,16 @@ TRANSLATION_SLOTS = {
 
 
 def _document(state: TranslationState) -> Document:
+    """Graph stateが指すJSONをDocumentとして検証・復元し、Taskの入力にする。"""
+
     return Document.model_validate_json(
         Path(state["document_path"]).read_text(encoding="utf-8")
     )
 
 
 def _findings(path: str) -> dict[int, list[Finding]]:
+    """指摘Artifactをschema検証し、ページ番号を整数へ戻して後続Taskに渡す。"""
+
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     return {
         int(page): [Finding.model_validate(item) for item in items]
@@ -110,11 +114,15 @@ def _findings(path: str) -> dict[int, list[Finding]]:
 
 
 def _save_document(path: Path, document: Document) -> str:
+    """更新文書をJSONへ原子的に保存し、Graph stateへは本文でなく保存pathを返す。"""
+
     atomic_write_json(path, document.model_dump(mode="json"))
     return str(path)
 
 
 def _save_findings(path: Path, values: dict[int, list[Finding]]) -> str:
+    """ページ別の指摘をJSONへ原子的に保存し、次のTaskで読めるpathを返す。"""
+
     atomic_write_json(
         path,
         {
@@ -126,6 +134,8 @@ def _save_findings(path: Path, values: dict[int, list[Finding]]) -> str:
 
 
 def _workspace(state: TranslationState) -> Path:
+    """Graph stateに保存した中間成果物のrootをPathとしてTaskへ渡す。"""
+
     return Path(state["workspace_dir"])
 
 
@@ -138,7 +148,11 @@ def build_graph(
     graph = StateGraph(TranslationState)  # ty: ignore[invalid-argument-type]
 
     def node(name: str, function: Callable[[TranslationState], dict[str, Any]]) -> None:
+        """Taskの観測・通知・Graph state更新を付けたnodeを登録する。"""
+
         def wrapped(state: TranslationState) -> dict[str, Any]:
+            """Taskの開始・成否を通知し、成功時に現在位置とskipを含む既存の完了情報を更新する。"""
+
             report_task_status(TaskStatusEvent(name, "started"))
             try:
                 with (
@@ -175,6 +189,8 @@ def build_graph(
         graph.add_node(name.lower().replace("-", "_"), wrapped)
 
     def split_node(state: TranslationState) -> dict[str, Any]:
+        """入力PDFを検証・分割し、後続のDocling処理へpartのpathを渡す。"""
+
         work = _workspace(state)
         manifest = split.run(
             Path(state["source"]), work / "split", settings.split_pages, role="source"
@@ -182,6 +198,8 @@ def build_graph(
         return {"parts": [item["path"] for item in manifest["parts"]]}
 
     def docling_node(state: TranslationState) -> dict[str, Any]:
+        """PDF partを逐次Doclingへ送り、応答ZIPのpathをGraph stateへ返す。"""
+
         work = _workspace(state)
         values = docling.run(
             [Path(item) for item in state["parts"]], work / "docling", settings
@@ -189,10 +207,14 @@ def build_graph(
         return {"archives": [str(item) for item in values]}
 
     def unpack_node(state: TranslationState) -> dict[str, Any]:
+        """Docling応答ZIPを安全に展開し、文書JSONのpathを統合nodeへ渡す。"""
+
         values = unpack.run([Path(item) for item in state["archives"]])
         return {"documents": [str(item) for item in values]}
 
     def merge_node(state: TranslationState) -> dict[str, Any]:
+        """分割文書を原本PDFに対応させて統合し、統合Artifactのpathを返す。"""
+
         work = _workspace(state)
         value = merge.run(
             [Path(item) for item in state["documents"]],
@@ -202,12 +224,16 @@ def build_graph(
         return {"merged": str(value)}
 
     def position_node(state: TranslationState) -> dict[str, Any]:
+        """統合文書の座標に基づいて読み順と断片結合を補正し、結果のpathを返す。"""
+
         work = _workspace(state)
         return {
             "positioned": str(position.run(Path(state["merged"]), work / "position"))
         }
 
     def normalize_node(state: TranslationState) -> dict[str, Any]:
+        """読み順補正済み文書から不要要素を除去・整形し、結果のpathを返す。"""
+
         work = _workspace(state)
         return {
             "normalized": str(
@@ -216,11 +242,15 @@ def build_graph(
         }
 
     def load_node(state: TranslationState) -> dict[str, Any]:
+        """正規化JSONを共通文書Modelへ変換・保存し、文書Artifactのpathを返す。"""
+
         work = _workspace(state)
         load.run(Path(state["normalized"]), work / "load")
         return {"document_path": str(work / "load" / "document.json")}
 
     def structure_node(state: TranslationState) -> dict[str, Any]:
+        """文書・原本PDF・構造規則を構造推定Taskへ渡し、補正済み文書のpathを返す。"""
+
         work = _workspace(state)
         structure.run(
             _document(state),
@@ -232,6 +262,8 @@ def build_graph(
         return {"document_path": str(work / "structure" / "document.json")}
 
     def translate_node(state: TranslationState) -> dict[str, Any]:
+        """翻訳規則と用語集を使ってLLM翻訳を実行し、訳文付き文書を保存してpathを返す。"""
+
         work = _workspace(state)
         glossary = check.read_glossary(settings.templates_dir / "glossary.csv")
         value = translate.run(
@@ -246,6 +278,8 @@ def build_graph(
         }
 
     def translate_lite_node(state: TranslationState) -> dict[str, Any]:
+        """LibreTranslateによる翻訳結果を共通の文書Artifactへ保存し、pathを返す。"""
+
         work = _workspace(state)
         value = translate_lite.run(_document(state), settings, work / "translate")
         return {
@@ -253,6 +287,8 @@ def build_graph(
         }
 
     def check_node(state: TranslationState) -> dict[str, Any]:
+        """訳文と用語集の決定的検査を実行し、ページ別指摘を保存してpathを返す。"""
+
         work = _workspace(state)
         values = check.run(
             _document(state), settings.templates_dir / "glossary.csv", work / "check"
@@ -260,6 +296,8 @@ def build_graph(
         return {"checks_path": _save_findings(work / "check" / "findings.json", values)}
 
     def review_node(state: TranslationState) -> dict[str, Any]:
+        """訳文とCHECK指摘を規則・用語集とともにLLM Reviewへ渡し、結果のpathを返す。"""
+
         work = _workspace(state)
         glossary = check.read_glossary(settings.templates_dir / "glossary.csv")
         values = review.run(
@@ -275,6 +313,8 @@ def build_graph(
         }
 
     def fix_node(state: TranslationState) -> dict[str, Any]:
+        """REVIEW指摘に基づく修正候補を文書へ反映し、その文書を保存してpathを返す。"""
+
         work = _workspace(state)
         value = fix.run(
             _document(state),
@@ -286,6 +326,8 @@ def build_graph(
         return {"document_path": _save_document(work / "fix" / "document.json", value)}
 
     def verify_node(state: TranslationState) -> dict[str, Any]:
+        """修正候補を検証して採否を反映した文書を保存し、後続検査へpathを渡す。"""
+
         work = _workspace(state)
         value = verify.run(
             _document(state),
@@ -298,12 +340,16 @@ def build_graph(
         }
 
     def cover_node(state: TranslationState) -> dict[str, Any]:
+        """原本の第1ページを表紙画像へ変換し、本文出力nodeへ画像pathを渡す。"""
+
         work = _workspace(state)
         return {
             "cover": str(cover.run(Path(state["source"]), work / "cover" / "cover.png"))
         }
 
     def validate_node(state: TranslationState) -> dict[str, Any]:
+        """最終文書の訳文・画像等を検証し、検査reportと文書Artifactを保存する。"""
+
         work = _workspace(state)
         value = validate.run(
             _document(state), work / "merge", work / "validate" / "report.json"
@@ -313,6 +359,8 @@ def build_graph(
         }
 
     def markdown_node(state: TranslationState) -> dict[str, Any]:
+        """表紙・最終文書・画像資産からMarkdown成果物を作り、DOCX変換へpathを渡す。"""
+
         work = _workspace(state)
         value = markdown.run(
             _document(state),
@@ -323,6 +371,8 @@ def build_graph(
         return {"markdown": str(value)}
 
     def docx_node(state: TranslationState) -> dict[str, Any]:
+        """生成Markdownと同梱Templateから公開先のDOCXを作り、成果物pathを返す。"""
+
         output = Path(state["output_dir"]) / "document.ja.docx"
         value = docx.run(
             Path(state["markdown"]), output, settings.templates_dir / "template.docx"
@@ -385,6 +435,8 @@ def build_graph(
 
 
 def _failed_status(name: str, error: BaseException) -> TaskStatusEvent:
+    """例外に付いた対象位置とLLM診断値をTask失敗通知へ写し、共通失敗処理へ渡す。"""
+
     return TaskStatusEvent(
         name,
         "failed",

@@ -82,6 +82,8 @@ class LLMError(RuntimeError):
         output_tokens: int | None = None,
         total_tokens: int | None = None,
     ) -> None:
+        """公開する失敗stageと数値診断を保持し、原因例外の本文をメッセージへ含めない。"""
+
         if stage not in LLM_STAGES:
             msg = "invalid LLM stage"
             raise ValueError(msg)
@@ -110,6 +112,8 @@ class _LLMAttemptError(Exception):
         output_tokens: int | None = None,
         total_tokens: int | None = None,
     ) -> None:
+        """再試行判断用の原因と診断を内部に保持し、生の原因本文は例外メッセージへ展開しない。"""
+
         self.stage = stage
         self.cause = cause
         self.retryable = retryable
@@ -243,6 +247,8 @@ def _model(
     reasoning: ReasoningEffort,
     thinking: ThinkingPolicy,
 ) -> ChatOpenAI:
+    """要求ごとの推論・出力・待機条件を設定し、外側と重複しないようSDK再試行を無効にする。"""
+
     extra_body: dict[str, object] = {"reasoning_effort": reasoning}
     if thinking == "disabled":
         # The local template hint alone does not prevent Gemma from reopening
@@ -262,6 +268,8 @@ def _model(
 
 
 def _status_code(error: Exception) -> int | None:
+    """SDKとHTTP層で異なる例外形から、再試行判断用のstatus codeを取り出す。"""
+
     status = getattr(error, "status_code", None)
     if isinstance(status, int):
         return status
@@ -273,6 +281,8 @@ def _status_code(error: Exception) -> int | None:
 def _invoke_with_retry[ResultT](
     settings: Settings, call: Callable[[], ResultT]
 ) -> ResultT:
+    """再実行可能と判定した失敗だけを有限回再試行し、停止時は安全な公開例外へ変換する。"""
+
     deadline = time.monotonic() + settings.task_deadline_seconds
     for attempt in range(1, settings.retry_attempts + 1):
         try:
@@ -355,6 +365,8 @@ def structured[ResponseT: BaseModel](
     messages = [SystemMessage(content=system_text), HumanMessage(content=content)]
 
     def invoke_and_parse() -> ResponseT:
+        """一回の送信とschema解析を行い、通信障害・解析失敗・出力切断を再試行判断用に分ける。"""
+
         invoke_stage: LLMStage = "vision-invoke" if mode == "vision" else "text-invoke"
         try:
             count_external_call("llm")

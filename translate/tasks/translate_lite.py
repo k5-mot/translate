@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 
 def _protect(text: str) -> tuple[str, dict[str, str]]:
+    """翻訳対象の保護断片をmarkerへ置換し、送信後に原文へ戻すための対応表を返す。"""
+
     values: dict[str, str] = {}
     for index, fragment in enumerate(protected_fragments(text)):
         marker = f"__PROTECTED_{index}__"

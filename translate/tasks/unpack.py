@@ -15,6 +15,8 @@ from translate.tasks.base import BaseTask
 
 
 def _safe_target(root: Path, name: str) -> Path | None:
+    """ZIP要素の展開先がroot内に収まることを確認し、絶対path・drive・親参照を拒否する。"""
+
     normalized = name.replace("\\", "/")
     posix = PurePosixPath(normalized)
     windows = PureWindowsPath(normalized)

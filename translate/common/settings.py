@@ -118,6 +118,8 @@ class Settings(BaseModel):
 
 
 def _positive(env: Mapping[str, str], name: str, default: int) -> int:
+    """回数やtoken数の設定を整数へ変換し、変換不能または0以下なら設定名付きで拒否する。"""
+
     try:
         value = int(env.get(name, str(default)))
     except ValueError as error:
@@ -130,6 +132,8 @@ def _positive(env: Mapping[str, str], name: str, default: int) -> int:
 
 
 def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
+    """通信待機秒数などの設定を数値へ変換し、変換不能または0以下なら設定名付きで拒否する。"""
+
     try:
         value = float(env.get(name, str(default)))
     except ValueError as error:
@@ -142,6 +146,8 @@ def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
 
 
 def _runs_dir(value: str | None) -> Path:
+    """CLIとUIの保存先を揃えるため、未指定値と相対pathをRepository基準の絶対pathにする。"""
+
     path = Path(value).expanduser() if value else PROJECT_ROOT / "runs"
     if not path.is_absolute():
         path = PROJECT_ROOT / path
@@ -209,6 +215,8 @@ def load_settings(
 
 
 def _validate(settings: Settings, command: Command, backend: Backend) -> None:
+    """操作と翻訳backendに必要な設定の欠落を、外部処理開始前にまとめて通知する。"""
+
     required: dict[str, str | None] = {}
     if command == "translate":
         required = {

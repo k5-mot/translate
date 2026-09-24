@@ -49,6 +49,8 @@ class ResumeRejectedError(ValueError):
     """指定Runが現在の入力・設定とは互換でない。"""
 
     def __init__(self, reasons: tuple[str, ...]) -> None:
+        """再開できない項目別の理由を保持し、CLIとUIへ共通の拒否説明を渡す。"""
+
         self.reasons = reasons
         super().__init__("resume rejected: " + "; ".join(reasons))
 
@@ -93,6 +95,8 @@ class PublicRunError(RuntimeError):
     """公開entry pointへ返す、既にredactされたRun失敗。"""
 
     def __init__(self, failure: FailureRecord) -> None:
+        """失敗情報を保持し、公開入口へ渡すメッセージを共通の診断表示形式に揃える。"""
+
         self.failure = failure
         super().__init__(format_failure(failure))
 
@@ -510,6 +514,8 @@ def _safe_output_diagnostics(
         return None, None, None, None, None
 
     def count(name: str) -> int | None:
+        """Task通知を優先してtoken数を取得し、bool・負値・非整数を公開診断から除外する。"""
+
         value = getattr(event, name) if event is not None else None
         if value is None:
             value = getattr(error, name, None)
@@ -529,6 +535,8 @@ def _safe_output_diagnostics(
 
 
 def _copied_inputs(repository: RunRepository, record: RunRecord) -> dict[str, Path]:
+    """元の入力pathへ戻らず処理するため、保存済み入力copyをrole別のpathへ解決する。"""
+
     root = repository.paths(record.run_id).root
     return {item.role: root / item.relative_path for item in record.inputs}
 
@@ -538,6 +546,8 @@ def _collect_sources(
     inputs: dict[str, Path],
     source_id: str | None,
 ) -> tuple[InputSource, ...]:
+    """登録時だけ拡張子制限とnamespaceを適用し、公開操作の入力を検証済み一覧へ展開する。"""
+
     extensions = (
         {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
         if operation == "register"
@@ -556,6 +566,8 @@ def _execute_operation(
     backend: Backend,
     callback: ProgressCallback,
 ) -> tuple[Path, ...]:
+    """準備済み入力を翻訳・比較・登録・DOCX変換へ渡し、公開成果物のpathを揃えて返す。"""
+
     operation = prepared.record.operation
     if operation == "translate":
         result = run_translation(

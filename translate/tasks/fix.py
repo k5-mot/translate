@@ -33,9 +33,13 @@ class FixResponse(BaseModel):
 
 
 def _apply(page: Page, mapping: dict[str, str], status: str, error: str | None) -> None:
+    """本文・caption・表セルの初回訳から最終層を作り、指定IDの修正と処理状態を付与する。"""
+
     blocks = page.blocks
 
     def fixed(values: list[Inline] | None) -> list[Inline] | None:
+        """未翻訳層はNoneに保ち、各Inlineの初回訳を基に修正文と修正結果のmetadataを設定する。"""
+
         if values is None:
             return None
         return [
@@ -70,6 +74,8 @@ def _translations(page: Page) -> list[tuple[str, str]]:
 
 
 def _validate_mapping(mapping: dict[str, str], valid: set[str]) -> None:
+    """修正対象外のIDや空の修正文を拒否し、不正な提案が最終層へ反映されるのを防ぐ。"""
+
     if not set(mapping) <= valid or any(not value for value in mapping.values()):
         msg = "FIX returned invalid IDs or empty text"
         raise ValueError(msg)

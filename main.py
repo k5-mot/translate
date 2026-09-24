@@ -33,6 +33,8 @@ if TYPE_CHECKING:
 
 
 def _save(upload: UploadedFile, directory: Path) -> Path:
+    """Upload名の末尾要素だけを一時保存先に使い、受信済みbyte列を原子的に保存する。"""
+
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / Path(upload.name).name
     atomic_write_bytes(path, upload.getvalue())
@@ -40,10 +42,14 @@ def _save(upload: UploadedFile, directory: Path) -> Path:
 
 
 def _progress_callback() -> Callable[[ProgressEvent], None]:
+    """Streamlitの進捗表示を作り、同じ表示部品を更新する通知関数を返す。"""
+
     bar = st.progress(0.0)
     status = st.empty()
 
     def callback(event: ProgressEvent) -> None:
+        """通知された完了数と総数を進捗率に変換し、Taskとメッセージを画面へ反映する。"""
+
         bar.progress(event.current / event.total)
         status.write(f"[{event.current}/{event.total}] {event.task}: {event.message}")
 
@@ -59,6 +65,8 @@ def _resume_choice(  # noqa: PLR0913, PLR0917
     key: str,
     source_id: str | None = None,
 ) -> str | None:
+    """新規を既定値に同一入力候補と互換性差分を表示し、選択された既存IDまたはNoneを返す。"""
+
     candidates = candidates_for(
         repository, operation, inputs, settings, backend, source_id
     )
@@ -85,6 +93,8 @@ def _execute_ui(  # noqa: PLR0913, PLR0917
     key: str,
     source_id: str | None = None,
 ) -> tuple[str, tuple[Path, ...]] | None:
+    """開始操作とResume確認を受けて共通処理を実行し、失敗は画面表示、成功は成果物を返す。"""
+
     repository = RunRepository(settings.runs_dir)
     resume_id = _resume_choice(
         repository, operation, inputs, settings, backend, key, source_id
@@ -149,6 +159,8 @@ def _run_selected(  # noqa: PLR0913, PLR0917
 
 
 def _downloads(outputs: tuple[Path, ...], key: str) -> None:
+    """成果物のbyte列を読込み、各Fileに重複しないkeyのダウンロードボタンを設ける。"""
+
     for index, output in enumerate(outputs):
         st.download_button(
             f"{output.name} をダウンロード",
@@ -159,6 +171,8 @@ def _downloads(outputs: tuple[Path, ...], key: str) -> None:
 
 
 def _translation() -> None:
+    """PDFと翻訳backendを受け取り、一時入力を介して共有保存先で翻訳し成果物を提供する。"""
+
     source = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
     backend = cast(
         "Backend",
@@ -186,6 +200,8 @@ def _translation() -> None:
 
 
 def _review() -> None:
+    """原文と訳文のPDFを別の一時directoryに保存し、比較処理と成果物の取得画面を提供する。"""
+
     source = st.file_uploader("英語PDF", type=["pdf"], key="review-source")
     target = st.file_uploader("日本語PDF", type=["pdf"], key="review-target")
     if source is None or target is None:
@@ -207,6 +223,8 @@ def _review() -> None:
 
 
 def _register() -> None:
+    """参照文書と登録元IDの置換確認を受け取り、共通の登録処理へ渡す。"""
+
     uploads = st.file_uploader(
         "参照文書",
         type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
@@ -245,6 +263,8 @@ def _register() -> None:
 
 
 def _convert() -> None:
+    """Markdownと任意の参照DOCXを別々の一時directoryへ保存し、共通変換処理へ渡す。"""
+
     source = st.file_uploader("Markdown", type=["md"], key="convert-source")
     reference_doc = st.file_uploader(
         "参照DOCX(省略時は同梱template)",
@@ -266,6 +286,8 @@ def _convert() -> None:
 
 
 def _run_management() -> None:  # noqa: C901, PLR0912
+    """保存済みRunの状態と成果物を表示し、明示されたexport・確認済み削除を実行する。"""
+
     settings = load_settings("convert")
     repository = RunRepository(settings.runs_dir)
     scan = repository.list_runs()

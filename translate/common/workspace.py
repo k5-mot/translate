@@ -142,10 +142,14 @@ def load_json(path: Path, default: Any = None) -> Any:
 
 
 def _validate_json(path: Path) -> None:
+    """置換前の一時FileがUTF-8 JSONとして読めることを確認し、破損時は公開を中止させる。"""
+
     json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write_manifest(directory: Path) -> None:
+    """directory公開直前に既存形式の印を作り、flushとfsyncでFile内容を同期する。"""
+
     manifest = directory / ".complete.json"
     with manifest.open("wb") as stream:
         stream.write(b'{"complete":true}\n')
@@ -154,6 +158,8 @@ def _write_manifest(directory: Path) -> None:
 
 
 def _flush_tree(directory: Path) -> None:
+    """directory置換前に配下のFileをfsyncし、同期失敗は公開処理へ伝える。"""
+
     for path in directory.rglob("*"):
         if path.is_file():
             with path.open("r+b") as stream:
@@ -165,6 +171,8 @@ def _phase(name: str, path: Path) -> None:
 
 
 def _backup_path(path: Path) -> Path:
+    """置換失敗時の復元用退避pathを選び、symbolic linkの置換は拒否する。"""
+
     if path.is_symlink():
         msg = f"refusing to replace linked directory: {path}"
         raise ValueError(msg)

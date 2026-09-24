@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 
 def _fake_render(_source: Path, _page: int, output: Path, dpi: int = 120) -> Path:
+    """実PDFを読まず検証可能なPNGを作り、表紙の本文除外と公開契約を検査する。"""
+
     assert dpi > 0
     Image.new("RGB", (10, 10), "white").save(output, format="PNG")
     return output
@@ -74,6 +76,8 @@ def test_cover_failure_preserves_previous_artifact_and_can_resume(
     output.write_bytes(b"old-complete")
 
     def fail(*_args: object, **_kwargs: object) -> Path:
+        """表紙描画を失敗させ、旧成果物を保護して一時領域が片付くか確認する。"""
+
         msg = "injected COVER failure"
         raise RuntimeError(msg)
 

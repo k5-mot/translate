@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 
 
 def _document(block_id: str, text: str) -> Document:
+    """指定した原文を一つのBlockに持つ文書を作り、独立英日入力の比較条件を固定する。"""
+
     return Document(
         pages=[
             Page(

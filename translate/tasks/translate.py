@@ -144,6 +144,8 @@ def _restore_chunk_placeholders(
 
 
 def _restore_placeholders(text: str, protected: dict[str, str]) -> str:
+    """保護用tokenを保存済み原文断片へ置換し、翻訳出力へ元の表記を戻す。"""
+
     for token, fragment in protected.items():
         text = text.replace(token, fragment)
     return text
@@ -164,6 +166,8 @@ class TranslationOutputError(ValueError):
         page: int,
         target_id: str,
     ) -> None:
+        """翻訳出力検証の原因分類と対象だけを保持し、原文・応答・保護値の公開を防ぐ。"""
+
         self.cause_type = cause_type
         self.page = page
         self.target_id = target_id
@@ -188,6 +192,8 @@ def apply_translations(page: Page, mapping: dict[str, str]) -> None:
     """ID対応をPageのtranslated layerへ反映する。"""
 
     def translated(values: list[Inline]) -> list[Inline]:
+        """原文Inlineを複製してID対応の訳文を設定し、対応のない要素は元のtextを保持する。"""
+
         return [
             item.model_copy(update={"text": mapping.get(item.id, item.text)})
             for item in values
@@ -204,6 +210,8 @@ def _chunks(
     values: list[tuple[str, str]], settings: Settings
 ) -> list[list[tuple[str, str]]]:
     # Note 1: The shared budget includes output, image, and tokenizer safety reserves.
+    """保護処理後のprompt文字量と件数の上限でInline列を分割し、単一Inlineの分断は避ける。"""
+
     max_chars = min(4_000, max(1_000, settings.available_input_tokens * 2))
     result: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
@@ -263,6 +271,8 @@ def _translate_page(
     settings: Settings,
     qdrant_artifact_dir: Path,
 ) -> None:
+    """ページ内のChunkを逐次翻訳し、全Chunk成功後にID対応の訳文を文書へ反映する。"""
+
     mapping: dict[str, str] = {}
 
     def translate_chunk(
@@ -272,6 +282,8 @@ def _translate_page(
         split_depth: int = 0,
         force_no_reasoning: bool = False,
     ) -> dict[str, str]:
+        """参照検索と保護付き翻訳を行い、出力検証・切断時の有限回復を経たID対応の訳文を返す。"""
+
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
         target_id = f"page-{page.number:04d}-chunk-{chunk_label}"
@@ -294,6 +306,8 @@ def _translate_page(
         )
 
         def split_after_truncation(error: LLMError) -> dict[str, str]:
+            """生成切断のときだけChunkを二分して逐次再送し、分割上限または単一要素なら失敗を伝える。"""
+
             if (
                 not _is_text_output_truncated(error)
                 or split_depth >= _MAX_TRUNCATION_SPLIT_DEPTH

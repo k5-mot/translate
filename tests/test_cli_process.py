@@ -15,6 +15,8 @@ import cli
 
 
 def _command(source: Path, output: Path) -> list[str]:
+    """Test中のPythonから公開CLIのconvertを起動する引数列を作る。"""
+
     return [
         sys.executable,
         str(cli.__file__),
@@ -26,6 +28,8 @@ def _command(source: Path, output: Path) -> list[str]:
 
 
 def _environment(runs: Path) -> dict[str, str]:
+    """親環境を保持しつつRun保存先だけをTestの隔離領域へ変更する。"""
+
     environment = os.environ.copy()
     environment["TRANSLATE_RUNS_DIR"] = str(runs)
     return environment
@@ -34,6 +38,8 @@ def _environment(runs: Path) -> dict[str, str]:
 def _run_noninteractive(
     source: Path, output: Path, runs: Path
 ) -> subprocess.CompletedProcess[str]:
+    """標準入出力をcaptureした実CLIを有限時間で実行し、非対話時の選択規則を調べる。"""
+
     return subprocess.run(
         _command(source, output),
         cwd=Path(cli.__file__).parent,
@@ -46,6 +52,8 @@ def _run_noninteractive(
 
 
 def _run_ids(output: str) -> list[str]:
+    """CLI出力に表示されたRun IDを、最初の出現順を保って重複なく取り出す。"""
+
     return list(dict.fromkeys(re.findall(r"run_id=([0-9a-f-]{36})", output)))
 
 
@@ -91,6 +99,8 @@ def test_posix_pty_selects_candidate_then_answers_yes_or_no(  # noqa: PLR0915
     existing_ids = _run_ids(first.stdout) + _run_ids(second.stdout)
 
     def interact(answer: bytes, output: Path) -> str:
+        """PTYで候補選択とy/n回答を送り、CLI終了と残存childの後片付けまで行って出力を返す。"""
+
         master, slave = pty.openpty()
         process = subprocess.Popen(
             _command(source, output),

@@ -106,11 +106,15 @@ def pages_text(path: Path) -> list[str]:
 
 
 def _validate_png(path: Path) -> None:
+    """公開直前の画像をPillowで検証し、破損画像の置換保存を防ぐ。"""
+
     with Image.open(path) as image:
         image.verify()
 
 
 def _validate_split(directory: Path) -> None:
+    """分割成果物の公開前にmanifestとFile数の一致、各PDFにページがあることを確認する。"""
+
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
     parts = sorted(directory.glob("part-*.pdf"))
     if not parts or len(parts) != len(manifest.get("parts", [])):

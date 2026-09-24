@@ -56,6 +56,8 @@ class StructurePageError(RuntimeError):
     """STRUCTURE失敗を本文なしのpage診断へ正規化する。"""
 
     def __init__(self, page: int, target_id: str, cause: LLMError) -> None:
+        """構造推定が停止したページ・対象と安全なLLM診断値を保持し、応答本文は公開しない。"""
+
         self.page = page
         self.target_id = target_id
         self.stage: LLMStage = cause.stage
@@ -239,6 +241,8 @@ def _save_page_checkpoint(
 
 
 def _heading_jumps(page: Page) -> None:
+    """非見出しのlevelを除去し、直前の見出しから二段以上深くなる階層を一段までに抑える。"""
+
     previous = 0
     for block in page.blocks:
         if block.kind != "heading":
@@ -250,6 +254,8 @@ def _heading_jumps(page: Page) -> None:
 
 
 def _merge_code(page: Page) -> None:
+    """隣接するcode Blockの原文Inlineを先頭Blockへまとめ、ページ内の順序番号を振り直す。"""
+
     merged = []
     for block in page.blocks:
         if merged and merged[-1].kind == block.kind == "code":
@@ -272,6 +278,8 @@ def _is_text_output_truncated(error: LLMError) -> bool:
 
 
 def _apply(page: Page, response: StructureResponse) -> list[dict[str, object]]:
+    """既知Blockへの構造提案とcaption移動を反映し、階層とcode連結を補正して変更監査を返す。"""
+
     blocks = {block.id: block for block in page.blocks}
     audit: list[dict[str, object]] = []
     for patch in response.patches:
