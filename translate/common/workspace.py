@@ -171,14 +171,22 @@ def _backup_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.{uuid4().hex}.backup")
 
 
+class OutputInUseError(RuntimeError):
+    """別の呼出が出力の排他を所有しており、今回の操作を開始できない。"""
+
+
 class OutputLock:
     """同じRunの`.workspace`を二つのprocessが更新することを防ぐ。"""
 
     def __init__(self, path: Path) -> None:
+        """対象directoryを保持し、実際の排他取得はenterまで行わない。"""
+
         self.path = path
         self._lock: portalocker.Lock | None = None
 
     def __enter__(self) -> Self:
+        """導入済みportalockerで即時取得し、競合は専用例外で通知する。"""
+
         self.path.mkdir(parents=True, exist_ok=True)
         # Note 4: A non-blocking lock fails fast instead of hiding duplicate runs.
         lock = portalocker.Lock(self.path / "run.lock", mode="a+b", timeout=0)
@@ -186,7 +194,7 @@ class OutputLock:
             lock.acquire()
         except portalocker.AlreadyLocked as error:
             message = f"output is already in use: {self.path}"
-            raise RuntimeError(message) from error
+            raise OutputInUseError(message) from error
         self._lock = lock
         return self
 
@@ -196,6 +204,8 @@ class OutputLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        """保持している排他だけを解放し、保存内容は変更しない。"""
+
         if self._lock is not None:
             self._lock.release()
             self._lock = None

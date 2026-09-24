@@ -165,6 +165,10 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 ## 実装方針の訂正
 
+### RUN-001の実装修正（2026-09-25）
+
+[protect-active-run-from-rejected-execution](../protect-active-run-from-rejected-execution/verification.md)で開始準備から終了保存・log解放まで実lockを保持し、拒否側のmetadata/failure/log変更と古い失敗の誤表示を修正した。全4操作とfailure有無の修正前8失敗→修正後成功、追加17 Test、全体383 passed/1 skippedを確認。新Codeの実E2E・目視前のため最終解決は保留。削除時のlock解放後rmtree、通常失敗の再読込み、二重状態管理は別途残る。
+
 ### DATA-001の実装修正（2026-09-25）
 
 [include-table-and-caption-content-in-review](../include-table-and-caption-content-in-review/verification.md)で本文/caption/cellの共通列挙をCHECK/REVIEW/VERIFY/ALIGNと比較Documentへ適用した。セル単位の欠落、空訳、候補検証、表/captionだけの比較と片側欠落の追加29 Test、全体366 passed/1 skippedを確認。新実装の実translation→Word PDF→reviewと目視が未完了のためDATA-001は未解決のまま。FIXの指摘対象限定とVERIFYページ単位採否も別途是正が必要であり、今回の対象列挙だけで仕様全体の適合を宣言しない。

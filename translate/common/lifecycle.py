@@ -27,6 +27,7 @@ from translate.common.progress import TaskStatusEvent, bind_task_status
 from translate.common.redaction import credential_values, safe_failure_reason
 from translate.common.runs import InputSource, collect_input_sources
 from translate.common.workspace import (
+    OutputInUseError,
     OutputLock,
     atomic_write_bytes,
     atomic_write_json,
@@ -237,100 +238,110 @@ def execute_run(
 ) -> tuple[RunRecord, tuple[Path, ...]]:
     """Run lock内で操作を実行し、成功・失敗statusと最後のTaskを保存する。"""
 
-    record = repository.save(prepared.record.model_copy(update={"status": "running"}))
-    configure_logging(
-        prepared.paths.workspace / "logs" / "run.log",
-        credential_values(settings),
-    )
+    # 拒否側はmetadata・失敗記録・所有者のlog設定へ一切触れない。
+    with OutputLock(prepared.paths.workspace):
+        record = repository.load(prepared.record.run_id)
+        record = repository.save(record.model_copy(update={"status": "running"}))
+        configure_logging(
+            prepared.paths.workspace / "logs" / "run.log",
+            credential_values(settings),
+        )
 
-    failure_path = prepared.paths.workspace / "failure.json"
-    failure_written = False
-    observation_warnings = set(record.warnings)
+        failure_path = prepared.paths.workspace / "failure.json"
+        failure_written = False
+        observation_warnings = set(record.warnings)
 
-    def progress(event: ProgressEvent) -> None:
-        nonlocal record
-        record = repository.save(record.model_copy(update={"last_task": event.task}))
-        if callback is not None:
-            callback(event)
+        def progress(event: ProgressEvent) -> None:
+            """所有権を保持した呼出の進捗を保存して利用者へ通知する。"""
 
-    def task_status(event: TaskStatusEvent) -> None:
-        nonlocal failure_written, record
-        if event.phase in {"started", "failed"}:
+            nonlocal record
             record = repository.save(
                 record.model_copy(update={"last_task": event.task})
             )
-        if event.phase != "failed":
-            return
-        error = event.error or RuntimeError("task failed")
-        stage, cause_type = _safe_diagnostics(event.stage, event.cause_type, error)
-        output_diagnostics = _safe_output_diagnostics(event, error, stage)
-        failure = FailureRecord(
-            run_id=record.run_id,
-            task=event.task,
-            page=event.page,
-            group=event.group,
-            target_id=event.target_id,
-            error_type=type(error).__name__,
-            reason=safe_failure_reason(error),
-            stage=stage,
-            cause_type=cause_type,
-            failure_kind=output_diagnostics[0],
-            finish_reason=output_diagnostics[1],
-            input_tokens=output_diagnostics[2],
-            output_tokens=output_diagnostics[3],
-            total_tokens=output_diagnostics[4],
-            failed_at=datetime.now(UTC),
-        )
-        atomic_write_json(failure_path, failure.model_dump(mode="json"))
-        LOGGER.error("Run task failed: %s", format_failure(failure))
-        failure_written = True
+            if callback is not None:
+                callback(event)
 
-    def observation_warning(warning: str) -> None:
-        nonlocal record
-        if warning in observation_warnings:
-            return
-        observation_warnings.add(warning)
-        record = repository.save(
-            record.model_copy(update={"warnings": [*record.warnings, warning]})
-        )
+        def task_status(event: TaskStatusEvent) -> None:
+            """所有者のTask境界と安全な障害情報を排他保持中に記録する。"""
 
-    try:
+            nonlocal failure_written, record
+            if event.phase in {"started", "failed"}:
+                record = repository.save(
+                    record.model_copy(update={"last_task": event.task})
+                )
+            if event.phase != "failed":
+                return
+            error = event.error or RuntimeError("task failed")
+            stage, cause_type = _safe_diagnostics(event.stage, event.cause_type, error)
+            output_diagnostics = _safe_output_diagnostics(event, error, stage)
+            failure = FailureRecord(
+                run_id=record.run_id,
+                task=event.task,
+                page=event.page,
+                group=event.group,
+                target_id=event.target_id,
+                error_type=type(error).__name__,
+                reason=safe_failure_reason(error),
+                stage=stage,
+                cause_type=cause_type,
+                failure_kind=output_diagnostics[0],
+                finish_reason=output_diagnostics[1],
+                input_tokens=output_diagnostics[2],
+                output_tokens=output_diagnostics[3],
+                total_tokens=output_diagnostics[4],
+                failed_at=datetime.now(UTC),
+            )
+            atomic_write_json(failure_path, failure.model_dump(mode="json"))
+            LOGGER.error("Run task failed: %s", format_failure(failure))
+            failure_written = True
+
+        def observation_warning(warning: str) -> None:
+            """同じ観測警告を重複保存せず、所有者のmetadataへ追加する。"""
+
+            nonlocal record
+            if warning in observation_warnings:
+                return
+            observation_warnings.add(warning)
+            record = repository.save(
+                record.model_copy(update={"warnings": [*record.warnings, warning]})
+            )
+
         try:
-            with (
-                OutputLock(prepared.paths.workspace),
-                bind_task_status(task_status),
-                bind_observation_context(
-                    credential_values(settings),
-                    observation_warning,
-                    prepared.record.operation.upper(),
-                ),
-            ):
-                outputs = _execute_operation(prepared, settings, backend, progress)
-        except Exception as error:
-            if not failure_written:
-                task_status(
-                    TaskStatusEvent(
-                        record.last_task or prepared.record.operation.upper(),
-                        "failed",
-                        error=error,
+            try:
+                with (
+                    bind_task_status(task_status),
+                    bind_observation_context(
+                        credential_values(settings),
+                        observation_warning,
+                        prepared.record.operation.upper(),
+                    ),
+                ):
+                    outputs = _execute_operation(prepared, settings, backend, progress)
+            except Exception as error:
+                if not failure_written:
+                    task_status(
+                        TaskStatusEvent(
+                            record.last_task or prepared.record.operation.upper(),
+                            "failed",
+                            error=error,
+                        )
+                    )
+                warning = safe_failure_reason(error)
+                record = repository.save(
+                    record.model_copy(
+                        update={
+                            "status": "failed",
+                            "warnings": [*record.warnings, warning],
+                        }
                     )
                 )
-            warning = safe_failure_reason(error)
-            record = repository.save(
-                record.model_copy(
-                    update={
-                        "status": "failed",
-                        "warnings": [*record.warnings, warning],
-                    }
-                )
-            )
-            raise
-        failure_path.unlink(missing_ok=True)
-        record = repository.save(record.model_copy(update={"status": "completed"}))
-        return record, outputs
-    finally:
-        # Release Windows FileHandler before export or Run deletion.
-        configure_logging()
+                raise
+            failure_path.unlink(missing_ok=True)
+            record = repository.save(record.model_copy(update={"status": "completed"}))
+            return record, outputs
+        finally:
+            # Release Windows FileHandler before export or Run deletion.
+            configure_logging()
 
 
 def execute_public_run(
@@ -345,13 +356,22 @@ def execute_public_run(
     try:
         return execute_run(repository, prepared, settings, backend, callback)
     except Exception as error:  # noqa: BLE001
-        failure = load_failure(repository, prepared.record.run_id)
+        # 排他拒否は今回の呼出だけのErrorであり、所有者の過去の失敗とは別。
+        failure = (
+            None
+            if isinstance(error, OutputInUseError)
+            else load_failure(repository, prepared.record.run_id)
+        )
         if failure is None:
             stage, cause_type = _safe_diagnostics(None, None, error)
             output_diagnostics = _safe_output_diagnostics(None, error, stage)
             failure = FailureRecord(
                 run_id=prepared.record.run_id,
-                task=prepared.record.last_task or prepared.record.operation.upper(),
+                task=(
+                    prepared.record.operation.upper()
+                    if isinstance(error, OutputInUseError)
+                    else prepared.record.last_task or prepared.record.operation.upper()
+                ),
                 error_type=type(error).__name__,
                 reason=safe_failure_reason(error),
                 stage=stage,
