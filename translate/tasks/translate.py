@@ -208,15 +208,26 @@ def _chunks(
     current: list[tuple[str, str]] = []
     size = 0
     for item in values:
-        if current and (len(current) >= 20 or size + len(item[1]) > max_chars):
+        item_size = _prompt_item_size(item[1], len(current))
+        if current and (len(current) >= 20 or size + item_size > max_chars):
             result.append(current)
             current = []
             size = 0
         current.append(item)
-        size += len(item[1])
+        size += _prompt_item_size(item[1], len(current) - 1)
     if current:
         result.append(current)
     return result
+
+
+def _prompt_item_size(text: str, unit_number: int) -> int:
+    """placeholder化後のprompt長をchunk budgetへ反映する。"""
+
+    value = text
+    for fragment_number, fragment in enumerate(protected_fragments(text)):
+        token = f"__PROTECTED_{unit_number}_{fragment_number}__"
+        value = value.replace(fragment, token, 1)
+    return len(value)
 
 
 def _validated_mapping(
@@ -263,9 +274,7 @@ def _translate_page(
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
         target_id = f"page-{page.number:04d}-chunk-{chunk_label}"
-        prompt_chunk, protected = (
-            _protect_chunk_for_prompt(chunk) if force_no_reasoning else (chunk, {})
-        )
+        prompt_chunk, protected = _protect_chunk_for_prompt(chunk)
         evidence = search(
             settings,
             source[:2_000],

@@ -290,6 +290,44 @@ def test_split_fallback_restores_protected_placeholders(
     assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
 
 
+def test_normal_chunk_protects_and_restores_protected_fragments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    prompts: list[str] = []
+
+    def structured(*_args: object, **_kwargs: object) -> translate.TranslationResponse:
+        prompt = str(_args[-1])
+        prompts.append(prompt)
+        assert "https://example.com/path" not in prompt
+        assert "__PROTECTED_0_0__" in prompt
+        return translate.TranslationResponse(
+            translations=[
+                translate.TranslationItem(
+                    id="inline-1", text="Translated __PROTECTED_0_0__"
+                )
+            ]
+        )
+
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(translate, "structured", structured)
+    page = _page("See https://example.com/path")
+    translate._translate_page(  # noqa: SLF001
+        page,
+        "",
+        "",
+        "rules",
+        [],
+        settings_factory(translation_model="translation", retry_attempts=1),
+        tmp_path / "qdrant",
+    )
+
+    assert len(prompts) == 1
+    assert page.blocks[0].translated is not None
+    assert page.blocks[0].translated[0].text == "Translated https://example.com/path"
+
+
 def test_placeholder_variants_are_canonicalized_before_restoration() -> None:
     response = translate.TranslationResponse(
         translations=[
@@ -348,8 +386,9 @@ def test_missing_placeholder_retries_before_failing_the_split_unit(
         nonlocal calls
         calls += 1
         if calls <= 2:
+            stage = "text-output"
             raise LLMError(
-                "text-output",
+                stage,
                 LLMOutputTruncatedError(),
                 failure_kind="output-truncated",
                 finish_reason="length",
@@ -360,9 +399,7 @@ def test_missing_placeholder_retries_before_failing_the_split_unit(
         prompt = str(_args[-1])
         if calls == 3:
             return translate.TranslationResponse(
-                translations=[
-                    translate.TranslationItem(id="inline-0", text="欠落")
-                ]
+                translations=[translate.TranslationItem(id="inline-0", text="欠落")]
             )
         if calls == 4:
             return translate.TranslationResponse(
@@ -375,9 +412,7 @@ def test_missing_placeholder_retries_before_failing_the_split_unit(
             )
         assert '"id": "inline-1"' in prompt
         return translate.TranslationResponse(
-            translations=[
-                translate.TranslationItem(id="inline-1", text="Translated")
-            ]
+            translations=[translate.TranslationItem(id="inline-1", text="Translated")]
         )
 
     monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
