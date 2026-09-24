@@ -37,4 +37,5 @@
 
 ## 指摘
 
-実装上の指摘は0件。PDF同士のComparison Reviewだけは、ユーザーがDOCXをPDFへ変換した後に実施する外部操作として保留している。
+- 実装上の指摘は0件。
+- **保留（外部操作）**: ユーザーが `outputs/sample3-translated/document.ja.docx` をPDFへ変換した成果物が未提供のため、入力PDFとのComparison Reviewは未実施。これを完了するまでChangeはarchiveしない。
