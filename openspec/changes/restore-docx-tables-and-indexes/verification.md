@@ -284,7 +284,7 @@ openspec-verify-changeで本Changeのproposal/specs/design/tasksを読み直し�
 - 現実装はMarkdownの指摘行へseverity/kind/messageしか渡さない。CLIの`--output`はこのMarkdownをexportするため、内部JSONの保持を公開契約の充足とはみなせない。
 - `test_comparison_capability_reports_findings_or_explicit_zero_without_mutation`は根拠・修正方針付きFindingを入力するが、Markdownの重大度/種別とJSON集計だけをassertし、三fieldの公開を検査していない。
 - 推薦対応: 別Changeで、既存Findingの対象ID・根拠・修正方針を公開Markdownへ保持し、対応Groupを辿れる表示と欠落fieldの扱いを明示する。全field・複数Finding・指摘0件の公開report回帰Testを追加する。新たな進捗台帳や外部要求は不要。Findingの内容を生成し直して不足を隠さない。
-- 是正提案: [preserve-public-review-finding-details](../preserve-public-review-finding-details/proposal.md)。提案のみであり、本指摘は実装修正と公開成果物の検証が済むまで未解決とする。
+- 是正Change: [preserve-public-review-finding-details](../preserve-public-review-finding-details/verification.md)。REPORT実装と公開経路の自動回帰Testを追加し、関連17件・全体587 passed/1 skippedを確認した。最新Translation→Word PDF→Reviewでの正式検証は未完了のため、本指摘の解決判定は保留する。
 
 ### 調査対象Artifactの同一性
 

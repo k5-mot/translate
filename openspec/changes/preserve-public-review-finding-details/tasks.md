@@ -2,14 +2,14 @@
 
 ## 1. REPORTの契約回復
 
-- [ ] 1.1 CHECK/REVIEW双方のtarget_ids・evidence・suggestionを公開Markdownに求める回帰Testを追加し、現実装で欠落により失敗することを記録する（Q-FUNC）。既存tests/test_comparison_capability.pyのJSONのみの検査を補う
-- [ ] 1.2 ReportTaskに全Finding項目と対応一覧のalignment/indexラベルを描画し、空/複数/未知対象、None/空文字/空白のみ、caption/cell、多対多・片側未対応のTestを成功させる。順序・集計・JSON全fieldを変更しない（Q-FUNC/Q-INT/Q-COMP）
-- [ ] 1.3 自由文とIDをliteralとして描画し、導入済みMarkdown parserで複数行・CRLF・長いbacktick列・HTML・実体参照・見出し/リンクを検査する。内容保持とraw HTML token 0件を確認し、既存APIとの契約差と小さな実装に限定した理由を残す（Q-SEC/Q-MNT）
+- [x] 1.1 CHECK/REVIEW双方のtarget_ids・evidence・suggestionを公開Markdownに求める回帰Testを追加し、現実装で欠落により失敗することを記録する（Q-FUNC）。既存tests/test_comparison_capability.pyのJSONのみの検査を補う
+- [x] 1.2 ReportTaskに全Finding項目と対応一覧のalignment/indexラベルを描画し、空/複数/未知対象、None/空文字/空白のみ、caption/cell、多対多・片側未対応のTestを成功させる。順序・集計・JSON全fieldを変更しない（Q-FUNC/Q-INT/Q-COMP）
+- [x] 1.3 自由文とIDをliteralとして描画し、導入済みMarkdown parserで複数行・CRLF・長いbacktick列・HTML・実体参照・見出し/リンクを検査する。内容保持とraw HTML token 0件を確認し、既存APIとの契約差と小さな実装に限定した理由を残す（Q-SEC/Q-MNT）
 
 ## 2. 公開経路と回帰品質
 
-- [ ] 2.1 実REPORTで生成したMarkdownをCLI --output、UI download、共通exportへ通す統合Testを追加し、全fieldを含むbytes同一性、指摘0件表示、入力hash不変を確認する。モデル/外部通信はdoubleとし、REPORTは置換しない（Q-REL/Q-COMP）
-- [ ] 2.2 Ruff check/format、ty check、pytest全体、OpenSpec strict validation、git diff --checkを実行して結果をverification.mdへ記録する。関数説明と依存再利用を点検し、新しいmodule・依存・外部要求・再開台帳がないことを差分で確認する（Q-MNT）
+- [x] 2.1 実REPORTで生成したMarkdownをCLI --output、UI download、共通exportへ通す統合Testを追加し、全fieldを含むbytes同一性、指摘0件表示、入力hash不変を確認する。モデル/外部通信はdoubleとし、REPORTは置換しない（Q-REL/Q-COMP）
+- [x] 2.2 Ruff check/format、ty check、pytest全体、OpenSpec strict validation、git diff --checkを実行して結果をverification.mdへ記録する。関数説明と依存再利用を点検し、新しいmodule・依存・外部要求・再開台帳がないことを差分で確認する（Q-MNT）
 
 ## 3. 実成果物での正式検証
 
