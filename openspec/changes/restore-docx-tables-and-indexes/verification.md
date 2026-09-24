@@ -190,3 +190,23 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 利用者の指摘に従い、表をHTMLへ変換する既存処理と今回のHTML経由案を廃止する。Internal Documentの行・列・結合情報からPandocの表構造を直接構築し、既存Pandocでgrid tableを出力する。HTML readerやHTML中間成果物は使用しない。
 
 一覧はMarkdownを正規表現で再解析せず、変換済みDOCXの見出し・図題・表題から静的な項目を作る。これによりCode内の見かけ上の見出しやCaptionが目次へ混入することを防ぐ。ページ番号は提案どおり含めない。
+
+## 先行成果物のWord/PDFと表内画像の調査（2026-09-25）
+
+Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`の実translationが終了コード0で完了した。生成DOCXを自分で起動した非表示Microsoft WordでPDF化し、`outputs/sample3-acceptance-v2/document.ja.docx`と`document.ja.pdf`を利用者へ提示した。hash、Word実行条件、起動時版の制約は[Checkpoint修正の先行成果物記録](../sanitize-workflow-checkpoint-errors/verification.md)を参照。ユーザ目視結果は未回答。先行processは後続修正を読み込んでいないため、最新Codeの実機Gateを完了にしない。
+
+PDFは28ページ。表紙1ページ、目次2ページ、図一覧3〜4ページ、表一覧5ページで一覧は非空。25ページの評価表はWord表として出力される。一方、26ページのステータス表の黄・緑丸はセル内になく、27ページに10個縦並びで出力される。図一覧のFigure 2開始と仮ヘッダー/フッターも残り、既存指摘は未解決。
+
+### 表内画像の対応が欠ける境界
+
+- 調査対象は`.workspace/docling/part-0002/unpacked/document.json`の`tables[1]`、part内5ページ（原本15ページ）。Docling Schema JSONの時点で3行×6列の表に、文字のある`table_cells` 7個と`grid` 18個がある。丸の入る10空セルにbbox/画像参照はなく、10画像は親`#/body`の独立pictureとなっている。
+- 表全体bbox、文字セルbbox、画像bboxはMERGE/POSITIONのJSONに残る。ページは612×792pt。表/画像はBOTTOMLEFT、文字セルはTOPLEFTなので、同じ原点へ変換して照合する必要がある。
+- このサンプルでは全10画像が表bbox内に完全包含される。画像中心xは列見出しbboxのx区間へ1件、中心yは行見出しbboxのy区間へ1件だけ対応する。空セルbboxそのものへの包含判定ではない。行列は0始まりで、pictures 13/14→列1、19/20→列2、17/18→列3、21/22→列4、15/16→列5、各組の先頭→行1、後方→行2。距離閾値や最近傍推測を使わずこの10個は一意に対応できる。
+- `load._table_cells()`はgridから18個のInternal TableCellを作るがbboxを保持せず、`TableCell`には画像表現もない。`load._block()`は画像を独立Figureにする。LOAD→STRUCTURE→VERIFYでも表と10 Figureが分離したままで、Markdownはそれを表の外へ描画する。WordによるPDF化だけの不具合ではない。
+- 導入済みPandoc 3.11へ標準入力でgrid table内の画像を渡すと、Cell内のImageと寸法属性を認識した。HTMLや新規依存は不要。Docling画像は38〜40px、原本上は約19ptであり、単にpixel寸法で描画せず原本寸法を保持する必要がある。
+
+### 次の提案へ向けた未決事項
+
+LOADで既存の幾何情報からセルとの対応を確定し、Internal Documentに画像参照を保持して既存Pandocへ渡す案を調査した。割当済み画像の二重出力防止、asset参照検証、表示寸法も必要。commonや別保存Layer、別モデル要求の追加は前提にしない。
+
+`grill-with-docs`の判断確認として、所属セルが一意に決まらない場合に停止・Resume可能とするか、警告して表外へ残すかを利用者へ質問した。**回答待ちのため、新Changeの正式作成・製品実装には進んでいない。** 推奨は誤った表の公開を防ぐ停止だが、承認済みの要求として扱わない。用語の新規合意や採用判断もないため、Glossary/ADRは追加していない。

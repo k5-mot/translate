@@ -74,3 +74,13 @@ session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01
 | 01a0d44f-1efa-7597-9d1b-0be4c5748b85 | 19 | 0 | 0 |
 
 固定分類以外の計6行は、本文・秘密を含まないことをこの件数調査だけでは証明できない。新実装で過去行も浄化されたとは扱わない。別layout/削除済みDB/空き領域を含む完全調査ではない。task 4.1は実機証拠との対応付けが残るため未完了のままとする。
+
+### 修正後の実translation開始
+
+- 起動: `uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-checkpoint-acceptance`
+- Run ID: `01a0d4f7-20bf-7ed0-b580-7ddd2cb6299d`、追跡session: `58094`。SPLIT〜STRUCTUREの8 Taskが完了し（STRUCTURE 102.352秒）、同じlive handleでTRANSLATE処理中。終了コードと成果物hashは未取得のため3.1を完了にしない。
+- code commit: `419b6e15e16a2c4f63383b05d3a639bc93db0eda`。起動時の追跡File差分（`git diff --binary`）SHA-256: `f4f834059bc84c6ef2158dc4da64e65063eb4b4a95a63e13609ce703295fba7e`。
+- 入力SHA-256: `5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`。
+- 未コミットの製品File SHA-256: `translate/adapters/llm.py` = `d75bef0d3baea485a9d3b6510cd0aef8badfb0f45fcfdd77ec9aef0951186014`、`translate/common/lifecycle.py` = `d15eb3dff4782da13cc747f695e9731b8f4da1b3103e3a5ba73e5214499ddc8a`、`translate/common/terminal_evidence.py` = `881339c47e68857e782f21b4d7c2e2609c65ab4e6458584c3a5e6c1cd565b6f8`、`translate/tasks/review.py` = `b968b2ac43d23032f435c7a8486901c07334cf0a3c76f4899a9b7f4f01e54c14`。
+- contextは30,208 tokens、request timeoutは1,800秒、Task deadlineは21,600秒。実Model/Embeddingは逐次実行し、先行translationの終端後に起動した。実行中の製品Fileを変更しない。
+- 接続時にQdrant clientから`Api key is used with an insecure connection.`という環境警告が出た。鍵値は表示されていない。Checkpoint修正とは別の通信保護上の確認事項として残し、警告の抑止や接続先の無断変更は行わない。
