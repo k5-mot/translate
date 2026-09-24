@@ -87,7 +87,11 @@ def test_markdown_preserves_heading_code_table_and_figure_structure() -> None:
 
 
 def _fake_pandoc_run(*, valid: bool) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """公開前のDOCX検証を試すため、Pandocの成功/不正出力を模擬する。"""
+
     def run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        """指定された出力先へ検証用の最小containerを書き込む。"""
+
         output = Path(args[args.index("--output") + 1])
         if valid:
             with zipfile.ZipFile(output, "w") as archive:
@@ -101,6 +105,8 @@ def _fake_pandoc_run(*, valid: bool) -> Callable[..., subprocess.CompletedProces
 
 
 def _write_minimal_docx(path: Path) -> None:
+    """containerの存在検証に必要な部品だけを持つDOCXを作る。"""
+
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("[Content_Types].xml", "<Types/>")
         archive.writestr("word/document.xml", "<document/>")
@@ -255,6 +261,8 @@ def test_preflight_rejects_before_pandoc_conversion(
     conversion_calls = 0
 
     def convert(*_args: object, **_kwargs: object) -> object:
+        """事前検証で拒否すべきケースの変換呼出を検出する。"""
+
         nonlocal conversion_calls
         conversion_calls += 1
         message = "conversion must not start"
@@ -297,6 +305,8 @@ def test_conversion_and_replace_failure_clean_temporary_and_preserve_output(
     if failure == "process":
 
         def fail_process(*_args: object, **_kwargs: object) -> object:
+            """Pandoc process失敗時の旧成果物保持を検査する。"""
+
             raise subprocess.CalledProcessError(1, "pandoc")
 
         monkeypatch.setattr(pandoc.subprocess, "run", fail_process)
@@ -304,6 +314,8 @@ def test_conversion_and_replace_failure_clean_temporary_and_preserve_output(
         monkeypatch.setattr(pandoc.subprocess, "run", _fake_pandoc_run(valid=True))
 
         def fail_replace(_temporary: Path, _output: Path) -> None:
+            """公開時の置換失敗を注入して一時File清掃を検査する。"""
+
             message = "replace failed"
             raise OSError(message)
 
@@ -491,3 +503,175 @@ def test_invalid_table_shape_is_rejected(cells: list[TableCell]) -> None:
 
     with pytest.raises(ValueError, match="invalid table shape"):
         render_block(Block(id="bad", kind="table", order=0, cells=cells))
+
+
+def _convert_table_fixture(table: Block, tmp_path: Path) -> tuple[ET.Element, str]:
+    """実rendererとPandocを通した本文XMLとLink参照先を返す。"""
+
+    markdown = tmp_path / "table.md"
+    markdown.write_text(render_block(table), encoding="utf-8")
+    output = tmp_path / "table.docx"
+    template = Path(__file__).parents[1] / "translate/templates/template.docx"
+    pandoc.create_docx(markdown, output, template)
+    with zipfile.ZipFile(output) as archive:
+        return (
+            ET.fromstring(archive.read("word/document.xml")),  # noqa: S314
+            archive.read("word/_rels/document.xml.rels").decode("utf-8"),
+        )
+
+
+def test_header_to_body_rowspan_preserves_columns_without_repeated_header(
+    tmp_path: Path,
+) -> None:
+    """見出し/本文をまたぐ縦結合では位置を優先し、見出しを太字にする。"""
+
+    table = Block(
+        id="crossing",
+        kind="table",
+        order=0,
+        cells=[
+            TableCell(
+                row=0,
+                column=0,
+                rowspan=2,
+                header=True,
+                source=[Inline(id="merged", text="MERGED")],
+            ),
+            TableCell(
+                row=0,
+                column=1,
+                header=True,
+                source=[Inline(id="header", text="HEADER")],
+            ),
+            TableCell(row=1, column=1, source=[Inline(id="body", text="BODY")]),
+        ],
+    )
+    root, _ = _convert_table_fixture(table, tmp_path)
+    ns = {"w": pandoc.W_NS}
+    rendered = root.find(".//w:tbl", ns)
+    assert rendered is not None
+    rows = rendered.findall("w:tr", ns)
+    assert [
+        ["".join(cell.itertext()) for cell in row.findall("w:tc", ns)] for row in rows
+    ] == [["MERGED", "HEADER"], ["", "BODY"]]
+    assert rows[0].find("w:tc/w:tcPr/w:vMerge[@w:val='restart']", ns) is not None
+    assert rows[1].find("w:tc/w:tcPr/w:vMerge", ns) is not None
+    assert not rendered.findall(".//w:tblHeader", ns)
+    assert rows[0].find("w:tc//w:b", ns) is not None
+
+
+@pytest.mark.parametrize("header_rows", [1, 2])
+def test_empty_corner_multiple_headers_and_body_row_headers(
+    tmp_path: Path,
+    header_rows: int,
+) -> None:
+    """空隅セルを含む先頭見出し群と本文の行見出しを失わない。"""
+
+    cells = [TableCell(row=0, column=0)]
+    cells.append(
+        TableCell(
+            row=0, column=1, header=True, source=[Inline(id="head0", text="HEADER0")]
+        )
+    )
+    if header_rows == 2:
+        cells.extend(
+            [
+                TableCell(
+                    row=1,
+                    column=0,
+                    header=True,
+                    source=[Inline(id="sub0", text="SUB0")],
+                ),
+                TableCell(
+                    row=1,
+                    column=1,
+                    header=True,
+                    source=[Inline(id="sub1", text="SUB1")],
+                ),
+            ]
+        )
+    cells.extend(
+        [
+            TableCell(
+                row=header_rows,
+                column=0,
+                header=True,
+                source=[Inline(id="row", text="ROWHEADER")],
+            ),
+            TableCell(
+                row=header_rows, column=1, source=[Inline(id="value", text="VALUE")]
+            ),
+        ]
+    )
+    root, _ = _convert_table_fixture(
+        Block(id="headers", kind="table", order=0, cells=cells), tmp_path
+    )
+    ns = {"w": pandoc.W_NS}
+    rendered = root.find(".//w:tbl", ns)
+    assert rendered is not None
+    assert len(rendered.findall("w:tr/w:trPr/w:tblHeader", ns)) == header_rows
+    last_row = rendered.findall("w:tr", ns)[-1]
+    assert ["".join(cell.itertext()) for cell in last_row.findall("w:tc", ns)] == [
+        "ROWHEADER",
+        "VALUE",
+    ]
+    assert last_row.find("w:tc//w:b", ns) is not None
+
+
+@pytest.mark.parametrize("target", ["cell", "caption"])
+def test_table_inlines_keep_links_code_marks_and_breaks(
+    tmp_path: Path, target: str
+) -> None:
+    """表セルと表題のInlineを実DOCXのLink・Code・装飾へ保持する。"""
+
+    inlines = [
+        Inline(id="bold", text="BOLD", marks=["strong"]),
+        Inline(id="italic", text="ITALIC", marks=["emphasis"]),
+        Inline(id="strike", text="STRIKE", marks=["strikethrough"]),
+        Inline(id="under", text="UNDER", marks=["underline"]),
+        Inline(id="sub", text="SUB", marks=["subscript"]),
+        Inline(id="super", text="SUPER", marks=["superscript"]),
+        Inline(
+            id="link",
+            text="LINK",
+            kind="link",
+            href="https://example.com/table?x=1&y=2",
+        ),
+        Inline(id="code", text="x = `a`", kind="code"),
+        Inline(id="br", kind="line_break"),
+        Inline(id="end", text="END"),
+    ]
+    table = Block(
+        id="inline-table",
+        kind="table",
+        order=0,
+        caption=inlines if target == "caption" else [],
+        cells=[
+            TableCell(
+                row=0,
+                column=0,
+                source=inlines if target == "cell" else [Inline(id="v", text="VALUE")],
+            )
+        ],
+    )
+    root, relationships = _convert_table_fixture(table, tmp_path)
+    ns = {"w": pandoc.W_NS}
+    container = (
+        root.find(".//w:tbl", ns)
+        if target == "cell"
+        else next(
+            paragraph
+            for paragraph in root.findall(".//w:body/w:p", ns)
+            if paragraph.find("w:pPr/w:pStyle[@w:val='TableCaption']", ns) is not None
+        )
+    )
+    assert container is not None
+    for tag in ("b", "i", "strike", "u"):
+        assert container.find(f".//w:rPr/w:{tag}", ns) is not None
+    for value in ("subscript", "superscript"):
+        assert container.find(f".//w:vertAlign[@w:val='{value}']", ns) is not None
+    assert container.find(".//w:rStyle[@w:val='VerbatimChar']", ns) is not None
+    assert "x = `a`" in "".join(container.itertext())
+    assert container.find(".//w:hyperlink", ns) is not None
+    assert "https://example.com/table?x=1&amp;y=2" in relationships
+    assert container.find(".//w:br", ns) is not None

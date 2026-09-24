@@ -4,7 +4,16 @@
 
 ## 現在の判定
 
-2026-09-25の正式verify結果: **検証失敗・archive不可**。既存Testは成功したが、追加の境界ケースで表の列位置とInline情報の欠落を再現した。tasksのチェックは10/11であり、チェック済みであることを全入力の正しさの証拠にはしない。利用者の目視確認も未完了。以下の積み残しは保持する。
+2026-09-25の追加修正後: **正式verify未完了・archive不可**。V-C2/V-W1/V-W2は回帰Testで修正を確認した。tasksは14/16で、4.3の利用者目視と5.5のtranslation→Word PDF化→review実行が未完了。以下の以前の正式verify失敗は履歴として保持し、追加修正だけで全指摘の解消とはしない。
+
+## 追加Applyの回帰検証（2026-09-25）
+
+- 承認済みの縦結合方針を設計/Scenario/tasksへ反映。header/body境界をまたぐ表だけ繰返し見出しを外し、位置と結合を保持。headerセルは太字とする。
+- 空隅セル、複数見出し行、行見出し、セルとcaptionのLink/Code/6種marks/明示改行を既存PandocのASTへ対応付けた。HTMLや新parser、依存Package、共通実行Layerは追加していない。
+- 修正前の追加5caseは全失敗。修正後は`tests/test_output_contract.py`が22 passed。列位置、w:vMerge、w:tblHeader、太字等のrun properties、hyperlink relationship、VerbatimChar、改行を実DOCXで確認。
+- 対象2filesのRuff lint/formatとmarkdown.pyのtyは成功。全体pytestは292 passed, 1 skipped（25.32秒）。この成功は、別Changeで記録した診断I/Oの間欠失敗を解決した証拠ではない。
+- 対象の既存7関数へ目的の説明を追加。関数コメントの全体監査は別記し、全件解消した扱いにしない。
+- この節の自動Testは正式E2Eの代替ではない。実モデルtranslation、Microsoft WordによるPDF生成、入力PDFと生成PDFのreviewを順に実行してから正式verifyを更新する。
 
 ## 正式検証（2026-09-25）
 

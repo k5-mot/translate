@@ -25,7 +25,8 @@
 
 ## 5. Verify指摘への対応
 
-- [ ] 5.1 見出し/本文をまたぐ縦結合の列位置と結合を保持し、当該表の繰返し見出しを無効・見出しセルを太字にする回帰Testを追加してV-C2を修正する
-- [ ] 5.2 空隅セル・複数見出し行・本文の行見出しを保持する実Pandoc/DOCX Testを追加してV-W2を修正する
-- [ ] 5.3 表セルとCaptionのLink/Code/marks/改行を保持する実Pandoc/DOCX Testを追加してV-W1を修正する
-- [ ] 5.4 追加Test・Ruff・型検査と全体Testを実行し、成功/失敗・未検証範囲をverification.mdへ記録する
+- [x] 5.1 見出し/本文をまたぐ縦結合の列位置と結合を保持し、当該表の繰返し見出しを無効・見出しセルを太字にする回帰Testを追加してV-C2を修正する
+- [x] 5.2 空隅セル・複数見出し行・本文の行見出しを保持する実Pandoc/DOCX Testを追加してV-W2を修正する
+- [x] 5.3 表セルとCaptionのLink/Code/marks/改行を保持する実Pandoc/DOCX Testを追加してV-W1を修正する
+- [x] 5.4 追加Test・Ruff・型検査と全体Testを実行し、成功/失敗・未検証範囲をverification.mdへ記録する
+- [ ] 5.5 sample3.pdfで公開translationを実行し、Microsoft Wordで生成DOCXをPDF化してから入力PDFと生成PDFの公開reviewを実行し、順序と実成果物を正式verifyの証拠として記録する

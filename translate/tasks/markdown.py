@@ -159,7 +159,21 @@ def _render_table(block: Block) -> str:
         _table_row(block.cells, row, columns)
         for row in range(max(cell.row + cell.rowspan for cell in block.cells))
     ]
-    has_header = all(cell.header for cell in block.cells if cell.row == 0)
+    header_rows = 0
+    for row in range(len(rows)):
+        covering = [
+            cell for cell in block.cells if cell.row <= row < cell.row + cell.rowspan
+        ]
+        if not any(cell.header for cell in covering) or any(
+            not cell.header and inline_text(_cell_current(cell)).strip()
+            for cell in covering
+        ):
+            break
+        header_rows += 1
+    # PandocのTableHead/TableBodyをまたぐ縦結合は同じセルとして扱われない。
+    # この場合だけ全行をbodyへ置き、見出しの意味はセルの太字で保持する。
+    if any(cell.row < header_rows < cell.row + cell.rowspan for cell in block.cells):
+        header_rows = 0
     caption = _table_inlines(_caption_current(block))
     # Pandocの構文木へセルを直接対応付ける。HTMLや独自の表解析は介在させず、
     # 幅計算・Unicodeの折返し・結合境界は導入済みPandocのwriterへ委譲する。
@@ -173,8 +187,8 @@ def _render_table(block: Block) -> str:
                     [{"t": "AlignDefault"}, {"t": "ColWidthDefault"}]
                     for _ in range(columns)
                 ],
-                [["", [], []], rows[:1] if has_header else []],
-                [[["", [], []], 0, [], rows[1:] if has_header else rows]],
+                [["", [], []], rows[:header_rows]],
+                [[["", [], []], 0, [], rows[header_rows:]]],
                 [["", [], []], []],
             ],
         }
@@ -182,6 +196,8 @@ def _render_table(block: Block) -> str:
 
 
 def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
+    """開始位置と結合済み領域を保ち、1行をPandocのRowへ対応付ける。"""
+
     result: list[object] = []
     occupied = {
         column
@@ -194,37 +210,57 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
         cell = starts.get(column)
         if cell is None and column in occupied:
             continue
+        inlines = _table_inlines(_cell_current(cell)) if cell else []
+        if cell is not None and cell.header and inlines:
+            inlines = [{"t": "Strong", "c": inlines}]
         result.append(
             [
                 ["", [], []],
                 {"t": "AlignDefault"},
                 cell.rowspan if cell else 1,
                 cell.colspan if cell else 1,
-                [{"t": "Plain", "c": _table_inlines(_cell_current(cell))}]
-                if cell
-                else [],
+                [{"t": "Plain", "c": inlines}] if cell else [],
             ]
         )
     return [["", [], []], result]
 
 
 def _table_inlines(values: list[Inline]) -> list[dict[str, object]]:
-    """表内の文字列と明示改行をPandoc inlineへ対応付ける。"""
+    """表と表題のInline型・装飾を既存Pandocの構文木へ対応付ける。"""
 
     result: list[dict[str, object]] = []
+    mark_types = {
+        "strong": "Strong",
+        "emphasis": "Emph",
+        "strikethrough": "Strikeout",
+        "underline": "Underline",
+        "subscript": "Subscript",
+        "superscript": "Superscript",
+    }
     for item in values:
         if item.kind == "line_break":
             result.append({"t": "LineBreak"})
             continue
-        result.extend(
-            {"t": "LineBreak"}
-            if part == "\n"
-            else {"t": "Space"}
-            if part.isspace()
-            else {"t": "Str", "c": part}
-            for part in re.split(r"(\n|[^\S\n]+)", item.text)
-            if part
-        )
+        content: list[dict[str, object]]
+        if item.kind == "code":
+            content = [{"t": "Code", "c": [["", [], []], item.text]}]
+        else:
+            content = [
+                {"t": "LineBreak"}
+                if part == "\n"
+                else {"t": "Space"}
+                if part.isspace()
+                else {"t": "Str", "c": part}
+                for part in re.split(r"(\n|[^\S\n]+)", item.text)
+                if part
+            ]
+        for mark in item.marks:
+            content = [{"t": mark_types[mark], "c": content}]
+        if item.kind == "link":
+            content = [
+                {"t": "Link", "c": [["", [], []], content, [item.href or "", ""]]}
+            ]
+        result.extend(content)
     return result
 
 
