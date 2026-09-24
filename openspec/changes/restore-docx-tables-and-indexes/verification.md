@@ -125,6 +125,8 @@
 
 ### 型検査項目の追跡更新（2026-09-25）
 
+利用者回答: 縦結合が見出し/本文をまたぐ表は、位置・結合を優先し、繰返し見出しを無効化して見出しセルを太字にする方針を承認。Taskは関数/classの二者択一ではなく併用案を検討する。commonの配置は具体的な処理・移動先の説明が必要で、承認済みではない。[具体案](architecture-audit.md)を追記した。
+
 ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し、全体`uv run ty check`が成功した。STRUCTURE/Evidenceの転送・再送・context復元を含む関連29 Test、全体278 passed/1 skippedを確認。ARCH-003全体を解決済みにはしない（規約コメント、不要コード、未追跡probeのLint、配置、Test再現性等は残る）。
 
 型修復Changeは正式verify成功後、[2026-09-25のarchive](../archive/2026-09-25-restore-typed-internal-call-contracts/verification.md)へ移した。Spec deltaはなく同期対象なし。main merge/pushは他の未解決事項とPR/CIゲートのため未実施。

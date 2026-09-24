@@ -202,6 +202,52 @@ V-C2のMERGED/HEADER/BODY表について、メモリ内の試験用構文木で�
 
 ## 次の判断と完了条件
 
+### 利用者回答を受けた具体案（2026-09-25、配置は未承認）
+
+「関数かclassか」の二者択一は撤回する。関数を既存呼出interfaceとして残し、BaseTaskを継承した各Task classへ委譲する併用案とする。実処理を両方へ実装する案ではない。以下の配置も、移動済み・承認済みではなく利用者への説明案である。
+
+以下のpathは`translate/`相対。ただし`tests/`はRepository直下。
+
+| 現行module | 実際に行う処理 | 具体的な配置案・統合/削除 |
+| --- | --- | --- |
+| common/__init__.py | package marker | 残す。汎用APIの再export集約には使わない |
+| common/logger.py | handler/level設定、LogRecord filter、外部HTTP log抑制 | 残す。Run制御やファイル保存を追加しない |
+| common/settings.py | 環境設定読取り、Pydantic検証、操作ごとの必須設定検証、rules読取り | 残す。Run状態や処理実行を保持しない |
+| common/workspace.py | file hash、UTF-8/JSON/binary原子的保存、directory公開/rollback、fsync、OutputLock | adapters/filesystem.pyへ移す。製品未使用のatomic_publish_directoryは除去し、実利用のatomic_directoryをTestする |
+| common/runs.py | RunRecord/Input/Paths、入力copy/manifest/hash、一覧/検索/metadata保存/削除 | adapters/run_repository.pyへ移す。ファイルとしてのRun保存境界を担当し、Workflow実行はしない |
+| common/identifiers.py | Python 3.12対応UUIDv7生成 | 唯一の製品利用元であるadapters/run_repository.py内へ統合。独立moduleと旧import aliasは廃止 |
+| common/fingerprint.py | 入力/モデル/OCR/token/rules/glossary/templateのsnapshot/hash、差分、Resume互換性 | workflows/run_compatibility.pyへ移す。SHA-256のfile読取りはfilesystemを再利用。Qdrant状態を含めない契約は維持 |
+| common/lifecycle.py | CLI/UI共通の候補提示、新規/Resume準備、操作振分け、Run実行/成功失敗管理、障害表示、export/サイズ計算 | 実行制御はworkflows/run_lifecycle.pyへ。exportのcopy処理と保存物サイズ計算はrun_repositoryへ移し、run_lifecycleは実行順序だけを指示する |
+| common/progress.py | TaskStatusEvent/context-local通知、ProgressEvent、Workflow完了slot数とResume後の進捗集計 | workflows/progress.pyへ移す。Task classはここへ依存させず、Workflow側がnode全体の成否を通知する |
+| common/redaction.py | Credential置換、body/binary除外、metadata再帰処理、例外の安全な表示 | adapters/redaction.pyへ移す。ログだけでなく保存/UI/Langfuseの出力境界から利用する。loggerへの統合は、承認済みloggerを再び万能moduleにしないため採用しない |
+| common/terminal_evidence.py | 検証専用Evidence型/保存、heartbeat、child/watchdog、診断counter、temp cleanup、debug入口 | tests/support/detached_runner.pyへ移す。製品adapterのcounter専用import/callは撤去し、必要な計測は検証runner側で外部呼出境界を一時的に計測する。製品からtestsをimportさせない。不要helperは廃止 |
+
+「adaptersへ移す」の意味は、余った共通処理を押し込むことではない。filesystemはOS入出力、run_repositoryはRun永続化、redactionは外部へ出す診断/metadataの安全化、と責務を固定する。redactionは下位の純粋な変換で、Task/Workflow/Runを参照しない。loggerからredactionを使う例外方向は規約とimport検査へ明記する。class化に合わせてprogressの機能をBaseTaskへ移す必要はない。
+
+### 関数とTask classの併用
+
+```text
+Workflow → tasks.docx.run(markdown, output, template)
+                → DocxTask(markdown, output, template).execute()
+                      → BaseTask: 開始時刻/終了時計測（finally）
+                      → DocxTask._run(): DOCX変換と成果物返却
+```
+
+- `tasks/base.py`に`BaseTask[ResultT]`を置く。各Taskは既存のTask module内にclassを定義し、新規に20個の別moduleを作らない。
+- 各classのconstructorはTask固有の具体型付き引数を持つ。すべてを汎用dictやobject可変引数へ変換せず、一律のInput DTOも増やさない。
+- module-level runは既存署名/戻り型を維持し、instance生成とexecuteへの委譲だけを行う。直接classを使う場合も同じexecuteを通る。補助的な変換関数は関数のまま利用する。
+- BaseTaskは全体の経過時間を成功/失敗ともfinallyで一回だけ計測し、元の例外をそのまま伝播する。固有処理側の重複計測は除去する。
+- retry、atomic公開、page/chunk cache、部分失敗時のskip/revertは各Task/adapterに残す。モデル並列処理は導入しない。
+- WorkflowはTask後の総合Artifact保存とcheckpoint更新も担当しているため、開始/完了/失敗通知は引き続きWorkflowのnode全体を囲う。Task.executeの終了だけをWorkflow完了として二重通知しない。
+- Run状態/再開/全体進捗はWorkflow側に残し、Task instanceはcheckpointへ保存しない。
+- 関数runとclass.executeの両経路について、同一結果・同一例外・計測一回・逐次call回数をTestする。
+
+この併用は既存関数interfaceの維持と共通実行境界という別の目的を持つ。単なる互換wrapperの増殖や、同じ処理の二重実装にはしない。
+
+### 確定した表方針
+
+利用者は、見出しから本文へ縦結合する表について、セル位置・結合を優先し、その表の繰返し見出しを無効化して見出しセルを太字で区別する案に同意した。通常の表の見出し保持とHTML非使用は維持する。実装とWord/PDF受入は未完了。
+
 - [ ] commonの配置案・全説明への利用者確認。
 - [ ] Task関数維持か最小BaseTask継承かの利用者判断。
 - [ ] 結合が見出し/本文をまたぐ表の表示方針の確認。
