@@ -66,7 +66,7 @@ _PARENT_OBSERVATION: ContextVar[_Observation | None] = ContextVar(
 
 @lru_cache(maxsize=4)
 def _client(public_key: str, secret_key: str, host: str | None) -> Langfuse:
-    """同じ接続設定のClientをWorkflow内で共有する。"""
+    """同じ接続設定のClientをprocess内で再利用し、最大4設定をCacheする。"""
 
     return Langfuse(public_key=public_key, secret_key=secret_key, base_url=host)
 
@@ -149,7 +149,10 @@ def observe(
     metadata: dict[str, str] | None = None,
     model: str | None = None,
 ) -> Iterator[object | None]:
-    """秘密や本文を送らず、観測障害時はuntracedで本処理を続ける。"""
+    """名前とmetadataを既知規則でマスクし、観測APIの例外は警告して本処理を続ける。
+
+    非detached観測の終了時は処理例外をSDKへ渡すため、本文非送信をここだけでは保証しない。
+    """
 
     client = _get_client(settings)
     if client is None:

@@ -1,4 +1,4 @@
-"""Error、logおよびmetadataの秘密・本文・binary除去。"""
+"""既知の秘密値・field名・表記を使い、Errorやmetadataの露出を抑える補助処理。"""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ def redact_text(value: object, secrets: Sequence[str] = ()) -> str:
 def redact_value(  # noqa: PLR0911
     value: Any, secrets: Sequence[str] = (), *, key: str = ""
 ) -> Any:
-    """JSON相当値を再帰処理し、危険なfieldとbinaryを永続化不能にする。"""
+    """JSON相当値の既知の機密field・本文fieldとbinaryを置換する。任意の本文は識別しない。"""
 
     if SENSITIVE_KEY.search(key):
         return REDACTED
@@ -87,14 +87,14 @@ def redact_value(  # noqa: PLR0911
 
 
 def safe_error(error: BaseException, secrets: Sequence[str] = ()) -> str:
-    """例外型を維持しつつ、利用者表示用messageを安全化する。"""
+    """例外型と既知表記をマスクしたmessageを返す。自由文の本文除去は保証しない。"""
 
     message = redact_text(error, secrets)
     return f"{type(error).__name__}: {message}" if message else type(error).__name__
 
 
 def safe_failure_reason(error: BaseException) -> str:
-    """外部応答本文を保存せず、例外型とHTTP statusだけで原因を示す。"""
+    """例外messageを使わず型・HTTP status、登録失敗では許可したstageと原因型を返す。"""
 
     stage = getattr(error, "stage", None)
     cause_type = getattr(error, "cause_type", None)

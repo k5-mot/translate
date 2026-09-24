@@ -40,7 +40,7 @@ class _Manager:
 def test_log_and_error_redact_credentials_bodies_and_binary(
     tmp_path: Path,
 ) -> None:
-    """既知Credential、base64画像、binaryおよび例外messageを公開しない。"""
+    """既知秘密値・画像Data URI・binary引数とexc_info本文の除去を検査する。"""
 
     credential_value = "credential-value-123"
     log_file = tmp_path / "run.log"
@@ -79,7 +79,7 @@ def test_log_and_error_redact_credentials_bodies_and_binary(
 
 
 def test_run_metadata_redacts_sensitive_and_body_fields(tmp_path: Path) -> None:
-    """run.jsonへCredential、本文全文または画像binaryを保存しない。"""
+    """既知のapi_key・prompt fieldとbinary値がrun.jsonで置換されることを検査する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"safe input copy")
@@ -110,7 +110,7 @@ def test_trace_metadata_is_redacted_before_sdk_call(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Trace属性にもCredential、本文およびbinaryを渡さない。"""
+    """Trace開始時の既知token・prompt fieldと画像Data URIの置換を検査する。"""
 
     captured: dict[str, Any] = {}
     credential_value = "trace-credential-value"

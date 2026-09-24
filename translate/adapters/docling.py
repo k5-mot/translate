@@ -51,7 +51,7 @@ class DoclingClient:
     def _request(
         self, method: str, url: str, deadline: float, **kwargs: Any
     ) -> httpx.Response:
-        """再送前にstreamを巻き戻し、一時的なHTTP障害を回数と期限で制限して再試行する。"""
+        """streamを巻き戻して有限回再送する。期限は失敗後に確認し、開始済み要求は中断しない。"""
 
         for attempt in range(1, self.retry_attempts + 1):
             try:

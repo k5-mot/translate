@@ -115,7 +115,10 @@ def _retry[T](
     deadline: float | None = None,
     retry_type_error: bool = False,
 ) -> T:
-    """期限内で一時障害を有限回再試行し、TypeErrorは指定された外部書込み境界だけで扱う。"""
+    """操作前後と再送前に期限を確認し、許可した失敗だけ有限回再試行する。
+
+    実行中の操作は中断せず、TypeErrorは呼出側が指定した場合だけ再試行する。
+    """
 
     expires = deadline or time.monotonic() + settings.task_deadline_seconds
     for attempt in range(1, settings.retry_attempts + 1):
@@ -239,7 +242,7 @@ def search(
 
 
 def _docling_text(path: Path, settings: Settings, deadline: float) -> str:
-    """binary文書を残時間以内の条件でDoclingへ送り、ZIP内の単一JSONから登録textを得る。"""
+    """残時間をDoclingの通信設定へ渡し、単一JSONの各collection直下のtextを登録用に集める。"""
 
     if not settings.docling_url:
         msg = "DOCLING_SERVER_URL is required for binary reference documents"

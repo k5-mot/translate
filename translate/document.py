@@ -185,7 +185,7 @@ def block_text_units(block: Block) -> Iterator[TextUnit]:
 
 
 def block_text(block: Block, *, final: bool = True) -> str:
-    """Blockから利用可能な最新のplain textを返す。
+    """Blockの本文層からplain textを返す。captionと表セルは含めない。
 
     Args:
         block: 対象Block。
@@ -206,7 +206,7 @@ def block_text(block: Block, *, final: bool = True) -> str:
 
 
 def page_text(page: Page, *, final: bool = True) -> str:
-    """ページ内Blockを文書順にplain textへ連結する。
+    """ページ内Blockの本文を文書順に連結する。captionと表セルは含めない。
 
     Args:
         page: 対象ページ。

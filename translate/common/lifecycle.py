@@ -393,7 +393,7 @@ def execute_public_run(
 def export_run(
     repository: RunRepository, run_id: str, destination: Path
 ) -> tuple[Path, ...]:
-    """Run成果物をroot外へatomic copyし、Run削除から独立させる。"""
+    """完了Runの成果物を指定先へFile単位で置換copyする。指定先がroot外かは検査しない。"""
 
     record = repository.load(run_id)
     if record.status != "completed":
@@ -428,7 +428,7 @@ def load_failure(repository: RunRepository, run_id: str) -> FailureRecord | None
 
 
 def format_failure(failure: FailureRecord) -> str:
-    """CLI/UI共通の秘密を含まない失敗表示を作る。"""
+    """FailureRecordの値をCLI/UI共通形式に整える。値の秘密除去はこの関数では行わない。"""
 
     targets = [
         f"page={failure.page}" if failure.page is not None else None,
@@ -496,7 +496,7 @@ def _safe_output_diagnostics(
     int | None,
     int | None,
 ]:
-    """出力枯渇stageに対する固定分類と数値usageだけを許可する。"""
+    """許可したLLM stageに対して、既知の失敗分類と非負整数のtoken数だけを採用する。"""
 
     if stage not in {"text-output", "vision-output"}:
         return None, None, None, None, None

@@ -186,7 +186,7 @@ def _preflight(markdown: Path, output: Path, template: Path) -> None:
 
 
 def _validate_docx(path: Path, message: str) -> None:
-    """Templateと生成物の必須ZIP部品・CRC・配置条件を検査し、不正DOCXの利用や公開を防ぐ。"""
+    """Templateと生成物の必須ZIP部品・CRCおよび対応する配置条件を検査する。"""
 
     try:
         with zipfile.ZipFile(path) as archive:
@@ -200,7 +200,7 @@ def _validate_docx(path: Path, message: str) -> None:
 
 
 def _validate_docx_layout(entries: dict[str, bytes]) -> None:
-    """更新要求・二重見出し番号・表紙配置・外部File参照を検査し、不整合なDOCXを拒否する。"""
+    """dirty属性、明示SectionNumber、表紙の重複・順序・captionと外部File参照を検査する。"""
 
     document_data = entries.get("word/document.xml")
     if document_data is None:
@@ -287,7 +287,7 @@ def _normalize_docx(path: Path) -> None:
 
 
 def _remove_dirty_fields(root: ET.Element) -> None:
-    """Prevent Word from asking to update generated fields on open."""
+    """Wordの更新確認の原因になるdocument XML内のdirty属性を除去する。"""
 
     for element in root.iter():
         element.attrib.pop(f"{W}dirty", None)

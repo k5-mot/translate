@@ -75,7 +75,7 @@ class RunRecord(BaseModel):
     @field_validator("settings_snapshot", mode="before")
     @classmethod
     def redact_settings_snapshot(cls, value: object) -> object:
-        """Credentialや本文をrun.jsonへ格納させない。"""
+        """snapshot内の既知の機密field・本文fieldをマスクする。未知のfieldの機密性は判別しない。"""
 
         return redact_value(value)
 
@@ -125,7 +125,7 @@ class RunScan:
 
 
 class RunRepository:
-    """Directoryを正本にRunを作成・読込みする。"""
+    """入力copyとRun metadataをdirectoryへ保存する。Graphの再開位置は決めない。"""
 
     def __init__(self, root: Path) -> None:
         """保存rootを絶対pathへ固定し、後続操作の基準にする。directoryはまだ作成しない。"""
@@ -264,7 +264,7 @@ class RunRepository:
         )
 
     def delete(self, run_id: str) -> None:
-        """停止済みでroot直下にある実directoryだけを削除する。"""
+        """保存状態・path・排他取得可否を確認して削除する。削除中の排他保持は行わない。"""
 
         paths = self.paths(run_id)
         if not paths.root.exists():
@@ -281,7 +281,7 @@ class RunRepository:
         if record.status == "running":
             msg = f"run is active: {run_id}"
             raise RuntimeError(msg)
-        # Acquiring the same lock rejects deletion while another process is active.
+        # この時点の競合は拒否するが、解放後のrmtreeとの間の再起動は防げない。
         with OutputLock(paths.workspace):
             pass
         shutil.rmtree(resolved)
@@ -378,7 +378,7 @@ def _safe_logical_path(value: str) -> Path:
 
 
 def _copy_verified(source: Path, target: Path) -> tuple[str, int]:
-    """入力を固定sizeでcopyし、copy中にSHA-256を計算する。"""
+    """排他的に作成した先へ入力をcopyしてhash化する。例外時は既存先でも削除を試みる。"""
 
     digest = hashlib.sha256()
     size = 0

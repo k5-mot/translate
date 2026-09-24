@@ -26,7 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseModel):
-    """一回の実行で共有する検証済み設定。"""
+    """型とtoken予約を検証する設定Model。操作別の必須設定検証はloaderで行う。"""
 
     model_config = ConfigDict(frozen=True)
 
@@ -132,7 +132,7 @@ def _positive(env: Mapping[str, str], name: str, default: int) -> int:
 
 
 def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
-    """通信待機秒数などの設定を数値へ変換し、変換不能または0以下なら設定名付きで拒否する。"""
+    """待機秒数をfloatへ変換し、変換不能と0以下を拒否する。NaN・無限大は検査しない。"""
 
     try:
         value = float(env.get(name, str(default)))
@@ -159,7 +159,7 @@ def load_settings(
     backend: Backend = "llm",
     env: Mapping[str, str] | None = None,
 ) -> Settings:
-    """commandで実際に使用する環境変数だけを検証する。"""
+    """共通の数値設定を読み、操作・backendごとに外部接続の必須設定を検証する。"""
 
     if env is None:
         load_dotenv()

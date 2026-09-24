@@ -77,3 +77,26 @@
 - Ruff、Format（307 files）、ty、diff checkは合格。pytestは401 passed, 1 skipped（26.99秒）。skipはWindows上のPOSIX PTY検査。
 - PATH上ではOpenSpec commandが見つからなかったが、導入済みnpm cache内のOpenSpec 1.13.1をnodeから起動し、project root、Change status、apply instructionsを取得した。strict validationもvalid。新しいpackageは導入していない。
 - 既存configの`operations.verify`をCLIが未対応operationとして警告するが、apply instructionsとstrict検査は成功した。既存未commitのconfig編集は今回変更・commitしていない。
+
+## adapters/commonの意味確認（2026-09-25、追記）
+
+- `translate/adapters/`の8 files、`translate/common/`の10 filesを全関数・入れ子まで全文確認した。併せて`translate/document.py`と`tests/test_redaction.py`を確認した。20 filesのdocstring除去後ASTはChange開始時baselineと一致した。Testの空double 2関数は既存の本文先頭説明Commentで説明されている。
+- 秘密除去は既知の値・field名・表記によるもので、任意の自由文の機密性を識別しない。`safe_error`、snapshot validator、ログfilter、fingerprint差分表示、FailureRecord表示の保証を過大に記載していた箇所を訂正した。既存redaction Testの説明も、実際の既知field/値のfixture範囲に合わせた。本文を出力しないという製品要求を弱めたのではなく、現行実装の不足を明示した。
+- directory公開は旧先の退避と新先の公開の二段階であり、間に保存先が存在しない時間がある。例外時の復元試行とprocess強制終了後の復元は異なる。File fsyncだけでdirectory entryの永続性まで保証する説明は除いた。`OutputLock`は同じlockを使用する呼出間で保持中だけ有効であり、全更新を自動的に保護するものではない。
+- Run削除は排他取得可否の確認後にlockを解放してrmtreeしている。exportはFile単位のcopyで、指定先がRun外かは検査しない。これらを現状の制約として記載し、既存の未解決事項を解消扱いにしない。
+- Evidenceの`checkpoint_count`は.workspace内のFile数で、LangGraph checkpointの履歴件数ではない。Gateの`finished_at`存在はflushの実証ではない。識別子の文字種制限も機密性検証ではない。説明を修正し、検証結果の解釈を限定した。
+- Langfuseの非detached経路は処理例外をSDK context managerへ渡す。導入済み`langfuse/_client/client.py`の`_start_as_current_otel_span_with_processed_media`と`opentelemetry/trace/__init__.py`の`use_span`で、既定の例外記録経路を確認した。ただし現在の製品呼出（両Workflow/Task/LLM）はすべて`detached=True`であり、これだけで現行製品からの本文漏洩が発生したとは判定しない。既存API境界を整理する際の回帰対象とする。
+- task 1.3を完了し4/8。全Testの既存説明の意味確認、lambda等の最終確認、最終検査、実E2E・利用者目視は残る。common配置、独自再開記録、導入済み機能の再実装の是正は本Changeでは未解決。
+
+### 再現した境界不具合（未解決）
+
+- **EVIDENCE-IDENTITY-001**: 別UUIDv7・別operationのheartbeatと現在の保存Evidenceをmockから返すと、`_read_heartbeat`は拒否せず現在のID/operationへ上書きし、別実行の`llm_calls=123`を引き継いだ。識別の照合と保存先再利用の契約を是正する必要がある。
+- **SETTINGS-FINITE-001**: `_positive_float`へ合成した`nan`を渡すと非有限値が受理された。環境変数のtimeout/retry/deadlineを有限正数として検証する回帰Testと是正が必要。実サービスで無期限待機が発生したことを示す診断ではない。
+- **INPUT-COPY-001**: `_copy_verified`のtarget.openへ`FileExistsError`を注入すると、target.unlinkが1回呼ばれた。新規作成に失敗した対象までcleanupする。Fileの所有権を確認したcleanupへ修正する必要がある。mockだけの再現で、利用者の既存Fileが消えたとは主張しない。
+- **SECURITY-BOUNDARY（既存指摘の補強）**: `safe_error(ValueError("SYNTHETIC_BODY_TEXT"))`がその自由文を保持した。既知値のマスクが任意の本文非出力を保証しないことを確認した。安全な型/固定fieldによる公開境界への縮小は配置監査の未解決方針に対応する。
+- 上記4件は合成値・mockのみで検査し、外部Service呼出と実データの保存・削除は行っていない。配置整理だけでこれらの振る舞いの不具合が直るとは扱わない。
+
+### 今回の品質検査
+
+- Ruff、Format（307 files）、ty、diff check、OpenSpec strict validationは合格。pytestは401 passed, 1 skipped（25.86秒）。これは製品不具合の不存在や実E2E完了を意味しない。
+- 同じtranslation session 40709をpollしliveを確認した。翻訳Workflow内REVIEWは継続中で、モデル要求を重複起動していない。Word PDF化とComparison Reviewはまだ開始していない。

@@ -129,7 +129,7 @@ def _canonical_run_id(value: str) -> str:
 
 
 def _safe_name(value: str | None) -> str | None:
-    """固定長の識別子だけをEvidenceへ許可する。"""
+    """80文字以内で英数字と限定記号からなる名前を受理する。値の機密性は判別しない。"""
 
     if value is None or not isinstance(value, str):
         return None
@@ -191,7 +191,7 @@ class TerminalEvidence(BaseModel):
         return safe
 
     def with_update(self, **updates: object) -> Self:
-        """安全なimmutable updateを返す。"""
+        """終端statusから別statusへの変更を拒否し、全fieldを再検証した新しい値を返す。"""
 
         next_status = updates.get("status", self.status)
         terminal: tuple[TerminalStatus, ...] = (
@@ -252,7 +252,7 @@ class EvidenceStore:
         return value is not None and value.status not in {"running", "unknown"}
 
     def allows_public_resume(self) -> bool:
-        """completed、exit 0、flush済みのEvidenceだけをGate通過とする。"""
+        """completed・exit 0・終了時刻ありの保存値をGate通過とする。flush自体は検証しない。"""
 
         value = self.read()
         return bool(
@@ -342,7 +342,7 @@ def evidence_from_failure(
 
 
 def workspace_counts(root: Path) -> dict[str, int]:
-    """root containmentを確認した小さいcountだけを返す。"""
+    """root内の.workspaceとoutputsのFile数を返す。checkpoint_countはGraph履歴件数ではない。"""
 
     resolved = root.resolve()
     if not resolved.exists() or not resolved.is_dir():
@@ -441,7 +441,10 @@ def run_public_run_detached(
 
 
 def cleanup_detached_temp(temp_root: Path) -> bool:
-    """markerで所有権を確認したdetached temp rootだけを削除する。"""
+    """解決済みrootに既知形式のmarkerがあることを確認して削除する。
+
+    解決前のpathがリンクか、markerのIDが今回の実行と一致するかは検査しない。
+    """
 
     root = temp_root.resolve()
     marker = root / _TEMP_MARKER
@@ -589,7 +592,7 @@ def _run_id_from_heartbeat(path: Path | None) -> str | None:
 def _read_heartbeat(
     heartbeat_path: Path | None, store: EvidenceStore
 ) -> TerminalEvidence | None:
-    """child heartbeatのIDと操作を照合し、未作成・不正・再利用不能な値は採用しない。"""
+    """有効なheartbeatを読込み、保存EvidenceがあればそのID・操作へ上書きして返す。"""
 
     if heartbeat_path is None:
         return None

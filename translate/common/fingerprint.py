@@ -41,7 +41,7 @@ class ResumeCompatibility:
 
     @property
     def reasons(self) -> tuple[str, ...]:
-        """CLI/UIで表示できる項目別理由を返す。"""
+        """差分pathと保存値・現在値のreprを返す。表示前の秘密除去はこの関数では行わない。"""
 
         return tuple(
             f"{item.path}: saved={item.saved!r}, current={item.current!r}"
@@ -60,7 +60,7 @@ def build_fingerprint(
     template_path: Path | None = None,
     input_manifest: list[dict[str, str | int | None]] | None = None,
 ) -> Fingerprint:
-    """出力へ影響する入力と設定だけをcanonical化する。"""
+    """選定した入力・設定・規則のsnapshotをhash化する。Qdrantの状態は含めない。"""
 
     snapshot: dict[str, Any] = {
         "inputs": dict(sorted(input_hashes.items())),

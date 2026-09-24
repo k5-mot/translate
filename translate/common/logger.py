@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class RedactionFilter(logging.Filter):
-    """全Handlerへ渡る前にCredential、binaryおよび例外messageを除去する。"""
+    """取り付け先Handlerのmessageを既知の規則でマスクし、exc_infoを型名へ置き換える。"""
 
     def __init__(self, secrets: Sequence[str] = ()) -> None:
         """後続のLogRecordから除去する、今回の実行で既知の秘密値を保持する。"""
@@ -22,7 +22,7 @@ class RedactionFilter(logging.Filter):
         self.secrets = tuple(secrets)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """LogRecordを安全な完成messageへ置換する。"""
+        """既知秘密値を置換し、binary引数と例外本文を省く。自由文やstack_infoは残り得る。"""
 
         # Preserve numeric values for logging placeholders such as `%d`. Converting
         # every argument to text makes standard HTTP client logs raise TypeError.

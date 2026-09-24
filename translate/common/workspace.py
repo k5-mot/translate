@@ -61,7 +61,7 @@ def atomic_write_bytes(
             stream.write(value)
             _phase("write", temporary)
             stream.flush()
-            # Note 3: fsync prevents a checkpoint from preceding its artifact on disk.
+            # 置換前にFile内容を同期する。directory entryの耐障害性までは保証しない。
             os.fsync(stream.fileno())
             _phase("flush", temporary)
         if validator is not None:
@@ -89,7 +89,7 @@ def atomic_publish_directory(
     builder: DirectoryBuilder,
     validator: ArtifactValidator | None = None,
 ) -> None:
-    """Directory Artifactを完成・検証し、complete manifestと共に公開する。"""
+    """builderの正常終了後、任意検証を経てcomplete印付きのdirectoryを置換公開する。"""
 
     with atomic_directory(path, validator) as temporary:
         builder(temporary)
@@ -100,7 +100,10 @@ def atomic_directory(
     path: Path,
     validator: ArtifactValidator | None = None,
 ) -> Iterator[Path]:
-    """TaskがDirectory Artifactを段階作成するためのcontextを返す。"""
+    """一時directoryで作成し、既存先を退避して公開する。二段階renameの間は保存先が欠ける。
+
+    公開renameの例外では旧先の復元を試みるが、process強制終了後の自動復元は行わない。
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(
@@ -184,7 +187,7 @@ class OutputInUseError(RuntimeError):
 
 
 class OutputLock:
-    """同じRunの`.workspace`を二つのprocessが更新することを防ぐ。"""
+    """同じdirectoryのrun.lockを使う呼出同士を、contextを保持している間だけ排他する。"""
 
     def __init__(self, path: Path) -> None:
         """対象directoryを保持し、実際の排他取得はenterまで行わない。"""
