@@ -249,3 +249,32 @@
 ### 指摘の後続対応
 
 CONTENT-PROTECTED-001は既存Change [harden-protected-fragment-restoration](../harden-protected-fragment-restoration/verification.md)で実装修正し、通常・分割Chunkの回帰Testを追加した（全体409 passed, 1 skipped）。本説明Changeへ機能変更を混ぜず別commitで扱う。実E2E受入は未完了であり、ほかの指摘を解消扱いにしない。
+
+### CONTENT-MERGE-001の追加調査（2026-09-25、未解決）
+
+grill-with-docsの環境事実調査として、外部Serviceを呼ばないメモリ内の合成Docling文書でPOSITIONの結合とLOADを連続して検査した。製品・Test Fileは変更していない。
+
+| 条件 | 観測 |
+| --- | --- |
+| 近接する本文A/Bと、bodyに現れない別本文 | LOADは結合済み`A B`に加えて`B`と別本文を出力する。正常なcollection補完も必要なため、fallback全廃は不可 |
+| 近接する同列数の表TA/TB | LOADは結合先にTA/TB、結合元にTBを出力し、後半行が重複する |
+| 同じA/Bを二つのgroupがchildrenから参照 | 同一POSITION呼出内に二回結合され、結合先本文が`A B B`になる。LOADだけの除外では修正できない |
+| 結合した表の各先頭cellが独自self_refを持つ | 現在の文字列置換後は双方が`#/tables/0/cell/0`となる。LOADはcell IDを別に生成するが、中間文書の参照衝突を解決済みとはみなせない |
+| 各表にgridとtable_cellsが共存 | POSITIONはtable_cellsだけをTA/TBへ更新し、LOADは未更新gridを優先する。現状は別表のTBで偶然残るため、結合元の除外だけを追加するとTBが欠落する |
+| POSITIONを結合後の同じ文書へ再適用 | 追加のmerged記録は空でも、collectionに残る結合元はLOADで再出力される |
+
+#### 保存契約と既存APIの事実
+
+- `PositionTask.run`は結合出典を同じdirectoryのreport.jsonにだけ保存する。戻り値のdocument.jsonには含めず、NORMALIZE/LOADはreportを受け取らない。既存のlayout_merges等を利用できるという前提は誤りである。
+- NORMALIZEは文書をdeep copyして加工するため、中間文書内に明示した出典対応を維持する案は検討できる。ただし新しいArtifact契約になる。採用する場合もTask完了・再開位置・skip判定を持つ台帳にしてはならない。
+- 既存MERGEの`_remap`はself_ref/$refを再帰的に見てcollection indexへ一定offsetを足す処理であり、削除後の疎なindexの詰め替え、結合先への対応、cell suffixの更新をそのまま提供しない。名前だけで同等APIと判定しない。
+- 導入済み依存にはdocling/docling_coreの文書編集APIが見つからず、現在はDocling ServiceのJSONを扱っている。未導入Packageを再利用可能と主張したり、この小修正のためだけに依存を増やしたりしない。
+- 修正範囲には、結合元の再出力防止だけでなく、共有参照の二重結合防止、表の複数表現の整合、子要素・Caption・cell参照の保全が必要。未結合の正常要素は保持する。同じ文字列というだけの内容ベース除重は行わない。
+
+#### 未確定の振る舞い
+
+複数親やCaption/子要素の帰属を安全に引き継げない場合について、「結合せず内容を保持して警告・続行」（推奨）と「Workflow停止・Resume保持」を利用者へ確認した。回答前に方針を確定した新Changeや製品修正は作らない。提案候補は`preserve-merged-fragment-content-on-load`。既存の曖昧な表を未結合で残す挙動を参考とするが、本文の共有参照等まで承認済みとはみなさない。
+
+実sample3への発生件数や修正結果はまだ未確認。最新実translationは別のHTTP 500で停止しており、[実機記録](../sanitize-workflow-checkpoint-errors/verification.md)を参照。本調査を実translation→Word PDF→Comparison Reviewの代替証拠とせず、CONTENT-MERGE-001とtask 2.3は未完了に維持する。
+
+記録更新後の既存文書/POSITION Testは25 passed（0.37秒）、本ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。POSITION Testは結合後の値・body参照等を検査するがLOADとの連続実行や上記の追加条件を含まない。この既存Testの成功は不具合がないことの証明ではなく、修正前に統合回帰Testを追加して失敗を確認する必要がある。
