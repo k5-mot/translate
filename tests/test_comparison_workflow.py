@@ -36,7 +36,7 @@ EXPECTED_NODES = {
 def test_comparison_graph_has_independent_branch_nodes(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """左右7 Taskとjoin後4 Taskを独立nodeとして公開する。"""
+    """左右7 Taskと後続4 Taskのnode集合および左右を逐次処理する接続を検査する。"""
 
     graph = comparison_review.build_graph(settings_factory())
 

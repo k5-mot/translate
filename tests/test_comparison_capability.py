@@ -47,7 +47,7 @@ def test_comparison_capability_reports_findings_or_explicit_zero_without_mutatio
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """独立英日入力を変更せず、Finding有無を公開Reportへ正確に集計する。"""
+    """合成した英日Documentから指摘あり/なしのReportを作る。PDF解析は行わない。"""
 
     source_pdf = tmp_path / "independent-en.pdf"
     target_pdf = tmp_path / "independent-ja.pdf"

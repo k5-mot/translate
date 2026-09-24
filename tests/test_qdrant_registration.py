@@ -346,7 +346,7 @@ def test_registration_removes_legacy_and_changed_setting_revisions(
 def test_registration_revision_covers_schema_extraction_and_chunk_settings(
     tmp_path: Path, settings_factory: Callable[..., Settings]
 ) -> None:
-    """revisionはsource hash、schema、分割・OCR・Chunk設定を正規化する。"""
+    """source hash・分割数・OCR変更によるrevision差と固定schema名を確認する。"""
 
     source = tmp_path / "reference.pdf"
     source.write_bytes(b"pdf")
@@ -388,7 +388,7 @@ def test_registration_batches_are_bounded_and_point_ids_are_deterministic(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Embedding、upsertおよびretrieveは16件以下で決定的IDを使う。"""
+    """VectorStore書込みとretrieveのdoubleで16件以下のbatchとID再現性を確認する。"""
 
     class ManyChunks:
         def __init__(self, **_kwargs: object) -> None:
@@ -427,7 +427,7 @@ def test_pdf_is_stream_hashed_split_once_and_reused_within_page_limit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """原PDFを全量readせず10page以下へ分割し、complete artifactを再利用する。"""
+    """原PDFのread_bytesを禁止し、23頁を10/10/3頁へ一回だけ分割して再利用する。"""
 
     source = tmp_path / "large.pdf"
     with pdfium.PdfDocument.new() as document:
@@ -456,7 +456,7 @@ def test_pdf_is_stream_hashed_split_once_and_reused_within_page_limit(
         return original_split(*args, **kwargs)
 
     def reject_original_read_bytes(path: Path) -> bytes:
-        """原本PDFの全体byte読込みだけを拒否し、streaming hashと分割処理を検証する。"""
+        """原本PDFに対するPath.read_bytesだけを拒否し、他のFileは元の処理へ渡す。"""
 
         if path == source:
             pytest.fail("original PDF must not be loaded by Path.read_bytes")
@@ -642,13 +642,13 @@ def test_docling_and_qdrant_clients_receive_only_remaining_deadline(
 def test_only_registration_write_boundary_retries_transient_type_error(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """local Embedding応答の一時TypeErrorだけを明示指定時に有限retryする。"""
+    """retry helperの明示flagでTypeErrorの再試行を許可し、既定では即時伝播する。"""
 
     settings = settings_factory(retry_attempts=2, retry_base_seconds=0)
     attempts = 0
 
     def flaky() -> str:
-        """初回だけ型不整合を発生させ、登録書込み境界での限定的な再試行を検証する。"""
+        """初回だけTypeErrorを投げ、helperのflagによる再試行を検証する。"""
 
         nonlocal attempts
         attempts += 1

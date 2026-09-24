@@ -42,7 +42,7 @@ def test_cli_and_streamlit_resume_each_others_runs(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """双方の作成Runが同じworkspace Artifactと最終成果物へ到達する。"""
+    """翻訳を代替し、CLIとUIの共有入口が同じRunのArtifactと成果物を使うか確認する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
@@ -196,7 +196,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """利用者指定templateをfingerprint付きで相互Resumeする。"""
+    """変換を代替し、CLIとUIの共有入口で同じIDと指定Templateを相互利用する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
@@ -275,7 +275,7 @@ def test_uuid4_run_is_excluded_and_all_public_operations_reject_it(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """旧UUIDv4 Runは一覧外となりCLI/UIの各操作で同じ理由を返す。"""
+    """UUIDv4をCLIの一覧・登録再開・export・削除と、UIの登録実行入口で拒否する。"""
 
     settings = settings_factory(runs_dir=tmp_path / "runs")
     source = tmp_path / "reference.md"

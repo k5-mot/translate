@@ -140,7 +140,7 @@ def test_docx_failure_preserves_existing_complete_output(
 def test_valid_docx_is_structurally_verified_before_publish(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """必須OOXML部品を持つDOCXだけを最終pathへ公開する。"""
+    """代替Pandocが作る最小containerを公開し、必須OOXML部品が残るか確認する。"""
 
     markdown = tmp_path / "source.md"
     template = tmp_path / "template.docx"
@@ -330,7 +330,7 @@ def test_conversion_and_replace_failure_clean_temporary_and_preserve_output(
 
 @pytest.mark.integration
 def test_real_pandoc_preserves_required_document_structures(tmp_path: Path) -> None:
-    """実PandocのDOCXに全要求要素のOOXML表現が存在する。"""
+    """実Pandocで見出し・list・code・表・図・link・脚注のOOXMLと文字列を検査する。"""
 
     if pandoc.shutil.which("pandoc") is None:
         pytest.fail("Pandoc is required for the structure acceptance test")

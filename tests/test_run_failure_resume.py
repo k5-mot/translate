@@ -38,7 +38,7 @@ def test_external_failure_stops_run_and_resumes_after_qdrant_change(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """検索失敗をfailedで保持し、Qdrant変更後も同じArtifactから再開する。"""
+    """Workflow障害を模擬し、Qdrant Collection変更後も同じ保存先で再開できる。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",

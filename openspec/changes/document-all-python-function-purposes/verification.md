@@ -2,7 +2,7 @@
 
 ## 中間検証（2026-09-25）
 
-本Changeは実装途中。以下は時点ごとの監査履歴であり、最新の進捗は末尾の追記を参照する。全Testの既存説明の意味確認と実E2Eが未完了のため、正式verifyとarchiveは行わない。
+本Changeは実検証待ち。以下は時点ごとの監査履歴であり、最新の進捗は末尾の追記を参照する。説明の補足・意味確認は完了したが、実E2Eと利用者目視が未完了のため、正式verifyとarchiveは行わない。
 
 ## 今回の差分
 
@@ -194,3 +194,50 @@
 - 最終補足後の検査はRuff、Format（307 files）、ty、diff check、OpenSpec strict validationが合格。pytestは401 passed, 1 skipped（25.62秒）。Windows上のPOSIX PTY Testだけがskipであり、実LLMのE2E合格を意味しない。
 - task 1.5を完了し、進捗は5/8。task 1.4は残る21 Test filesの既存説明の意味確認が必要。2.2は全対象完了後の最終監査、2.3は実E2Eと利用者目視が必要であり、未完了のままとする。
 - 実translation session 40709の同一live handleを再pollした。翻訳Workflow内REVIEWは継続しており、03:45:39 JSTに.review領域の更新を確認した。これは最終DOCXの完成やComparison Reviewの完了ではない。モデル・Embeddingを並列起動していない。
+
+## 全Testの意味確認完了（2026-09-25、追記）
+
+残る21 filesをfixture・double・入れ子・assertまで確認した。先の24 files（空のpackage入口を含む）と合わせ、追跡対象Test 45 filesの意味確認を完了した。未追跡の手動probeは前節の別枠監査を維持し、commitしない。
+
+- `tests/test_adapter_retry.py`
+- `tests/test_cli_runs.py`
+- `tests/test_comparison_capability.py`
+- `tests/test_comparison_workflow.py`
+- `tests/test_execution_exclusion.py`
+- `tests/test_failure_contract.py`
+- `tests/test_historical_resume.py`
+- `tests/test_invalid_pdf_lifecycle.py`
+- `tests/test_langfuse.py`
+- `tests/test_output_contract.py`
+- `tests/test_pdf_translation_capability.py`
+- `tests/test_qdrant_registration.py`
+- `tests/test_review_output_recovery.py`
+- `tests/test_run_failure_resume.py`
+- `tests/test_run_interoperability.py`
+- `tests/test_structure_diagnostics.py`
+- `tests/test_terminal_evidence.py`
+- `tests/test_text_unit_review.py`
+- `tests/test_traceability.py`
+- `tests/test_translation_output_failures.py`
+- `tests/test_translation_workflow.py`
+
+### 説明と証拠の範囲
+
+- CLI/UI共有Testは一部のWorkflowを置換している。Resume準備だけのTestを、再開後の製品処理完了と表現しない。比較Capabilityは合成Documentを使用し、実PDFの抽出品質を検証していない。
+- Qdrant登録のbatch TestはVectorStore/retrieveのdoubleを使い、実Embeddingのbatch制限を検証していない。原PDFのPath.read_bytes禁止も、あらゆる読込みAPIのmemory使用を測る検査ではない。revision Testが変更する設定と、固定schema名のassertを区別した。
+- LLM retry TestのHTTP status、構築境界、指定試行回数を具体化した。例外chainのTestは非循環の二段で、循環耐性を検査していない。
+- Historical Resumeのfixtureは合成三頁で、page 2の独自Cacheを再利用する現状の挙動を確認する。LangGraphへの状態統合済みや実履歴PDF全体の合格とは扱わない。link拒否Testも判定のmockであり実junctionではない。
+- LangfuseのGraph Testは呼出元threadでの実Graph/SDK処理と固定応答を検証する。SDK障害Testは各fixtureが注入した境界だけを証明する。Evidenceの安全性Testには秘密値を入力していないものがあり、一般的な秘密除去の証明とは扱わない。
+- traceability Testは初期archiveの件数・行番号・参照Test名の存在を確認する。現在の全要求とTestの意味的な一対一対応を自動検証するものではない。実Pandoc Testと最小OOXML doubleによる公開境界Testも区別した。
+- 説明を実態へ修正したのであり、製品要求や未解決の検証項目を弱めてはいない。
+
+### 追加の製品不具合（未解決）
+
+- **CONTENT-PROTECTED-001**: `translate._restore_chunk_placeholders`は保護対象の対応表が空なら検査せず応答を返す。合成応答に未知の`__PROTECTED_9_9__`だけを入れた呼出で、応答identityと未知markerがともに保持された。split fallbackの既存Testでも保護対象がない後半Chunkを検査していない。対応表が空の通常/分割Chunkを含む未知marker拒否と回帰Testが必要。今回の診断はメモリ内だけで、外部Service・利用者Fileの変更はない。説明のみの本Changeへ製品修正を混ぜない。
+
+### 最終静的・オフライン検査と残作業
+
+- 上記21 Test filesのdocstring除去後ASTは編集開始時baselineと全件一致した。`translate/tasks/translate.py`もHEADと説明除去後ASTが一致し、今回の製品差分は空対応表の現状説明だけである。先行節の全製品・lambda・実行文字列監査と合わせ、tasks 1.4/2.2を完了した。
+- Ruff、Format（307 files）、ty、diff checkは合格。pytestは**401 passed, 1 skipped（26.51秒）**。skipはWindowsのPOSIX PTY Test。OpenSpec strict validationも再実行しvalidを確認した。
+- 進捗は**7/8**。task 2.3の実translation→Microsoft Word PDF化→Comparison Reviewと利用者目視が残る。記載した製品不具合、common整理、独自再開記録と依存API再利用の指摘は別途是正が必要であり、説明監査完了を製品全体の適合としない。
+- 同じtranslation session 40709のlive handleを再pollした。翻訳Workflow内REVIEWを継続中で、03:59:32 JSTの中間領域更新を確認した。最終DOCXは未確認。Word PDF化とComparison Reviewは未開始。旧実行中Processへ後から加えた実装修正は反映されないため、その結果だけで新実装のE2Eを合格にしない。

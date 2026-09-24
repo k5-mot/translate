@@ -33,7 +33,7 @@ def _response(
 def test_libretranslate_retries_5xx_and_stops_on_permanent_4xx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """5xxだけを有限retryし、400は一回で失敗する。"""
+    """503後の再送で成功し、400では一回で失敗することを確認する。"""
 
     responses = iter([_response(503), _response(200, {"translatedText": ["訳"]})])
     calls = 0
@@ -233,7 +233,7 @@ def test_llm_schema_mode_preserves_retry_and_parse_contracts(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Schema modeでもtransportとparseだけを有限retryする。"""
+    """Schemaを一回bindし、接続失敗・解析失敗の後の三回目で成功する。"""
 
     calls = 0
     bind_calls = 0
@@ -484,7 +484,7 @@ def test_llm_origin_diagnostic_reduces_traceback_without_raw_values(
 
 
 def test_llm_origin_diagnostic_follows_exception_chain_once() -> None:
-    """cause chainを循環せず調べ、安全な型名だけを返す。"""
+    """二段の非循環cause chainからSDK境界と型名を取得し、例外本文を除く。"""
 
     namespace: dict[str, object] = {"__name__": "openai._base_client"}
     exec(  # noqa: S102
@@ -511,7 +511,7 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """LLM Network Errorを既定回数内でretryし、上限後は伝播する。"""
+    """LLM接続失敗を指定した三回までretryし、回復と上限後の伝播を確認する。"""
 
     calls = 0
 
@@ -659,7 +659,7 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """恒久4xxとClient構築TypeErrorは一度で停止する。"""
+    """HTTP 400、Model構築とprompt構築のTypeErrorではretryしない。"""
 
     calls = 0
     request = httpx.Request("POST", "https://service.invalid")

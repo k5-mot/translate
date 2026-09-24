@@ -59,7 +59,7 @@ def test_translation_output_mismatch_retries_same_chunk_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """一時的なID不一致だけを同じchunkで再試行する。"""
+    """単一InlineのID不一致後に再送し、二回目の正しいIDの訳を採用する。"""
 
     responses = iter(
         [
@@ -147,7 +147,7 @@ def test_translation_output_truncation_fallback_is_bounded_and_safe(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """fallbackの再枯渇は追加要求せず、本文なしの診断へ伝播する。"""
+    """単一Inlineのfallbackも枯渇した場合は二回で停止し、本文なしの診断を返す。"""
 
     calls: list[tuple[str, str | None]] = []
 

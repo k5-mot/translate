@@ -11,7 +11,7 @@ ARCHIVE_ROOT = CHANGE_ROOT / "archive"
 
 
 def test_all_capability_scenarios_have_existing_test_ids() -> None:
-    """30 Requirement/48 Scenarioを実在するTest名へ一対一で対応付ける。"""
+    """初期archiveの要求・Scenario数と対応表の連番、参照するTest名の存在を検査する。"""
 
     specification_paths = sorted(
         ARCHIVE_ROOT.glob("*-establish-translate-ja-contracts/specs/*/spec.md")

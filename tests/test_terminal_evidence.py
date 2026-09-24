@@ -168,10 +168,7 @@ def test_evidence_literal_narrowing_keeps_allowlist(
 def test_evidence_and_counts_contain_no_sensitive_or_external_values(
     tmp_path: Path,
 ) -> None:
-    """
-    進捗由来のEvidenceに機密値がなく、workspace集計が本文ではなくFile件数を返すか調べる
-    。
-    """
+    """無害な進捗fixtureの既知文字列不在とFile件数を確認する。機密値は入力しない。"""
 
     run_id = str(uuid7())
     root = tmp_path / "run"
@@ -198,7 +195,7 @@ def test_evidence_and_counts_contain_no_sensitive_or_external_values(
 
 
 def test_cleanup_detached_temp_preserves_external_evidence(tmp_path: Path) -> None:
-    """印付きの診断一時領域だけを削除し、領域外のEvidenceは残ることを確認する。"""
+    """印付き一時領域の削除と外部Evidence保持を確認する。印のRun ID照合は試さない。"""
 
     root = tmp_path / "temp"
     root.mkdir()

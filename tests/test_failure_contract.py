@@ -475,7 +475,7 @@ def test_registration_stage_failure_is_public_safe_and_resumable(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """公開Lifecycleはstage診断を保存し、成果0件のfailed RunをResume可能にする。"""
+    """stage診断と登録結果Fileの不在を確認し、失敗RunのResume準備を通す。"""
 
     sentinel = "credential=SECRET body=DOCUMENT raw=RESPONSE job_id=JOB-123"
     settings = settings_factory(runs_dir=tmp_path / "runs")

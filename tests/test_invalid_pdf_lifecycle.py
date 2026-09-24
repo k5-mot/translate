@@ -62,7 +62,7 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """空・暗号化・破損・読取り不能PDFはrole付きで停止する。"""
+    """空・破損PDFと注入した暗号化/読取り障害をrole付きで保存し、再開準備を確認する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",

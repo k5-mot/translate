@@ -56,7 +56,7 @@ def test_translation_graph_exposes_each_task_node(
 
 
 def test_failed_status_copies_safe_structure_diagnostics() -> None:
-    """Workflow wrapperはpage、target、stageおよびcause typeをEventへ移す。"""
+    """例外に付けた位置・stage・cause・出力切断理由・usageが失敗Eventへ移る。"""
 
     error = RuntimeError("raw response")
     error.page = 7  # type: ignore[attr-defined]

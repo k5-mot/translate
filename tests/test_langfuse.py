@@ -461,7 +461,7 @@ def test_pending_structure_resume_crosses_real_graph_and_sdk_once(  # noqa: C901
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """実Graph workerのpending STRUCTUREが応答を一度だけ確定する。"""
+    """呼出元threadでGraphのSTRUCTUREを再開し、固定SDK応答を一度だけ解析する。"""
 
     credential = "lf-offline-graph-credential"
     calls: list[dict[str, object]] = []
@@ -1063,7 +1063,7 @@ def test_each_langfuse_failure_stage_reaches_context_warning_sink_once(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """初期化以外の各SDK境界をTask付きwarningへ変換する。"""
+    """観測update・finish・flushの障害を各一回、Task付きwarningへ変換する。"""
 
     credential = "langfuse-secret-value"
     warnings: list[str] = []

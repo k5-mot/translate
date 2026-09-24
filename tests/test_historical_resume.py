@@ -492,7 +492,7 @@ def test_historical_checkpoint_clone_is_read_only_and_rebased(
     tmp_path: Path,
     historical_settings: Settings,
 ) -> None:
-    """SQLite backupと公開API rebaseが正本を変更せずlineageを保つ。"""
+    """合成checkpoint DBの不変性と複製側の履歴件数増加・path再配置を確認する。"""
 
     repository, run_id = _synthetic_historical_run(
         tmp_path / "source", historical_settings
@@ -577,7 +577,7 @@ def test_historical_clone_removes_partial_copy_on_link_or_copy_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """危険なlinkとcopy failureで部分cloneを残さない。"""
+    """link判定とcopy失敗を注入し、部分cloneの削除を確認する。実linkは作らない。"""
 
     source = tmp_path / "source"
     source.mkdir()
@@ -624,7 +624,7 @@ def test_fresh_full_document_reuses_page_checkpoint_and_sdk_once(
     monkeypatch: pytest.MonkeyPatch,
     historical_settings: Settings,
 ) -> None:
-    """Fresh SQLiteとfull Documentでもpage 2を再実行せずpage 3だけ処理する。"""
+    """合成した三頁の文書でpage 2の独自Cacheを再利用し、page 3だけSDKを呼ぶ。"""
 
     repository, run_id = _synthetic_historical_run(
         tmp_path / "fresh", historical_settings
@@ -685,7 +685,7 @@ def test_historical_resume_crosses_full_document_and_wrappers_once(
     historical_settings: Settings,
     mode: str,
 ) -> None:
-    """Full DocumentとLifecycle wrapperが同じSDK応答を一度だけ消費する。"""
+    """合成三頁の複製checkpointを観測等の境界で囲み、一回のSDK呼出を確認する。"""
 
     repository, run_id = _synthetic_historical_run(
         tmp_path / "source", historical_settings

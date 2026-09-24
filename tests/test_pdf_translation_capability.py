@@ -33,7 +33,7 @@ def test_fix_and_verify_adopt_valid_candidate(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """指摘を解消して検証に合格した修正候補を最終訳として採用する。"""
+    """固定の修正応答と承認応答を与え、候補が最終訳へ採用されるか確認する。"""
 
     document = Document(
         pages=[

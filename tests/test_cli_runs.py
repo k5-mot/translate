@@ -56,7 +56,7 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """明示Resumeだけが同じRunを使い、非互換拒否とexport保持を保証する。"""
+    """非対話CLIの明示Resume、設定不一致の拒否、Run削除後のexport保持を検査する。"""
 
     templates = _templates(tmp_path / "templates")
     current = [
@@ -141,7 +141,7 @@ def test_interactive_same_input_requires_y_and_supports_candidate_selection(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """複数の同一入力候補からrun IDを選び、yの場合だけ再開する。"""
+    """対話CLIで複数の同一入力候補からIDを選び、y回答でそのRunが再開される。"""
 
     templates = _templates(tmp_path / "templates")
     settings = settings_factory(

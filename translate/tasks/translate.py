@@ -83,8 +83,9 @@ def _restore_chunk_placeholders(
 ) -> TranslationResponse:
     """LLM応答内のplaceholderを正規化して原文fragmentへ戻す。
 
-    LLMが区切り文字、空白または大小文字を揺らしても、期待したtokenと
-    一対一に対応する場合だけ受理する。原文値や生応答は例外へ含めない。
+    保護対象が空なら検査せず応答をそのまま返す。対象がある場合はmarkerの
+    表記揺れを正規化し、Chunk全体で個数と未知tokenを確認する。marker欠落時は
+    原文断片が一度だけ現れる応答も認める。原文値や生応答は例外へ含めない。
     """
 
     if not protected:
