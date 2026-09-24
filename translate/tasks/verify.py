@@ -28,7 +28,7 @@ class VerifyResponse(BaseModel):
 
 
 def _revert(page: Page, error: str) -> None:
-    """不承認ページの本文・caption・セルを修正前の訳へ戻す。"""
+    """ページの最終訳を初回訳と共有させ、両層のInlineへ修正skip理由を記録する。"""
 
     for block in page.blocks:
         block.final = block.translated
@@ -56,7 +56,7 @@ class VerifyTask(BaseTask):
         settings: Settings,
         output_dir: Path,
     ) -> Document:
-        """修正済みページだけ検証し、不合格なら修正前へ戻す。"""
+        """指摘のあるページを検証し、不承認・検証失敗ならページ全体を初回訳へ戻す。"""
 
         with self.measure():
             result = document.model_copy(deep=True)

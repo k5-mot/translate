@@ -74,7 +74,7 @@ def _translations(page: Page) -> list[tuple[str, str]]:
 
 
 def _validate_mapping(mapping: dict[str, str], valid: set[str]) -> None:
-    """修正対象外のIDや空の修正文を拒否し、不正な提案が最終層へ反映されるのを防ぐ。"""
+    """ページの初回訳にないIDや空の修正文を拒否する。Findingの対象IDには限定しない。"""
 
     if not set(mapping) <= valid or any(not value for value in mapping.values()):
         msg = "FIX returned invalid IDs or empty text"
@@ -94,7 +94,7 @@ class FixTask(BaseTask):
         settings: Settings,
         output_dir: Path,
     ) -> Document:
-        """Findingがあるページだけ修正し、errorはskipする。"""
+        """指摘のあるページへ修正を提案し、提案・適用に失敗したページは初回訳を保持する。"""
 
         with self.measure():
             result = document.model_copy(deep=True)

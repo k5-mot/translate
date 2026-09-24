@@ -94,7 +94,7 @@ class MergeTask(BaseTask):
     name = "MERGE"
 
     def run(self, documents: list[Path], source: Path, output_dir: Path) -> Path:
-        """Task directory全体を検証後に公開する。"""
+        """partのJSONとassetを一時directoryで結合し、正常終了後にまとめて公開する。"""
 
         with self.measure():
             with atomic_directory(output_dir) as temporary:

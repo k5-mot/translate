@@ -60,7 +60,7 @@ def _is_text_output_truncated(error: LLMError) -> bool:
 def _protect_chunk_for_prompt(
     chunk: list[tuple[str, str]],
 ) -> tuple[list[tuple[str, str]], dict[str, str]]:
-    """split fallbackのpromptだけ保護fragmentをplaceholder化する。"""
+    """通常・分割後の各Chunkで保護fragmentをplaceholder化し、復元用の対応表を返す。"""
 
     protected: dict[str, str] = {}
     result: list[tuple[str, str]] = []
@@ -413,7 +413,7 @@ class TranslateTask(BaseTask):
         settings: Settings,
         output_dir: Path,
     ) -> Document:
-        """本文ページを高推論modelで翻訳する。"""
+        """第1ページ以外を逐次翻訳し、全ページ成功後に訳文と参照検索結果を公開する。"""
 
         with self.measure():
             result = document.model_copy(deep=True)

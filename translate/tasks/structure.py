@@ -85,7 +85,7 @@ def _structure_request(
     thinking: ThinkingPolicy = "provider-default",
     image: Path | None = None,
 ) -> StructureResponse:
-    """一時的な接続断だけを一回、逐次再送する。"""
+    """LLM診断の原因型がConnectionErrorを含むときだけ、一回追加で逐次再送する。"""
 
     request = partial(
         structured,
@@ -132,7 +132,7 @@ def _response_schema_hash() -> str:
 
 
 def _bound_image(path: Path) -> Path:
-    """STRUCTUREの画像全域を縦横比を保って安全な画素数へ縮小する。"""
+    """画像全域を縦横比がおおむね保たれる整数寸法へ縮小し、画素数上限内で上書きする。"""
 
     with Image.open(path) as source:
         width, height = source.size
@@ -441,7 +441,7 @@ class StructureTask(BaseTask):
         settings: Settings,
         output_dir: Path,
     ) -> Document:
-        """Task directory全体を検証後に公開する。"""
+        """独自のページ再開記録を利用し、構造補正が正常終了したらTask成果物を公開する。"""
 
         with self.measure():
             progress_dir = output_dir.parent / "structure-pages"

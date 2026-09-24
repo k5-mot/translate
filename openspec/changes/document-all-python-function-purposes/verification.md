@@ -52,3 +52,28 @@
 ## 更新後の残作業と判定
 
 2/8 tasks完了。task 2.1は完了したが、1.1/1.3/1.4の既存説明を含む全件の意味確認、1.5のlambda全件確認、2.2の最終監査、2.3の実E2Eと目視が未完了。目的説明の追加だけで再実装・二重状態管理・common配置の指摘は解消しない。未実装と実検証不足を残してarchive・main merge・pushはしない。
+
+## 公開入口・Taskの意味確認（2026-09-25、追記）
+
+- `cli.py`、`main.py`、`translate/tasks/`全22 files（baseと空のpackage入口を含む）の全文を確認した。目的、対象範囲、入力の変更、副作用、失敗時の動作を既存説明と照合した。
+- CHECKはcritical限定でなくerror/warningを返し、否定などの照合はheuristicである。VERIFYはFIX成功の有無でなくFindingの存在でページを選び、失敗時にはページ全体の初回訳を最終層と共有してskip情報を付ける。FIXのID検査はページ内の初回訳IDまでで、Finding対象に限定しない。これらを過大な説明から実態へ訂正した。
+- ALIGNは低信頼対応があれば全対象をモデルへ渡す。TRANSLATEの保護処理はsplit fallback限定ではない。MERGE/STRUCTUREの「検証後に公開」は独立した全体検証を保証していないため、正常終了後の公開と記載した。BaseTaskはfinallyの標準出力も失敗し得るため、元例外を無条件に保持するという説明を除いた。
+- Markdownの最終層選択はReview承認の保証ではなく、Noneでない層を優先して空列も保持する。REVIEWの重複判定keyはFindingの全JSONを含み、匿名化済みではない。文字数からのtoken見積もりはProvider上限の保証ではない。既存の独自再開記録は現状の動作として記載し、仕様適合の説明へ置き換えない。
+- 24 filesのdocstring除去後ASTは、本Change開始時baselineと全件一致した。既存未commitのREVIEW機能差分はbaselineに含まれるため、commit時にはその機能変更を除外して説明だけを選択stageする。
+- task 1.1を完了し、進捗は3/8。adapter/common、Test既存説明、lambda/実行文字列の最終確認と正式E2Eは引き続き未完了。
+
+### 意味確認から判明した製品不具合（未解決）
+
+- **CONTENT-VALIDATE-001**: `validate._require_translations`はcaptionの原文/訳文層を確認しない。第2ページに原文captionだけを持つFigureを与えて例外なしを確認した。`markdown._caption_current`はそのcaptionを原文へfallbackする。本文/セルの存在検査をcaptionへ適用する製品修正と回帰Testが必要。実PDF全体での発生件数は未確認。
+- **CONTENT-MERGE-001**: `position._merge_fragments`は結合元をbodyのchildrenから除くが、texts collectionには残す。`load.load_document`がcollectionの未出現要素を補完するため、合成した隣接paragraph `A`/`B`は結合記録1件、body参照1件に対し、LOAD後に`A B`と`B`の2 Blockとなった。表も含む結合元の所有権・除外方法をOpenSpecで確定して是正する。単純なcollection補完廃止で、bodyに現れない正当な内容を失わせてはならない。
+- 上記診断はメモリ内の合成入力だけで実行し、LLMや外部Serviceを呼ばず、利用者文書・Runを変更していない。説明のみの本Changeへ製品修正を混ぜず、後続Changeで扱う。
+
+### 実translationの進展
+
+- 同じexec session 40709のlive handleをpollした。TRANSLATE 5703.479秒、CHECK 0.139秒の完了通知を確認し、翻訳Workflow内REVIEWへ進んだ。検索Artifactは`page-0002-review-0001.json`（03:23:25 JST）。まだ最終DOCX、Word PDF化、原文PDFとのComparison Reviewの完了証拠ではない。
+
+### 今回の検査
+
+- Ruff、Format（307 files）、ty、diff checkは合格。pytestは401 passed, 1 skipped（26.99秒）。skipはWindows上のPOSIX PTY検査。
+- PATH上ではOpenSpec commandが見つからなかったが、導入済みnpm cache内のOpenSpec 1.13.1をnodeから起動し、project root、Change status、apply instructionsを取得した。strict validationもvalid。新しいpackageは導入していない。
+- 既存configの`operations.verify`をCLIが未対応operationとして警告するが、apply instructionsとstrict検査は成功した。既存未commitのconfig編集は今回変更・commitしていない。

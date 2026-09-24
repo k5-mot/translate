@@ -80,7 +80,7 @@ class ValidateTask(BaseTask):
     name = "VALIDATE"
 
     def run(self, document: Document, asset_root: Path, output: Path) -> Document:
-        """文書参照とassetを検査しreportを保存する。"""
+        """入力文書の旧asset参照を補正し、出力可能性の検査後にreportを保存する。"""
 
         with self.measure():
             _canonicalize_assets(document, asset_root)

@@ -17,7 +17,7 @@ class BaseTask:
 
     @contextmanager
     def measure(self) -> Iterator[None]:
-        """成功・失敗にかかわらず一度計測し、処理中の例外はそのまま伝播する。"""
+        """成功・失敗のどちらでも経過時間を計測し、標準出力へ通知する。"""
 
         start = time.perf_counter()
         try:

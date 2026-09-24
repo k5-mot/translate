@@ -244,7 +244,7 @@ def _length_findings(source: str, target: str) -> list[Finding]:
 def deterministic_findings(
     source: str, target: str, glossary: list[GlossaryEntry]
 ) -> list[Finding]:
-    """原文と訳文の機械的invariant違反を検出する。
+    """原文と訳文を決定的な規則で比較し、欠落や誤訳の候補を返す。
 
     Args:
         source: 英語原文。
@@ -252,7 +252,7 @@ def deterministic_findings(
         glossary: 適用する用語集。
 
     Returns:
-        検出したcritical finding列。
+        検出したerror/warningのFinding列。語句の照合にはheuristicを含む。
     """
 
     # heuristicは自動修正せずfindingだけを返し、最終判断をReview graphへ委ねる。

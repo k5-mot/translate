@@ -93,7 +93,7 @@ def _current(block: Block) -> list[Inline]:
         block: 対象Block。
 
     Returns:
-        Review済み、翻訳済み、原文の優先順で選んだInline列。
+        最終層、翻訳層、原文の優先順で選ぶ。Noneだけを未設定とし、空列は維持する。
     """
 
     return (
@@ -112,7 +112,7 @@ def _cell_current(cell: TableCell) -> list[Inline]:
         cell: 対象cell。
 
     Returns:
-        Review済み、翻訳済み、原文の優先順で選んだInline列。
+        最終層、翻訳層、原文の優先順で選ぶ。Noneだけを未設定とし、空列は維持する。
     """
 
     return (
@@ -131,7 +131,7 @@ def _caption_current(block: Block) -> list[Inline]:
         block: 図または表Block。
 
     Returns:
-        Review済み、翻訳済み、原文の優先順で選んだInline列。
+        最終層、翻訳層、原文の優先順で選ぶ。Noneだけを未設定とし、空列は維持する。
     """
 
     return (
@@ -458,7 +458,7 @@ def _validate_block(block: Block, asset_root: Path, anchors: set[str]) -> None:
 
 
 def validate_document(document: Document, asset_root: Path) -> None:
-    """Rendererが黙って壊れた出力を作らないよう文書を検証する。
+    """本文の制御文字、図assetの存在、表の位置・spanと内部linkを検査する。
 
     Args:
         document: 検証する文書。
@@ -468,7 +468,7 @@ def validate_document(document: Document, asset_root: Path) -> None:
         なし。
 
     Raises:
-        ValueError: 制御文字、欠損asset、表shapeが不正な場合。
+        ValueError: 本文の制御文字、欠損asset、表shapeまたは内部linkが不正な場合。
     """
 
     # link検証より先に全ページの見出しを集め、後方参照も正しく解決する。
@@ -493,6 +493,7 @@ def render_document(
     Args:
         document: 変換する正規化済み文書。
         cover_path: 任意の表紙画像path。
+        excluded_pages: 本文から除くページ番号。表紙pathだけでは本文を除外しない。
 
     Returns:
         UTF-8 Markdown文字列。

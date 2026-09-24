@@ -68,7 +68,7 @@ class AlignTask(BaseTask):
         output_dir: Path,
         settings: Settings | None = None,
     ) -> list[AlignmentGroup]:
-        """番号・URLと文書順を使い、全Blockを重複なく対応付ける。"""
+        """文字のある本文・caption・セルを対応付け、LLM失敗時は決定的な対応を残す。"""
 
         with self.measure():
             source_items = _items(source)
@@ -125,7 +125,7 @@ class AlignTask(BaseTask):
                 for index, (target_id, _) in enumerate(target_items)
                 if index not in used_targets
             )
-            # Note 3: Low-confidence order matches are the only records sent to the model.
+            # 低信頼の対応が一つでもあれば、全対象をLLMへ渡して対応を再提案させる。
             if settings is not None and any(group.confidence < 0.8 for group in groups):
                 try:
                     response = structured(

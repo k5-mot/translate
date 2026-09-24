@@ -38,7 +38,7 @@ def _review_chunks(
     available_input_tokens: int,
     max_items: int = _MAX_REVIEW_ITEMS,
 ) -> list[list[dict[str, str]]]:
-    """入力順を保ったまま、有限の入力budget境界でpairsを分割する。"""
+    """入力順を保って概算文字量と件数で分割する。単独pairが上限を超えても分断しない。"""
 
     budget = max(1_024, available_input_tokens * 4)
     chunks: list[list[dict[str, str]]] = []
@@ -74,7 +74,7 @@ def _is_output_truncated(error: LLMError) -> bool:
 
 
 def _finding_key(finding: Finding) -> str:
-    """Findingを本文を露出しない内部dedupe keyへ正規化する。"""
+    """Finding全内容を含むJSONを内部の重複判定keyにする。ログや公開診断には出さない。"""
 
     return json.dumps(
         finding.model_dump(mode="json"), sort_keys=True, ensure_ascii=False
@@ -117,7 +117,7 @@ class ReviewTask(BaseTask):
         settings: Settings,
         output_dir: Path,
     ) -> dict[int, list[Finding]]:
-        """各ページを高推論modelで査読する。"""
+        """第1ページ以外を逐次査読し、独自のChunk応答Cacheを正常終了後に削除する。"""
 
         with self.measure():
             results: dict[int, list[Finding]] = {}
@@ -201,7 +201,7 @@ def _run_chunk(
     *,
     depth: int,
 ) -> list[Finding]:
-    """一つのReview chunkを実行し、枯渇時だけ決定的に二分する。"""
+    """既存Cacheを照合して査読し、回復対象の失敗だけ有限回の再送・逐次二分へ回す。"""
 
     chunk_id = _chunk_id(page, index)
     digest = _cache_key(page, pairs)

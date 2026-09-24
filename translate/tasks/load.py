@@ -89,7 +89,7 @@ def _walk_refs(
         value: tree nodeまたは値。
 
     Yields:
-        groupを除く参照先要素、親list階層、順序付きlistかどうかの組。
+        可視内容のない親を平坦化した参照先要素、親list階層、順序付きかどうかの組。
     """
 
     if isinstance(value, list):
@@ -388,11 +388,11 @@ def _picture_content_refs(document: dict[str, Any]) -> set[str]:
 
 
 def _integer(value: Any, default: int) -> int:
-    """Doclingの任意値を安全に整数へ変換する。
+    """Docling値がintのインスタンスなら保持し、それ以外は既定値へ置き換える。
 
     Args:
         value: 変換候補。
-        default: 変換不能時の値。
+        default: int以外の場合の値。
 
     Returns:
         整数値。
