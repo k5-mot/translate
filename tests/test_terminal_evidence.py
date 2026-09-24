@@ -12,7 +12,9 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from translate.common import terminal_evidence
 from translate.common.identifiers import uuid7
+from translate.common.lifecycle import FailureRecord
 from translate.common.runs import RunRepository
 from translate.common.settings import Settings
 from translate.common.terminal_evidence import (
@@ -80,7 +82,7 @@ def test_progress_and_failure_are_reduced_to_safe_values() -> None:
     )
     assert progress.phase == "STRUCTURE"
     assert progress.current == 3
-    failure = SimpleNamespace(
+    failure = FailureRecord(
         run_id=run_id,
         task="TRANSLATE",
         stage="text-output",
@@ -91,6 +93,8 @@ def test_progress_and_failure_are_reduced_to_safe_values() -> None:
         input_tokens=20,
         output_tokens=30,
         total_tokens=50,
+        reason="ProviderError",
+        failed_at=datetime.now(UTC),
     )
     failed = evidence_from_failure(
         failure, started_at=progress.started_at, previous=progress
@@ -99,6 +103,47 @@ def test_progress_and_failure_are_reduced_to_safe_values() -> None:
     assert failed.stage == "text-output"
     assert failed.total_tokens == 50
     assert failed.cause_type == "TimeoutError"
+
+
+def test_external_call_counter_restores_nested_and_failed_contexts() -> None:
+    """入れ子contextと例外終了の後に外側/未束縛のcounterへ戻る。"""
+
+    inner_values: list[dict[str, int]] = []
+    failure = RuntimeError("fixture failure")
+
+    def fail_in_context() -> None:
+        with terminal_evidence.bind_call_counts() as inner:
+            terminal_evidence.count_external_call("embedding")
+            inner_values.append(dict(inner))
+            raise failure
+
+    with terminal_evidence.bind_call_counts() as outer:
+        terminal_evidence.count_external_call("llm")
+        with pytest.raises(RuntimeError, match="fixture failure"):
+            fail_in_context()
+        terminal_evidence.count_external_call("qdrant")
+    terminal_evidence.count_external_call("llm")
+    assert dict(outer) == {"llm_calls": 1, "embedding_calls": 0, "qdrant_calls": 1}
+    assert inner_values == [{"llm_calls": 0, "embedding_calls": 1, "qdrant_calls": 0}]
+
+
+@pytest.mark.parametrize(
+    ("phase", "stage", "expected_phase", "expected_stage"),
+    [
+        ("structure", "text-invoke", "STRUCTURE", "text-invoke"),
+        ("REVIEW", "text-output", "REVIEW", "text-output"),
+        ("private value", "private value", None, None),
+        (None, None, None, None),
+    ],
+)
+def test_evidence_literal_narrowing_keeps_allowlist(
+    phase: str | None,
+    stage: str | None,
+    expected_phase: str | None,
+    expected_stage: str | None,
+) -> None:
+    assert terminal_evidence._safe_phase(phase) == expected_phase  # noqa: SLF001
+    assert terminal_evidence._safe_stage(stage) == expected_stage  # noqa: SLF001
 
 
 def test_evidence_and_counts_contain_no_sensitive_or_external_values(

@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import time
+from functools import partial
 from typing import TYPE_CHECKING, Literal
 
 from PIL import Image
@@ -70,15 +71,38 @@ class StructurePageError(RuntimeError):
         )
 
 
-def _structure_request(*args: object, **kwargs: object) -> StructureResponse:
+def _structure_request(
+    settings: Settings,
+    model: str,
+    response_type: type[StructureResponse],
+    system: str,
+    user: str,
+    *,
+    reasoning: ReasoningEffort,
+    schema_mode: StructuredOutputMode = "prompt",
+    thinking: ThinkingPolicy = "provider-default",
+    image: Path | None = None,
+) -> StructureResponse:
     """一時的な接続断だけを一回、逐次再送する。"""
 
+    request = partial(
+        structured,
+        settings,
+        model,
+        response_type,
+        system,
+        user,
+        reasoning=reasoning,
+        schema_mode=schema_mode,
+        thinking=thinking,
+        image=image,
+    )
     try:
-        return structured(*args, **kwargs)
+        return request()
     except LLMError as error:
         if "ConnectionError" not in error.cause_type:
             raise
-        return structured(*args, **kwargs)
+        return request()
 
 
 # Keep Gemma4 vision input below the local runtime's observed high-resolution

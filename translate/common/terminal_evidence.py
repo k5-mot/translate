@@ -13,12 +13,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Self, get_args
+from typing import TYPE_CHECKING, Literal, Self, cast, get_args
 from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from translate.common.workspace import atomic_write_json, load_json
+
+if TYPE_CHECKING:
+    from translate.common.lifecycle import FailureRecord
 
 
 @contextmanager
@@ -94,7 +97,7 @@ _CALL_COUNTS: ContextVar[dict[str, int] | None] = ContextVar(
 
 
 @contextmanager
-def bind_call_counts() -> Mapping[str, int]:
+def bind_call_counts() -> Iterator[Mapping[str, int]]:
     """一回のchildだけの逐次外部call数を束縛する。"""
 
     counts = {"llm_calls": 0, "embedding_calls": 0, "qdrant_calls": 0}
@@ -288,14 +291,14 @@ def evidence_from_progress(
 
 
 def evidence_from_failure(
-    failure: object,
+    failure: FailureRecord,
     *,
     started_at: datetime,
     previous: TerminalEvidence | None = None,
     child_pid: int | None = None,
     exit_code: int | None = None,
 ) -> TerminalEvidence:
-    """FailureRecordまたはPublicRunErrorから本文なしEvidenceを作る。"""
+    """PublicRunErrorのFailureRecordから本文なしEvidenceを作る。"""
 
     run_id = _canonical_run_id(str(failure.run_id))
     operation = _operation_from_previous(previous)
@@ -604,11 +607,11 @@ def _safe_phase(value: str | None) -> TerminalPhase | None:
     if value is None:
         return None
     upper = value.upper()
-    return upper if upper in get_args(TerminalPhase) else None
+    return cast("TerminalPhase", upper) if upper in get_args(TerminalPhase) else None
 
 
 def _safe_stage(value: object) -> TerminalStage | None:
-    return value if value in get_args(TerminalStage) else None
+    return cast("TerminalStage", value) if value in get_args(TerminalStage) else None
 
 
 def _nonnegative_int(value: object) -> int:

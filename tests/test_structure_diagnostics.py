@@ -48,6 +48,52 @@ def _source(tmp_path: Path) -> Path:
     return source
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        (0, ConnectionError, 1, True),
+        (1, ConnectionError, 2, True),
+        (2, ConnectionError, 2, False),
+        (1, TimeoutError, 1, False),
+    ],
+)
+def test_structure_request_preserves_typed_arguments_and_retry_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    case: tuple[int, type[Exception], int, bool],
+) -> None:
+    """型付き転送でも同じ引数で最大一回だけ接続断を再送する。"""
+
+    failures, cause, expected_calls, succeeds = case
+    settings = settings_factory()
+    expected = structure.StructureResponse()
+    args = (settings, "model", structure.StructureResponse, "rules", "body")
+    kwargs = {
+        "reasoning": "none",
+        "schema_mode": "json-schema",
+        "thinking": "disabled",
+        "image": tmp_path / "page.png",
+    }
+    calls = []
+    failure = LLMError("vision-invoke", cause("private body"))
+
+    def invoke(*actual: object, **options: object) -> structure.StructureResponse:
+        calls.append((actual, options))
+        if len(calls) <= failures:
+            raise failure
+        return expected
+
+    monkeypatch.setattr(structure, "structured", invoke)
+    if succeeds:
+        assert structure._structure_request(*args, **kwargs) is expected  # noqa: SLF001
+    else:
+        with pytest.raises(LLMError) as raised:
+            structure._structure_request(*args, **kwargs)  # noqa: SLF001
+        assert raised.value is failure
+    assert calls == [(args, kwargs)] * expected_calls
+
+
 def test_structure_bounds_vision_image_without_cropping(tmp_path: Path) -> None:
     """大きな画像だけを全page保持のまま上限内へ縮小する。"""
 
