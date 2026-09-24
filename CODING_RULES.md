@@ -1,7 +1,8 @@
 # 📜 コーディング規約
 
 本書は、このRepositoryで実装する際の共通規則と、Python、TypeScript、
-Java固有の規則を定める。
+Java固有の規則を定める。製品の振る舞い、対応環境、採用構成および
+配置制約はOpenSpecで管理し、本書へ重複記載しない。
 
 ## 🧭 共通規則
 
@@ -30,21 +31,6 @@ Java固有の規則を定める。
   OpenSpecの設計に記録し、独自実装を必要な差分に限定すること
 - MUST; Module新設や共通化では、実際の利用元、責務、既存Codeまたは依存APIで
   不足する理由を説明すること。配置変更だけを重複機能の解消とみなさないこと
-- MUST NOT; `common/`へ承認済みの`logger`と`settings`以外の責務を追加しないこと。
-  既存の未承認Moduleや本規約の更新を、配置の承認として扱わないこと
-
-### 🔄 再開状態の正本
-
-- MUST; Taskの順序、分岐、再開位置および完了履歴はLangGraphのGraph定義と
-  Checkpointを正本とし、進捗表示はその情報から導出すること
-- MUST NOT; 再開を制御する独立した完了一覧、進捗台帳、PageまたはChunk単位の
-  再開Cacheを作り、LangGraphと二重管理しないこと
-- MUST; 細粒度の再開が必要な場合もLangGraphの永続化機能を利用し、
-  Task内部に別の再開機構を実装しないこと
-- MUST; 入力・設定の再開互換性検証、Artifactの読書き、外部副作用の冪等性確認を
-  再開位置の管理と区別し、それらに独立したTask完了状態を持たせないこと
-- MUST; 再開機構を変更する際は、障害後の再開と副作用の重複防止をTestし、
-  既存の再開粒度を暗黙に失わせないこと
 
 ### 💬 コメント
 
@@ -76,17 +62,14 @@ Java固有の規則を定める。
 
 ### 🧰 実装と実行
 
-- MUST; Python 3.12以上を使用すること
-- MUST; 製品として直接実行を保証するEntry Pointを`cli.py`と`main.py`に限定すること
-- MUST; 製品Entry Pointは`main()`またはCLI Applicationと
+- MUST; 製品仕様で定めたPython対応Versionの範囲で実装すること
+- MUST; 実行用Entry Pointは`main()`またはCLI Applicationと
   `if __name__ == "__main__":`で実行境界を明示すること
 - MAY; 内部Moduleには、開発時のDebugに有用な場合に限り、簡易な`main()`と
   `if __name__ == "__main__":`を設けてもよい
-- MUST NOT; 内部ModuleのDebug Entry Pointを公開Interfaceとして扱わないこと
 - MUST; 内部ModuleのDebug Entry Pointは既存Functionへ委譲し、製品処理を
   再実装しないこと
 - MUST NOT; 直接実行する用途がないPython Fileへ形式的なEntry Pointを追加しないこと
-- MUST; `time.perf_counter()`で各Taskの経過時間を計測可能にすること
 - SHOULD; Path操作には`pathlib`、Process実行には`subprocess.run()`を使用すること
 - MUST; RuffのLintとFormat検査を通すこと
 - MUST; 型検査が構成されているProjectでは`ty check`を通すこと
@@ -119,41 +102,13 @@ uv run pytest
 | CLI | `typer` |
 | Data検証・設定Model | `pydantic` |
 
-### ⚙️ `pyproject.toml`参考設定
+### ⚙️ 品質検査の参考設定
 
-次はAgent／RAG用途を含むProject向けの参考例である。新規Projectへ一括適用せず、
-実際に使用するDependencyとPathだけを残すこと。
+次はLintとFormatの参考例である。Projectの実際の設定を置き換えるものではない。
+製品のDependency、Version制約および検査対象Pathは例へ複製せず、
+その採用方針はOpenSpec、実際の値はProjectの設定Fileで管理する。
 
 ```toml
-[project]
-name = "agent-skills"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-  "httpx>=0.28.1",
-  "openai>=2.8.1",
-  "pillow>=12.0.0",
-  "portalocker>=3.2.0,<4",
-  "pypdfium2>=5.13.0,<6",
-  "pydantic>=2.12.5",
-  "python-dotenv>=1.2.1",
-  "typer>=0.20.0",
-  "langchain>=1.4.0",
-  "langchain-openai>=1.6.0",
-  "langchain-qdrant>=1.1.0",
-  "langgraph>=1.2.11",
-  "langgraph-checkpoint-sqlite>=3.1.1",
-  "langfuse>=3,<5",
-  "qdrant-client>=1.16.0,<2",
-  "typing-extensions>=4.16.0",
-  "streamlit>=1.64.0",
-]
-
-[dependency-groups]
-dev = ["pytest>=9.1.1", "ruff>=0.15.22", "ty>=0.0.61"]
-
 [tool.ruff]
 line-length = 88
 indent-width = 4
@@ -208,8 +163,6 @@ line-ending = "lf"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
-[tool.ty.src]
-exclude = [".agents", "tests"]
 ```
 
 ## 🟦 TypeScript
