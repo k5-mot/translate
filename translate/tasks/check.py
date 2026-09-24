@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import csv
 import re
-import time
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
 from translate.common.workspace import atomic_directory, atomic_write_json
 from translate.document import Document, Finding, inline_text
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -297,30 +297,41 @@ def deterministic_findings(
     return findings
 
 
+class CheckTask(BaseTask):
+    """Execute CHECK while sharing elapsed-time measurement only."""
+
+    name = "CHECK"
+
+    def run(
+        self, document: Document, glossary_path: Path | None, output_dir: Path
+    ) -> dict[int, list[Finding]]:
+        """文書全体を決定的に検査し、page別Findingを保存する。"""
+
+        with self.measure():
+            glossary = read_glossary(glossary_path)
+            results: dict[int, list[Finding]] = {}
+            for page in document.pages:
+                page_findings: list[Finding] = []
+                for block in page.blocks:
+                    target = block.translated or block.source
+                    page_findings.extend(
+                        deterministic_findings(
+                            inline_text(block.source), inline_text(target), glossary
+                        )
+                    )
+                results[page.number] = page_findings
+            with atomic_directory(output_dir) as temporary:
+                for number, page_findings in results.items():
+                    atomic_write_json(
+                        temporary / f"page-{number:04d}.json",
+                        [item.model_dump() for item in page_findings],
+                    )
+            return results
+
+
 def run(
     document: Document, glossary_path: Path | None, output_dir: Path
 ) -> dict[int, list[Finding]]:
-    """文書全体を決定的に検査し、page別Findingを保存する。"""
+    """Existing function delegates to the typed CheckTask operation."""
 
-    start = time.perf_counter()
-    glossary = read_glossary(glossary_path)
-    results: dict[int, list[Finding]] = {}
-    for page in document.pages:
-        page_findings: list[Finding] = []
-        for block in page.blocks:
-            target = block.translated or block.source
-            page_findings.extend(
-                deterministic_findings(
-                    inline_text(block.source), inline_text(target), glossary
-                )
-            )
-        results[page.number] = page_findings
-    with atomic_directory(output_dir) as temporary:
-        for number, page_findings in results.items():
-            atomic_write_json(
-                temporary / f"page-{number:04d}.json",
-                [item.model_dump() for item in page_findings],
-            )
-    end = time.perf_counter()
-    print(f"[TIME] CHECK page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return results
+    return CheckTask().run(document, glossary_path, output_dir)

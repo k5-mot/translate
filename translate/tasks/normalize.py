@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import re
-import time
 from typing import TYPE_CHECKING, Any
 
 from translate.common.workspace import atomic_directory, atomic_write_json
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,65 +74,79 @@ def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None
         _filter_tree(document, value, removed)
 
 
-def run(source: Path, output_dir: Path) -> Path:
-    """不要要素を参照treeから除き、非code本文をcleanする。"""
+class NormalizeTask(BaseTask):
+    """Execute NORMALIZE while sharing elapsed-time measurement only."""
 
-    start = time.perf_counter()
-    document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
-    removed_reasons: dict[str, str] = {}
-    changed: list[str] = []
-    # Note 3: Picture child text is metadata/caption content, not duplicate body prose.
-    picture_owned = set().union(
-        *(_refs(item.get("children", [])) for item in document.get("pictures", [])),
-        set(),
-    )
-    index_pages = {
-        page
-        for item in document.get("texts", [])
-        if isinstance(item, dict)
-        and (
-            item.get("label") == "document_index"
-            or INDEX_RE.fullmatch(str(item.get("text", "")).strip())
-        )
-        if (page := _page(item)) is not None
-    }
-    for collection in ("texts", "tables", "pictures"):
-        for index, item in enumerate(document.get(collection, [])):
-            if not isinstance(item, dict):
-                continue
-            ref = str(item.get("self_ref", f"#/{collection}/{index}"))
-            text = str(item.get("text", ""))
-            reason = None
-            if item.get("label") in SKIPPED:
-                reason = str(item.get("label"))
-            elif _page(item) in index_pages:
-                reason = "document_index_page"
-            elif ref in picture_owned:
-                reason = "picture_owned_text"
-            elif collection == "texts" and not text.strip():
-                reason = "empty_text"
-            if reason is not None:
-                removed_reasons[ref] = reason
-                continue
-            # Note 2: Never normalize literal code where punctuation is meaningful.
-            if item.get("label") not in CODE and isinstance(item.get("text"), str):
-                cleaned = _clean(item["text"])
-                if cleaned != item["text"]:
-                    item["text"] = cleaned
-                    changed.append(ref)
-    _filter_tree(document, document.get("body", {}), set(removed_reasons))
-    with atomic_directory(output_dir) as temporary:
-        atomic_write_json(temporary / "document.json", document)
-        atomic_write_json(
-            temporary / "report.json",
-            {
-                "removed": [
-                    {"id": ref, "reason": reason}
-                    for ref, reason in sorted(removed_reasons.items())
-                ],
-                "cleaned": changed,
-            },
-        )
-    end = time.perf_counter()
-    print(f"[TIME] NORMALIZE page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return output_dir / "document.json"
+    name = "NORMALIZE"
+
+    def run(self, source: Path, output_dir: Path) -> Path:
+        """不要要素を参照treeから除き、非code本文をcleanする。"""
+
+        with self.measure():
+            document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
+            removed_reasons: dict[str, str] = {}
+            changed: list[str] = []
+            # Note 3: Picture child text is metadata/caption content, not duplicate body prose.
+            picture_owned = set().union(
+                *(
+                    _refs(item.get("children", []))
+                    for item in document.get("pictures", [])
+                ),
+                set(),
+            )
+            index_pages = {
+                page
+                for item in document.get("texts", [])
+                if isinstance(item, dict)
+                and (
+                    item.get("label") == "document_index"
+                    or INDEX_RE.fullmatch(str(item.get("text", "")).strip())
+                )
+                if (page := _page(item)) is not None
+            }
+            for collection in ("texts", "tables", "pictures"):
+                for index, item in enumerate(document.get(collection, [])):
+                    if not isinstance(item, dict):
+                        continue
+                    ref = str(item.get("self_ref", f"#/{collection}/{index}"))
+                    text = str(item.get("text", ""))
+                    reason = None
+                    if item.get("label") in SKIPPED:
+                        reason = str(item.get("label"))
+                    elif _page(item) in index_pages:
+                        reason = "document_index_page"
+                    elif ref in picture_owned:
+                        reason = "picture_owned_text"
+                    elif collection == "texts" and not text.strip():
+                        reason = "empty_text"
+                    if reason is not None:
+                        removed_reasons[ref] = reason
+                        continue
+                    # Note 2: Never normalize literal code where punctuation is meaningful.
+                    if item.get("label") not in CODE and isinstance(
+                        item.get("text"), str
+                    ):
+                        cleaned = _clean(item["text"])
+                        if cleaned != item["text"]:
+                            item["text"] = cleaned
+                            changed.append(ref)
+            _filter_tree(document, document.get("body", {}), set(removed_reasons))
+            with atomic_directory(output_dir) as temporary:
+                atomic_write_json(temporary / "document.json", document)
+                atomic_write_json(
+                    temporary / "report.json",
+                    {
+                        "removed": [
+                            {"id": ref, "reason": reason}
+                            for ref, reason in sorted(removed_reasons.items())
+                        ],
+                        "cleaned": changed,
+                    },
+                )
+            return output_dir / "document.json"
+
+
+def run(source: Path, output_dir: Path) -> Path:
+    """Existing function delegates to the typed NormalizeTask operation."""
+
+    return NormalizeTask().run(source, output_dir)

@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING
 
 from translate.common.workspace import atomic_write_json
+from translate.tasks.base import BaseTask
 from translate.tasks.markdown import validate_document
 
 if TYPE_CHECKING:
@@ -70,15 +70,24 @@ def _canonicalize_assets(document: Document, asset_root: Path) -> None:
                 block.asset_path = candidate
 
 
-def run(document: Document, asset_root: Path, output: Path) -> Document:
-    """文書参照とassetを検査しreportを保存する。"""
+class ValidateTask(BaseTask):
+    """Execute VALIDATE while sharing elapsed-time measurement only."""
 
-    start = time.perf_counter()
-    _canonicalize_assets(document, asset_root)
-    _require_translations(document)
-    validate_document(document, asset_root)
-    warnings = _translation_warnings(document)
-    atomic_write_json(output, {"valid": True, "warnings": warnings})
-    end = time.perf_counter()
-    print(f"[TIME] VALIDATE page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return document
+    name = "VALIDATE"
+
+    def run(self, document: Document, asset_root: Path, output: Path) -> Document:
+        """文書参照とassetを検査しreportを保存する。"""
+
+        with self.measure():
+            _canonicalize_assets(document, asset_root)
+            _require_translations(document)
+            validate_document(document, asset_root)
+            warnings = _translation_warnings(document)
+            atomic_write_json(output, {"valid": True, "warnings": warnings})
+            return document
+
+
+def run(document: Document, asset_root: Path, output: Path) -> Document:
+    """Existing function delegates to the typed ValidateTask operation."""
+
+    return ValidateTask().run(document, asset_root, output)

@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import statistics
-import time
 from typing import TYPE_CHECKING, Any
 
 from translate.common.workspace import atomic_directory, atomic_write_json
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -301,22 +301,31 @@ def _sort_children(
             _sort_children(document, target, report)
 
 
-def run(source: Path, output_dir: Path) -> Path:
-    """読み順を補正してJSONとreportを保存する。"""
+class PositionTask(BaseTask):
+    """Execute POSITION while sharing elapsed-time measurement only."""
 
-    start = time.perf_counter()
-    document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
-    changed: list[dict[str, Any]] = []
-    _sort_children(document, document.get("body", {}), changed)
-    merged: list[dict[str, str]] = []
-    warnings: list[dict[str, str]] = []
-    _merge_fragments(document, document.get("body", {}), merged, warnings)
-    with atomic_directory(output_dir) as temporary:
-        atomic_write_json(temporary / "document.json", document)
-        atomic_write_json(
-            temporary / "report.json",
-            {"reordered": changed, "merged": merged, "warnings": warnings},
-        )
-    end = time.perf_counter()
-    print(f"[TIME] POSITION page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return output_dir / "document.json"
+    name = "POSITION"
+
+    def run(self, source: Path, output_dir: Path) -> Path:
+        """読み順を補正してJSONとreportを保存する。"""
+
+        with self.measure():
+            document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
+            changed: list[dict[str, Any]] = []
+            _sort_children(document, document.get("body", {}), changed)
+            merged: list[dict[str, str]] = []
+            warnings: list[dict[str, str]] = []
+            _merge_fragments(document, document.get("body", {}), merged, warnings)
+            with atomic_directory(output_dir) as temporary:
+                atomic_write_json(temporary / "document.json", document)
+                atomic_write_json(
+                    temporary / "report.json",
+                    {"reordered": changed, "merged": merged, "warnings": warnings},
+                )
+            return output_dir / "document.json"
+
+
+def run(source: Path, output_dir: Path) -> Path:
+    """Existing function delegates to the typed PositionTask operation."""
+
+    return PositionTask().run(source, output_dir)

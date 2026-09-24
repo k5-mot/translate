@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import time
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
@@ -28,6 +27,7 @@ from translate.common.workspace import (
     sha256_file,
 )
 from translate.document import BlockKind, Document, Page, inline_text
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -318,7 +318,6 @@ def _run_into(
 ) -> Document:
     """本文ページをVLMで構造補正しpage別Artifactを保存する。"""
 
-    start = time.perf_counter()
     result = document.model_copy(deep=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     source_hash = sha256_file(source_pdf)
@@ -418,9 +417,42 @@ def _run_into(
         )
         atomic_write_bytes(output_dir / f"page-{page.number:04d}.json", page_bytes)
         atomic_write_bytes(output_dir / f"audit-{page.number:04d}.json", audit_bytes)
-    end = time.perf_counter()
-    print(f"[TIME] STRUCTURE page=- group=-: {end - start:.3f} s")  # noqa: T201
     return result
+
+
+class StructureTask(BaseTask):
+    """Execute STRUCTURE while sharing elapsed-time measurement only."""
+
+    name = "STRUCTURE"
+
+    def run(
+        self,
+        document: Document,
+        source_pdf: Path,
+        rules: str,
+        settings: Settings,
+        output_dir: Path,
+    ) -> Document:
+        """Task directory全体を検証後に公開する。"""
+
+        with self.measure():
+            progress_dir = output_dir.parent / "structure-pages"
+            if progress_dir.is_symlink() or progress_dir.is_junction():
+                msg = "linked STRUCTURE progress directory is not allowed"
+                raise ValueError(msg)
+            with atomic_directory(output_dir) as temporary:
+                result = _run_into(
+                    document,
+                    source_pdf,
+                    rules,
+                    settings,
+                    temporary,
+                    progress_dir,
+                )
+                atomic_write_json(
+                    temporary / "document.json", result.model_dump(mode="json")
+                )
+                return result
 
 
 def run(
@@ -430,20 +462,6 @@ def run(
     settings: Settings,
     output_dir: Path,
 ) -> Document:
-    """Task directory全体を検証後に公開する。"""
+    """Existing function delegates to the typed StructureTask operation."""
 
-    progress_dir = output_dir.parent / "structure-pages"
-    if progress_dir.is_symlink() or progress_dir.is_junction():
-        msg = "linked STRUCTURE progress directory is not allowed"
-        raise ValueError(msg)
-    with atomic_directory(output_dir) as temporary:
-        result = _run_into(
-            document,
-            source_pdf,
-            rules,
-            settings,
-            temporary,
-            progress_dir,
-        )
-        atomic_write_json(temporary / "document.json", result.model_dump(mode="json"))
-        return result
+    return StructureTask().run(document, source_pdf, rules, settings, output_dir)

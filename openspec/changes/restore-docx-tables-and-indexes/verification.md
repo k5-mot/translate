@@ -113,7 +113,7 @@
 
 ### ARCH-002: Taskの共通構造と基底クラス継承の検討
 
-**状態: 方針承認済み・実装と検証は未完了。** 2026-09-25、既存関数を入口として維持し、BaseTaskを継承する各Task classへ委譲する併用案を利用者が承認した。共通計測と固有処理を分離し、Workflowの状態通知・Resume管理はBaseTaskへ移さない。承認を実装完了として扱わない。
+**状態: 方針承認済み・実装/自動検証済み、実E2Eと利用者確認は未完了。** 2026-09-25、[unify-task-timing-with-base-task](../unify-task-timing-with-base-task/verification.md)で20 Taskへ具体classと既存関数入口を併用実装した。計測はBaseTaskへ集約し、Workflowの状態通知・Resume管理は移していない。47計測/転送Test、全体337 passed/1 skippedを確認。実translation→Word PDF→review前のためARCH-002の最終解決にはしない。
 
 - [ ] 全Taskの入出力、実行順序、計時、atomic保存、retry、失敗通知、状態の有無を比較し、実際の重複を示す。
 - [ ] 共通base class＋各Task class案と現行関数方式を、差分量、型の明確さ、テスト容易性、LangGraph/Resumeとの対応、継承しない例外Taskの扱いで比較する。

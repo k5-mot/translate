@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import time
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -14,6 +13,7 @@ from translate.adapters.llm import LLMError, structured
 from translate.adapters.qdrant import search
 from translate.common.workspace import atomic_directory, atomic_write_json
 from translate.document import Document, Finding, inline_text
+from translate.tasks.base import BaseTask
 from translate.tasks.check import GlossaryEntry, matching_glossary
 
 if TYPE_CHECKING:
@@ -99,6 +99,80 @@ def _cache_key(page: int, pairs: list[dict[str, str]]) -> str:
     return hashlib.sha256(f"{page}:".encode() + payload.encode()).hexdigest()
 
 
+class ReviewTask(BaseTask):
+    """Execute REVIEW while sharing elapsed-time measurement only."""
+
+    name = "REVIEW"
+
+    def run(
+        self,
+        document: Document,
+        checks: dict[int, list[Finding]],
+        rules: str,
+        glossary: list[GlossaryEntry],
+        settings: Settings,
+        output_dir: Path,
+    ) -> dict[int, list[Finding]]:
+        """各ページを高推論modelで査読する。"""
+
+        with self.measure():
+            results: dict[int, list[Finding]] = {}
+            cache_dir = output_dir.parent / f".{output_dir.name}.chunks"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with atomic_directory(output_dir) as temporary:
+                for page in document.pages:
+                    if page.number == 1:
+                        continue
+                    pairs = [
+                        {
+                            "id": block.id,
+                            "source": inline_text(block.source),
+                            "translation": inline_text(
+                                block.translated or block.source
+                            ),
+                        }
+                        for block in page.blocks
+                        if block.source
+                    ]
+                    if not pairs:
+                        results[page.number] = []
+                        continue
+                    source = "\n".join(str(item["source"]) for item in pairs)
+                    automatic_findings = [
+                        item.model_dump() for item in checks.get(page.number, [])
+                    ]
+                    glossary_items = [
+                        item.model_dump()
+                        for item in matching_glossary(source, glossary)
+                    ]
+                    page_findings: list[Finding] = []
+                    chunks = _review_chunks(
+                        pairs, available_input_tokens=settings.available_input_tokens
+                    )
+                    for position, chunk in enumerate(chunks, start=1):
+                        chunk_findings = _run_chunk(
+                            page.number,
+                            str(position).zfill(4),
+                            chunk,
+                            automatic_findings,
+                            glossary_items,
+                            rules,
+                            settings,
+                            temporary,
+                            cache_dir,
+                            depth=0,
+                        )
+                        page_findings.extend(chunk_findings)
+                    results[page.number] = _merge_findings(page_findings)
+                for number, page_findings in results.items():
+                    atomic_write_json(
+                        temporary / f"page-{number:04d}.json",
+                        [item.model_dump() for item in page_findings],
+                    )
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            return results
+
+
 def run(
     document: Document,
     checks: dict[int, list[Finding]],
@@ -107,63 +181,9 @@ def run(
     settings: Settings,
     output_dir: Path,
 ) -> dict[int, list[Finding]]:
-    """各ページを高推論modelで査読する。"""
+    """Existing function delegates to the typed ReviewTask operation."""
 
-    start = time.perf_counter()
-    results: dict[int, list[Finding]] = {}
-    cache_dir = output_dir.parent / f".{output_dir.name}.chunks"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    with atomic_directory(output_dir) as temporary:
-        for page in document.pages:
-            if page.number == 1:
-                continue
-            pairs = [
-                {
-                    "id": block.id,
-                    "source": inline_text(block.source),
-                    "translation": inline_text(block.translated or block.source),
-                }
-                for block in page.blocks
-                if block.source
-            ]
-            if not pairs:
-                results[page.number] = []
-                continue
-            source = "\n".join(str(item["source"]) for item in pairs)
-            automatic_findings = [
-                item.model_dump() for item in checks.get(page.number, [])
-            ]
-            glossary_items = [
-                item.model_dump() for item in matching_glossary(source, glossary)
-            ]
-            page_findings: list[Finding] = []
-            chunks = _review_chunks(
-                pairs, available_input_tokens=settings.available_input_tokens
-            )
-            for position, chunk in enumerate(chunks, start=1):
-                chunk_findings = _run_chunk(
-                    page.number,
-                    str(position).zfill(4),
-                    chunk,
-                    automatic_findings,
-                    glossary_items,
-                    rules,
-                    settings,
-                    temporary,
-                    cache_dir,
-                    depth=0,
-                )
-                page_findings.extend(chunk_findings)
-            results[page.number] = _merge_findings(page_findings)
-        for number, page_findings in results.items():
-            atomic_write_json(
-                temporary / f"page-{number:04d}.json",
-                [item.model_dump() for item in page_findings],
-            )
-    shutil.rmtree(cache_dir, ignore_errors=True)
-    end = time.perf_counter()
-    print(f"[TIME] REVIEW page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return results
+    return ReviewTask().run(document, checks, rules, glossary, settings, output_dir)
 
 
 def _run_chunk(

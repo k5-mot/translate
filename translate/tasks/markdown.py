@@ -7,12 +7,12 @@ import itertools
 import json
 import re
 import shutil
-import time
 from typing import TYPE_CHECKING
 
 from translate.adapters.pandoc import table_to_markdown
 from translate.common.workspace import atomic_directory, atomic_write_text
 from translate.document import Block, Document, Inline, TableCell, inline_text
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -533,7 +533,6 @@ def _run_into(
 ) -> Path:
     """Internal DocumentをMarkdownとして保存する。"""
 
-    start = time.perf_counter()
     output.parent.mkdir(parents=True, exist_ok=True)
     # Note 1: Pandoc resolves relative image paths from the Markdown directory.
     if asset_root is not None and (asset_root / "assets").exists():
@@ -546,9 +545,27 @@ def _run_into(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         excluded_pages = {int(value) for value in manifest["excluded_pages"]}
     atomic_write_text(output, render_document(document, cover_path, excluded_pages))
-    end = time.perf_counter()
-    print(f"[TIME] MARKDOWN page=- group=-: {end - start:.3f} s")  # noqa: T201
     return output
+
+
+class MarkdownTask(BaseTask):
+    """Execute MARKDOWN while sharing elapsed-time measurement only."""
+
+    name = "MARKDOWN"
+
+    def run(
+        self,
+        document: Document,
+        output: Path,
+        cover_path: Path | None = None,
+        asset_root: Path | None = None,
+    ) -> Path:
+        """Markdownとresource directoryをまとめてatomic公開する。"""
+
+        with self.measure():
+            with atomic_directory(output.parent) as temporary:
+                _run_into(document, temporary / output.name, cover_path, asset_root)
+            return output
 
 
 def run(
@@ -557,8 +574,6 @@ def run(
     cover_path: Path | None = None,
     asset_root: Path | None = None,
 ) -> Path:
-    """Markdownとresource directoryをまとめてatomic公開する。"""
+    """Existing function delegates to the typed MarkdownTask operation."""
 
-    with atomic_directory(output.parent) as temporary:
-        _run_into(document, temporary / output.name, cover_path, asset_root)
-    return output
+    return MarkdownTask().run(document, output, cover_path, asset_root)

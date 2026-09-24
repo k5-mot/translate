@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from translate.common.workspace import atomic_directory, atomic_write_json
+from translate.tasks.base import BaseTask
 
 COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
 
@@ -48,7 +48,6 @@ def _remap(value: Any, offsets: dict[str, int], page_offset: int, part: str) -> 
 def _run_into(documents: list[Path], source: Path, output_dir: Path) -> Path:
     """part JSONとassetを一文書へ結合する。"""
 
-    start = time.perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
     merged: dict[str, Any] | None = None
     page_offset = 0
@@ -86,14 +85,24 @@ def _run_into(documents: list[Path], source: Path, output_dir: Path) -> Path:
     )
     result = output_dir / "document.json"
     atomic_write_json(result, merged)
-    end = time.perf_counter()
-    print(f"[TIME] MERGE page=- group=-: {end - start:.3f} s")  # noqa: T201
     return result
 
 
-def run(documents: list[Path], source: Path, output_dir: Path) -> Path:
-    """Task directory全体を検証後に公開する。"""
+class MergeTask(BaseTask):
+    """Execute MERGE while sharing elapsed-time measurement only."""
 
-    with atomic_directory(output_dir) as temporary:
-        _run_into(documents, source, temporary)
-    return output_dir / "document.json"
+    name = "MERGE"
+
+    def run(self, documents: list[Path], source: Path, output_dir: Path) -> Path:
+        """Task directory全体を検証後に公開する。"""
+
+        with self.measure():
+            with atomic_directory(output_dir) as temporary:
+                _run_into(documents, source, temporary)
+            return output_dir / "document.json"
+
+
+def run(documents: list[Path], source: Path, output_dir: Path) -> Path:
+    """Existing function delegates to the typed MergeTask operation."""
+
+    return MergeTask().run(documents, source, output_dir)

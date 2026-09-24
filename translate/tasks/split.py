@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import time
 from typing import TYPE_CHECKING, Any
 
 from translate.adapters import pdf
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,6 +21,29 @@ class PdfInputError(ValueError):
         super().__init__(f"invalid PDF input role={role} cause={self.error_type}")
 
 
+class SplitTask(BaseTask):
+    """Execute SPLIT while sharing elapsed-time measurement only."""
+
+    name = "SPLIT"
+
+    def run(
+        self,
+        source: Path,
+        output_dir: Path,
+        pages_per_part: int = 10,
+        *,
+        role: str = "source",
+    ) -> dict[str, Any]:
+        """PDFを分割してmanifestを返す。"""
+
+        with self.measure():
+            try:
+                pdf.validate(source)
+            except Exception as error:  # noqa: BLE001
+                raise PdfInputError(role, error) from None
+            return pdf.split(source, output_dir, pages_per_part)
+
+
 def run(
     source: Path,
     output_dir: Path,
@@ -28,14 +51,6 @@ def run(
     *,
     role: str = "source",
 ) -> dict[str, Any]:
-    """PDFを分割してmanifestを返す。"""
+    """Existing function delegates to the typed SplitTask operation."""
 
-    start = time.perf_counter()
-    try:
-        pdf.validate(source)
-    except Exception as error:  # noqa: BLE001
-        raise PdfInputError(role, error) from None
-    result = pdf.split(source, output_dir, pages_per_part)
-    end = time.perf_counter()
-    print(f"[TIME] SPLIT page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return result
+    return SplitTask().run(source, output_dir, pages_per_part, role=role)

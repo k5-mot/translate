@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from typing import TYPE_CHECKING, Any, cast
 
 from translate.common.workspace import atomic_directory, atomic_write_text
@@ -19,6 +18,7 @@ from translate.document import (
     TableCell,
     inline_text,
 )
+from translate.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -686,15 +686,25 @@ def load_document(document: dict[str, Any]) -> Document:
     return Document(pages=[pages[number] for number in sorted(pages)])
 
 
-def run(source: Path, output_dir: Path) -> Document:
-    """JSONをInternal Documentへ変換して保存する。"""
+class LoadTask(BaseTask):
+    """Execute LOAD while sharing elapsed-time measurement only."""
 
-    start = time.perf_counter()
-    document = load_document(json.loads(source.read_text(encoding="utf-8")))
-    with atomic_directory(output_dir) as temporary:
-        atomic_write_text(
-            temporary / "document.json", document.model_dump_json(indent=2) + "\n"
-        )
-    end = time.perf_counter()
-    print(f"[TIME] LOAD page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return document
+    name = "LOAD"
+
+    def run(self, source: Path, output_dir: Path) -> Document:
+        """JSONをInternal Documentへ変換して保存する。"""
+
+        with self.measure():
+            document = load_document(json.loads(source.read_text(encoding="utf-8")))
+            with atomic_directory(output_dir) as temporary:
+                atomic_write_text(
+                    temporary / "document.json",
+                    document.model_dump_json(indent=2) + "\n",
+                )
+            return document
+
+
+def run(source: Path, output_dir: Path) -> Document:
+    """Existing function delegates to the typed LoadTask operation."""
+
+    return LoadTask().run(source, output_dir)

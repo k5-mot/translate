@@ -14,6 +14,7 @@ from translate.adapters.llm import LLMError, structured
 from translate.adapters.qdrant import search
 from translate.common.workspace import atomic_directory, atomic_write_json
 from translate.document import Document, Inline, Page, page_text
+from translate.tasks.base import BaseTask
 from translate.tasks.check import GlossaryEntry, matching_glossary, protected_fragments
 
 if TYPE_CHECKING:
@@ -385,6 +386,51 @@ def _translate_page(
     apply_translations(page, mapping)
 
 
+class TranslateTask(BaseTask):
+    """Execute TRANSLATE while sharing elapsed-time measurement only."""
+
+    name = "TRANSLATE"
+
+    def run(
+        self,
+        document: Document,
+        rules: str,
+        glossary: list[GlossaryEntry],
+        settings: Settings,
+        output_dir: Path,
+    ) -> Document:
+        """本文ページを高推論modelで翻訳する。"""
+
+        with self.measure():
+            result = document.model_copy(deep=True)
+            source_pages = {page.number: page for page in result.pages}
+            with atomic_directory(output_dir) as temporary:
+                for page in result.pages:
+                    if page.number == 1:
+                        continue
+                    _translate_page(
+                        page,
+                        page_text(
+                            source_pages.get(page.number - 1, Page(number=0)),
+                            final=False,
+                        ),
+                        page_text(
+                            source_pages.get(page.number + 1, Page(number=0)),
+                            final=False,
+                        ),
+                        rules,
+                        glossary,
+                        settings,
+                        temporary / "qdrant",
+                    )
+                for page in result.pages:
+                    atomic_write_json(
+                        temporary / f"page-{page.number:04d}.json",
+                        page.model_dump(mode="json"),
+                    )
+            return result
+
+
 def run(
     document: Document,
     rules: str,
@@ -392,33 +438,6 @@ def run(
     settings: Settings,
     output_dir: Path,
 ) -> Document:
-    """本文ページを高推論modelで翻訳する。"""
+    """Existing function delegates to the typed TranslateTask operation."""
 
-    start = time.perf_counter()
-    result = document.model_copy(deep=True)
-    source_pages = {page.number: page for page in result.pages}
-    with atomic_directory(output_dir) as temporary:
-        for page in result.pages:
-            if page.number == 1:
-                continue
-            _translate_page(
-                page,
-                page_text(
-                    source_pages.get(page.number - 1, Page(number=0)), final=False
-                ),
-                page_text(
-                    source_pages.get(page.number + 1, Page(number=0)), final=False
-                ),
-                rules,
-                glossary,
-                settings,
-                temporary / "qdrant",
-            )
-        for page in result.pages:
-            atomic_write_json(
-                temporary / f"page-{page.number:04d}.json",
-                page.model_dump(mode="json"),
-            )
-    end = time.perf_counter()
-    print(f"[TIME] TRANSLATE page=- group=-: {end - start:.3f} s")  # noqa: T201
-    return result
+    return TranslateTask().run(document, rules, glossary, settings, output_dir)
