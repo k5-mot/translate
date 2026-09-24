@@ -111,3 +111,12 @@ session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01
 - Run内DOCXは0件。Word PDF化・Comparison Review・利用者目視は未実施で、実機Gateは不合格のまま。失敗Runの入力、Artifact、checkpointを保全し、再実行・新規Run作成・設定変更は行っていない。
 - 本観測ではServer側の原因を特定しておらず、再起動やtimeout/retry変更を修正策と決めつけない。製品Codeは変更していない。task 3.1以降と最終verify・archive・main merge・pushは未完了のまま。
 - 記録更新後、文書Test 21 passed（0.26秒）、本Change・入力コピーChange・有限設定ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。文書検査の合格を失敗した実機Gateの合格へ読み替えない。
+
+### HTTP 500の逐次再現確認（2026-09-25）
+
+- diagnosing-bugsのPhase 1として、公開失敗にTask以外の呼出位置がないため、TRANSLATEが利用する既存`qdrant.search`の経路を切り出した。`uv run python -`でSettingsを読み、`search(settings, query, limit=5)`を逐次呼出し、例外時は型・HTTP status・固定分類のroute・stackのFile/関数/行番号だけを出して終了コード1とする診断を実行した。検索結果・query本文・URL・認証値は出力せず、artifact_pathも指定しない。これは検索系の再現確認であり、翻訳生成そのものの再現ではない。
+- 短い合成queryは結果1件、0.907秒で成功した。次に失敗Runの保存済み`structure/document.json`から、製品の`units`と`_chunks`で実queryを組み立て、製品と同じ先頭2,000文字の切出しを用いた。
+- 最初の実queryはpage 2/chunk 1、結果5件、21.844秒で成功。残る23件はsession 22682で一件ずつ実行し、同じhandleから終了コード0と`remaining_queries_completed=23`を取得した。合計24件すべて結果5件、所要時間は4.109〜25.781秒、個別時間の合計410.578秒。実query長は275〜2,000文字。再試行が内部で起きていないことや外部HTTP呼出数まで計測した試験ではない。
+- 現在の検索経路ではHTTP 500を再現できず、過去失敗の原因は未確定。失敗が検索系にあったとも、現在の成功で外部障害が修復済みとも断定しない。HTTP 500を安定再現するloopは得られていないため、仮説に基づく製品修正へ進んでいない。
+- 利用者へ2026-09-25 05:38:43前後（日本時間）のLM Studio側ログを、本文・prompt・秘密値を除いて共有するよう依頼した。timeout/retry、Server設定、失敗Runは変更せず、翻訳の再試行・新規Run作成も行わなかった。
+- 全検索診断の終端確認後、別の既存成果物を用いるComparison Reviewを開始した。[表・一覧Changeの実機継続記録](../restore-docx-tables-and-indexes/verification.md)を参照。旧翻訳成果物であるため、本Changeと後続入力コピー・有限設定修正を含む最新translation Gateの代替にしない。
