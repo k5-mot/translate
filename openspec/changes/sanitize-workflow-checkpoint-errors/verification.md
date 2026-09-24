@@ -102,3 +102,12 @@ session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01
 - 入力と保存copyはともに5,284,914 bytes、SHA-256 `5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`。保存copyを標準file_digestで読み、metadataのhash/sizeとも一致を確認した。
 - 新processのcontextは30,208、request timeoutは1,800秒、Task deadlineは21,600秒、retry_attemptsは3。先行モデル処理と診断要求がすべて終了してから起動し、並列のModel/Embedding要求は追加していない。
 - 本ターンは実機失敗の診断と新規受入実行、証拠文書だけを扱う。予定していたCONTENT-MERGE-001の新規提案は作成しておらず、指摘は未解決のまま。
+
+### 最新受入RunのHTTP 500による終端（2026-09-25）
+
+- session 3343の同一handleをpollし、終了コード1を取得した。Run `01a0d520-15a4-74a2-9eaf-afafa726a03a`はSTRUCTUREまで完了し、TRANSLATEで`InternalServerError status=500`となった。TRANSLATE 136.827秒、TOTAL 279.156秒。接続断だった先行Runとは失敗分類が異なる。
+- failure.jsonを読取り専用で確認した。taskはTRANSLATE、error_typeはInternalServerError、failed_atは`2026-09-24T20:38:43.954349Z`。target/stage/causeはnullであり、この記録から翻訳生成・Embedding等の呼出先や失敗単位は断定できない。例外本文、入力本文、認証値は表示していない。
+- 終端確認後のSQLite mode=ro検査ではcheckpoint 10件、`writes.channel='__error__'`は1件。そのtype/valueはJsonPlusSerializerの固定値`TaskError`と一致した。公開診断の不足や外部500の根本原因をこの一致で解決済みとはしない。
+- Run内DOCXは0件。Word PDF化・Comparison Review・利用者目視は未実施で、実機Gateは不合格のまま。失敗Runの入力、Artifact、checkpointを保全し、再実行・新規Run作成・設定変更は行っていない。
+- 本観測ではServer側の原因を特定しておらず、再起動やtimeout/retry変更を修正策と決めつけない。製品Codeは変更していない。task 3.1以降と最終verify・archive・main merge・pushは未完了のまま。
+- 記録更新後、文書Test 21 passed（0.26秒）、本Change・入力コピーChange・有限設定ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。文書検査の合格を失敗した実機Gateの合格へ読み替えない。

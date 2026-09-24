@@ -68,3 +68,5 @@
 先行session 58094はTRANSLATEのOpenAIConnectionErrorで終了コード1となった。現在の短い生成要求は成功したが、先行接続断の原因は未確定。失敗Runは保持し、新processでRun `01a0d520-15a4-74a2-9eaf-afafa726a03a`（session 3343）を開始した。基点は後続入力コピー修正を含む848296eと既存の未コミット差分で、今回の有限設定修正も含む。起動設定はcontext 30,208 / timeout 1,800秒 / deadline 21,600秒 / retry 3。SPLIT〜LOAD完了、終端未確認。
 
 診断・入力hash・正確なrevision範囲は[Checkpoint実機記録](../sanitize-workflow-checkpoint-errors/verification.md)の最新節を参照。実translation→Word PDF→Comparison Review・利用者目視は未完了のため、tasks 3.1〜3.3を完了にしない。
+
+追跡session 3343はその後、TRANSLATEのInternalServerError status=500により終了コード1となった。同じhandleで終端を確認し、Run内DOCXは0件。有限設定の受付成功を翻訳全体の成功と扱わず、tasks 3.1〜3.3を未完了に維持する。原因未確定のままtimeout/retryやServer設定を変更せず、失敗Runを保全した。詳細は上記実機記録の最新終端節を参照。
