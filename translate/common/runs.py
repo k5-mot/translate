@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -378,23 +379,27 @@ def _safe_logical_path(value: str) -> Path:
 
 
 def _copy_verified(source: Path, target: Path) -> tuple[str, int]:
-    """排他的に作成した先へ入力をcopyしてhash化する。例外時は既存先でも削除を試みる。"""
+    """排他的にcopyして保存内容をhash化し、失敗時は今回作成した先だけを後始末する。"""
 
-    digest = hashlib.sha256()
-    size = 0
+    created = False
     try:
-        with source.open("rb") as reader, target.open("xb") as writer:
-            while chunk := reader.read(1024 * 1024):
-                writer.write(chunk)
-                digest.update(chunk)
-                size += len(chunk)
+        with source.open("rb") as reader, target.open("x+b") as writer:
+            created = True
+            # Bound copy memory to 1 MiB; hash the saved bytes through the stdlib.
+            shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            size = writer.tell()
             writer.flush()
             os.fsync(writer.fileno())
+            writer.seek(0)
+            digest = hashlib.file_digest(writer, "sha256").hexdigest()
         shutil.copystat(source, target)
     except BaseException:
-        target.unlink(missing_ok=True)
+        if created:
+            # Streams are closed; cleanup refusal must not replace the copy error.
+            with suppress(OSError):
+                target.unlink(missing_ok=True)
         raise
-    return digest.hexdigest(), size
+    return digest, size
 
 
 def _read_scanned_record(metadata: Path) -> RunRecord:
