@@ -73,3 +73,35 @@
 - design.mdへ責務縮小とoutputs.py案を記載したが、Q1（旧UUIDv7移行）、Q2（全操作の保存形式）、Q3（配置）の回答待ち。grill-with-docsの判断確認に従い、正式な新Change作成と製品実装へは進めていない。tasks 3.1〜3.4は未完了のまま。
 
 今回の文書検査は`tests/test_documentation.py`が21 passed（0.25秒）、OpenSpec strict validationがvalid、git diff --checkは指摘なし。製品コードを変更していないため全製品Testは再実行していない。先行Changeの409 passedは今回の再開統合が実装済みという証拠には使わない。
+
+## LangGraphの別process再開と公開境界の試験（2026-09-25追記）
+
+task 3.1の実現手段を確認するため、既存のLangGraph 1.2.11 / checkpoint 4.2.0 / sqlite 3.1.1で、先行のメモリ試験を別process・実SQLite Fileへ拡張した。製品コード・Test File・利用者Runは未変更。`langgraph-persistence`のCheckpointer/thread単位の考え方を用い、Storeや独自完了記録は追加していない。既存SQLiteを利用し、新たなService/依存は導入していない。
+
+### 試験構成
+
+- `uv run python -`の親processから、同じGraph定義を持つ新しいPython childを順番に起動した。初回とResumeは別processであり、in-memory saverの使い回しではない。
+- StateGraphはSTART→pages→ENDだけ。pages node内で`langgraph.func.task`を1、2、3の順に呼び、一件ずつ`.result()`を待つ。`max_concurrency=1`、`durability="sync"`、同じthread_idと既存`open_checkpoint`を使用する。
+- 各durable taskは既存`atomic_write_text`で合成Artifactを安定pathへ保存し、path文字列だけを返す。Graph stateもpath配列だけで、完了ID集合・skip用digest・独立Page/Chunk Cacheを持たない。標準出力のcall番号は試験観測用で、Resume判定に読ませていない。
+- socket接続は禁止、LangSmith tracingは無効。LLM/Embedding/Qdrantは呼ばない。45秒の子process timeoutは試験の異常終了保護であり、製品のローカルLLM timeoutを変更するものではない。
+- 新規TemporaryDirectoryの解決済み親がRepository直下であることを確認し、試験のSQLite/合成Artifactだけをその配下へ作った。試験後に自動cleanupした。利用者Runや稼働中Reviewのprocessへ終了要求を送っていない。
+
+### 結果
+
+| 障害位置 | 初回終了コード / 呼出 | 別processのResume終了コード / 呼出 | 観測 |
+| --- | --- | --- | --- |
+| Page 3がValueError | 17 / 1,2,3 | 0 / 3 | Page 1/2はSQLiteの成功結果を再利用。失敗後のnextはpages、errorはTaskError |
+| Page 3開始時に試験childがos._exit | 23 / 1,2,3 | 0 / 3 | Pythonのfinallyを通さず終了しても、今回の試験ではPage 1/2の結果を再利用 |
+| Page 2のArtifact保存直後、task戻り値を返す前にos._exit | 29 / 1,2 | 0 / 2,3 | Page 2 Fileが既にあっても再実行。File存在による独自skipをしない |
+
+前二つのResumeは3件のArtifact pathと実在Fileを返し、nextは空になった。復元したCheckpoint値のreprに合成本文/例外markerはなかった。公開境界試験でも最終nextは空で、接続終了後のSQLite関連Fileのbyte列に合成本文markerはなかった。これは上記の限定入力に関する検査であり、任意のstateや過去DBの秘密値が安全という保証ではない。
+
+### 実装方針への含意と残る検証
+
+- 成功した細粒度の結果を別processで再利用する機能は既存APIにある。これと同じ目的のPage完了File、Chunk完了Cache、独自進捗台帳を新設する根拠にはならない。
+- 成果物公開とCheckpointへの完了保存の間には中断可能な境界がある。未記録の処理は再実行されるため、Artifactの原子的置換・外部副作用の冪等性を別契約として扱う必要がある。「一度公開済みだから全Taskを完了扱いにする」台帳で隠してはならない。
+- 今回は同じ内容を同じpathへ上書きする合成Artifactだけである。Qdrant登録などの外部副作用、実Page/Chunkの欠損・改変、公開中断時の整合性、製品の可変分割処理の呼出順安定性は未検証。
+- os._exitは試験child自身の強制終了であり、電源断・OS crash・POSIX環境を検証したものではない。少数回の観測から全故障条件の永続性を保証しない。
+- 製品の独自状態を廃止する実装は未着手。旧UUIDv7移行・全操作の保存形式・責務配置の判断も未確定であり、tasks 3.1〜3.4は未完了に維持する。これを実translation→Word PDF→reviewの代替証拠にはしない。
+
+追記後の既存文書/Workflow state Testは28 passed（2.22秒）、本ChangeのOpenSpec strict検査はvalid、git diff --checkは指摘なし。試験用TemporaryDirectoryの残存0件を確認した。製品コード未変更のため全製品suiteは再実行していない。

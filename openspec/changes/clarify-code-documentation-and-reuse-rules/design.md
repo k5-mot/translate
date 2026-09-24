@@ -60,6 +60,7 @@ Q-MNT: 汎用規約と製品固有要求の管理先を分離する。Q-REL: 再
 
 - 導入版はLangGraph 1.2.11、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1。Graph nodeから`langgraph.func.task(...).result()`を一件ずつ呼び、成功結果をSQLite pending writesから再利用できる。既存の`max_concurrency=1`を維持する。
 - メモリSQLiteの合成試験でPage 3失敗後のResumeは呼出履歴`[1, 2, 3, 3]`となり、成功したPage 1/2は再実行されなかった。別の分割試験でも`[root, root.0, root.1, root.1]`となり、保存した分割判断と左結果を再利用できた。実Page/Chunk Artifactや別process再起動を含む検証はまだ行っていない。
+- 後続のWindows別process試験では、実FileのSQLiteと合成Artifactを用い、通常例外・os._exitによる終了の双方で成功済みPage 1/2が再利用された。Artifact公開直後かつ戻り値保存前の終了では、そのPageを再実行した。詳細と限界は[追加検証](verification.md)に記録する。実STRUCTURE/REVIEWへの統合、既存データ移行、外部副作用の冪等性はまだ未検証であり、下記の未承認案を採用済みにはしない。
 - `@task`内で別の`@task(...).result()`を待つネスト試験は同時実行数1で完了しなかった。全再帰関数をdecoratorで包む案は採用しない。通常関数の再帰制御からdurableな要求をflatに逐次呼ぶか、逐次subgraphを用いる。安全な分割判断もLangGraphの結果として保持し、Resume前後の呼出順を変えない。
 - Graph state、Task戻り値、config metadata、例外文字列は永続化対象になる。本文・画像・Settings・Credentialを渡さず、安定したArtifact path/ID/hashと安全な小metadataへ限定する。Settingsは実行時closure等で参照する。Task引数だけを秘密の安全な逃がし先として扱わない。
 - Page/Chunkの完成ArtifactはTask全体のランダムな一時directoryとは別に安定保存し、LangGraphへその参照だけを返す。独自`.complete.json`やdigest一致をskip判定の正本にしない。checkpointが参照するArtifactの欠損・改変は整合性Errorとして検出し、黙って成功扱いしない。
