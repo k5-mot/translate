@@ -8,10 +8,10 @@ import operator
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from translate.adapters.checkpoint import open_checkpoint
 from translate.adapters.langfuse import bind_observation_task, flush, observe
 from translate.common.progress import (
     ProgressCallback,
@@ -499,7 +499,7 @@ def _run(
     }
     last = initial
     # Note 4: The context manager keeps the SQLite connection alive while streaming.
-    with SqliteSaver.from_conn_string(str(work / "checkpoints.sqlite")) as saver:
+    with open_checkpoint(work / "checkpoints.sqlite") as saver:
         compiled = build_graph(settings).compile(checkpointer=saver)
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id},

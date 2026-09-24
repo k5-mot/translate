@@ -63,6 +63,8 @@
 
 追加調査により、nodeで例外型を変えなくても、公開`SqliteSaver(conn, serde=...)`の保存境界で直接例外だけを安全化できることを確認した。上記のnode変換は唯一の実現手段ではない。元の例外型・retry・制御フローを保持する案を別Change [sanitize-workflow-checkpoint-errors](../sanitize-workflow-checkpoint-errors/proposal.md)として提案し、実験結果と適用範囲を同Changeの[verification.md](../sanitize-workflow-checkpoint-errors/verification.md)へ記録した。製品実装はまだなく、本指摘は未解決のまま。
 
+その後のapplyで保存境界を両Workflowへ接続し、実Graphの障害注入、公開診断、既存DBの再接続Resumeを検証した。全体441 passed / 1 skipped。過去5 DBの読取り専用検査では旧形式の例外行が4 Runに計6行残っている。修正後の実translation→Word PDF→Comparison Reviewと過去行の安全性確認は未完了であり、SECURITY-CHECKPOINT-001の最終解決は保留する。詳細・対象ID・検証範囲は同Changeの最新検証節を参照。
+
 ### 配置と移行の状態
 
 - 現行共通root内にrun.jsonが8 files、新しいoutputs配下のmanifest.jsonは0 filesだった。これは有効性検証済みRun数ではなくFile件数。旧データを移動・削除していない。

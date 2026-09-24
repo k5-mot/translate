@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.checkpoint.sqlite import SqliteSaver
 
 from translate.common.progress import bind_task_status
 from translate.common.workspace import (
@@ -82,10 +83,13 @@ def test_failed_status_copies_safe_structure_diagnostics() -> None:
     assert status.total_tokens == 30
 
 
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
 def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    *,
+    legacy_checkpoint: bool,
 ) -> None:
     """両Backend、Finding分岐、COVER失敗からのResumeを一貫して処理する。"""
 
@@ -290,10 +294,16 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     source.write_bytes(b"source")
 
     with bind_task_status(statuses.append):
-        with pytest.raises(RuntimeError, match="COVER"):
-            translation.run(
-                source, tmp_path / "llm", "llm", settings, llm_events.append
-            )
+        # 初回だけ標準serializerを選び、修正前DBも新しい保存境界から再開できるか調べる。
+        with monkeypatch.context() as initial_patch:
+            if legacy_checkpoint:
+                initial_patch.setattr(
+                    translation, "open_checkpoint", SqliteSaver.from_conn_string
+                )
+            with pytest.raises(RuntimeError, match="COVER"):
+                translation.run(
+                    source, tmp_path / "llm", "llm", settings, llm_events.append
+                )
         llm_result = translation.run(
             source, tmp_path / "llm", "llm", settings, llm_events.append
         )

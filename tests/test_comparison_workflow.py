@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import START
 
 from translate.common.progress import bind_task_status
@@ -103,10 +104,13 @@ def test_comparison_split_failure_defaults_to_its_input_role(
     ]
 
 
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
 def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    *,
+    legacy_checkpoint: bool,
 ) -> None:
     """片側POSITION失敗後は成功済み反対側Taskを再実行しない。"""
 
@@ -272,8 +276,14 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     output = tmp_path / "review.md"
 
     with bind_task_status(statuses.append):
-        with pytest.raises(RuntimeError, match="POSITION"):
-            comparison_review.run(source, target, output, settings, events.append)
+        # 既存serializerのDBと新しいDBの両方を、再接続した製品入口からResumeする。
+        with monkeypatch.context() as initial_patch:
+            if legacy_checkpoint:
+                initial_patch.setattr(
+                    comparison_review, "open_checkpoint", SqliteSaver.from_conn_string
+                )
+            with pytest.raises(RuntimeError, match="POSITION"):
+                comparison_review.run(source, target, output, settings, events.append)
         result = comparison_review.run(source, target, output, settings, events.append)
 
     assert result == output

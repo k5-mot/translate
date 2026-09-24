@@ -2,15 +2,15 @@
 
 ## 1. 失敗保存境界の実装
 
-- [ ] 1.1 既存TranslationとComparison Reviewの実Graphへ本文・Credential・binary markerを含むTask例外を注入し、既定serializerのDB/pending writes/snapshotにmarkerが残るfailing-first Testを作成する。Workflow全体をdoubleへ置き換えず、失敗Taskだけを置換した再現を記録する
-- [ ] 1.2 `adapters/checkpoint.py`に公開serde注入による直接例外の固定分類と接続寿命管理だけを実装し、通常例外/custom repr/dataclass例外/chain/notes/未知型名のmarker非保存、通常値の既定serializerとの往復互換性、closeをUnit Testで確認する（Q-SEC/Q-MNT）
-- [ ] 1.3 両WorkflowのCheckpoint生成を新adapterへ接続し、1.1のTest成功、元例外型/既存retry回数の維持、Graph制御例外と取消の意味が変わらないことを回帰Testで確認する。共通台帳・新Dependency・common追加がないことを差分で確認する
+- [x] 1.1 既存TranslationとComparison Reviewの実Graphへ本文・Credential・binary markerを含むTask例外を注入し、既定serializerのDB/pending writes/snapshotにmarkerが残るfailing-first Testを作成する。Workflow全体をdoubleへ置き換えず、失敗Taskだけを置換した再現を記録する
+- [x] 1.2 `adapters/checkpoint.py`に公開serde注入による直接例外の固定分類と接続寿命管理だけを実装し、通常例外/custom repr/dataclass例外/chain/notes/未知型名のmarker非保存、通常値の既定serializerとの往復互換性、closeをUnit Testで確認する（Q-SEC/Q-MNT）
+- [x] 1.3 両WorkflowのCheckpoint生成を新adapterへ接続し、1.1のTest成功、元例外型/既存retry回数の維持、Graph制御例外と取消の意味が変わらないことを回帰Testで確認する。共通台帳・新Dependency・common追加がないことを差分で確認する
 
 ## 2. 統合・互換性・品質Gate
 
-- [ ] 2.1 両Workflowについて接続を閉じ再接続した障害後Resumeを試験し、失敗Taskだけが追加1回、成功済みTaskは再実行0回、通常Artifactと既存の安全な合成DBが復元可能であることを確認する（Q-REL/Q-COMP）
-- [ ] 2.2 実Graphを通る公開Failure TestでTask/Page/入力role/LLM stage/原因分類/token数が維持され、画面・log・failure.json・DB/WAL・再読込snapshotに合成markerが残らないことを確認する。state/configへ例外や本文を入れず、task/debug payloadを丸ごと公開しない現行境界も検査する
-- [ ] 2.3 `uv run ruff check .`、`uv run ruff format --check .`、`uv run ty check`、`uv run pytest`、OpenSpec strict validation、`git diff --check`を実行し、結果と実行時commit/差分をverification.mdへ記録する。関数説明と既存APIへの委譲を確認する
+- [x] 2.1 両Workflowについて接続を閉じ再接続した障害後Resumeを試験し、失敗Taskだけが追加1回、成功済みTaskは再実行0回、通常Artifactと既存の安全な合成DBが復元可能であることを確認する（Q-REL/Q-COMP）
+- [x] 2.2 実Graphを通る公開Failure TestでTask/Page/入力role/LLM stage/原因分類/token数が維持され、画面・log・failure.json・DB/WAL・再読込snapshotに合成markerが残らないことを確認する。state/configへ例外や本文を入れず、task/debug payloadを丸ごと公開しない現行境界も検査する
+- [x] 2.3 `uv run ruff check .`、`uv run ruff format --check .`、`uv run ty check`、`uv run pytest`、OpenSpec strict validation、`git diff --check`を実行し、結果と実行時commit/差分をverification.mdへ記録する。関数説明と既存APIへの委譲を確認する
 
 ## 3. 実成果物による受入れ
 

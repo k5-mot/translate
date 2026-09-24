@@ -32,3 +32,45 @@ session 40709へwrite_stdinを行い、同じlive sessionが返ることを確�
 - `uv run pytest tests/test_documentation.py -q`: 21 passed（0.24秒）。
 - `git diff --check`: 指摘なし。
 - 製品Codeを編集していないため、全製品Test・Ruff・型検査・実機Gateは本提案ターンでは未実行。tasks.mdに残す。
+
+## Apply中間結果（2026-09-25）
+
+以下は上記計画時点からの更新。6/11 tasksを完了した。正式verify・archive・merge・pushは未完了で、実機Gateを自動Testに置き換えていない。
+
+### 実装と自動検証
+
+- `adapters/checkpoint.py`で直接BaseExceptionだけを固定文字列`TaskError`へ変換する。通常値の保存・全値の復元はJsonPlusSerializer、SQL・transaction・pending writes・ResumeはSqliteSaver/LangGraphへ委譲する。Translation/Comparison Reviewの接続生成だけを変更した。
+- 既定serializerの両製品Workflowで本文markerが残る追加Test 2件が失敗することを確認後、修正後の成功を確認した。Workflow全体を置換せず、失敗Taskだけをdoubleとした。
+- 新規adapter Testは26 cases。例外args/custom repr/dataclass/未知型名/chain/notes、通常値互換、成功/失敗時の接続close、両Graphの制御例外、型指定retryの成功/枯渇を検査した。元の例外と制御フローは維持する。
+- 両Workflowの旧serializer DBと新DBについて、接続を閉じてから製品入口でResumeし、成功済みTaskの呼出数が増えず、失敗Taskだけ追加実行されることを確認した。
+- 公開CLIから実GraphのSPLIT失敗を通し、Task/Page/role/group/stage/原因分類/token数を維持し、診断出力・failure.json・Run metadata・DB/WALに合成markerが残らないことを確認した。入力copyの本文は意図された保存であり除外した。
+- 対象Test群は55 passed。全品質Gateを再実行し、Ruff lint成功、format 314 files成功、ty成功、pytest **441 passed / 1 skipped（28.19秒）**、OpenSpec strict validation valid、git diff --check指摘なし。
+- 実行時HEADは`b72716b`。本Changeの差分は新adapter、2 Workflowの接続箇所、新Testと既存3 Test files。本Change前から未コミットのLLM/review/lifecycle/terminal_evidence関連差分も存在するworktreeで検証したため、HEAD単体の検証結果とは報告しない。無関係な差分は今回のcommitに含めない。
+- 全追加関数に目的説明があり、新Dependency・common追加・独自完了台帳はない。nested例外、state/configの本文、Graph task/debug streamは本serializerだけでは保護されないという設計上の適用範囲を維持する。
+
+### 先行する実translationとWord/PDF
+
+session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01a0d44f-1efa-7597-9d1b-0be4c5748b85`。このprocessは修正前に起動しており、本Changeや起動後の他ChangeのRuntime証拠には使わない。
+
+- DOCX: `outputs/sample3-acceptance-v2/document.ja.docx`
+- PDF: `outputs/sample3-acceptance-v2/document.ja.pdf`
+- DOCX SHA-256: `02670602e0ac7f3edd65a9ee8a549a22f3bcb02dda29a52964124e606c0a6383`
+- PDF SHA-256: `c6ddeac815919742b20a95af5882832658261eed797a7732c0635fca543cbab4`
+- 自分で起動した非表示Microsoft Word 16.0で読取り専用Open、Repaginate、ExportAsFixedFormatを実施し、そのinstanceをClose/Quitした。リンク更新とmacroを無効化し、DOCXは保存し直していない。Wordは表3個・28ページを認識した。DOCX内field instructionは0個で、一覧は静的である。
+- PDF renderの1/2/3/4/5/25/26/27ページを目視した。表紙は1ページ目、目次は2ページ目、図一覧は3〜4ページ目、表一覧は5ページ目。いずれも空ではない。25ページに評価表の枠・セル本文がある。
+- **既存品質指摘が残存**: 26ページのステータス表は丸印を欠き、黄・緑の10個の丸が27ページに独立配置される。消失ではなくセルとの関連付け・配置の不備である。図一覧はFigure 2から始まり、テンプレートの仮ヘッダー/フッターも残る。[表出力Changeの残課題](../restore-docx-tables-and-indexes/verification.md)を解消扱いにしない。
+- 利用者へ上記Word/PDFと問題箇所を提示し目視を依頼したが、回答はまだない。3.2の修正後成果物の確認をこの先行結果で完了にしない。
+
+### 過去Checkpointの読取り専用調査
+
+現在の共通rootから`*/.workspace/checkpoints.sqlite`を対象に、SQLite URIの`mode=ro`で5 DBを開いた。`writes.channel='__error__'`のtype/valueを読み、固定分類のbyte列との一致件数だけを確認した。例外本文の表示・復元やDB書換え・削除は行っていない。
+
+| Run ID | Checkpoint数 | 過去例外行数 | 固定分類以外 |
+| --- | ---: | ---: | ---: |
+| 01a0c138-0e5f-7e62-b0a8-8f9fd1e5bfa5 | 9 | 1 | 1 |
+| 01a0c97c-f5cf-7031-b808-4ad545133925 | 9 | 1 | 1 |
+| 01a0d080-2c51-7da5-a91b-700b9a21e7a9 | 19 | 3 | 3 |
+| 01a0d2fc-f952-722c-86bc-866103f75773 | 20 | 1 | 1 |
+| 01a0d44f-1efa-7597-9d1b-0be4c5748b85 | 19 | 0 | 0 |
+
+固定分類以外の計6行は、本文・秘密を含まないことをこの件数調査だけでは証明できない。新実装で過去行も浄化されたとは扱わない。別layout/削除済みDB/空き領域を含む完全調査ではない。task 4.1は実機証拠との対応付けが残るため未完了のままとする。
