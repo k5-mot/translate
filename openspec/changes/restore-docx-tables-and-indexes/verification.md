@@ -154,6 +154,10 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 利用者がoutputs/<入力名>/<uuidv7>/.state/<task>とRun直下のinput.pdf・output.ja.docx・output.ja.pdf・manifest.jsonを指定した。[設計メモ](architecture-audit.md)にRun保存/再開/Artifact公開/診断の新規directory候補と、旧layoutからの仕様変更を記録した。root全体のatomic置換や再帰exportをそのまま流用しない。PDFは既存の手動操作方針を維持する。既存Run移行と翻訳以外の操作への適用範囲は確認待ち。ARCH-001は未解決、製品code/既存Runは未変更。
 
+### 保存構成と命名の訂正（2026-09-25）
+
+最新の利用者指定はoutputs/<file-basename>/<uuidv7>/.artifacts/{001-split,002-docling,...}と直下のinput.pdf・output.ja.docx・output.ja.pdf・manifest.json。.state案を置き換える。sourceのutils/artifacts.pyと検証機能のtests配下移管を反映し、意味が曖昧なrun/repository・compatibility・lifecycle、diagnostics/、workflows/progress、tests/supportは再提案した。[設計メモの最新節](architecture-audit.md)に元moduleとの対応と責務を記録。directory名変更だけでARCH-001を解決扱いにせず、機能削減と回帰検証は未完了のまま。製品code変更・既存成果物移動は未実施。
+
 ### HTMLを使わない表出力（既定方針）
 
 利用者の指摘に従い、表をHTMLへ変換する既存処理と今回のHTML経由案を廃止する。Internal Documentの行・列・結合情報からPandocの表構造を直接構築し、既存Pandocでgrid tableを出力する。HTML readerやHTML中間成果物は使用しない。

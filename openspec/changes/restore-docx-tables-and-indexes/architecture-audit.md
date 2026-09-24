@@ -383,3 +383,47 @@ run/・artifacts/・diagnostics/は新設候補であり承認済みではない
 2. この図は翻訳の例とし、Reviewの2入力・登録の複数入力・Markdown変換にもgroup/UUID/.state/manifestの共通外枠を使う案でよいか。入力のrole/pathはmanifestへ記録し、複数入力をinput.pdfに上書き統合しない。
 
 未決定事項があるため、この時点では設計メモのみを更新し、正式Change作成・製品実装・データ移行は行っていない。
+
+## 対象が分かる命名と番号付きArtifact配置（最新の利用者指摘、2026-09-25）
+
+本節を現在の整理案とする。以前のrun/repository・compatibility・lifecycle、artifacts/io、diagnostics/、workflows/progress、tests/supportという配置案は、そのまま実装しない。既存directoryへの限定も、新規directoryの機械的な追加も行わない。
+
+### 利用者指定の保存構成
+
+```text
+outputs/
+└─ <file-basename>/
+   └─ <uuidv7>/
+      ├─ .artifacts/
+      │  ├─ 001-split/
+      │  ├─ 002-docling/
+      │  └─ …
+      ├─ input.pdf
+      ├─ output.ja.docx
+      ├─ output.ja.pdf
+      └─ manifest.json
+```
+
+.state案は.artifactsへ置き換える。file-basenameは例sample3.pdfならsample3と解釈する。番号はWorkflow内の固定Task順序とする案であり、実行回数や再開回数ではない。条件分岐で省略した場合は番号を詰め直さず、Resumeでも同じTaskのpathを使う。翻訳以外の操作と複数入力の命名、既存UUIDv7成果物の移行は未決定のまま残す。
+
+番号付きdirectoryはTaskが完成させた中間Artifactの保存先とする。checkpoint・失敗情報・logの内部配置も.artifacts配下にまとめる案だが、偽のTask番号を振ってTask成果物に見せない。manifestに実行ID・操作・状態・入出力参照を持たせ、checkpointと別々のTask状態機械を作らない。Run root全体をatomic_directoryで置換せず、完成済み成果物だけを個別fileとして公開する前節の方針は維持する。PDFは任意の手動生成物であり、自動生成の製品要件は増やさない。
+
+### 名前から対象が分かるsource配置候補
+
+| 元の処理 | 配置候補 | 対象と責務 |
+| --- | --- | --- |
+| common/runs.py・identifiers.py | translate/document_processing/execution_storage.py | 文書処理1回分の保存。UUID生成、入力copy、manifest、履歴検索・削除、排他。登録専用の収集/選別は含めない |
+| common/fingerprint.py・lifecycle内のsnapshot組立て | translate/document_processing/resume_validation.py | 文書処理の再開条件検証。入力・出力影響設定のfingerprintと拒否差分に限定 |
+| common/lifecycle.pyの実行境界 | translate/document_processing/execution_control.py | 文書処理の開始・再開・成功/失敗管理。Workflowへの実行委譲を行い、Task連結やファイル保存を再実装しない |
+| common/workspace.pyの実利用I/O | translate/utils/artifacts.py | 利用者指定の配置。Artifactのhash・検証・原子的保存に限定。UUID・履歴・Resume判断は持たない |
+| common/progress.py | translate/document_processing/progress_notifications.py | 文書処理の進捗値・処理境界通知。Task連結ではないのでworkflowsには置かない。Task順序や分岐のslot定義は各Workflowが所有する |
+| common/redaction.py | translate/utils/redaction.py | 既知秘密の除去と安全な診断値の選別。新しい診断機能ではなく既存処理の縮小。設定の読込み、Run保存、UI描画、監視は持たない |
+| common/terminal_evidence.py | tests/execution_evidence.py・tests/detached_execution.py | 前者は検証用の実行証拠、後者は検証対象の子process実行・監視。意味の曖昧なsupport/は作らない。製品からのimportを撤去 |
+
+document_processing/は「文書処理の実行管理」を集める新設候補。文書変換アルゴリズムはtasks、複数Taskの連結・分岐はworkflows、外部接続はadaptersに残す。execution_storage/resume_validation/execution_controlはそれぞれ文書処理実行の保存・再開条件・実行制御を指す。汎用Repository frameworkやLifecycle frameworkを導入する意味ではない。全ソースをこの新packageに集約しない。
+
+diagnostics/は元から存在するdirectoryではなく、前案で新設を提案したものだった。由来はcommon/redaction.pyとcommon/lifecycle.pyのFailureRecord・安全な原因抽出であり、新しい製品機能ではない。この新設案は撤回する。実行に固有の失敗情報はexecution_control側、横断的な安全な値変換はutils/redactionへ整理し、Task/adapterから実行制御を逆importさせない。
+
+utilsはcommonの名前を変えた集約先にはしない。今回の候補はartifacts/redactionのみで、Run管理・モデル実行・Task順序・画面処理は入れない。純粋変換やI/Oという理由だけで未知の汎用helperを追加せず、実利用と必要な安全要件を説明する。commonのlogger/settingsは維持する。
+
+Task関数＋BaseTaskの併用と縦結合表の承認は変更しない。source配置は引き続き提案であり、今回は設計メモの更新のみ。製品code・旧Run・成果物の移動/削除は行っていない。
