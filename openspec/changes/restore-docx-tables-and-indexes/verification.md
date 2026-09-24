@@ -146,6 +146,12 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 ## 実装方針の訂正
 
+### ARCH-001の再整理要求（2026-09-25）
+
+利用者はcli/uiへの配置誘導ではなく、commonの過剰機能・整理不足そのものの是正を求めた。前のcli/ui新設推奨は今回の整理案から外し、[architecture-audit.mdの最新節](architecture-audit.md)に8moduleの保持・統合・削除候補と責務別配置を再記録した。重複hash、未使用API、製品の検証counter依存、二重の実行/失敗境界、暗黙callbackを縮小対象とする。要件上必要な排他・atomic保存・Resume判定・秘密保護は維持する。**配置・削減方針は未承認、製品変更と解決判定は行っていない。** Task併用と表の承認は維持する。
+
+### HTMLを使わない表出力
+
 利用者の指摘に従い、表をHTMLへ変換する既存処理と今回のHTML経由案を廃止する。Internal Documentの行・列・結合情報からPandocの表構造を直接構築し、既存Pandocでgrid tableを出力する。HTML readerやHTML中間成果物は使用しない。
 
 一覧はMarkdownを正規表現で再解析せず、変換済みDOCXの見出し・図題・表題から静的な項目を作る。これによりCode内の見かけ上の見出しやCaptionが目次へ混入することを防ぐ。ページ番号は提案どおり含めない。

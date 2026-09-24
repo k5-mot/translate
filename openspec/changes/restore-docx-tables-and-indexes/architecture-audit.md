@@ -278,3 +278,53 @@ Workflow → tasks.docx.run(markdown, output, template)
 - [ ] 規約に配置・依存・例外・計測の意味を追加し、実コードとTestで検証。
 - [ ] sample3でWord/PDFを再生成し、利用者の目視確認を得る。
 - [ ] 各Changeの指摘解消後に同期/archive、PR/CI、main merge/push。現時点では未実施。
+
+## 機能削減を先に行う再整理案（2026-09-25、未承認）
+
+この節は前述の配置案とcli/ui新設推奨を置き換える。利用者はdirectory名への追従ではなく、過剰機能・責務混在そのものの再考を求めている。cli/ui新設、Run専用package新設、一般化されたservice/event busの追加は今回の整理から外す。承認済みのTask併用・縦結合表方針は変更しない。
+
+### 要件と実装手段を区別する
+
+run-lifecycle仕様が要求するのはUUIDv7、Run保存・明示選択・相互Resume、fingerprintによる拒否理由、正確な進捗、安全なArtifact公開・削除、秘密非出力である。現在のclass数、ContextVarによる通知、汎用recursive sanitizer、検証runnerを製品へ置くことはその要件ではない。要件を維持しつつ、独立module・公開API・二重状態・暗黙依存を減らす。
+
+### 再読取りで確認した根拠
+
+- fingerprint._optional_file_hashはworkspace.sha256_fileと同じstreaming SHA-256処理。lifecycle.fingerprint_forとfingerprint.build_fingerprintに対象決定と組立てが分散している。
+- ResumeCompatibility.compatibleはdifferencesの有無から算出できる値を別に保持している。diff_snapshotsの直接呼出は内部判定とTestであり、汎用公開APIである必要はない。
+- runs.collect_input_sourcesはRun保存に加えて、登録対象拡張子による選別とsource_key生成を扱う。汎用Repositoryの引数supported_extensionsの有無が登録用key生成の条件にもなっている。
+- lifecycleはprepare/executeに加え、登録adapter固有の入力変換、DOCX Task呼出、ログ/観測、失敗の保存・再読込み、表示文字列、export/容量計算を担う。execute_public_runはexecute_runの例外後に保存済み失敗を再読込みする二重境界になっている。
+- progressのContextVarは2つのWorkflowのnode通知をlifecycleへ運ぶ。Task本体からの通知ではない。進捗表示とnode成否は異なる意味であり、安易に同一eventへ統合しない。
+- redaction.safe_errorは例外全文を文字列化してregexで加工する一方、safe_failure_reasonは原則として型とstatusだけを採用する。前者が任意の本文を確実に除去する保証はない。Run保存前の汎用加工は、比較対象snapshotの値を変更し得る。
+- workspace.atomic_publish_directoryは製品呼出0でTestのみ。atomic_directoryは多数のTaskで実利用があり削除対象ではない。OutputLockはRunの排他であって任意Artifact保存の排他ではない。
+- terminal_evidenceのcounterはLLM/Qdrant adapterからimportされ、childは逆にlifecycleを呼ぶ。heartbeatと終端証拠に親子双方が書込む実装があり、別ChangeのI/O障害も未解決である。
+
+### 各moduleの縮小方針と配置候補
+
+pathはtranslate/相対、testsのみRepository直下。以下は実装済みではない。
+
+| 現行module | 残す責務 | 減らす・統合する責務 | 配置候補 |
+| --- | --- | --- | --- |
+| fingerprint.py | 正規化snapshot/hashとResume拒否差分 | lifecycle.fingerprint_forと対象構築を集約。重複hash実装を削除。差分探索は非公開。compatibleは差分から導出し、汎用diff frameworkにしない。型を消してAny/dictへ置換することはしない | workflows/resume.py |
+| identifiers.py | UUIDv7生成と形式検証 | 単独moduleを廃止し、Run保存側の非公開関数へ統合。IDの独立service/classは追加しない | adapters/run_repository.py内 |
+| runs.py | Run metadata・入力正本・path・CRUD・UUID/path検証・排他 | 登録用のdirectory展開・source_key生成は登録処理へ。createのdict/Sequence二重受付は内部呼出を確認して検証済み入力へ一本化。exportと容量取得はRepositoryへ集約。RunRecord/RunInput等の保存契約型は保持し、class削減のための未型付け化はしない | adapters/run_repository.py。登録固有の準備はworkflows/reference_registration.py |
+| lifecycle.py | 検証済みRunの準備、排他を所有した実行、成功/失敗の一度だけの記録、操作選択 | fingerprintはresumeへ、保存はRepositoryへ。execute_run/execute_public_runは単一実行境界とし、失敗を一度作成・保存して同じ値を返す例外へ載せる。登録固有処理は登録Workflowへ。DOCX単独変換は既存Taskへ直接委譲し、1行だけの新Workflowは作らない。LLMのstage定数への依存は診断契約へ切り離す | workflows/run.py |
+| progress.py | 進捗値とnode成否通知、Resume済みslotの重複抑止 | node通知は明示callback引数をWorkflowへ渡す案とし、ContextVar/bind/reportの暗黙配線を撤去。進捗callbackとstatus callbackは区別。BaseTask計測と二重管理しない。slot表とcheckpoint既存値を用い、別の永続進捗状態を持たない | workflows/progress.py |
+| redaction.py | 診断出力に使う安全な型・値の選別、既知秘密の伏字化 | 汎用objectのstr化とrecursive変換を主たる安全策にしない。Failure型と固定項目による安全な原因作成へ一本化し、safe_errorのraw例外本文経路は廃止候補。snapshotは許可項目だけから構築し、保存直前にhash対象を変更しない。ログfilterはlogger、credential抽出はsettings側の設定責務、Trace送信項目はLangfuse側で選ぶ | translate/diagnostics.py（単一module、package新設なし）。純粋な型/変換のみで、OS・Settings・Run・Workflowへの依存を持たない |
+| workspace.py | 実利用の原子的File/Directory公開とfile hash | atomic_publish_directoryを廃止しTestはatomic_directoryへ。OutputLockはRepositoryに統合。load_jsonの未作成時defaultは呼出側の意味を確認して限定し、汎用storage frameworkへ広げない。fsync・検証・rollbackは要件を守るため維持 | adapters/artifacts.py |
+| terminal_evidence.py | 未完了の受入検証に必要な証拠取得・監視だけ | 製品counter hook、製品から検証moduleへの依存を撤去。証拠型/保存とprocess監視の2責務へ限定。製品Run状態を再実装しない。実呼出の計測はTest内の境界spyで検証し、retry単位の回数が同等になることを確認。未解決検証の証拠機能は勝手に削除せず、用途終了時に廃止判定 | tests/support/evidence.pyとtests/support/detached_runner.py |
+
+diagnostics.pyはredactionをそのまま改名する案ではない。Run別の状態や実行、任意objectのserializer、監視、UI表示を含めない。FailureRecordからRun固有のID・日時はRun側へ残し、Task・stage・安全な原因・usage等の値の契約だけを共用する。新たな「何でも置く共通層」にしないため、許可するAPIと依存禁止を規約に明記する。登録専用Workflowは既にlifecycleとRepositoryにある実処理の移管であり、新機能ではない。
+
+### 安全性・互換性の境界
+
+- fingerprintの対象設定を操作別に絞れば不要な拒否を減らせる可能性はあるが、保存済みsnapshotとResume判定が変わる。配置整理に混ぜず、必要なら別の仕様変更として提案する。
+- credentials/Qdrant状態除外、UUIDv7のみ、共通Run root、.workspace、逐次モデル実行、公開cli.py/main.pyは維持する。
+- raw例外表示・recursive sanitizerの削減は、秘密・本文非出力を境界ごとのTestで代替できてから行う。regexを消すことを目的に安全対策を先に外さない。snapshotの安全性検証とhashの整合性もTestする。
+- ContextVar撤去は同期実行だけを根拠に即断しない。LangGraphのnode callbackの伝達・Resume・直接Workflow呼出をTestしてから切替える。観測adapter内の別のContextVarは今回一括撤去しない。
+- 同期モデル実行でもCLI/UIの別processから同じRunへアクセスし得るため排他は必要。RUN-001（lock拒否側の状態書換え）と削除時の排他範囲を検証する。
+- Directory公開の中断時保証は現行実装をそのまま正しいとみなさず、旧版renameから新版renameまでの障害も検査する。
+- 検証runnerは証拠の書込み所有者を明確にして縮小する案を別途設計する。未解決のWindows I/O障害を単なる移動で解決扱いにしない。
+
+### 移行の単位
+
+まず未使用API・重複hash・UUIDの単独module・製品診断hookを縮小し、次にRun保存/再開判定/実行境界を分離する。進捗通知と安全な診断出力の変更はそれぞれ回帰検証できる単位に分ける。commonが空に近づくことではなく、公開API、重複状態、逆依存が減り、既存要件のTestが保持されることを完了基準とする。今回は設計検討の記録のみで、製品code・保存済みRun・既存成果物を変更していない。
