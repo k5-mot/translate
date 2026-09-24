@@ -104,7 +104,7 @@
 
 ### ARCH-002: Taskの共通構造と基底クラス継承の検討
 
-**状態: 未解決・設計未決定。** Taskが似た構造を持つためbase classを継承すべきではないか、という利用者の指摘を記録する。今回のDOCX修正でclass化を実施・決定した扱いにしない。
+**状態: 方針承認済み・実装と検証は未完了。** 2026-09-25、既存関数を入口として維持し、BaseTaskを継承する各Task classへ委譲する併用案を利用者が承認した。共通計測と固有処理を分離し、Workflowの状態通知・Resume管理はBaseTaskへ移さない。承認を実装完了として扱わない。
 
 - [ ] 全Taskの入出力、実行順序、計時、atomic保存、retry、失敗通知、状態の有無を比較し、実際の重複を示す。
 - [ ] 共通base class＋各Task class案と現行関数方式を、差分量、型の明確さ、テスト容易性、LangGraph/Resumeとの対応、継承しない例外Taskの扱いで比較する。
@@ -122,6 +122,12 @@
 - この追加監査でも実LLM/Embedding要求、過去RunのResume、Word/PDF再生成、archive、main merge/pushは行っていない。既存のCRITICAL/WARNINGと利用者目視未完了は維持する。
 
 ## DOCX品質の残課題（継続）
+
+### 配置案の再検討と方針承認（2026-09-25）
+
+- ARCH-001は未承認・未解決。利用者の指示により、既存adapters/workflows/testsだけでなく、新設translate/cli/・translate/ui/と追加のRun専用directory候補を比較した。[具体案](architecture-audit.md)に現行関数との対応と採否理由を記録した。製品sourceは移動していない。
+- ARCH-002の関数＋BaseTask併用案は承認済み。実装・回帰検証を別Changeへ反映する作業は残る。
+- V-C2の見出し/本文をまたぐ縦結合は、セル位置・結合優先、当該表の繰返し見出し無効、見出しセル太字の方針を承認済み。修正・Word/PDF目視確認が終わるまで指摘を解決扱いにしない。
 
 ### 型検査項目の追跡更新（2026-09-25）
 

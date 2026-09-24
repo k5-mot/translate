@@ -224,7 +224,30 @@ V-C2のMERGED/HEADER/BODY表について、メモリ内の試験用構文木で�
 
 「adaptersへ移す」の意味は、余った共通処理を押し込むことではない。filesystemはOS入出力、run_repositoryはRun永続化、redactionは外部へ出す診断/metadataの安全化、と責務を固定する。redactionは下位の純粋な変換で、Task/Workflow/Runを参照しない。loggerからredactionを使う例外方向は規約とimport検査へ明記する。class化に合わせてprogressの機能をBaseTaskへ移す必要はない。
 
-### 関数とTask classの併用
+### 新規directoryも含めた配置の再検討（2026-09-25、未承認）
+
+利用者は既存directoryだけへの移動に限定せず、ui/・cli/等の新設も検討するよう指示した。上表はcommonの移動先の初案であり、配置の承認ではない。cli.py・main.py・common/lifecycle.py・common/progress.pyの実装を再確認した。
+
+現状のcommon/lifecycle.pyのcandidates_forは候補と互換性を返す処理であり、対話確認や画面描画は行わない。「候補提示」という前述の説明は、候補の計算と利用者への表示に分けて読む必要がある。
+
+| 配置候補 | 移す具体的な処理 | 採否案・理由 |
+| --- | --- | --- |
+| translate/cli/app.py（新設） | ルートcli.pyのTyper app、command定義、引数の受取り、終了codeへの変換 | 採用案。CLI固有の入口と製品処理を分離する |
+| translate/cli/presentation.py（新設） | cli.pyの_progress、_is_interactive、_candidate_resume、端末へのRun一覧・失敗表示と確認 | 採用案。TTY判定、y/n、非対話時の新規Run方針をここへ限定する。互換性そのものは判断しない |
+| translate/ui/app.py（新設） | main.pyのmain、操作選択、各操作の入力フォームと実行要求 | 採用案。Streamlit再描画を含む画面側の制御を担当する |
+| translate/ui/run_management.py（新設） | main.pyの_resume_choice、_execute_ui、_run_selected、_run_management | 採用案。Run選択・確認・一覧・export/削除ボタンと共通実行への委譲。Resumeの許可判定・永続化は持たない |
+| translate/ui/files.py（新設） | main.pyの_save、_downloads、UploadedFileから一時入力を作る処理 | 採用案。Streamlit固有の入出力を担当し、原子的書込みはadapters/filesystem.pyへ委譲する。Run内の入力コピーはRepositoryに残す |
+| translate/ui/progress.py（新設） | main.pyの_progress_callback | 採用案。共有ProgressEventを受けて進捗バー・状態欄を描画するだけにする |
+| workflows/run_lifecycle.py・run_compatibility.py・progress.py | commonの共有実行制御・互換性判定・進捗集計 | 前案を維持。CLI/UIのどちらにも属さないため、新設cli/uiへ押し込まない |
+| translate/runs/ または application/（追加の候補） | Run実行制御・互換性・Repositoryを新たなまとまりへ移す案 | 今回の推奨案では見送る。共有実行はworkflows、保存はadaptersで説明でき、さらに入口と呼出層を増やす必要性がない。データ保存先runs/との区別も必要になる |
+
+ルートのcli.pyとmain.pyは、既存の公開起動方法と総時間計測を維持し、それぞれtranslate.cli.app・translate.ui.appへ委譲する。ルートにcli/を作ってcli.pyと同名にせず、package配下へ配置する。内部moduleを新たな製品直接実行entry pointにはしない。
+
+依存方向は「公開起動file → cli/ui → 共有Workflow → Task/adapter」を基本とする。cli/uiが一覧・サイズ取得等でRunRepositoryを直接利用する箇所も明示する。cliとuiは相互importしない。workflows/tasks/adaptersはTyper・Streamlitやcli/uiをimportしない。ProgressEventの生成・集計と、その表示を分ける。Run root・UUIDv7・fingerprint・削除対象・逐次実行の既存契約は変更しない。
+
+commonのlogger/settings以外の移動先は上表の初案を維持しつつ、CLI/UI固有の処理を現在のルートfileから新設directoryへ分離する。この違いを明示し、common内にUI固有コードがあるかのような名目だけの移動は行わない。新設directoryも責務・利用元・依存方向を説明し、承認後に別Changeで実装する。テストは実装moduleへpatch先を更新し、公開起動方法とCLI/UI間のRun共有を回帰検証する。
+
+### 関数とTask classの併用（方針承認済み、未実装）
 
 ```text
 Workflow → tasks.docx.run(markdown, output, template)
@@ -249,8 +272,8 @@ Workflow → tasks.docx.run(markdown, output, template)
 利用者は、見出しから本文へ縦結合する表について、セル位置・結合を優先し、その表の繰返し見出しを無効化して見出しセルを太字で区別する案に同意した。通常の表の見出し保持とHTML非使用は維持する。実装とWord/PDF受入は未完了。
 
 - [ ] commonの配置案・全説明への利用者確認。
-- [ ] Task関数維持か最小BaseTask継承かの利用者判断。
-- [ ] 結合が見出し/本文をまたぐ表の表示方針の確認。
+- [x] Task関数とBaseTask＋各Task classの併用方針への利用者承認（実装は未完了）。
+- [x] 結合が見出し/本文をまたぐ表の表示方針の確認（実装・目視検証は未完了）。
 - [ ] 型/Lint/Test再現性、コメント、不要コード、排他、表の検証範囲を対応するChangeへ分けてpropose/apply/verify。
 - [ ] 規約に配置・依存・例外・計測の意味を追加し、実コードとTestで検証。
 - [ ] sample3でWord/PDFを再生成し、利用者の目視確認を得る。
