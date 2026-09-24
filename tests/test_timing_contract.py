@@ -43,7 +43,7 @@ TASK_NAMES = (
 
 
 def test_every_task_uses_shared_timing_without_another_state_store() -> None:
-    """全Taskを検査対象に含め、手書き計測と独立状態を増やさない。"""
+    """全Taskの共通計測呼出と入口の計測表記、計測用状態File名の不在を静的検査する。"""
 
     task_modules = {
         path.stem: path.read_text(encoding="utf-8")
@@ -113,7 +113,7 @@ def test_timing_occurs_once_and_preserves_failure(
     *,
     fail: bool,
 ) -> None:
-    """成功でも失敗でも一度計測し、失敗本文を出さず元例外を伝播する。"""
+    """出力可能な環境で成功・例外時とも一行だけ計測し、同じ処理例外を伝える。"""
 
     ticks = iter([10.0, 12.5])
     monkeypatch.setattr(base, "time", SimpleNamespace(perf_counter=lambda: next(ticks)))

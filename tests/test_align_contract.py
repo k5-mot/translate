@@ -58,7 +58,7 @@ def _assert_partition(
 def test_one_to_one_and_unmatched_blocks_are_partitioned(
     tmp_path: Path,
 ) -> None:
-    """決定的対応で1対1、source_only、target_onlyを分類する。"""
+    """全IDのpartitionと先頭の1対1対応、余った訳文のtarget_only分類を検査する。"""
 
     source = _document("source", ["Section 1", "source only"])
     target = _document("target", ["節 1", "target extra", "target only"])

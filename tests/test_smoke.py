@@ -21,7 +21,7 @@ def test_public_entry_points_import() -> None:
 
 
 def test_settings_factory(settings_factory: Callable[..., Settings]) -> None:
-    """外部service設定を隔離して生成できる。"""
+    """settings factoryでDoclingの接続先をTest用URLへ上書きできる。"""
 
     settings = settings_factory(docling_url="https://docling.invalid")
 

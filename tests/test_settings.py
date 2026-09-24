@@ -36,7 +36,7 @@ def test_default_runs_dir_is_project_runs() -> None:
     ids=["posix-style", "windows-style"],
 )
 def test_relative_runs_dir_is_resolved_from_project(configured: str) -> None:
-    """OSで一般的な区切りを含む相対pathをProject基準で解決する。"""
+    """両表記の相対pathを実行OSのPath解釈に従いProject基準で絶対化する。"""
 
     settings = load_settings("convert", env={"TRANSLATE_RUNS_DIR": configured})
 
@@ -67,7 +67,7 @@ def test_retry_timeout_and_deadline_are_configurable() -> None:
 
 
 def test_default_llm_budget_matches_deployed_model_context() -> None:
-    """既定予算は実Model context内に入力領域を確保する。"""
+    """既定のtoken予約と入力余白、timeoutが合意済みの設定値と一致する。"""
 
     settings = load_settings("convert", env={})
 
@@ -83,7 +83,7 @@ def test_default_llm_budget_matches_deployed_model_context() -> None:
 
 
 def test_context_is_capped_at_model_limit_without_reducing_exact_limit() -> None:
-    """実上限は保持し、それを超える指定だけを制限する。"""
+    """指定値30208は保持し、99999は設定上限30208へ制限する。"""
 
     exact = load_settings("convert", env={"LLM_CONTEXT_TOKENS": "30208"})
     capped = load_settings("convert", env={"LLM_CONTEXT_TOKENS": "99999"})
@@ -135,7 +135,7 @@ def test_translation_chunks_use_shared_available_input_budget(
     ],
 )
 def test_non_positive_service_control_is_rejected(name: str) -> None:
-    """無限または即時失敗を招く非正値を拒否する。"""
+    """各外部Service制御の環境変数で0を拒否し、設定名を例外へ含める。"""
 
     with pytest.raises(ValueError, match=name):
         load_settings("convert", env={name: "0"})

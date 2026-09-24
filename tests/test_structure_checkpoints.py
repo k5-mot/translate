@@ -1,4 +1,4 @@
-"""STRUCTUREの非公開page checkpointとTask全体の公開境界を検証する。"""
+"""STRUCTUREの既存Page Cacheと公開境界を検査する。LangGraph統合の証拠ではない。"""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def test_structure_page_key_tracks_generation_policy_and_schema(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """生成policyまたはResponse schemaが違う旧pageを再利用しない。"""
+    """生成policyとResponse schemaの変更が既存Page Cacheのkeyを変えるか検査する。"""
 
     page = _document().pages[0]
     settings = settings_factory(structure_model="model-a")
@@ -118,7 +118,7 @@ def test_structure_resume_reuses_only_completed_page_checkpoints(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """page 3失敗後のResumeではpage 2を再推論しない。"""
+    """Task直接再呼出時に、失敗したpage 3だけを推論し成功済みpage 2を再利用する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"PDF-INPUT-A")
@@ -219,7 +219,7 @@ def test_structure_old_run_without_page_progress_starts_normally(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """旧Runにpage progressがなくても全pageを一度ずつ処理する。"""
+    """既存Page Cacheのない新規保存先では、両pageを一度ずつ順番に処理する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"PDF-INPUT-A")

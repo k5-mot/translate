@@ -354,6 +354,7 @@ def build_graph(
         report.run(groups, checks, reviews, Path(state["output"]), work / "report")
         return {}
 
+    # 遅延実行される各nodeがloop終了後も元の側を使うよう、既定引数へsideを固定する。
     for side in ("source", "target"):
         tracked(
             f"{side.upper()}-SPLIT", lambda state, side=side: split_node(state, side)

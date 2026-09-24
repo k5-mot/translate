@@ -1,4 +1,4 @@
-"""TaskとAdapterがatomic publish境界を経由することを検証する。"""
+"""直接writeの表記と、POSITION公開失敗時の旧成果物保持を検査する。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
     ids=["tasks", "adapters"],
 )
 def test_modules_do_not_publish_with_direct_path_writes(directory: Path) -> None:
-    """全Task/AdapterからPathの直接write APIを排除する。"""
+    """Task/Adapter直下のPythonにwrite_text/write_bytesの呼出表記がないか検査する。"""
 
     violations: list[str] = []
     for module in directory.glob("*.py"):

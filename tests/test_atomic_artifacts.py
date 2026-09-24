@@ -37,7 +37,7 @@ def test_file_publish_preserves_old_complete_artifact_on_failure(
     phase: str,
     kind: str,
 ) -> None:
-    """各phaseの失敗で旧完全版だけを観測できる。"""
+    """各公開phaseに例外を注入し、復帰後の旧完全版と一時Fileの除去を確認する。"""
 
     target = tmp_path / "artifact"
     target.write_bytes(b"old-complete")
@@ -99,7 +99,7 @@ def test_directory_publish_preserves_old_complete_artifact_on_failure(
 
 
 def test_artifacts_publish_only_after_validation(tmp_path: Path) -> None:
-    """成功時は各形式を検証済みの完全版へ置換する。"""
+    """新規公開後のtext・binary・JSONの値と、directoryの完了markerを確認する。"""
 
     text = tmp_path / "value.txt"
     binary = tmp_path / "value.bin"

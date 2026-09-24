@@ -40,7 +40,7 @@ def _templates(root: Path) -> Path:
 def test_version_one_run_remains_readable_and_resumable(
     tmp_path: Path, settings_factory: Callable[..., Settings]
 ) -> None:
-    """旧Runは登録以外のResume、一覧、export、削除に利用できる。"""
+    """schema v1の翻訳Runが再開準備・一覧・export・削除を通る。UUIDはv7を使う。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
@@ -149,16 +149,14 @@ def test_linked_input_and_unsafe_logical_path_leave_no_partial_run(
 def test_copy_hashes_in_chunks_without_read_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """大きい入力を全体読込みせずcopyし、metadataへ本文を保存しない。"""
+    """入力のread_bytes呼出を禁止し、copy後のsizeとmetadata内の本文marker不在を確認する。"""
 
     source = tmp_path / "large.pdf"
     source.write_bytes(b"streaming-sentinel" * 100_000)
     original = Path.read_bytes
 
     def guarded(path: Path) -> bytes:
-        """
-        元入力への全体byte読込みだけを拒否し、Run作成がstreaming copyを使うか検査する。
-        """
+        """元入力のread_bytes呼出だけを拒否する。他の読込みAPIやsize上限は検査しない。"""
 
         if path == source:
             message = "source.read_bytes must not be used"

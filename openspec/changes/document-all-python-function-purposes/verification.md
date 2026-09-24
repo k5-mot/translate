@@ -2,7 +2,7 @@
 
 ## 中間検証（2026-09-25）
 
-本Changeは実装途中。全関数の意味確認・Test側の補足・再発防止検査・実E2Eが未完了のため、正式verifyとarchiveは行わない。
+本Changeは実装途中。以下は時点ごとの監査履歴であり、最新の進捗は末尾の追記を参照する。全Testの既存説明の意味確認と実E2Eが未完了のため、正式verifyとarchiveは行わない。
 
 ## 今回の差分
 
@@ -100,3 +100,97 @@
 
 - Ruff、Format（307 files）、ty、diff check、OpenSpec strict validationは合格。pytestは401 passed, 1 skipped（25.86秒）。これは製品不具合の不存在や実E2E完了を意味しない。
 - 同じtranslation session 40709をpollしliveを確認した。翻訳Workflow内REVIEWは継続中で、モデル要求を重複起動していない。Word PDF化とComparison Reviewはまだ開始していない。
+
+## Lambda・実行文字列とTest説明の監査（2026-09-25、追記）
+
+- 公開入口・translate・testsの93 filesを再列挙した。通常のFunctionDef/AsyncFunctionDefは967件、説明存在検査の欠落0件。うち1 fileは未追跡の手動probeであり、commit対象外。
+- 通常source内のlambdaは37 files・149件（製品26、Test 123）。各呼出文と包含関数の目的説明を読み、sort key、stream読込み、Graph分岐、表示、retry単位、clock固定、外部呼出double、障害注入の意図を確認した。比較Graphの7 nodeには、遅延実行時の側を既定引数へ固定する理由を1か所に補足した。説明用wrapperや新しいAPIは追加していない。
+- `exec` 2か所、`AppTest.from_string` 2か所、Python `-c` 4か所を確認した。最後のparametrizeは2つのCodeを持つため、実行sourceは合計9個。計3関数は既存の本文先頭Commentで説明され、説明存在検査でも欠落0件。文字列内の4 lambdaはUIの選択固定・進捗無効化・実処理置換であり、包含Testと代入先から意図を確認した。通常sourceと合わせて153 lambdaを確認した。
+- Graph/正規表現のcompile、SQLのexecute、PandocのsubprocessはPython文字列実行ではない。文書検査Testの意図的に説明を欠くsource fixtureは構文解析だけで、実行対象へ数えない。
+- 未追跡の`manual_detached_historical_gate.py`を全文確認した。mainの不変性の説明は、実際に比較している元checkpoint DBへ限定した。Run全体の不変性をこの比較だけで保証しない。またsummaryの`failure_present_before_cleanup`はstatusから算出する値であり、failure Fileを直接観測した証拠としては扱わない。実モデルを使うprobe自体は今回実行していない。
+
+### 通常sourceのlambda棚卸し
+
+| File | 件数 |
+| --- | ---: |
+| `main.py` | 1 |
+| `tests/test_adapter_retry.py` | 20 |
+| `tests/test_align_contract.py` | 1 |
+| `tests/test_atomic_artifacts.py` | 1 |
+| `tests/test_cli_runs.py` | 7 |
+| `tests/test_comparison_capability.py` | 1 |
+| `tests/test_comparison_workflow.py` | 1 |
+| `tests/test_execution_exclusion.py` | 3 |
+| `tests/test_failure_contract.py` | 2 |
+| `tests/test_historical_resume.py` | 4 |
+| `tests/test_langfuse.py` | 20 |
+| `tests/test_output_contract.py` | 9 |
+| `tests/test_pdf_translation_capability.py` | 4 |
+| `tests/test_qdrant_registration.py` | 8 |
+| `tests/test_qdrant_search.py` | 4 |
+| `tests/test_redaction.py` | 1 |
+| `tests/test_review_output_recovery.py` | 5 |
+| `tests/test_run_interoperability.py` | 8 |
+| `tests/test_run_repository.py` | 1 |
+| `tests/test_streamlit_ui.py` | 7 |
+| `tests/test_structure_checkpoints.py` | 1 |
+| `tests/test_text_unit_review.py` | 1 |
+| `tests/test_timing_contract.py` | 1 |
+| `tests/test_translation_output_failures.py` | 11 |
+| `tests/test_translation_workflow.py` | 1 |
+| `tests/test_workflow_state.py` | 1 |
+| `translate/adapters/qdrant.py` | 4 |
+| `translate/common/fingerprint.py` | 2 |
+| `translate/common/redaction.py` | 1 |
+| `translate/common/runs.py` | 3 |
+| `translate/common/workspace.py` | 1 |
+| `translate/document.py` | 2 |
+| `translate/tasks/align.py` | 1 |
+| `translate/tasks/markdown.py` | 1 |
+| `translate/tasks/position.py` | 1 |
+| `translate/workflows/comparison_review.py` | 7 |
+| `translate/workflows/translation.py` | 2 |
+
+文字列内は`test_streamlit_apptest_renders_structured_failure`に1件、`test_streamlit_apptest_requires_resume_confirmation`に3件。File表の通常AST件数には含めていない。
+
+### Testの既存説明の意味確認
+
+今回、次の22 filesを既存docstring・fixture・assertまで全文確認した。前回の`test_redaction.py`と合わせて23 filesを確認済みとする。空の`tests/__init__.py`は関数なし。
+
+- `tests/conftest.py`
+- `tests/test_align_contract.py`
+- `tests/test_atomic_artifacts.py`
+- `tests/test_cover_contract.py`
+- `tests/test_documentation.py`
+- `tests/test_finding_contract.py`
+- `tests/test_position_layout.py`
+- `tests/test_position_tables.py`
+- `tests/test_smoke.py`
+- `tests/test_streamlit_ui.py`
+- `tests/test_task_artifacts.py`
+- `tests/test_timing_contract.py`
+- `tests/test_validate_contract.py`
+- `tests/test_settings.py`
+- `tests/test_fingerprint.py`
+- `tests/test_run_repository.py`
+- `tests/test_run_input_manifest.py`
+- `tests/test_workflow_state.py`
+- `tests/test_qdrant_search.py`
+- `tests/test_cli_process.py`
+- `tests/test_streamlit_process.py`
+- `tests/test_structure_checkpoints.py`
+
+- HTTP response doubleが投げるのはRuntimeErrorで、httpx例外型ではない。Settings factoryはTemplate保存先を分けるが、全外部設定を自動隔離しない。説明を訂正した。
+- Atomic保存Testは例外後の状態を確認するもので、並行observerやprocess強制終了時の不可分性までは検査しない。直接write検査・計測状態検査はsource文字列やFile名の検査であり、任意の別実装が存在しないことの証明ではない。
+- ALIGNの当該fixtureはtarget_onlyを検査するがsource_onlyは検査しない。POSITIONの当該fixtureは段組・欄外・座標欠落を検査し、重なりは含まない。指摘は説明とcoverageの差であり、それらの製品要求を削除したのではない。
+- Settings Testは固定設定値と0の拒否を検査し、稼働Providerのcontext上限やNaN/Infinity拒否の検証ではない。既存SETTINGS-FINITE-001は未解決。fingerprintの当該TestはModel変更を検査し、Rule変更は含まない。
+- 非UUID名の破損directory TestはID検証で除外されるため、UUIDv7内の壊れたJSON解析失敗を証明しない。link Testはsymlinkまたはその判定mockであり、junctionを作るTestではない。copy Testはread_bytes禁止とsize一致までで、全読込みAPIのmemory使用を検証しない。
+- 最小Graphのcheckpoint Testは同一invokeでのTask一回実行と失敗後の完全Artifactを確認する。障害後のResumeを起動していないので、再開後の副作用重複防止をこのTestだけで合格にしない。
+- STRUCTUREのPage Cache TestはTask直接再呼出の現行挙動であり、LangGraphのcheckpoint統合済みと解釈しない。画像path変換Testも旧checkpointを実際に読んでいない。これらの説明を実装に合わせた。
+
+### 検査結果と残作業
+
+- 今回編集した16 Python files（未追跡probeを含む）は、先頭docstringを除いたASTが編集前と全件一致した。実行文字列には今回変更を加えていない。
+- 最終補足後の検査はRuff、Format（307 files）、ty、diff check、OpenSpec strict validationが合格。pytestは401 passed, 1 skipped（25.62秒）。Windows上のPOSIX PTY Testだけがskipであり、実LLMのE2E合格を意味しない。
+- task 1.5を完了し、進捗は5/8。task 1.4は残る21 Test filesの既存説明の意味確認が必要。2.2は全対象完了後の最終監査、2.3は実E2Eと利用者目視が必要であり、未完了のままとする。
+- 実translation session 40709の同一live handleを再pollした。翻訳Workflow内REVIEWは継続しており、03:45:39 JSTに.review領域の更新を確認した。これは最終DOCXの完成やComparison Reviewの完了ではない。モデル・Embeddingを並列起動していない。

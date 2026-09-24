@@ -1,4 +1,4 @@
-"""Workflow checkpointがArtifact pathだけを保持することを検証する。"""
+"""最小GraphでWorkflowのstate型・path保存とcheckpoint失敗時のArtifactを検査する。"""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def _checkpoint(
 def test_translation_checkpoint_contains_paths_not_document_bodies(
     tmp_path: Path,
 ) -> None:
-    """翻訳stateからInternal DocumentとFinding本文を排除する。"""
+    """翻訳state型の本文field不在と、pathを渡した最小GraphのDBに本文がないか検査する。"""
 
     document = tmp_path / "document.json"
     findings = tmp_path / "findings.json"
@@ -70,7 +70,7 @@ def test_translation_checkpoint_contains_paths_not_document_bodies(
 def test_comparison_checkpoint_contains_paths_not_alignment_or_documents(
     tmp_path: Path,
 ) -> None:
-    """比較stateから両文書、AlignmentおよびFinding本文を排除する。"""
+    """比較state型の本文field不在と、pathを渡した最小GraphのDBに本文がないか検査する。"""
 
     artifact = tmp_path / "artifact.json"
     artifact.write_bytes(b"ALIGNMENT-AND-IMAGE-BINARY-SENTINEL")
@@ -106,7 +106,7 @@ def test_checkpoint_commit_failure_keeps_single_task_result_without_partial(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Task後のcheckpoint障害はTask再実行や部分Artifactを生まない。"""
+    """checkpoint保存失敗時の単一invokeで、Taskが一度だけ実行され完全版が残る。"""
 
     database = tmp_path / "failure.sqlite"
     output = tmp_path / "artifact"

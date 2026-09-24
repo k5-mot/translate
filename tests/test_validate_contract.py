@@ -98,7 +98,7 @@ def test_picture_asset_path_matches_merged_assets_root() -> None:
 
 
 def test_validate_migrates_legacy_structured_asset_path(tmp_path: Path) -> None:
-    """同一Runの旧checkpointも成果物生成前に安全なURIへ移行する。"""
+    """旧structured接頭辞の画像pathを、実在するassets配下のpathへ書き換える。"""
 
     asset = tmp_path / "assets" / "figure.png"
     asset.parent.mkdir()

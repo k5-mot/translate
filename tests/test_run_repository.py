@@ -69,7 +69,7 @@ def test_create_and_load_run(tmp_path: Path) -> None:
 
 
 def test_run_json_contains_only_lifecycle_metadata(tmp_path: Path) -> None:
-    """run.jsonへ本文やbinaryを保存せず、必要なLifecycle項目だけを持つ。"""
+    """作成時metadataの主要fieldを確認し、入力の本文markerが含まれないか検査する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"secret-document-body")
@@ -90,7 +90,7 @@ def test_run_json_contains_only_lifecycle_metadata(tmp_path: Path) -> None:
 
 
 def test_list_and_find_runs_exclude_corrupt_metadata(tmp_path: Path) -> None:
-    """破損Runを警告付きで隔離し、同一入力候補を新しい順で返す。"""
+    """非UUID名のdirectoryを警告付きで一覧から除外し、有効候補を更新日時順に返す。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"same-input")
@@ -190,7 +190,7 @@ def test_delete_rejects_running_locked_missing_and_outside_runs(tmp_path: Path) 
 def test_delete_rejects_linked_run_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """symlinkまたはjunctionをRun directoryとして辿らない。"""
+    """symlinkをRun削除で拒否する。作成権限がない環境ではlink判定を模擬する。"""
 
     repository = RunRepository(tmp_path / "runs")
     repository.root.mkdir()

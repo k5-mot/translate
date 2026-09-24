@@ -35,7 +35,7 @@ class FakeHttpResponse:
         return self._payload
 
     def raise_for_status(self) -> None:
-        """4xx/5xxをhttpx互換の例外として通知する。"""
+        """400以上ならstatusを含むRuntimeErrorを投げる。httpxの例外型は再現しない。"""
 
         if self.status_code >= 400:
             msg = f"HTTP {self.status_code}"
@@ -44,7 +44,7 @@ class FakeHttpResponse:
 
 @pytest.fixture
 def settings_factory(tmp_path: Path) -> Callable[..., Settings]:
-    """Testごとに隔離したSettingsを生成する。"""
+    """Templateの保存先をTestごとに分け、任意の設定を上書きできるfactoryを返す。"""
 
     def create(**updates: object) -> Settings:
         """

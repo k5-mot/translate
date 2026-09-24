@@ -53,7 +53,7 @@ def _fingerprint(
 def test_fingerprint_is_canonical_and_tracks_output_settings(
     settings_factory: Callable[..., Settings], tmp_path: Path
 ) -> None:
-    """同じ値は安定し、ModelやRuleの変更は差として検出する。"""
+    """同じ入力でhashが安定し、翻訳Modelだけの変更を項目名付きで検出する。"""
 
     settings = settings_factory(translation_model="model-a")
     first = _fingerprint(settings, tmp_path)
@@ -71,7 +71,7 @@ def test_fingerprint_is_canonical_and_tracks_output_settings(
 def test_credentials_retry_observation_and_qdrant_are_excluded(
     settings_factory: Callable[..., Settings], tmp_path: Path
 ) -> None:
-    """運用値と可変Qdrant状態だけの変更ではResume gateを変えない。"""
+    """指定したCredential・retry・観測・Qdrant接続設定を変えてもfingerprintは同じ。"""
 
     settings = settings_factory(
         openai_api_key="old-secret",
@@ -109,7 +109,7 @@ def test_structure_generation_policy_stays_out_of_public_run_fingerprint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """固定実装修正はprivate page keyだけを変え同じRunを許可する。"""
+    """STRUCTUREの生成policy定数を変えても公開Runのfingerprintは変わらない。"""
 
     settings = settings_factory(structure_model="model-a")
     before = _fingerprint(settings, tmp_path)
@@ -144,7 +144,7 @@ def test_libretranslate_endpoint_only_affects_libre_backend(
 def test_resume_accepts_equal_fingerprint_and_qdrant_change(
     settings_factory: Callable[..., Settings], tmp_path: Path
 ) -> None:
-    """Qdrant接続だけが変わっても互換RunをResumeできる。"""
+    """QdrantのCollectionだけを変更したRunは互換性判定を通る。再実行は行わない。"""
 
     settings = settings_factory(qdrant_collection="old")
     saved_fingerprint = _fingerprint(settings, tmp_path)

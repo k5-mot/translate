@@ -38,7 +38,7 @@ def _item(
 def test_multi_column_marginalia_overlap_and_missing_coordinates_are_stable(
     tmp_path: Path,
 ) -> None:
-    """欄外、左右column、重なり、座標なしを決定的に並べる。"""
+    """header・footer、左右column、座標なしの要素が期待する順序になるか検査する。"""
 
     items = [
         _item("#/texts/0", "right-bottom", 300, 100),
