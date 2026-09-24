@@ -111,7 +111,17 @@
 - [ ] 共通実行契約を定義し、基底クラスが担う責務と各Taskが担う責務を利用者へ具体例で説明する。
 - [ ] 合意した方式を別Changeの仕様・設計・tasksへ反映し、共通化だけを目的とする無関係なLayer追加を防ぐ。
 
-## DOCX品質の残課題
+## 追加監査（2026-09-25）
+
+利用者の全件監査依頼を受け、common全11ファイル、Task全20件、残りの製品ソースと追跡Testを棚卸しした。責務・API・依存・追加背景・配置案・Task構造の比較・規則別判定は[architecture-audit.md](architecture-audit.md)に記録する。**ARCH-001/ARCH-002は説明を作成した段階で、利用者承認・移行・解決は未完了。**
+
+- **ARCH-003（未解決）**: CODING_RULES全体への適合確認。全体Ruffは1件、tyは23 diagnosticsで失敗。formatは267 files成功。pytestは初回268 passed/1 failed/1 skipped、失敗Test単体は成功、全体再実行は269 passed/1 skipped。再現性の問題は未解決とし、後の成功で初回失敗を相殺しない。
+- **DATA-001（未解決）**: 表セルの数値欠落がCHECKから抜け、表だけの英日DocumentがALIGNで空の対応群になることを再現。REVIEW/VERIFY/比較本文生成にもcell/captionが対象外になる実装を確認。レンダリング修正やBaseTask化だけで解消した扱いにしない。
+- **RUN-001（未解決）**: 実行中Runのlockを保持したまま重複呼出を拒否すると、拒否された呼出がstatusをrunningからfailedに書換え、failure.jsonを作ることを一時Runで再現。所有者以外がRun状態を壊さないよう修正が必要。
+- V-C2の列ずれには、表全体を同じbodyへ置く候補で位置/縦結合を保持できることを実Pandoc/DOCXで確認した。ただし見出し表示方針は確認中で、製品sourceの修正はまだ行っていない。
+- この追加監査でも実LLM/Embedding要求、過去RunのResume、Word/PDF再生成、archive、main merge/pushは行っていない。既存のCRITICAL/WARNINGと利用者目視未完了は維持する。
+
+## DOCX品質の残課題（継続）
 
 - [ ] sample3のステータス表に含まれる黄・緑の丸は、既存Internal Documentでは独立したFigureになっている。セルへの関連付け・配置の保持は別途検証し、通常の表出力修正だけで解決としない。
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
