@@ -64,7 +64,7 @@
 
 ### 意味確認から判明した製品不具合（未解決）
 
-- **CONTENT-VALIDATE-001**: `validate._require_translations`はcaptionの原文/訳文層を確認しない。第2ページに原文captionだけを持つFigureを与えて例外なしを確認した。`markdown._caption_current`はそのcaptionを原文へfallbackする。本文/セルの存在検査をcaptionへ適用する製品修正と回帰Testが必要。実PDF全体での発生件数は未確認。
+- **CONTENT-VALIDATE-001**: `validate._require_translations`はcaptionの原文/訳文層を確認しない。第2ページに原文captionだけを持つFigureを与えて例外なしを確認した。`markdown._caption_current`はそのcaptionを原文へfallbackする。本文/セルの存在検査をcaptionへ適用する製品修正と回帰Testが必要。後続の[診断と提案](../require-translated-text-units-before-export/verification.md)で、最終層の空配列・空文字・空白も検査を通過することを再現した。先行実ArtifactのCaption 15件に層欠落はなかったが、翻訳品質の合格ではない。停止範囲を確認中であり、本指摘は未解決。
 - **CONTENT-MERGE-001**: `position._merge_fragments`は結合元をbodyのchildrenから除くが、texts collectionには残す。`load.load_document`がcollectionの未出現要素を補完するため、合成した隣接paragraph `A`/`B`は結合記録1件、body参照1件に対し、LOAD後に`A B`と`B`の2 Blockとなった。表も含む結合元の所有権・除外方法をOpenSpecで確定して是正する。単純なcollection補完廃止で、bodyに現れない正当な内容を失わせてはならない。
 - 上記診断はメモリ内の合成入力だけで実行し、LLMや外部Serviceを呼ばず、利用者文書・Runを変更していない。説明のみの本Changeへ製品修正を混ぜず、後続Changeで扱う。
 
