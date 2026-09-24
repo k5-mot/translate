@@ -14,4 +14,13 @@
 
 ## Verify
 
-正式verify未実施。ApplyのTest成功だけをarchive可の判定にしない。
+2026-09-25、実装commit `3ea187d`を対象に正式verifyを実施。**本Changeの型修復は検証成功。** Repository全体の受入成功や、親監査の全指摘解消を意味しない。
+
+| 観点 | 証拠・判定 |
+| --- | --- |
+| Completeness | 4/4 tasks完了。型修復のみでskip_specsが妥当、新Requirementなし |
+| Correctness | structure.pyの具体型/partial転送/接続断のみ1回再送、terminal_evidence.pyのIterator/FailureRecord/許可値検証後castを実装差分と照合。新規9件＋FailureRecordを使用する既存1件を再実行し10 passed |
+| Coherence | 標準libraryのみ、runtime import循環追加なし、既存保存schema不変。既存FailureKind拡張はcommit外で保持 |
+| Quality | 全体tyをverifyで再実行し0 diagnostics。OpenSpec strict validate成功。Ruff/formatと全体278 passed/1 skippedは同一実装の直前Apply証拠 |
+
+型修復に対するCRITICAL/WARNINGは0件。既存のEvidence読取り競合と手動probeのLintは上記および親監査に未解決で記録済みであり、解決済みに移していない。型Change単体はarchive可能。main統合の品質ゲートは残課題の解消とPR/CI確認後に判定する。
