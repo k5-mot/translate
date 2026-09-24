@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    TypeAdapter,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -23,6 +30,8 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 1_800.0
 # A fixed reserve absorbs tokenizer estimation and provider framing overhead.
 LLM_SAFETY_TOKENS = 1_024
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Environment durations are finite positive seconds; internal tests may use zero.
+_POSITIVE_SECONDS = TypeAdapter(Annotated[FiniteFloat, Field(gt=0)])
 
 
 class Settings(BaseModel):
@@ -33,10 +42,10 @@ class Settings(BaseModel):
     # CLI and Streamlit share durable runs under this absolute root.
     runs_dir: Path = PROJECT_ROOT / "runs"
     retry_attempts: int = 3
-    retry_base_seconds: float = 1.0
-    retry_max_seconds: float = 30.0
-    request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
-    task_deadline_seconds: float = 21_600.0
+    retry_base_seconds: FiniteFloat = 1.0
+    retry_max_seconds: FiniteFloat = 30.0
+    request_timeout_seconds: FiniteFloat = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    task_deadline_seconds: FiniteFloat = 21_600.0
 
     # Docling transport and OCR accuracy controls.
     docling_url: str | None = None
@@ -132,17 +141,14 @@ def _positive(env: Mapping[str, str], name: str, default: int) -> int:
 
 
 def _positive_float(env: Mapping[str, str], name: str, default: float) -> float:
-    """待機秒数をfloatへ変換し、変換不能と0以下を拒否する。NaN・無限大は検査しない。"""
+    """正の有限秒数を読み、不正値は入力を表示せず設定名と固定理由で拒否する。"""
 
     try:
-        value = float(env.get(name, str(default)))
-    except ValueError as error:
-        msg = f"{name} must be a positive number"
-        raise ValueError(msg) from error
-    if value <= 0:
-        msg = f"{name} must be a positive number"
-        raise ValueError(msg)
-    return value
+        # Preserve float's accepted numeric spellings before applying constraints.
+        return _POSITIVE_SECONDS.validate_python(float(env.get(name, str(default))))
+    except ValueError:
+        msg = f"{name} must be a finite positive number"
+        raise ValueError(msg) from None
 
 
 def _runs_dir(value: str | None) -> Path:

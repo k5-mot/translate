@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
+import pytest
 from typer.testing import CliRunner
 
 import cli
@@ -14,8 +16,6 @@ from translate.workflows import translation as translation_workflow
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
-    import pytest
 
     from translate.common.progress import ProgressCallback
     from translate.common.settings import Backend, Settings
@@ -217,3 +217,36 @@ def test_noninteractive_same_input_always_creates_new_run(
     assert all(result.exit_code == 0 for result in results)
     assert all("mode=new" in result.output for result in results)
     assert len(RunRepository(settings.runs_dir).list_runs().records) == 2
+
+
+@pytest.mark.parametrize("operation", ["translate", "review", "register", "convert"])
+@pytest.mark.parametrize("value", ["nan", "inf", "1e309", "SYNTHETIC_INVALID_DURATION"])
+def test_cli_invalid_duration_prevents_run_and_external_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, value: str
+) -> None:
+    """全処理の公開CLIで実loaderの設定拒否がRun準備と外部実行に先行する。"""
+
+    source = tmp_path / "synthetic.pdf"
+    source.write_bytes(b"synthetic input; must not be processed")
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.setenv("TRANSLATE_REQUEST_TIMEOUT_SECONDS", value)
+    prepare = Mock(side_effect=AssertionError("Run preparation must not start"))
+    execute = Mock(side_effect=AssertionError("External work must not start"))
+    monkeypatch.setattr(cli, "_prepare", prepare)
+    monkeypatch.setattr(cli, "execute_public_run", execute)
+    arguments = {
+        "translate": [str(source), "--output-dir", str(tmp_path / "export")],
+        "review": [str(source), str(source), "--output", str(tmp_path / "review.md")],
+        "register": [str(source)],
+        "convert": [str(source), "--output", str(tmp_path / "output.docx")],
+    }
+
+    result = CliRunner().invoke(cli.app, [operation, *arguments[operation]])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, ValueError)
+    assert str(result.exception) == (
+        "TRANSLATE_REQUEST_TIMEOUT_SECONDS must be a finite positive number"
+    )
+    prepare.assert_not_called()
+    execute.assert_not_called()

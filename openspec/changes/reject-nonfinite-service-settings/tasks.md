@@ -2,14 +2,14 @@
 
 ## 1. 有限値検証と境界の実装
 
-- [ ] 1.1 `tests/test_settings.py`に4環境変数×NaN/±Infinity/overflow/0/負数/変換不能、直接Settingsの非有限値のTestを追加し、現行実装で非有限値拒否のTestが失敗することを記録する。外部Serviceは使わない
-- [ ] 1.2 既存settings.pyの4 fieldと`_positive_float`を導入済みPydanticのFiniteFloat/TypeAdapter制約へ対応付け、1.1を成功させる。標準floatの変換、固定理由のValueError、通常tracebackでの原因非表示を維持し、新Dependency/module/独自finite検証器を作らない
-- [ ] 1.3 分数秒、1,800/21,600秒、有限の大きな値、全角数字・指数等の既存受理表記と内部retry=0をTestし、入力値の意図しない書換え0を確認する。正常設定のfingerprint不変も検証する（Q-COMP）
+- [x] 1.1 `tests/test_settings.py`に4環境変数×NaN/±Infinity/overflow/0/負数/変換不能、直接Settingsの非有限値のTestを追加し、現行実装で非有限値拒否のTestが失敗することを記録する。外部Serviceは使わない
+- [x] 1.2 既存settings.pyの4 fieldと`_positive_float`を導入済みPydanticのFiniteFloat/TypeAdapter制約へ対応付け、1.1を成功させる。標準floatの変換、固定理由のValueError、通常tracebackでの原因非表示を維持し、新Dependency/module/独自finite検証器を作らない
+- [x] 1.3 分数秒、1,800/21,600秒、有限の大きな値、全角数字・指数等の既存受理表記と内部retry=0をTestし、入力値の意図しない書換え0を確認する。正常設定のfingerprint不変も検証する（Q-COMP）
 
 ## 2. 公開境界と自動品質検査
 
-- [ ] 2.1 CLI/UIの既存入口を使い、不正設定はRun作成・外部要求より前に拒否されることをTestする。.envを無効化し実認証情報を渡さない実CLI子processで、設定名/固定理由の表示と無効値marker非表示を検査する。例外文字列だけのTestで合格にしない（Q-SEC/Q-USE）
-- [ ] 2.2 Ruff lint/format、ty、全pytest、OpenSpec strict validation、git diff --checkを実行し、件数、実行commit/差分、追加関数の目的説明、既存API委譲の確認結果をverification.mdへ記録する
+- [x] 2.1 CLI/UIの既存入口を使い、不正設定はRun作成・外部要求より前に拒否されることをTestする。.envを無効化し実認証情報を渡さない実CLI子processで、設定名/固定理由の表示と無効値marker非表示を検査する。例外文字列だけのTestで合格にしない（Q-SEC/Q-USE）
+- [x] 2.2 Ruff lint/format、ty、全pytest、OpenSpec strict validation、git diff --checkを実行し、件数、実行commit/差分、追加関数の目的説明、既存API委譲の確認結果をverification.mdへ記録する
 
 ## 3. 実機検証と指摘解消
 

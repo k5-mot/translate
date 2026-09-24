@@ -12,6 +12,7 @@ from translate.common.fingerprint import (
     diff_snapshots,
 )
 from translate.common.runs import RunRepository
+from translate.common.settings import load_settings
 from translate.tasks import structure
 
 if TYPE_CHECKING:
@@ -102,6 +103,23 @@ def test_credentials_retry_observation_and_qdrant_are_excluded(
     serialized = str(before.snapshot)
     assert "secret" not in serialized
     assert "qdrant" not in serialized
+
+
+def test_validated_service_durations_do_not_change_fingerprint(tmp_path: Path) -> None:
+    """実loaderで検証した秒数だけの変更は入力・出力影響設定の互換性を変えない。"""
+
+    original = load_settings("convert", env={})
+    changed = load_settings(
+        "convert",
+        env={
+            "TRANSLATE_RETRY_BASE_SECONDS": "0.25",
+            "TRANSLATE_RETRY_MAX_SECONDS": "4",
+            "TRANSLATE_REQUEST_TIMEOUT_SECONDS": "3600",
+            "TRANSLATE_TASK_DEADLINE_SECONDS": "43200",
+        },
+    )
+
+    assert _fingerprint(original, tmp_path) == _fingerprint(changed, tmp_path)
 
 
 def test_structure_generation_policy_stays_out_of_public_run_fingerprint(

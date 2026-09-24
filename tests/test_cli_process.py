@@ -78,6 +78,63 @@ def test_noninteractive_cli_always_creates_new_run_for_same_input(
     assert "同じ入力の既存Run" not in combined
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TRANSLATE_RETRY_BASE_SECONDS",
+        "TRANSLATE_RETRY_MAX_SECONDS",
+        "TRANSLATE_REQUEST_TIMEOUT_SECONDS",
+        "TRANSLATE_TASK_DEADLINE_SECONDS",
+    ],
+)
+def test_real_cli_rejects_invalid_seconds_without_echoing_input(
+    tmp_path: Path, name: str
+) -> None:
+    """実CLIを秘密とdotenvから隔離し、不正秒数の安全な拒否とRun未作成を確認する。"""
+
+    source = tmp_path / "source.md"
+    source.write_text("# Synthetic document\n", encoding="utf-8")
+    output = tmp_path / "result.docx"
+    runs = tmp_path / "runs"
+    # Pass only OS startup essentials, never the developer's service credentials.
+    environment = {
+        key: os.environ[key]
+        for key in ("SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT")
+        if key in os.environ
+    }
+    marker = "SYNTHETIC_INVALID_DURATION"
+    environment.update(
+        {
+            "PYTHON_DOTENV_DISABLED": "1",
+            "LANGSMITH_TRACING": "false",
+            "LANGCHAIN_TRACING_V2": "false",
+            "TRANSLATE_RUNS_DIR": str(runs),
+            "OPENAI_API_KEY": "SYNTHETIC_UNUSED_CREDENTIAL",
+            "COLUMNS": "240",
+            "NO_COLOR": "1",
+            name: marker,
+        }
+    )
+    result = subprocess.run(
+        _command(source, output),
+        cwd=Path(cli.__file__).parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    rendered = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert name in rendered
+    assert "must be a finite positive number" in rendered
+    assert marker not in rendered
+    assert "SYNTHETIC_UNUSED_CREDENTIAL" not in rendered
+    assert not runs.exists()
+    assert not output.exists()
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason="POSIX PTY contract; Windows is covered by the non-interactive process test",

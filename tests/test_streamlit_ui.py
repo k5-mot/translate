@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -81,6 +82,42 @@ def test_streamlit_entrypoint_uses_uploaded_file_and_segmented_backend() -> None
     assert not app.exception
     assert main._save.__annotations__["upload"] == "UploadedFile"  # noqa: SLF001
     assert any(widget.label == "翻訳バックエンド" for widget in app.segmented_control)
+
+
+@pytest.mark.browser
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TRANSLATE_RETRY_BASE_SECONDS",
+        "TRANSLATE_RETRY_MAX_SECONDS",
+        "TRANSLATE_REQUEST_TIMEOUT_SECONDS",
+        "TRANSLATE_TASK_DEADLINE_SECONDS",
+    ],
+)
+@pytest.mark.parametrize("value", ["nan", "inf", "SYNTHETIC_INVALID_DURATION"])
+def test_streamlit_invalid_seconds_stop_before_repository_and_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    """実UI起動時の設定例外は固定理由だけを表示し、保存処理と通信へ到達しない。"""
+
+    runs = tmp_path / "runs"
+    monkeypatch.setenv("PYTHON_DOTENV_DISABLED", "1")
+    monkeypatch.setenv("TRANSLATE_RUNS_DIR", str(runs))
+    monkeypatch.setenv(name, value)
+    repository = Mock(side_effect=AssertionError("Repository must not be opened"))
+    request = Mock(side_effect=AssertionError("External HTTP must not be used"))
+    monkeypatch.setattr("translate.common.runs.RunRepository", repository)
+    # AppTest needs Windows loopback sockets for its event loop, not service HTTP.
+    monkeypatch.setattr("httpx.Client.send", request)
+
+    app = AppTest.from_file(str(Path(main.__file__))).run(timeout=10)
+
+    assert len(app.exception) == 1
+    assert app.exception[0].value == f"{name} must be a finite positive number"
+    assert "SYNTHETIC_INVALID_DURATION" not in str(app.exception[0])
+    assert not runs.exists()
+    repository.assert_not_called()
+    request.assert_not_called()
 
 
 def test_streamlit_registration_requires_confirmed_source_id(
