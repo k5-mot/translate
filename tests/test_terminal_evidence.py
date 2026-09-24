@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from uuid_utils.compat import uuid7
 
 from translate.common import terminal_evidence
-from translate.common.identifiers import uuid7
 from translate.common.lifecycle import FailureRecord
 from translate.common.runs import RunRepository
 from translate.common.settings import Settings

@@ -22,6 +22,7 @@ dependencies = [
     "langfuse>=3,<5",
     "qdrant-client>=1.16.0,<2",
     "typing-extensions>=4.16.0",
+    "uuid-utils>=0.17.1,<1",
     "streamlit>=1.64.0",
     "langchain-text-splitters>=1.1.2",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from uuid import RFC_4122, UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from uuid_utils.compat import uuid7
 
-from translate.common.identifiers import uuid7
 from translate.common.redaction import redact_text, redact_value
 from translate.common.workspace import OutputLock, atomic_write_json
 
@@ -151,7 +152,9 @@ class RunRepository:
     ) -> RunRecord:
         """UUIDv7 Runを作り、入力の正本copyとmetadataを保存する。"""
 
-        run_id = str(uuid7())
+        # 呼出元で取得したUnix時刻を渡し、生成器とPython時計の差をIDへ持ち込まない。
+        seconds, nanoseconds = divmod(time.time_ns(), 1_000_000_000)
+        run_id = str(uuid7(timestamp=seconds, nanos=nanoseconds))
         paths = self.paths(run_id)
         paths.root.mkdir(parents=True, exist_ok=False)
         try:

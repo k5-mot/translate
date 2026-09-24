@@ -89,6 +89,8 @@
 
 **状態: 未解決。** 利用者が承認したcommonの範囲はlogger/settingsのみ。既存実装があることを設計承認済みの根拠にしてはならない。
 
+追加対応: [reuse-installed-uuid7-generator](../reuse-installed-uuid7-generator/verification.md)でidentifiers.pyの独自生成器を廃止し、導入済みAPIへ直接委譲した。以下の一覧は監査時の棚卸しであり、identifiers.pyは現在の残存ファイルではない。他Moduleの整理と新実装の実E2Eは未完了。
+
 以下は現在のファイル一覧と調査対象。役割名は入口の棚卸しであり、配置の妥当性や採用理由の説明完了を意味しない。
 
 | ファイル | 現在の役割・説明が必要な対象 |
