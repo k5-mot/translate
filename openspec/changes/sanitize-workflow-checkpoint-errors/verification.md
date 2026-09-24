@@ -84,3 +84,21 @@ session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01
 - 未コミットの製品File SHA-256: `translate/adapters/llm.py` = `d75bef0d3baea485a9d3b6510cd0aef8badfb0f45fcfdd77ec9aef0951186014`、`translate/common/lifecycle.py` = `d15eb3dff4782da13cc747f695e9731b8f4da1b3103e3a5ba73e5214499ddc8a`、`translate/common/terminal_evidence.py` = `881339c47e68857e782f21b4d7c2e2609c65ab4e6458584c3a5e6c1cd565b6f8`、`translate/tasks/review.py` = `b968b2ac43d23032f435c7a8486901c07334cf0a3c76f4899a9b7f4f01e54c14`。
 - contextは30,208 tokens、request timeoutは1,800秒、Task deadlineは21,600秒。実Model/Embeddingは逐次実行し、先行translationの終端後に起動した。実行中の製品Fileを変更しない。
 - 接続時にQdrant clientから`Api key is used with an insecure connection.`という環境警告が出た。鍵値は表示されていない。Checkpoint修正とは別の通信保護上の確認事項として残し、警告の抑止や接続先の無断変更は行わない。
+
+### 先行実translationの終端と実失敗保存（2026-09-25）
+
+- session 58094は終了コード1で終端した。Run `01a0d4f7-20bf-7ed0-b580-7ddd2cb6299d`はTRANSLATEの`text-invoke`で`OpenAIConnectionError`となり、TRANSLATE 2321.043秒、TOTAL 2455.420秒。failure.jsonの時刻は`2026-09-24T20:30:12.019004Z`。DOCXは0件で、Word PDFとComparison Reviewへは進めない。
+- 同じprocessの停止を終端handleで確認した後、SQLiteをmode=roで検査した。checkpointは10件、writesの`__error__`は1件。その1件のtype/valueは既定Serializerが生成する固定値`TaskError`と一致した。raw例外や本文は表示・復元していない。実際の失敗でも今回の例外保存境界が働いた証拠だが、全Checkpoint値の本文不在や過去DBの浄化まで証明するものではない。
+- 終了時にOpenTelemetryのspan export timeoutも記録された。翻訳停止の公開原因は上記LLM接続Errorであり、観測Serviceの障害だけが本処理を停止させたとは判定しない。
+- 接続診断はモデル処理の終端後に逐次実行した。設定済みendpointのGET `/models`は3回とも200、翻訳/Embeddingモデルあり。合成promptのPOST `/chat/completions`はmax_tokens=16で200・16 tokens・最終contentなし、256へ増やした一件は200・40 tokens・finish_reason=stop・contentあり（1.391秒）。promptの応答本文・URL・認証値を証拠へ転載していない。
+- 現在の小要求は成功しており、長い翻訳途中の接続断は再現・原因確定できていない。診断結果を根本修正済みとは扱わず、LLM Serverの再起動、timeout短縮、retry変更は行っていない。
+
+### 最新コードの新規受入Run
+
+- 入力コピーと有限設定の後続修正も実データで通すため、失敗Runを保全したまま新規Runを開始した。失敗Runを黙って削除したり、過去の失敗証拠を成功へ置換したりしない。
+- 起動: `uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-input-safety-acceptance`。
+- 新Run: `01a0d520-15a4-74a2-9eaf-afafa726a03a`、session `3343`。同じlive handleでSPLIT〜LOADの7 Task完了を確認した（DOCLING 34.815秒）。まだ最終成果物・終了コードはなく、3章のTaskは未完了。
+- code commit: `848296e9276edfcc46fe936dc3f61e97b9d91910`。既存の未コミット製品4 File（llm.py/lifecycle.py/terminal_evidence.py/review.py）のSHA-256は上の先行Run記録と全件一致し、今回変更していない。HEADだけの検証ではない。
+- 入力と保存copyはともに5,284,914 bytes、SHA-256 `5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`。保存copyを標準file_digestで読み、metadataのhash/sizeとも一致を確認した。
+- 新processのcontextは30,208、request timeoutは1,800秒、Task deadlineは21,600秒、retry_attemptsは3。先行モデル処理と診断要求がすべて終了してから起動し、並列のModel/Embedding要求は追加していない。
+- 本ターンは実機失敗の診断と新規受入実行、証拠文書だけを扱う。予定していたCONTENT-MERGE-001の新規提案は作成しておらず、指摘は未解決のまま。

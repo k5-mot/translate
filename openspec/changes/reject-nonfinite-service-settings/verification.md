@@ -62,3 +62,9 @@
 - session 58094を同じhandleで再pollしliveを確認した。新しい終端出力はなく、接続警告のみ継続している。先行processへ設定を注入したり停止・再起動したりしていない。今回のsource編集は今後起動するprocess用であり、この先行Runが新修正を検証したとは扱わない。
 - task 3.1〜3.3は未完了。先行実行の終端後に新Codeの実translation→自分で起動する非表示WordによるPDF化→元PDFとのComparison Reviewを逐次実行し、利用者目視を得る必要がある。
 - SETTINGS-FINITE-001の実装と自動回帰は是正済みだが、元Changeを含めた最終解決・archive・main merge・pushは実機証拠が揃うまで行わない。
+
+### 実機Gateの更新（2026-09-25）
+
+先行session 58094はTRANSLATEのOpenAIConnectionErrorで終了コード1となった。現在の短い生成要求は成功したが、先行接続断の原因は未確定。失敗Runは保持し、新processでRun `01a0d520-15a4-74a2-9eaf-afafa726a03a`（session 3343）を開始した。基点は後続入力コピー修正を含む848296eと既存の未コミット差分で、今回の有限設定修正も含む。起動設定はcontext 30,208 / timeout 1,800秒 / deadline 21,600秒 / retry 3。SPLIT〜LOAD完了、終端未確認。
+
+診断・入力hash・正確なrevision範囲は[Checkpoint実機記録](../sanitize-workflow-checkpoint-errors/verification.md)の最新節を参照。実translation→Word PDF→Comparison Review・利用者目視は未完了のため、tasks 3.1〜3.3を完了にしない。

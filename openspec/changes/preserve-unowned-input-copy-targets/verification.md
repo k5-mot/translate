@@ -71,3 +71,9 @@ cleanup拒否の公開準備TestではunlinkへPermissionErrorを注入し、rmt
 - session 58094の同一handleを再pollしliveを確認した。新しいTask完了・終端出力はなく、Qdrant接続警告が追加された。停止・再起動・重複Model要求はしていない。
 - この先行processは起動済みの旧moduleを使用しており、今回のcopy修正を含む実機証拠ではない。source編集と既存processの検証revisionを区別する。
 - tasks 3.1〜3.3は未完了。先行実行後、新Codeのtranslation→Word PDF→Comparison Reviewと利用者目視が必要。INPUT-COPY-001の実装・自動回帰は是正済みだが、最終解決判定は保留する。
+
+### 新規Runによる実入力保存の確認（2026-09-25）
+
+先行session 58094のTRANSLATE接続Errorによる終了コード1を確認し、現在の短い生成要求の成功後、最新848296eのprocessで新規Run `01a0d520-15a4-74a2-9eaf-afafa726a03a`（session 3343）を開始した。既存RunのResumeではコピーが再実行されないため、このGateでは新規保存経路を通している。失敗Runは保全した。
+
+実sample3.pdfの新しい保存copyは5,284,914 bytes、SHA-256 `5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`で、入力とmetadataのhash/sizeに一致した。SPLIT〜LOADは完了しているが、最終DOCXと終了状態は未取得のためtask 3.1は未完了。[実機記録](../sanitize-workflow-checkpoint-errors/verification.md)に診断・実行設定・dirty Codeの範囲を集約した。Word PDF・Comparison Review・利用者目視もまだ完了していない。
