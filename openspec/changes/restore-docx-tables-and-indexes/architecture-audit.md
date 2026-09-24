@@ -427,3 +427,13 @@ diagnostics/は元から存在するdirectoryではなく、前案で新設を�
 utilsはcommonの名前を変えた集約先にはしない。今回の候補はartifacts/redactionのみで、Run管理・モデル実行・Task順序・画面処理は入れない。純粋変換やI/Oという理由だけで未知の汎用helperを追加せず、実利用と必要な安全要件を説明する。commonのlogger/settingsは維持する。
 
 Task関数＋BaseTaskの併用と縦結合表の承認は変更しない。source配置は引き続き提案であり、今回は設計メモの更新のみ。製品code・旧Run・成果物の移動/削除は行っていない。
+
+## LangGraphとの重複をなくす最新方針（2026-09-25）
+
+document_processing/4fileの新設案は撤回する。directoryの変更でなく、LangGraphのcheckpoint・stream・再開機能へ責務を戻す。上記の配置候補を承認済み設計や実装指示として使用しない。
+
+利用者はResume進捗の二重管理を禁止した。既存translation/comparison_reviewはSqliteSaver、get_state().next、stream(None)を使用しているため、独自の完了リストから次Taskを選ぶ仕組みを作らない。GraphStateの表示用完了値、WorkflowProgress.completed、RunRecord.status/last_taskも別正本として維持しない。STRUCTURE page cache/REVIEW chunk cacheの独自再開は、逐次subgraph等の導入済み永続化へ移す設計が必要で、消すだけで完了page/chunkのモデル呼出を増やす方針にはしない。具体的な根拠・未解決条件は[coding-rules-audit.md](coding-rules-audit.md)参照。
+
+入力copy、指定保存構成、manifestの入出力情報、入力/設定互換性、root内削除、成果物exportは製品固有の責務である。これらをcheckpoint管理と混同して廃止しない。新たな汎用実行管理Layerは作らず、既存Workflowと必要最小限の保存処理へ縮小する。
+
+utils/artifacts.pyは利用者が理解・指定したloader/saverの責務に限定する。redactionの保護要件は維持するが、独立utils/redaction.pyの必要性は未承認。ログ/Trace/表示に対する安全な出力項目選別へ縮小した後に共有関数の必要性を判断する。Artifact本文のsaverへ一律redactionを適用して文書内容を消してはならない。

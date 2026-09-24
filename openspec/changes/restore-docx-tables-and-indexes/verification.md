@@ -122,6 +122,14 @@
 
 ## 追加監査（2026-09-25）
 
+### 更新goalの③-1・③-2・④
+
+[coding-rules-audit.md](coding-rules-audit.md)に追跡Python全90 filesの関数説明欠落候補を全件記録した。表修正後のAST集計は912関数、docstringなし474件。関数先頭のコメントを持つ候補も含むため、内容と代替可否を個別確認する。lambda・実行文字列内関数・未追跡probeは別枠で、黙って合格にしない。
+
+導入済みuuid-utils/tenacity/Pydanticと標準hashlibに置換可能な機構を確認。一方、portalocker.open_atomicは既存path更新を許さず、現行Artifact更新の代替にならない。既存依存の名前だけを理由に機械的置換しない。
+
+④により、GraphStateの独自完了情報、WorkflowProgressの再集計、RunRecord.status/last_task、STRUCTURE page/REVIEW chunkの独自再開cacheも整理対象とする。LangGraph checkpointを唯一の再開正本とし、manifestに独立のTask進捗を持たせない。register/convertは現状Graph未使用なので移行設計に含める。document_processing/4file新設案は撤回した。③・④とも未解決である。
+
 利用者の全件監査依頼を受け、common全11ファイル、Task全20件、残りの製品ソースと追跡Testを棚卸しした。責務・API・依存・追加背景・配置案・Task構造の比較・規則別判定は[architecture-audit.md](architecture-audit.md)に記録する。**ARCH-001/ARCH-002は説明を作成した段階で、利用者承認・移行・解決は未完了。**
 
 - **ARCH-003（未解決）**: CODING_RULES全体への適合確認。全体Ruffは1件、tyは23 diagnosticsで失敗。formatは267 files成功。pytestは初回268 passed/1 failed/1 skipped、失敗Test単体は成功、全体再実行は269 passed/1 skipped。再現性の問題は未解決とし、後の成功で初回失敗を相殺しない。
