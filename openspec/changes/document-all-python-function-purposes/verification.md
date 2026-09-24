@@ -95,6 +95,7 @@
 - SETTINGS-FINITE-001の後続調査で4秒数設定のNaN/正Infinity/overflow受理と、無効文字列のCLI原因表示を再確認した。[reject-nonfinite-service-settings](../reject-nonfinite-service-settings/proposal.md)で既存Pydanticを使う是正を提案し、内部retry=0との互換性と公開設定の正数制約を区別した。提案のみで、指摘は未解決。[検証範囲](../reject-nonfinite-service-settings/verification.md)を参照。
 - 後続applyで4 fieldとenvの有限値検証を実装した。修正前32件の失敗を再現後、公開CLI/UIを含む全体556 passed / 1 skippedを確認した。実装・自動回帰は是正済みだが、修正後の実translation→Word PDF→Comparison Reviewが未完了のため、最終解決は保留する。詳細は上記の検証範囲のApply節を参照。
 - **INPUT-COPY-001**: `_copy_verified`のtarget.openへ`FileExistsError`を注入すると、target.unlinkが1回呼ばれた。新規作成に失敗した対象までcleanupする。Fileの所有権を確認したcleanupへ修正する必要がある。mockだけの再現で、利用者の既存Fileが消えたとは主張しない。
+- source open失敗時にも未作成targetへのunlinkを呼ぶことを再確認した。[preserve-unowned-input-copy-targets](../preserve-unowned-input-copy-targets/proposal.md)で作成成功に限定した後始末と標準copy/hash APIへの委譲を提案した。提案のみで未解決。通常の公開経路のroot衝突は既存Runを削除しないため、helperの不備と実データ喪失を区別する。
 - **SECURITY-BOUNDARY（既存指摘の補強）**: `safe_error(ValueError("SYNTHETIC_BODY_TEXT"))`がその自由文を保持した。既知値のマスクが任意の本文非出力を保証しないことを確認した。安全な型/固定fieldによる公開境界への縮小は配置監査の未解決方針に対応する。
 - 上記4件は合成値・mockのみで検査し、外部Service呼出と実データの保存・削除は行っていない。配置整理だけでこれらの振る舞いの不具合が直るとは扱わない。
 
