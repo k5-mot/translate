@@ -55,10 +55,26 @@ def _require_translations(document: Document) -> None:
                     raise ValueError(msg)
 
 
+def _canonicalize_assets(document: Document, asset_root: Path) -> None:
+    """旧checkpointのstructured/assets URIをMERGE rootへ寄せる。"""
+
+    for page in document.pages:
+        for block in page.blocks:
+            asset_path = block.asset_path
+            if not asset_path or not asset_path.startswith("structured/assets/"):
+                continue
+            candidate = asset_path.removeprefix("structured/assets/")
+            candidate = candidate.removeprefix("assets/")
+            candidate = f"assets/{candidate}"
+            if (asset_root / candidate).exists():
+                block.asset_path = candidate
+
+
 def run(document: Document, asset_root: Path, output: Path) -> Document:
     """文書参照とassetを検査しreportを保存する。"""
 
     start = time.perf_counter()
+    _canonicalize_assets(document, asset_root)
     _require_translations(document)
     validate_document(document, asset_root)
     warnings = _translation_warnings(document)

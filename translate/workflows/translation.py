@@ -305,10 +305,12 @@ def build_graph(
 
     def validate_node(state: TranslationState) -> dict[str, Any]:
         work = _workspace(state)
-        validate.run(
+        value = validate.run(
             _document(state), work / "merge", work / "validate" / "report.json"
         )
-        return {"document_path": state["document_path"]}
+        return {
+            "document_path": _save_document(work / "validate" / "document.json", value)
+        }
 
     def markdown_node(state: TranslationState) -> dict[str, Any]:
         work = _workspace(state)

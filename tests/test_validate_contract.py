@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from translate.document import Block, Document, Inline, Page
-from translate.tasks import validate
+from translate.tasks import load, validate
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,3 +78,48 @@ def test_missing_translation_stops_without_publishing_report(tmp_path: Path) -> 
         validate.run(document, tmp_path, output)
 
     assert not output.exists()
+
+
+def test_picture_asset_path_matches_merged_assets_root() -> None:
+    """Doclingのstructured URIをMERGE後のassets rootへ正規化する。"""
+
+    block = load._block(  # noqa: SLF001
+        {},
+        {
+            "self_ref": "#/pictures/1",
+            "label": "picture",
+            "image": {"uri": "artifacts/part-0001/image.png"},
+        },
+        0,
+    )
+
+    assert block is not None
+    assert block.asset_path == "assets/part-0001/image.png"
+
+
+def test_validate_migrates_legacy_structured_asset_path(tmp_path: Path) -> None:
+    """同一Runの旧checkpointも成果物生成前に安全なURIへ移行する。"""
+
+    asset = tmp_path / "assets" / "figure.png"
+    asset.parent.mkdir()
+    asset.write_bytes(b"png")
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="figure",
+                        order=0,
+                        kind="figure",
+                        asset_path="structured/assets/figure.png",
+                    )
+                ],
+            )
+        ]
+    )
+
+    output = tmp_path / "report.json"
+    result = validate.run(document, tmp_path, output)
+
+    assert result.pages[0].blocks[0].asset_path == "assets/figure.png"

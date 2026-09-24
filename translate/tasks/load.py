@@ -530,8 +530,11 @@ def _block(
         if not isinstance(uri, str) or not uri:
             msg = f"picture asset is missing: ref={ref} label={label}"
             raise ValueError(msg)
-        relative = uri.removeprefix("artifacts/")
-        uri = f"structured/assets/{relative}"
+        relative = uri.removeprefix("artifacts/").removeprefix("assets/")
+        # MERGE publishes the contents of each structured/assets directory
+        # under the run-level assets root; keep the Internal Document path
+        # relative to that root so VALIDATE/Markdown resolve the same file.
+        uri = f"assets/{relative}"
         caption = _caption_inlines(document, item, ref)
         return Block(
             id=ref,

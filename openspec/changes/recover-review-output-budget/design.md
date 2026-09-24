@@ -11,6 +11,7 @@
 - Review pairsを決定的なchunkへ分割し、出力枯渇を検出してbounded split fallbackする。
 - chunk結果を順序保持でFindingへ統合し、全chunk完了後だけatomic publishする。
 - Resume時に完了済みchunkを再利用し、失敗chunkから再開できるArtifact境界を提供する。
+- 旧checkpointの`structured/assets/...`はVALIDATE前に`assets/...`へ正規化し、出力Markdown/DOCXの参照先を一貫させる。
 
 **Non-Goals:**
 
@@ -51,4 +52,3 @@
 2. 失敗したRun `01a0d080-2c51-7da5-a91b-700b9a21e7a9`を明示Resumeし、REVIEWから完了させる。
 3. 比較Reviewと成果物・Security・Lifecycleを検証し、verification.mdへ記録する。
 4. 問題時はChange commitをrollbackし、Runを保持する。
-

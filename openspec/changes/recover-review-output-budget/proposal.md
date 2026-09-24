@@ -9,6 +9,7 @@
 - REVIEWの入力pairsを決定的なsub-chunkへ分割し、各chunkをシーケンシャルに査読する。
 - output-truncated時は有限retry後にchunk分割へfallbackし、全Findingをページ単位へ統合する。
 - Review Artifactは全chunk完了後にatomic公開し、未完了時は成果物を公開せず同じRunをResume可能にする。
+- 既存checkpointに残るDocling画像URIもMERGE後の共通assets rootへ正規化し、VALIDATEから成果物生成まで継続できるようにする。
 - `sample3.pdf`のtranslate成果物を使って、同じRunのREVIEW Resume、Comparison Reviewおよび最終品質検証を行う。
 
 ## Capabilities
@@ -42,4 +43,3 @@
 - Q-SEC: Review prompt、生応答、入力本文をFailure Evidenceへ保存しない。
 - Q-PERF: 分割は逐次実行し、chunk数・wall time・token診断を安全な証跡へ記録する。
 - Q-MNT: 全pytest、Ruff、format、型検査、OpenSpec strict validationを通過させる。
-
