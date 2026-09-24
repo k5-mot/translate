@@ -4,9 +4,62 @@
 
 ## 現在の判定
 
-実装と自動検証は完了（tasks 10/11）。利用者の目視確認は未完了。以下の積み残しは本Changeの実装修正だけで解消済みとしない。archive判定は保留する。
+2026-09-25の正式verify結果: **検証失敗・archive不可**。既存Testは成功したが、追加の境界ケースで表の列位置とInline情報の欠落を再現した。tasksのチェックは10/11であり、チェック済みであることを全入力の正しさの証拠にはしない。利用者の目視確認も未完了。以下の積み残しは保持する。
 
-## 自動検証と実成果物
+## 正式検証（2026-09-25）
+
+対象実装commit: `afbd313`。検証では製品コードとtasksのチェック状態を変更していない。検証結果だけを追記する。
+
+| 観点 | 結果 |
+| --- | --- |
+| Completeness | tasks 10/11。4.3の利用者目視確認が未完了 |
+| Correctness | 4 Requirement中3件を確認、表・構造保持の1件に不一致。CRITICAL 2件、WARNING 2件 |
+| Coherence | HTMLを経由しないgrid table、日本語静的一覧、一覧末尾改ページ、見出しnumPr除去は設計に対応。結合セルとheader保持には不一致 |
+
+### CRITICAL（archive前に解決）
+
+**V-C1: Task 4.3が未完了。** `tasks.md:24`の利用者によるWord/PDFの目視承認は得られていない。Word COMでPDFを生成できたことは利用者承認の代替ではない。推薦対応: 既知の品質問題を整理・修正し、利用者の確認結果を記録してから4.3を完了とする。
+
+**V-C2: headerからbodyへまたがるrowspanでセルが別列へ移動する。** `translate/tasks/markdown.py:162`、`:176`、`:177`は先頭1行だけをTableHeadへ分離するため、その境界をまたぐrowspanを保持できない。次の有効な2列の表を製品rendererと実Pandocへ渡して再現した。
+
+- 入力: `(row=0,column=0,rowspan=2,header=True,text=MERGED)`、`(0,1,header=True,text=H)`、`(1,1,text=BODY)`。
+- 期待: MERGEDが第1列の2行を占有し、BODYは第2行・第2列。
+- 実際: grid tableの第2行が`| BODY | |`となり、DOCXの`w:vMerge`は0個。BODYが第1列へ移動する。変換は例外なく成功する。
+- 推薦対応: header/body境界をまたぐ結合を表現可能な構造として構築する。表現できない場合も、黙って列をずらして公開してはならない。行・列位置と結合範囲を照合する回帰Testを追加する。対応箇所は`_render_table`、`_table_row`と`tests/test_output_contract.py:378`。
+
+### WARNING（修正推奨）
+
+**V-W1: 表セル内のLink・Code・文字装飾を保持しない。** `translate/tasks/markdown.py:211`の`_table_inlines`は明示改行以外をStr/Spaceに変換し、`kind='link'`のhref、`kind='code'`、marksを参照しない。太字BOLD、href付きclick、Code `x = 1`を同じセルへ入れると、出力Markdownは`BOLDclickx = 1`のみ。DOCXの該当表に`w:b`と`w:hyperlink`がなく、relationshipsに指定URLもない。旧HTML処理でもInlineを平文化していたため、すべてを今回新規に生じた回帰とは扱わないが、構造・Link保持の要件に対する残存不具合である。推薦対応: Inlineのkind/marksを表の構文木へ対応付け、captionを含めて実DOCXで保持を検査する。
+
+**V-W2: 一部だけheaderの行ではheader指定が失われる。** `translate/tasks/markdown.py:162`の`all(cell.header ...)`により、左上が空の通常セル・右上がheaderの表はTableHeadが空になる。row headerも通常セルとして出力される。空欄/HEADER、ROWHEADER/VALUEの2×2表で`w:tblHeader=0`を再現した。推薦対応: 空の左上セルを伴う列見出し、複数header行およびrow headerの扱いを明確にし、`TableCell.header`を失わない変換とTestを用意する。
+
+### 要件・Scenarioとの対応
+
+| Requirement / Scenario | 実装・検証証拠 | 判定 |
+| --- | --- | --- |
+| Markdown変換に成功する | `markdown.py:146`、`pandoc.py:120`。製品renderer経由でWord表、結合セル、captionを確認。ただしV-C2/V-W1/V-W2の境界ケースで不一致 | 部分適合 |
+| 見出しと図表がある文書を変換する | `pandoc.py:345`、`:369`。実成果物で目次26/図一覧13/表一覧1項目、一覧直後の改ページ3個を確認 | 適合 |
+| 対象がない一覧を変換する | `test_output_contract.py:191`および実Pandocの表のみのfixture。空一覧は見出しのみで、動的フィールドなし | 適合 |
+| 番号付き見出しを変換する | `pandoc.py:306`、`test_output_contract.py:378`。Heading1～9のnumPr除去とoutlineLvl保持を確認 | 適合（同梱template） |
+| テンプレートスタイル一覧を検証する | template XMLと`template-style.md`のstyle ID・種別・表示名・継承元の全4列を照合。110/110一致 | 適合 |
+
+### 今回実行した検査
+
+- `uv run pytest -q tests/test_output_contract.py`: **17 passed**。
+- 対象3ファイルのRuff lint/format、および`ty check translate/adapters/pandoc.py translate/tasks/markdown.py`: **成功**。
+- `openspec validate restore-docx-tables-and-indexes --strict`: **成功**。
+- 追加の診断fixtureを一時directoryで実行し、V-C2/V-W1/V-W2を再現した。既存17テストはこれらのケースを含まない。
+- 既存sample3成果物を読取り検証: 表3個、画像24個、dirty属性0、updateFieldsなし。PDFは28ページで、2ページ目に目次、3ページ目に図一覧、4ページ目に表一覧、5ページ目から本文。
+- DOCX SHA-256: `5ba3c9f7a9443476c77732c6478384cfcb3877dc623792117d683fcfeaee76f4`。
+- PDF SHA-256: `4eb486b411d573a5da596add6430bc35ad054080a7b635b78d3e68976df97d4d`。
+- 本verifyでは実LLM/Embeddingへの要求、RunのResume、Word COMによる再生成は行わない。全体suiteの269 passed/1 skippedは直前のapply時の結果であり、本verifyの再実行件数には含めない。
+- CLI/UIを含む新規RunのE2Eと利用者の目視確認は未実施。過去Runのメモリ内asset path補正による生成成功を、未補正の公開Resumeが成功した証拠として扱わない。
+
+### 最終判定
+
+**CRITICAL 2件・WARNING 2件。archiveは不可。** ARCH-001/ARCH-002、黄・緑の丸の配置、図採番、テンプレートの仮ヘッダーについては後述の既存積み残しとして引き続き未解決とする。
+
+## Apply時の自動検証と実成果物（過去の証拠）
 
 - `uv run pytest -q`: 269 passed, 1 skipped。
 - DOCXに関する17件のTestで、実rendererからのWord表化、rowspan/colspan、明示改行、記号、日本語一覧、CodeとCaptionの目次除外、空一覧、改ページ、正規化の再実行、既存成果物のatomic公開を検証した。
