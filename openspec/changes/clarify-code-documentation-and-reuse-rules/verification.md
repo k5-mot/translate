@@ -61,6 +61,8 @@
 
 公開FailureRecord/ログの安全化だけでは、Graphが先に保存する例外本文を保護できない。Task/nodeから例外が出る前に安全な分類値へ変換し、本文・Credential・raw応答がCheckpointへ入らない回帰Testが必要。機能の移動だけで解消しない。
 
+追加調査により、nodeで例外型を変えなくても、公開`SqliteSaver(conn, serde=...)`の保存境界で直接例外だけを安全化できることを確認した。上記のnode変換は唯一の実現手段ではない。元の例外型・retry・制御フローを保持する案を別Change [sanitize-workflow-checkpoint-errors](../sanitize-workflow-checkpoint-errors/proposal.md)として提案し、実験結果と適用範囲を同Changeの[verification.md](../sanitize-workflow-checkpoint-errors/verification.md)へ記録した。製品実装はまだなく、本指摘は未解決のまま。
+
 ### 配置と移行の状態
 
 - 現行共通root内にrun.jsonが8 files、新しいoutputs配下のmanifest.jsonは0 filesだった。これは有効性検証済みRun数ではなくFile件数。旧データを移動・削除していない。
