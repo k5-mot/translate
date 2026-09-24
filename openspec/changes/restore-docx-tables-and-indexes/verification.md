@@ -358,3 +358,11 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 比較受入は新規CRITICAL 2件により不合格。14/16 tasksは変更せず、利用者目視・既知の表品質・配置/再開管理などの指摘も継続する。実行中Reviewが後で終了コード0となっても、上記の誤対応に基づくFindingを翻訳不具合と即断せず、正式verify・archive・main merge・pushの成功条件とは扱わない。
 
 記録後、`tests/test_documentation.py`・`tests/test_align_contract.py`・`tests/test_comparison_capability.py`は計26 passed（1.94秒）。本ChangeとCheckpoint Changeのstrict validationはvalid、git diff --checkは指摘なし。既存Testが新しい不適合を検出しないことは上記のassert点検と分けて記録する。全製品suiteと外部モデルの再実行はせず、session 12758の同一live handleでREVIEW継続を確認した。製品・Test Fileの編集、Runの停止・再起動・削除は行っていない。
+
+### 先行Reviewの終端確認（2026-09-25 07:30 JST）
+
+同じsession 12758は終了コード0、TOTAL 5615.091秒で終了し、公開Markdownと診断JSONを保存した。CHECK 247件＋REVIEW 170件の417 Findingがあるが、既知のALIGN誤対応に由来する指摘を含むため、そのまま翻訳欠陥数としない。旧REPORTの公開Markdownには根拠90件・修正方針98件の文字列が見当たらず、COMPARE-REPORT-001も実成果物で再現した。
+
+詳細・hash・修正版REPORTへの実データ再投入結果は[後続Changeの検証記録](../preserve-public-review-finding-details/verification.md)を参照する。修正版の単独描画では417区画の項目欠落0件・生HTML token 0件だったが、最新E2Eを代替しない。
+
+先行Review終了後、現在の入力/設定と互換な翻訳Run `01a0d520-15a4-74a2-9eaf-afafa726a03a`をsession 43282でResumeした。モデル実行は重複していない。14/16 tasksと不合格判定は維持し、最新Word/PDF・比較・利用者目視、表内画像、common/再開統合、ALIGN等の残課題が解消するまでarchiveしない。
