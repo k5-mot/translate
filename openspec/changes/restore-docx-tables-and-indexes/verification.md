@@ -277,6 +277,60 @@ openspec-verify-changeで本Changeのproposal/specs/design/tasksを読み直し�
 - この継続は`run-lifecycle`の「外部障害を分類して処理する」にある、回復しないLLM障害ではResume可能に停止する契約と不整合。推薦対応: 別Changeで安全な失敗伝播・原因分類を回復し、有限context内で1対多・多対1を含む正しい対応を得る実装と回帰Testを用意する。停止させるだけ、またはID数だけを検証する修正で意味的対応の指摘を解決済みにしない。
 - `tests/test_align_contract.py`の多対多Testは正解Groupを返すmodel doubleを採用できることを確認する。実文書の長さ、モデル失敗、上記の誤対応を検出するTestではない。
 
+#### 是正提案前の追加事実（2026-09-25 06:30 JST）
+
+同じ保存済みsource/target LOAD Artifactから製品`align._items`を通し、現行と同じ`json.dumps(..., ensure_ascii=False)`の要求文字列をメモリ内で組み立てた。外部要求・File書込みは行っていない。Settingsも読取りのみとし、URL・Model名・秘密値・本文を出力していない。
+
+| 測定対象 | 値 |
+| --- | ---: |
+| 原文 / 訳文 TextUnit数 | 264 / 289 |
+| user payload文字数 | 99,815 |
+| user payload UTF-8 bytes | 148,037 |
+| PydanticOutputParserのschema指示文字数 | 1,086 |
+| 設定context / output予約tokens | 30,208 / 16,384 |
+| image / safety予約tokens | 2,048 / 1,024 |
+| Settings.available_input_tokens | 10,752 |
+| 最大単位文字数（原文 / 訳文） | 1,936 / 817 |
+
+文字数をGemmaの実token数と同一視しない。現ALIGNはこの全文とschema指示を一要求にし、送信前budget検査を持たない。これは分割設計が必要な根拠だが、失敗応答の原因記録がないため、過去の実fallback原因をcontext超過と断定する証拠ではない。REQUEST timeoutを延長するだけでこの構造上の問題が解決するとは扱わない。
+
+応答の構造検査にも不足がある。`AlignmentGroup`を通常のPydantic初期化で作り、`align._valid`へ渡すメモリ合成で、次の10条件がすべてTrueになった。
+
+- matchedなのにsourceが空、またはtargetが空。
+- source_onlyにtarget_idsがある、またはtarget_onlyにsource_idsがある。
+- 正常Groupに両側空のGroupを追加する。
+- confidenceが−1、2、NaN、正の無限大、負の無限大。
+
+補助の読取り専用調査でも同じ結果を確認し、ID重複・未知IDはFalse、未定義kindはPydantic Literalで拒否されることを確認した。つまり現在の検査は全IDのpartitionであり、kindと両側の整合やconfidenceの有限性/範囲は保証しない。これらの決定的検査を加えるだけでも、意味的に正しい対応の証明にはならない。
+
+`_items`はTextUnitのIDとsource文字列だけを渡す。走査順とcaption/cellのID suffixは残るが、page境界、見出しkind/level、bbox、Block.order値、セルheader/span、Inline href/marksは要求にない。これらの属性だけを変えても同じ`_items`結果になることをメモリ合成で確認した。次の設計では構造文脈を候補探索に利用し、単なる同番号・近い位置を正しい対応の根拠としない。
+
+#### 導入済み機能の再利用範囲
+
+| 既存機能 | 使える部分 / 不足する契約 |
+| --- | --- |
+| REVIEWの_review_chunks | 対応済みpairの件数/文字量分割。未対応文書の探索や境界をまたぐ多対多の調停はしない |
+| TRANSLATEの_chunks | Inline列の分割。二言語対応はせず、巨大な単独Inlineは上限を超え得る |
+| RecursiveCharacterTextSplitter | length_function/overlapによる文字列分割。両文書IDの一意被覆や対応確定はしない |
+| TokenTextSplitter / from_tiktoken_encoder | 指定encodingの分割。ローカルGemmaのtokenizer一致は確認されておらず、意味対応機能ではない |
+| MarkdownHeaderTextSplitter | Markdown見出し分割。Internal Documentの英日見出し対応を解決しない |
+| llm.structured | 既存の単一要求・有限retry・応答解析へ委譲可能。ALIGN全体の分割と対応統合はしない |
+
+調べた既存Codeと導入済み分割APIには、有限context分割と英日多対多対応・全IDの一意被覆をそのまま満たすAPIは見つからなかった。この限定調査を全Packageの不存在証明にはしない。既存部品で不足する対応の責務だけをTaskに置き、独立した再開Cacheや汎用frameworkは追加しない。片側だけを機械的に二分し、反対側の同じ位置と対応させる設計では既知の誤対応を解消できない。
+
+#### 是正Changeの確定前に必要な利用者判断
+
+LLM通信が回復しない場合に停止する方針は既承認であり、再質問しない。今回の未決事項は、通信と構造検証には成功したが意味的な対応先を確定できず、本当の訳抜けとも区別できない場合である。
+
+- 推奨案: ALIGNで停止してResume可能な状態を保持し、誤った組で後続Reviewへ進まない。
+- 代替案: 「対応未確定」の公開状態を新設して全対象を保持し、確定した組だけReviewする。この場合は現在のmatched/source_only/target_onlyと公開report契約を拡張する必要がある。
+
+grill-with-docsの判断として利用者へ確認中。無回答を採用承認としない。新しい是正Changeはまだ作成せず、Code/Testも変更していない。どちらの案でも、適切に分割して既知の実対応を得ることが是正目標であり、巨大入力を停止させるだけでCOMPARE-ALIGN-001を解決済みにしない。改ページ差・多対多・順序が入れ替わる対応を、単純な同じ位置の窓に限定して切り捨てない。
+
+実Review session 12758は同一handleのpollでliveを確認しており、追加のLLM/Embedding要求・停止・再起動は行っていない。前提が変わらない既存Artifactは読取りだけで保持する。
+
+追記後の文書・ALIGN・比較Capabilityの既存Testは41 passed（2.33秒）、本Changeのstrict validationはvalid、git diff --checkは指摘なし。今回の構造不正を検出する製品Testはまだ追加しておらず、これらの既存Test成功を指摘の解消とは扱わない。
+
 ### COMPARE-REPORT-001: 公開MarkdownからFindingの対象・根拠・修正方針が落ちる（CRITICAL・未解決）
 
 - `comparison-review`の「問題と根拠をReportする」は重大度・種別に加え、対象、根拠、修正方針を公開reportへ記載する契約である。
