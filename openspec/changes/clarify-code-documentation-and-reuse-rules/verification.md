@@ -42,3 +42,30 @@
 ## 判定
 
 実処理の証拠不足につき正式verify・archive・mainへのマージは未実施。文書検査の合格を製品の検証合格へ読み替えない。
+
+## 再開統合の追加調査（2026-09-25）
+
+上記は以前の時点の記録。関数説明の監査は別Changeで完了し、`4cc80e8`に記録済み。現在の実translationは同じsession 40709のlive handleで継続を確認し、Workflow内REVIEWは2535.912秒で完了した。最終DOCX・Word PDF化・Comparison Review・目視確認はまだ完了していない。
+
+### 導入済み機能の再利用証拠
+
+- LangGraph 1.2.11 / checkpoint 4.2.0 / sqlite 3.1.1の実APIとソースを確認。`:memory:` SQLite、`max_concurrency=1`、`durability="sync"`の合成試験で、flatな永続Taskの成功結果がResume後に再利用された。
+- Page試験の呼出履歴は`[1, 2, 3, 3]`。親分割→左成功→右失敗の試験は`[root, root.0, root.1, root.1]`。後者では通常関数で再帰し、各要求の結果を一件ずつ待った。親の分割判断と左Artifact参照はLangGraphが保持し、独自Cacheは使用していない。
+- ネストしたdurable Taskから別Taskの結果を待つ試験は同時実行数1で完了せず、対象の合成試験processだけを停止した。スタックによるdeadlock確定診断まではしていない。この方式を確認済みの実装手段として採用しない。
+- 合成markerによるSQLite全列検査では、Task戻り値、Task例外message、config metadata、Graph入力が保存された。Task引数だけのmarkerはこの試験では保存されなかったが、観測経路もあるため秘密を渡してよいという保証には使わない。
+- すべて外部モデル・利用者Fileを使用しない合成試験。別processでの再開、強制終了時の永続化、実Artifactの復元と副作用重複防止は未検証。これらは是正実装の回帰条件へ残す。
+
+### SECURITY-CHECKPOINT-001（新規・未解決）
+
+既存`translation.build_graph(settings)`のSPLITだけを、合成本文markerを含むValueErrorを投げるdoubleへ置換して実Graphを実行した。Langfuseは未設定、socket.connectは禁止し、保存先はメモリSQLiteのみ。status通知側で`safe_failure_reason`を適用した結果は`ValueError`だけだったが、SQLite writesの`__error__`と`get_state().tasks[*].error`には合成本文markerが保存された。
+
+公開FailureRecord/ログの安全化だけでは、Graphが先に保存する例外本文を保護できない。Task/nodeから例外が出る前に安全な分類値へ変換し、本文・Credential・raw応答がCheckpointへ入らない回帰Testが必要。機能の移動だけで解消しない。
+
+### 配置と移行の状態
+
+- 現行共通root内にrun.jsonが8 files、新しいoutputs配下のmanifest.jsonは0 filesだった。これは有効性検証済みRun数ではなくFile件数。旧データを移動・削除していない。
+- 現コードには独自Page/Chunk Cache、GraphState完了一覧、WorkflowProgress集合、RunRecord.status/last_taskが残っている。さらに公開入口とWorkflowでfingerprintを別々に構築している。
+- `runs.collect_input_sources`と`qdrant._registration_sources`の登録入力展開・source key生成も重複している。製品利用ゼロのatomic_publish_directory、診断だけが使うload_jsonを確認した。新配置へ丸ごと持ち込まない。
+- design.mdへ責務縮小とoutputs.py案を記載したが、Q1（旧UUIDv7移行）、Q2（全操作の保存形式）、Q3（配置）の回答待ち。grill-with-docsの判断確認に従い、正式な新Change作成と製品実装へは進めていない。tasks 3.1〜3.4は未完了のまま。
+
+今回の文書検査は`tests/test_documentation.py`が21 passed（0.25秒）、OpenSpec strict validationがvalid、git diff --checkは指摘なし。製品コードを変更していないため全製品Testは再実行していない。先行Changeの409 passedは今回の再開統合が実装済みという証拠には使わない。

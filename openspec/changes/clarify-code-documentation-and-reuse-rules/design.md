@@ -51,3 +51,46 @@ Q-MNT: 汎用規約と製品固有要求の管理先を分離する。Q-REL: 再
 ## Migration Plan
 
 製品固有の再開状態節とcommon配置制約をCODING_RULESから除去し、OpenSpecの要求・設計へ移す。独立したPage/Chunk記録、独自完了情報、公開状態の正本統合は未実装として追跡する。register/convertを含む移行設計と既存UUIDv7データの扱いを確定する前に、再開データを削除・変換しない。
+
+## 再開統合の事実調査と未承認案（2026-09-25追記）
+
+本節はtask 3.1の判断材料であり、移行・配置の承認や実装完了を意味しない。新しい是正Changeの正式提案は、末尾の未決事項への回答後に作成する。
+
+### 導入済み機能へ戻す対象
+
+- 導入版はLangGraph 1.2.11、langgraph-checkpoint 4.2.0、langgraph-checkpoint-sqlite 3.1.1。Graph nodeから`langgraph.func.task(...).result()`を一件ずつ呼び、成功結果をSQLite pending writesから再利用できる。既存の`max_concurrency=1`を維持する。
+- メモリSQLiteの合成試験でPage 3失敗後のResumeは呼出履歴`[1, 2, 3, 3]`となり、成功したPage 1/2は再実行されなかった。別の分割試験でも`[root, root.0, root.1, root.1]`となり、保存した分割判断と左結果を再利用できた。実Page/Chunk Artifactや別process再起動を含む検証はまだ行っていない。
+- `@task`内で別の`@task(...).result()`を待つネスト試験は同時実行数1で完了しなかった。全再帰関数をdecoratorで包む案は採用しない。通常関数の再帰制御からdurableな要求をflatに逐次呼ぶか、逐次subgraphを用いる。安全な分割判断もLangGraphの結果として保持し、Resume前後の呼出順を変えない。
+- Graph state、Task戻り値、config metadata、例外文字列は永続化対象になる。本文・画像・Settings・Credentialを渡さず、安定したArtifact path/ID/hashと安全な小metadataへ限定する。Settingsは実行時closure等で参照する。Task引数だけを秘密の安全な逃がし先として扱わない。
+- Page/Chunkの完成ArtifactはTask全体のランダムな一時directoryとは別に安定保存し、LangGraphへその参照だけを返す。独自`.complete.json`やdigest一致をskip判定の正本にしない。checkpointが参照するArtifactの欠損・改変は整合性Errorとして検出し、黙って成功扱いしない。
+- 進捗はGraph定義と`get_state().next/tasks`、履歴・`tasks/checkpoints` streamから導出する。`completed_tasks/current_task/current/total`、`WorkflowProgress.completed`、保存metadataの`status/last_task`を独立して更新する方式を廃止する。省略したTaskを架空の成功として記録しない。process生存/排他所有権と、Graphの再開位置は別の情報として扱う。
+- register/convertは現在LangGraph外で直接実行している。各操作を既存処理へ委譲する最小Graphにすれば同じ状態照会が使える。登録処理を新たに全段階へ分解することや、汎用実行frameworkの追加は前提にしない。Qdrantの決定的ID・登録後照合は副作用の冪等性確認として残す。
+
+### 機能を縮小した後の配置候補
+
+| 現行 | 候補 | 残す責務と廃止する責務 |
+| --- | --- | --- |
+| runs | 新設`translate/outputs.py` | 入力copy、UUIDv7、manifest、一覧/検索、削除/exportと保存先排他のみ。Workflow・LLM/Qdrantをimportせず、Task完了状態や処理選択を持たない |
+| fingerprintとlifecycleのsnapshot構築 | settingsの設定値選別＋outputsの非公開照合 | 入力・補助Fileのhashと出力影響設定を一度だけ比較。Workflow内の別fingerprint/thread ID生成も統合し、共通の実行IDをthreadへ対応させる。Qdrant状態は照合対象外 |
+| lifecycle | 各Workflowと保存境界へ分解後、module廃止 | Graph実行と再開はWorkflow、入出力保存はoutputs。新しい汎用実行管理Layerへ改名移動しない |
+| progress | Graph由来の通知へ置換後、独立管理を廃止 | CLI/UIは導出した通知を表示するだけ。共通完了集合やTask状態台帳を置かない |
+| workspace | `translate/utils/artifacts.py` | 実利用loader/saver/hash。製品利用のないatomic_publish_directoryは廃止候補、診断だけが使うload_jsonはtests側。保存先の排他はoutputs側 |
+| redaction | ログ/Trace/表示/保存の各境界へ縮小 | 設定秘密抽出はsettings、ログの既知秘密置換はlogger、Langfuse送信はadapterで許可値を選別。Artifact本文は変更しない。独立utils/redaction.pyは新設しない案 |
+| terminal_evidence | `tests/`直下 | 検証child/watchdog/Evidenceに限定。製品からのcounter依存は試験側spy等へ置換し、製品からtestsをimportしない |
+
+`identifiers.py`は既に廃止され、uuid_utils.compat.uuid7を使用しているため再移動しない。登録固有の拡張子選別・論理path/source key生成は登録Workflowで一度だけ行う。現在のruns.collect_input_sourcesとqdrant._registration_sourcesの二重展開をoutputsへ持ち込まない。安全なpath/link/重複先の拒否は保存境界にも残す。
+
+失敗情報の共通型・変換の最終配置は未確定。既存FailureRecord全体をoutputsへ移して再び集約先にしてはならない。Graphが保存する前に安全な例外へ変換し、公開表示直前だけのredactionに依存しないことが必要。詳細はverification.mdのSECURITY-CHECKPOINT-001を参照。
+
+### 利用者へ確認中の判断
+
+1. 既存UUIDv7の旧保存形式を移行して同一IDのResumeを維持するか、新規処理だけ新形式とし旧データは削除せず保全・Resume非対応とするか。UUIDv4互換不要という既決定から推測しない。
+2. 比較Review・登録・Markdown変換にも`outputs/<主入力名>/<uuidv7>/.artifacts/`とmanifestの共通外枠を適用するか。複数入力はrole/論理pathで区別し、一つのinput.pdfへ統合しない。
+3. 上表のoutputs.py等の責務分担・配置案を採用するか。撤回済みdocument_processing/4file案を再導入しない。
+
+いずれも回答待ち。新しい用語の合意はないためGlossaryは作らず、未承認案を採用済みADRにしない。今回の調査だけでtasks 3.1〜3.4を完了にしない。
+
+## 参考資料（再開統合の調査）
+
+- [LangGraph Persistence](https://docs.langchain.com/oss/python/langgraph/persistence): CheckpointerとStoreの役割。今回の再開にはthread内のCheckpointを使い、別Storeを進捗台帳として追加しない。
+- [LangGraph task API](https://reference.langchain.com/python/langgraph/func/task): StateGraph内からのTask呼出。Web本文の取得に制限があったため、詳細は導入済み`langgraph/func/__init__.py`、`pregel/_runner.py`、`pregel/_algo.py`、`checkpoint/sqlite/__init__.py`と合成実行で確認した。
