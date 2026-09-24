@@ -22,3 +22,10 @@
 - [x] 4.1 `pytest tests/test_output_contract.py`、Ruffおよび型検査を実行し、全DOCX構造Testが成功することを確認する
 - [x] 4.2 sample3の既存Runまたは新規RunからDOCXを再生成し、`w:tbl`数、一覧テキスト、改ページ、重複しない見出し番号をXML/plain textで記録する
 - [ ] 4.3 利用者がWordでDOCXを開き、表・目次・図一覧・表一覧・改ページ・見出しを目視確認した後、OpenSpec Changeをverify/archive可能と判定する
+
+## 5. Verify指摘への対応
+
+- [ ] 5.1 見出し/本文をまたぐ縦結合の列位置と結合を保持し、当該表の繰返し見出しを無効・見出しセルを太字にする回帰Testを追加してV-C2を修正する
+- [ ] 5.2 空隅セル・複数見出し行・本文の行見出しを保持する実Pandoc/DOCX Testを追加してV-W2を修正する
+- [ ] 5.3 表セルとCaptionのLink/Code/marks/改行を保持する実Pandoc/DOCX Testを追加してV-W1を修正する
+- [ ] 5.4 追加Test・Ruff・型検査と全体Testを実行し、成功/失敗・未検証範囲をverification.mdへ記録する

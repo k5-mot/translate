@@ -27,6 +27,8 @@
 4. **改ページは一覧SDTの外側へ置く。** 各一覧をbody childとして正規化し、その直後に`w:br w:type="page"`段落を挿入することで、Word/PDFの両方で境界を保証する。
 5. **HeadingスタイルのnumPrを除去する。** 参照テンプレートのHeading1～9にはnumId=1が定義されているため、生成DOCXの`styles.xml`から該当numPrのみを除去する。outlineLvlは残し、目次対象の階層は維持する。
 6. **DOCXの確定した本文から一覧を作る。** Heading1～6、ImageCaption、TableCaptionの段落を対象とし、既存一覧を除外して項目を取得する。正規表現によるMarkdown再解析ではCode内の見出しや装飾を誤認識するため採用しない。生成済みの本文表示と一覧の文字列を一致させ、Captionは通常の目次へ含めない。
+7. **見出し境界よりセル位置を優先する。** 利用者承認に従い、先頭の見出し行群と本文の境界をまたぐrowspanがある表は全行を同じPandoc TableBodyへ置き、繰返し見出しを無効にする。header指定セルは太字で区別する。境界をまたがない通常の表では連続した先頭見出し行をTableHeadとして保持する。左上の空欄は見出し行判定を妨げず、本文内の行見出しも太字で保持する。
+8. **表のInlineを平文化しない。** Internal DocumentのLink/Code/marks/明示改行をPandocの既存Inline型へ対応付け、captionにも同じ対応を適用する。Markdownの構文解析・表幅計算・DOCX出力は引き続きPandocへ任せる。新規のparserやHTML中間表現は追加しない。
 
 ## Quality Attribute Design
 
