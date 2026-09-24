@@ -342,6 +342,8 @@ grill-with-docsの判断として利用者へ確認中。無回答を採用承�
 
 ### 調査対象Artifactの同一性
 
+先行sample3-acceptance-v2成果物について、[追加のセル照合](../require-translated-text-units-before-export/verification.md)でVERIFY Artifact→実DOCXの3表・151セルの行列位置、文字列、横結合幅の一致を確認した。非空訳は122セル。これは先行成果物での保持検査であり、原本からの抽出完全性・表内画像・翻訳品質・最新修正のE2E合格とは区別する。DATA-001および実受入の未完了判定は変更しない。
+
 | Artifact | bytes | SHA-256 |
 | --- | ---: | --- |
 | Review/source/load/document.json | 295,054 | `b477679632211a310e8d6708cfb07136bc0bd52c16e6cf6abfb6dd268bd52722` |

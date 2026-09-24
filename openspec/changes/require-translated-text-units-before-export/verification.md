@@ -48,3 +48,43 @@ CONTENT-VALIDATE-001は未解決。提案は作成途中で、製品コード・
 - `uv run pytest -q tests/test_validate_contract.py tests/test_text_unit_review.py tests/test_documentation.py`: **54 passed（2.01秒）**。既存Testが通っても上記の不具合が残るため、修正前の失敗Test追加が必要。
 - 先行Comparison Reviewのsession `12758`を同じhandleでpollし、実行継続を確認した。追加のモデル処理は並列起動していない。先行Reviewは本Changeの未実装修正を検証するものではない。
 - OpenSpecの必要Artifactはproposal以外が未作成。Deltaなしを隠す`skip_specs`は設定せず、strict検証合格やapply準備完了を宣言しない。
+
+## 先行成果物の全翻訳対象への追加照合（2026-09-25）
+
+同じ先行成功RunのVERIFY Artifactを読取り専用で集計した。第1ページを除き、本文・Caption・セルそれぞれの原文文字列と、最終層がNoneでない場合は最終層、そうでなければ初回訳を選択した文字列を調べた。原文と訳文の本文は出力せず、識別子と件数だけを扱った。
+
+| 対象 | 対象枠数 | 原文に非空白文字あり | 原文が空/空白 | 原文ありに対する訳層なし | 原文ありに対する出力訳が空/空白 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 本文 | 142 | 107 | 35 | 0 | 0 |
+| Caption | 142 | 15 | 127 | 0 | 0 |
+| Table cell起点 | 151 | 122 | 29 | 0 | 0 |
+
+本文/Captionの対象枠数は全Block分であり、文字のないFigure等も含む。`block_text_units`が実際に返す件数とは同一視しない。原文に非空白文字がある244対象では、出力に選ばれる空配列、および非空初回訳に対する空の最終配列も0件だった。
+
+これにより、今回確認中の停止条件を適用しても、この先行Artifactの244対象が空訳として拒否されることはない。一方、29個の原文空セルを一律に「訳欠落」として拒否する実装は誤りになる。画像だけのセルの図形欠落は文字列検査では分からず、表内画像の問題をこの検査で解決済みにしてはならない。
+
+### 実DOCXへのセル保持
+
+先行`outputs/sample3-acceptance-v2/document.ja.docx`をZip/XMLとして読取り、VERIFY Artifactの各表と文書順で照合した。表ごとの非空訳の出現回数を確認した後、各セルの行・列位置と横結合幅まで比較した。OOXMLのgridBefore/gridSpanを位置算出に使い、単なる全文検索だけでは合格にしていない。文字列はレイアウト上の空白を除去して比較した。
+
+| 原本ページ / Table ID | Internal cell起点数 | Word物理セル数 | 同じ行列位置の文字列・横結合幅一致 | 非空訳セル数 |
+| --- | ---: | ---: | ---: | ---: |
+| 14 / #/tables/0 | 28 | 28 | 28 | 28 |
+| 15 / #/tables/1 | 18 | 18 | 18 | 7 |
+| 16 / #/tables/2 | 105 | 105 | 105 | 87 |
+
+全151セルで一致し、非空訳122セルの表外への流出はこの照合では認められなかった。両側とも縦結合0件のため、縦結合の実品質は今回検証していない。Wordの各表内drawingは0件であり、原本15ページの丸画像がセル外に出る既知問題は残る。原本PDFからInternal Documentへの抽出完全性、文面の意味品質、Wordのページレイアウトも別途検証が必要。
+
+### 証拠の同一性と判定
+
+| 対象 | SHA-256 |
+| --- | --- |
+| 先行Runのverify/document.json | `4f60482ab67ab6d6e593eee05747f7b49bdb77324bfd0371a89a8fe3eb28efff` |
+| sample3-acceptance-v2/document.ja.docx | `02670602e0ac7f3edd65a9ee8a549a22f3bcb02dda29a52964124e606c0a6383` |
+| sample3-acceptance-v2/document.ja.pdf | `c6ddeac815919742b20a95af5882832658261eed797a7732c0635fca543cbab4` |
+
+欠落Captionのメモリ合成probeは再度2回とも「欠落を受理」で不合格になった。実成果物の存在確認を理由に不具合を閉じない。停止範囲は引き続き回答待ちで、製品コード・Testを変更していない。
+
+Review session `12758`は同一handleへのpollで継続を確認した。06:42:54 JSTの中間directory更新も観測したが、更新時刻だけを生存根拠にはしていない。追加モデルの起動、Run/成果物の書換えは行わず、先行成果物を最新修正の正式E2E合格には流用しない。
+
+追記後の文書/VALIDATE/TextUnitの既存Testは54 passed（2.48秒）、関連するrestore-docx-tables-and-indexesのOpenSpec strict検査はvalid、git diff --checkは指摘なし。本提案は未完成のため、そのstrict合格やapply準備完了を宣言しない。
