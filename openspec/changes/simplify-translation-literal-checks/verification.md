@@ -109,6 +109,14 @@ PDF全28ページを導入済みpypdfium2で読み、1・2・3・5・25・26・2
 
 14:14 UTCの比較trace fe87686a81b37a939449aaa97b608a4eでは完了要求12件（ALIGN 1、REVIEW 11）、すべてreasoning=none。比較Runはrunning、親のheartbeatは更新されている。Evidenceのtask=CHECKは最後の完了通知であり、run.jsonのlast_task=REVIEWと区別する。途中counter=0も実呼出し0を意味しない。既存の進捗表示・再開状態整理の課題として残し、比較の二重起動・中断は行わない。
 
+### 負数欠落の追加切り分け（同日14:17 UTC）
+
+導入済みpypdfium2で原本第16ページのテキストを直接抽出したところ、画像上の−766、−1,796、−749に対応する文字列にも負数符号がなかった。Docling part-0002のtable_cellsでもrow 17/19、column 1/2のtextは766、1,796だった。したがって、現時点の証拠から本アプリのTRANSLATEまたはDocling単独の不具合とは断定できない。原PDFの表示と抽出テキストの差が少なくとも入口から存在する。
+
+現行Docling adapterはdo_ocr=true、force_ocrは既存設定（既定false）を送る。強制OCRで画像上の符号を取得できるかは未検証であり、実行中Reviewとは並行して外部解析を起動していない。PDF内の符号の表現方法とOCR結果を確認する前に、金額や周辺行から負数を推測して書き換える対処は行わない。既存の設定/APIを用いた単一ページ検証を次の診断候補とする。
+
+14:18 UTC時点で比較child PID 53980/56052と親PID 55584の生存を確認。完了ReviewResponseは14件、対応する既存Chunk Artifactも14件へ増加している。未知の終了コードや中間counter値を成功扱いせず、同じ実行を継続する。
+
 ### 参考文献
 
 - [Microsoft Word Window.Hwnd](https://learn.microsoft.com/en-us/office/vba/api/word.window.hwnd): Automation対象のWindowから所有Processを確認するために使用。
