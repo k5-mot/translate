@@ -366,3 +366,11 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 詳細・hash・修正版REPORTへの実データ再投入結果は[後続Changeの検証記録](../preserve-public-review-finding-details/verification.md)を参照する。修正版の単独描画では417区画の項目欠落0件・生HTML token 0件だったが、最新E2Eを代替しない。
 
 先行Review終了後、現在の入力/設定と互換な翻訳Run `01a0d520-15a4-74a2-9eaf-afafa726a03a`をsession 43282でResumeした。モデル実行は重複していない。14/16 tasksと不合格判定は維持し、最新Word/PDF・比較・利用者目視、表内画像、common/再開統合、ALIGN等の残課題が解消するまでarchiveしない。
+
+### TRANSLATION-LATENCY-001: 実翻訳の長時間化を試行別に説明できない（WARNING・未解決）
+
+2026-09-25 08:52 JST、翻訳Resume processは約80分経過してliveだった。第15ページの参照検索Artifactは08:51に生成されたが、DOCXは未生成であり、完全停止ではないことを翻訳成功と解釈しない。利用者は長時間自体を問題としておらず、その原因説明を求めている。所要時間の新たな合否条件は設定しない。
+
+既存のLLM観測は再試行全体を一つにまとめ、試行ごとの経過時間・理由・対象Chunkを記録していない。通常の推論設定、出力検証や切断回復、通信再試行のいずれが時間を占めたかは取得済み出力から特定できない。`task_deadline_seconds`も各LLM要求の再試行判断用で、翻訳全体の総時間上限にはなっていない。詳細・根拠・是正案は[後続Changeの途中検証](../preserve-public-review-finding-details/verification.md)を参照する。診断不足を別Changeで是正し、根拠なしのtimeout短縮・並列化・推論設定変更や、独立したResume台帳の追加は行わない。
+
+後続の既存Langfuse Provider観測との照合で原因を特定した。約84.3分の確認範囲でchat 22件が時間の97.79%を占め、生成tokenの89.80%が推論だった。high推論が出力枠16,384 tokensをほぼ使い切った2試行は計約16分、その直後のnone再送はそれぞれ約8秒/16秒で成功した。製品側観測だけでは不足していたが、既存Provider観測にtoken内訳があったため、追加機能を前提にせず説明できた。詳細は上記リンクの「原因の特定」を参照する。速度の不合格やnone時の品質同等性を宣言せず、実行設定は変更しない。
