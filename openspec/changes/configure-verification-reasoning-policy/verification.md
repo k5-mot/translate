@@ -96,3 +96,7 @@ uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-a
 - 是正候補: 既存の翻訳保護要求に沿って、元要素内の全markerを欠落・重複なく保持する送信指示を明示し、有限retryの回復をTestと実モデルで検証する。欠落値の無条件追記、検査無効化、highへの切替、新たな再開cacheは行わない。既存`protect-all-translation-chunks`との範囲を照合して次の是正計画を確定する。
 
 この実失敗はOFF設定追加の自動Test成功とは別の判定である。今回のChangeは3.2〜3.5を未完了とし、Word/PDFを利用者へ新規提示できる段階には達していない。表内画像、ALIGN、common整理とLangGraph統合など他の未解決事項も維持する。
+
+### 是正計画への引継ぎ
+
+[clarify-translation-placeholder-instructions](../clarify-translation-placeholder-instructions/proposal.md)で、既存翻訳ルールへ保護記号の同一ID内保持を明記する計画を作成した。復元検査・retry上限・OFF設定は変更せず、ルールhash変更後は旧Runを保持して新規検証する。計画のみであり、TRANSLATE-PROTECTED-OFF-001は未解決、3.2〜3.5も未完了のままとする。
