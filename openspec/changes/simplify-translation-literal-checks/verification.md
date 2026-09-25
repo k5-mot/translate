@@ -58,3 +58,11 @@
 - TRANSLATEは基本Chunk 24に対して完了llm.request 24件。観測された生成区間の合計639.689秒、最長40.898秒。Task全体との差166.114秒には検索・I/O等が含まれ、その個別内訳は未計測。構造推定15件と開始済みReview 4件を含む取得済み43件は全てnone/disabled、v2 cursorなし。
 - CHECKは85指摘（warning/untranslated 15、error/number-unit 60、error/glossary 6、error/negation 2、error/comparison 1、error/condition 1）。literal-reference警告はこのsampleでは0であり、URL/ファイル名warningの実発生例を得たとはしない。警告経路は合成統合Testで別途確認済み。数値等の指摘は未判定で、品質合格を意味しない。
 - 中間構造には主要3表（7×4、3×6、21×5セル）がある。表内画像・Word上の配置の合格証拠には使用しない。
+
+### REVIEW完了とFIX待機
+
+同じsession 75952からREVIEW=397.029秒の完了を取得した。保存Findingは34件（error 11、warning 2、info 21）。Langfuseの完了ReviewResponseは38件、生成区間の合計198.283秒、最長34.046秒。差分約198.746秒の個別内訳は未計測である。
+
+CHECKの数値指摘は確定誤訳数ではない。原本第3ページの`#/texts/33`では「$7.4 billion」に対応して「74億ドル」があり、文字列7.4の欠落という指摘は換算表記による誤検出だった。同ページの意味Review結果は0件で、既存の意味確認がこの例を誤訳として残していない。他の数値指摘まで一括して誤検出と扱わない。
+
+最新確認時はFIX継続中。完了FixResponse 6件（合計37.264秒、最長20.695秒）を観測し、次の要求の完了を待っている。Python PID 19172とsession 75952のlive handleを確認済み。約3分の未完了期間をtimeout/停止とは判定せず、1800秒の要求timeout内で待機している。中断・再起動・同じRunの重複実行は行っていない。生成DOCX、Word PDF、比較Review、目視確認は依然未完了。
