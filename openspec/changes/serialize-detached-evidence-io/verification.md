@@ -98,3 +98,42 @@ Using change: `serialize-detached-evidence-io`。OpenSpec rootは当Repository�
 検査時SHA-256: terminal_evidence.pyは`565b29f970313de1653e1601b6c1851f43fb59553cf715de12ca4ce89be9de18`、Testは`b1cd44ea4ebebf9b94444accba14b81a6876aaef021858fb18c30689f0902621`。製品Fileの値は上記の除外対象FailureKindも含むworktreeのhashである。
 
 Tasks 2.1/2.2は統合受入未完了を維持する。既知の排他漏れは回帰Test付きで修正したが、writer単独でも起きる置換失敗について原因・handle所有の追加確認が必要。任意のPermissionErrorを握り潰して合格にする修正は行わず、applyをここで中断する。translation→Word PDF→Reviewも未実施であり、正式verify・archive・main merge/pushは行わない。今回の試験用一時領域だけを自動cleanupし、利用者Runは変更・削除していない。
+
+## 標準APIだけの再現とWindows照会（2026-09-25）
+
+修正commit `4a06c0a`後の残件について、`diagnosing-bugs`でwriter単独まで縮小した再現を継続した。仮説は「他processの一時handle」「置換先の属性」「一時File側の障害」として利用者へ提示し、合成File以外の内容を表示せず調べた。
+
+### 失敗直後の観測
+
+既存EvidenceStoreのPath.replaceを観測用にprocess内だけで包み、実PermissionError発生後、cleanup前のsource/targetをWindows Restart Managerへ登録してRmGetListで照会した。RmStartSession/RegisterResources/GetList/EndSessionだけを使用し、Shutdown/Restartは呼んでいない。追加PackageやToolの導入はない。
+
+- writer単独3試行中、1回でWinError 5（946 write後）。後続2回は各12秒で非再現（2116/2212 write）。session 5194はexit 0。
+- エラーのsourceは所有一時領域内、destinationは合成targetと一致。両者のFile attributesは32で、読取り専用bitは立っていなかった。
+- Restart Managerの各APIは0（成功）、必要process数0・PID一覧空。これは照会時点で捕捉できなかったという意味であり、瞬間的handleやkernel側の関与がない証拠ではない。
+- `handle`/`handle64`/`procmon`/`procmon64`はPATHから見つからなかった。Repository root自身はDirectoryで、LinkType/Target表示なし。配下全体やfilesystem filterの安全性を保証する検査ではない。
+
+### 製品Codeを使わない対照試験
+
+次に、プロジェクトModule・第三者Package・reader・lockをすべて除去した。標準Libraryだけで、所有TemporaryDirectory内にmkstemp → 17 bytesの固定JSONを書込み → flush/fsync → close → os.replaceを繰り返した。PowerShell here-stringから`uv run python -X utf8 -`で実行した。
+
+| 保存場所 | 試行 / 判定 | 置換成功件数 |
+| --- | --- | --- |
+| Repository直下の新規一時領域 | 3/3でWinError 5、失敗assertでexit 1 | 66 / 16 / 114 |
+| OS一時領域の新規一時領域 | 各8秒、3/3非再現、session 70810 exit 0 | 7239 / 7373 / 7338 |
+| runs/配下の新規一時領域 | 2/2でWinError 5 | 1472 / 1715 |
+| outputs/配下の新規一時領域 | 2/2でWinError 5 | 119 / 349 |
+
+git check-ignoreでruns側は除外対象、outputs側は非除外と確認したが、両方で再現した。従ってGitのignoreだけでは説明できない。場所と試行時刻が同時に変わる対照であり、特定の常駐ソフト・OS機能を原因と断定しない。
+
+### 判断と次の調査条件
+
+残る失敗は製品のEvidenceStore・portalocker・JSON parserを使わなくても再現する。これらを再実装する修正で解消できるという根拠はない。既知のパス操作の排他修正は保持し、原子的置換を非原子的保存へ弱めたり、任意のPermissionErrorを成功扱いにしたりしない。
+
+原因processの特定には、失敗瞬間のFile操作を観測する追加手段が必要。Microsoft Process Monitorによる合成File対象の採取を利用者へ確認する。未承認のダウンロード・起動・監視・常駐ソフト停止・セキュリティ設定変更は行っていない。ログ採取時にも他Fileのpath/command line等を不用意に共有しない。製品依存への追加は提案していない。
+
+今回変更したのは検証記録のみで、LLM/Embedding・Word・利用者Runは使っていない。生成した合成一時領域はcleanup済みで、元の入力・成果物を削除していない。Tasks 2.1/2.2および実translation→Word PDF→Reviewの受入は未完了、archive不可を維持する。
+
+### 参考資料（今回使用）
+
+- [Microsoft: RmGetList](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmgetlist)、[RM_PROCESS_INFO](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/ns-restartmanager-rm_process_info)、[RmRegisterResources](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmregisterresources)、[RmStartSession](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmstartsession): 使用した照会APIの型・引数・戻り値。
+- [Microsoft: Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon): File操作とprocess情報を観測する追加手段。未導入・未実行。

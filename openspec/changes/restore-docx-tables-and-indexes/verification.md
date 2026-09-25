@@ -164,6 +164,8 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 その後のapplyでパス解決・存在確認を排他内へ移し、実heartbeat経路の回帰Testを追加した。対象28 Test、全体659 passed / 1 skipped、Ruff/format/tyは成功。一方、元のRepository内の再現試験は3/3でWinError 5が残ったため、診断I/O全体の解決・archive判定は保留する。別Changeの未commit差分と利用者Runは保持している。
 
+`4a06c0a`後の追加診断では、製品Moduleを使わない標準os.replaceだけでもRepository内・runs/・outputs/でWinError 5を再現した。OS一時領域では3回とも非再現。失敗直後のRestart Manager照会は成功したが利用processを捕捉できず、両Fileに読取り専用bitはなかった。原因processは未特定であり、追加のFileアクセス採取を利用者へ確認する。常駐ソフト停止や監視Tool導入は行っていない。詳細と試行件数は上記診断記録を参照。
+
 - [ ] sample3のステータス表に含まれる黄・緑の丸は、既存Internal Documentでは独立したFigureになっている。セルへの関連付け・配置の保持は別途検証し、通常の表出力修正だけで解決としない。
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
 - [ ] 利用者による再生成Word/PDFの目視確認（表、一覧、改ページ、見出し、起動時ダイアログ）。
