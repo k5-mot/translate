@@ -374,3 +374,7 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 既存のLLM観測は再試行全体を一つにまとめ、試行ごとの経過時間・理由・対象Chunkを記録していない。通常の推論設定、出力検証や切断回復、通信再試行のいずれが時間を占めたかは取得済み出力から特定できない。`task_deadline_seconds`も各LLM要求の再試行判断用で、翻訳全体の総時間上限にはなっていない。詳細・根拠・是正案は[後続Changeの途中検証](../preserve-public-review-finding-details/verification.md)を参照する。診断不足を別Changeで是正し、根拠なしのtimeout短縮・並列化・推論設定変更や、独立したResume台帳の追加は行わない。
 
 後続の既存Langfuse Provider観測との照合で原因を特定した。約84.3分の確認範囲でchat 22件が時間の97.79%を占め、生成tokenの89.80%が推論だった。high推論が出力枠16,384 tokensをほぼ使い切った2試行は計約16分、その直後のnone再送はそれぞれ約8秒/16秒で成功した。製品側観測だけでは不足していたが、既存Provider観測にtoken内訳があったため、追加機能を前提にせず説明できた。詳細は上記リンクの「原因の特定」を参照する。速度の不合格やnone時の品質同等性を宣言せず、実行設定は変更しない。
+
+### 利用者指示後の実行切替（09:27 JST）
+
+上記の「設定は変更しない」は原因診断時点の履歴である。その後、利用者の指示でsession `43282`を停止し、Checkpoint/Artifactを保持した。共通推論OFF設定を実装・自動検査した`11e8dd3`のworktreeから、新規Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`をsession `98497`で開始した。保存設定はoffで、export先は`outputs/sample3-acceptance-off`。進捗・Code同一性・実要求観測は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)を参照する。未解決の表内画像・ALIGN・利用者目視を含む14/16 tasksの判定は維持し、設定追加だけで解決とはしない。

@@ -44,3 +44,31 @@
 ### 新規検証前の外部状態確認
 
 旧CLI translate/review processは存在しない。既存Langfuse Provider観測を本文なしで読取り、旧実行の最終chat（ID `3690d4572ad55107`）が09:05:43.740〜09:07:48.817 JSTで終端となったことを確認した。取得範囲08:55 JST以降のchatは5件、cursorなし。新しいモデル要求は発行していない。sample3の入力SHA-256は`5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`、予定export先`outputs/sample3-acceptance-off`は09:26 JST時点で未存在。
+
+## 新規実翻訳（09:27 JST開始、継続中）
+
+起動HEADは`11e8dd3`、session `98497`。環境は子プロセス限定で`LLM_REASONING_MODE=off`、`PYTHONUTF8=1`を設定し、非対話CLIで以下を開始した。`.env`の恒久変更、旧Runのコピー・Resumeは行っていない。
+
+```powershell
+# OFF設定を渡したプロセスから、既存成果物と別の出力先で新規実行する。
+uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-acceptance-off
+```
+
+- 新規ID: `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`。CLIは`mode=new`を表示した。
+- Run作成日時: 09:27:27.300695 JST。metadataの`llm_reasoning_mode=off`、context/output/image=30208/16384/2048を確認した。
+- 公開fingerprint: `10d8898b152867f501efacd9f23ee778c566a12dc47be55a108fec5cd6a9369b`。
+- 09:28 JSTに同一handleの実行継続とworker PID45188（親47252、uv29880）を確認した。DOCLING 26.983秒、LOADまで7/17通知、保存last_taskはSTRUCTURE。保存状態だけを生存証拠にせずhandle/processと照合した。
+- 旧Runと既存exportは削除・上書きしていない。新規DOCX/PDF/Reviewはまだ未確認で、tasks 3.2〜3.5を完了にしない。
+
+起動worktreeには既存未コミット製品差分4件があり、commit単独の検証とはしない。起動前SHA-256は以下。
+
+| File | SHA-256 |
+| --- | --- |
+| translate/adapters/llm.py | `f4c77c74a1555b4fb8a1df95786d7c0cdd7041ad4a8f7ea9f57632f65161ce5d` |
+| translate/common/lifecycle.py | `d15eb3dff4782da13cc747f695e9731b8f4da1b3103e3a5ba73e5214499ddc8a` |
+| translate/common/terminal_evidence.py | `881339c47e68857e782f21b4d7c2e2609c65ab4e6458584c3a5e6c1cd565b6f8` |
+| translate/tasks/review.py | `b968b2ac43d23032f435c7a8486901c07334cf0a3c76f4899a9b7f4f01e54c14` |
+
+### 初期LLM観測（09:29 JST読取り）
+
+09:27:55.503〜09:28:58.144 JSTの終了済み`llm.request` 9件すべてにreasoning=none/thinking=disabledを確認した。対応時刻のProvider chat 9件は約3.7〜14.3秒で終了し、usageのtotalはinput+outputと一致した。ただし全9件で`output_reasoning_tokens`項目自体が省略されているため、推論tokenの実測0を証明したとは扱わない。本文を取得せず、既存観測を読むだけで確認した。進行中の後続要求と最終成果物の品質は別途検査する。

@@ -155,3 +155,7 @@ request timeout=1800秒、Task期限=21600秒、retry=3、available_input_tokens
 その後、利用者が検証時のreasoning OFFと「現在の処理を中断し、設定追加後にOFFで新規検証」を指示した。対象workerを停止し、session `43282`のterminal exit 1を確認した。旧Run `01a0d520-15a4-74a2-9eaf-afafa726a03a`の入力・Artifact・Checkpointは保持し、成功/失敗状態を手動で捏造しない。これは利用者による中断で、最新成果物の品質判定ではない。
 
 設定追加と新規検証の計画は[configure-verification-reasoning-policy](../configure-verification-reasoning-policy/proposal.md)、停止証拠は[同verification.md](../configure-verification-reasoning-policy/verification.md)へ記録した。旧Runを引き続き実行中とみなさず、新設定を実装した後に別IDで逐次検証する。現在は提案のみで、tasks 3.1〜3.4は未完了のまま。旧成果物の成功を最新OFF成果物の合格に読み替えない。
+
+### OFF設定実装後の新規実検証（09:27 JST開始）
+
+`11e8dd3`で共通推論OFF設定を実装し、全体637 passed / 1 skippedを確認した。その後、旧要求のProvider側終端も確認して新規Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`（session `98497`）を開始した。`--resume`なし、export先は`outputs/sample3-acceptance-off`。旧Runは保持し再利用しない。入力/実行Code/設定の同一性と進捗は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)を参照する。本Changeの実成果物Taskはまだ完了にせず、翻訳→Word PDF→Reviewの終端と内容検査を待つ。

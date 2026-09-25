@@ -15,7 +15,7 @@
 
 ## 3. OFFでの新規実検証
 
-- [ ] 3.1 停止済みworkerとProvider側の旧要求が稼働していないことを確認後、プロセス限定OFF、非対話、`--resume`なし、未使用export先でsample3翻訳を開始する。新旧Run IDの相違、Code/入力hash/設定、旧Artifact保持をverification.mdへ記録する（Q-COMP/Q-REL/運用）。
+- [x] 3.1 停止済みworkerとProvider側の旧要求が稼働していないことを確認後、プロセス限定OFF、非対話、`--resume`なし、未使用export先でsample3翻訳を開始する。新旧Run IDの相違、Code/入力hash/設定、旧Artifact保持をverification.mdへ記録する（Q-COMP/Q-REL/運用）。
 - [ ] 3.2 初回と後続の取得可能なProvider観測で推論OFF指定と実測tokenを分けて確認し、所要時間/推論token/通常出力token、取得不能項目、翻訳の終端結果を記録する。非0の推論が判明した場合は合格とせず診断し、highへ暗黙に戻さない（Q-FUNC/Q-PERF）。
 - [ ] 3.3 新規DOCXの本文/表/表紙/目次・図表一覧を検査し、Microsoft Wordの手動相当操作で別PDFを作成する。実成果物hashと検査結果を記録し、利用者目視へ提示する。Word PDF化を製品へ追加しない（Q-FUNC/検証・供給）。
 - [ ] 3.4 原本sample3と新規Word PDFをOFFの新規Reviewで比較し、公開Finding詳細・実効設定・終端結果を記録する。既知ALIGN問題や目視未確認は残し、成功終了だけで品質合格としない（Q-FUNC/Q-REL）。
