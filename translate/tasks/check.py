@@ -25,22 +25,12 @@ GLOSSARY_FIELDS = (
     "note",
     "reference",
 )
-PROTECTED_RE = re.compile(
-    r"`[^`\n]+`"
-    r"|https?://[^\s<>()]+"
-    r"|www\.[^\s<>()]+"
-    r'|"(?:[A-Za-z]:[\\/][^"\r\n]+|(?:\\\\|\\)?[^"\r\n]*\\[^"\r\n]+)"'
-    r"|'(?:[A-Za-z]:[\\/][^'\r\n]+|(?:\\\\|\\)?[^'\r\n]*\\[^'\r\n]+)'"
-    r"|(?<!\w)(?:[A-Za-z]:[\\/][A-Za-z0-9_.~+@%-]+"
-    r"(?:[\\/][A-Za-z0-9_.~+@%-]+)*|(?:\\\\|\\)?[A-Za-z0-9_.~+@%-]+"
-    r"(?:\\[A-Za-z0-9_.~+@%-]+)+)"
-    r"|(?<!\w)(?:\.\.?/|~/|/)[A-Za-z0-9_.~+@%/-]+"
-    # Long options may contain words, but a single dash protects only a short option.
-    # This keeps ordinary prose such as ``word -word`` translatable.
-    r"|(?<!\w)(?:--[A-Za-z][A-Za-z0-9-]*|-[A-Za-z](?![A-Za-z0-9-]))"
-    r"|\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\b"
-    r"|\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b"
-    r"|\b[a-z]+(?:[A-Z][A-Za-z0-9]*)+\b"
+LITERAL_REFERENCE_RE = re.compile(
+    r"""https?://[^\s<>()\[\]{}"'。、]+"""
+    r"""|www\.[^\s<>()\[\]{}"'。、]+"""
+    r"|(?<![\w.])[A-Za-z0-9_][A-Za-z0-9_.-]*\."
+    r"(?:pdf|docx|xlsx|pptx|txt|md|csv|json|yaml|yml)(?![\w])",
+    re.IGNORECASE,
 )
 NUMBER_UNIT_RE = re.compile(
     r"(?<!\w)[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
@@ -150,21 +140,23 @@ def matching_glossary(text: str, glossary: list[GlossaryEntry]) -> list[Glossary
     return result
 
 
-def protected_fragments(text: str) -> list[str]:
-    """翻訳で変更してはならない文字列を抽出する。
+def literal_references(text: str) -> list[str]:
+    """明示URLと既知拡張子のファイル名だけを警告候補として抽出する。
 
     Args:
         text: 原文。
 
     Returns:
-        出現順の保護文字列列。
+        末尾の句読点を除いた出現順の参照文字列。
     """
 
-    return [match.group(0) for match in PROTECTED_RE.finditer(text)]
+    return [
+        match.group(0).rstrip(".,;:!?") for match in LITERAL_REFERENCE_RE.finditer(text)
+    ]
 
 
 def _missing_literal_findings(source: str, target: str) -> list[Finding]:
-    """数値・単位と保護文字列の欠落を検出する。
+    """数値・単位の欠落とURL・ファイル名の変更を検出する。
 
     Args:
         source: 原文。
@@ -186,12 +178,12 @@ def _missing_literal_findings(source: str, target: str) -> list[Finding]:
     ]
     findings.extend(
         Finding(
-            kind="protected",
-            severity="error",
-            message=f"保護文字列が欠落または変更: {value}",
+            kind="literal-reference",
+            severity="warning",
+            message=f"URLまたはファイル名が欠落または変更: {value}",
             evidence=value,
         )
-        for value in protected_fragments(source)
+        for value in literal_references(source)
         if value not in target
     )
     return findings

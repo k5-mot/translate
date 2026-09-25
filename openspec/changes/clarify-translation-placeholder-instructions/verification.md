@@ -104,3 +104,11 @@ Checkpoint SQLite（86016 bytes）、入力copy、STRUCTUREまでのArtifactを�
 推奨は、既存の有限retry上限内で、検証失敗の固定分類と各IDに必要な保護記号を次回要求へ追加し、同じChunk全体を再生成すること。初回・通信retry・分割上限・逐次実行・OFFを維持する。既存検証関数を正本とし、feedback生成用に別の合否判定を再実装しない。生応答・原文保護値・例外全文は転記せず、feedbackは蓄積せず置換し、永続Cacheや完了台帳を作らない。
 
 代替は欠落した翻訳単位だけ再生成する案だが、部分応答の保持・統合と文脈の扱いを追加設計する必要がある。利用者へ全Chunk再生成案を提示しており、回答前に採用済みとしない。新Changeは方針確認後に作成する。今回の元指摘・未完了Taskは変わらない。
+
+## 2026-09-25: 本文保護記号の廃止と後継
+
+利用者承認済みの後継 [simplify-translation-literal-checks](../simplify-translation-literal-checks/proposal.md) により、本文markerの生成・復元・正規化・一対一保持・未知marker拒否、および固有名詞/略語/識別子の完全一致を成功条件にする要求は廃止する。URL/既知拡張子ファイル名は事後warningとし、構造化CodeとLink先は保持する。
+
+本Changeの履歴・旧Run・過去の検証結果は削除しない。marker専用の未完了受入を成功扱いにせず「後継要求へ置換」として扱う。対象ID・空応答拒否、有限retry、切断時の逐次分割、本文を含まない失敗診断、既存成果物保持、Rule hashによる旧Run拒否は後継Testに残す。新規sample3、Word PDF、比較Review、利用者目視は後継のtasks 3.1〜3.3で追跡し、旧成果物で代用しない。
+
+同期/archive時は本Changeの旧marker Deltaを再適用しない。Deltaを持つChangeは後継仕様との統合後に仕様同期を省略してarchiveする。skip_specsのChangeはその設定を維持する。これはarchive済み・受入完了の宣言ではなく、旧要求を再導入しないための廃止記録である。

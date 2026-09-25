@@ -29,6 +29,66 @@ def test_legacy_finding_is_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("source", "target"),
+    [
+        ("U.S.", "米国"),
+        ("U.K.", "英国"),
+        ("U.S.A.", "アメリカ合衆国"),
+        ("Microsoft", "マイクロソフト"),
+        ("camelCase", "キャメルケース"),
+        ("some_identifier", "識別子"),
+    ],
+)
+def test_natural_names_and_abbreviations_are_not_literal_findings(
+    source: str, target: str
+) -> None:
+    """名前や識別子の形だけを根拠に自然な訳を誤指摘しない。"""
+
+    assert check.literal_references(source) == []
+    assert check.deterministic_findings(source, target, []) == []
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("See manual.pdf.", ["manual.pdf"]),
+        ("Open MANUAL.DOCX, please.", ["MANUAL.DOCX"]),
+        ("(https://example.com/manual.pdf).", ["https://example.com/manual.pdf"]),
+        ("www.example.com;", ["www.example.com"]),
+        ("See manual.unknown and U.S.A.", []),
+    ],
+)
+def test_explicit_references_only_produce_advisory_findings(
+    source: str, expected: list[str]
+) -> None:
+    """既知拡張子と明示URLだけを対象とし、句読点を根拠へ混ぜない。"""
+
+    assert check.literal_references(source) == expected
+    findings = check.deterministic_findings(source, "参照してください。", [])
+    assert [item.evidence for item in findings] == expected
+    assert all(item.severity == "warning" for item in findings)
+    assert all(item.kind == "literal-reference" for item in findings)
+
+
+def test_existing_semantic_checks_keep_their_severity() -> None:
+    """数値・単位・否定・条件・比較・用語集の検査を弱めない。"""
+
+    findings = check.deterministic_findings(
+        "If value is not higher than 10 MB, use cache.",
+        "値を使います。",
+        [check.GlossaryEntry(source="cache", target="キャッシュ")],
+    )
+    assert {item.kind for item in findings} >= {
+        "number-unit",
+        "negation",
+        "condition",
+        "comparison",
+        "glossary",
+    }
+    assert all(item.severity == "error" for item in findings)
+
+
 def test_finding_round_trip_across_check_review_and_report(tmp_path: Path) -> None:
     """CHECK/REVIEW/REPORTが同じFinding JSONを共有する。"""
 

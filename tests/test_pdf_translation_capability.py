@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from typing import TYPE_CHECKING
 
 import pytest
 from PIL import Image
 
-from translate.document import Block, Document, Finding, Inline, Page, page_text
+from translate.adapters import pandoc
+from translate.common.settings import load_settings
+from translate.document import (
+    Block,
+    Document,
+    Finding,
+    Inline,
+    Page,
+    TableCell,
+    page_text,
+)
 from translate.tasks import (
     check,
     cover,
     fix,
     markdown,
+    report,
+    review,
     structure,
     translate,
     translate_lite,
@@ -26,6 +39,189 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from translate.common.settings import Backend, Settings
+
+
+@pytest.mark.parametrize("backend", ["llm", "libretranslate"])
+@pytest.mark.parametrize("location", ["body", "caption", "cell"])
+def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: PLR0915
+    backend: Backend,
+    location: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """両BackendとFIXを経てもCodeとhrefを保ち、ラベルは翻訳して実DOCXへ出す。"""
+
+    values = [
+        Inline(id="code", kind="code", text="print('U.S.')"),
+        Inline(
+            id="label", kind="link", text="U.S. manual.pdf", href="https://example.com"
+        ),
+    ]
+    block = Block(
+        id="unit", order=0, kind="paragraph" if location == "body" else "table"
+    )
+    if location == "body":
+        block.source = values
+    elif location == "caption":
+        block.caption = values
+        block.cells = [TableCell(row=0, column=0)]
+    else:
+        block.cells = [TableCell(row=0, column=0, source=values)]
+    document = Document(pages=[Page(number=2, blocks=[block])])
+    settings = settings_factory(libretranslate_url="https://libre.invalid")
+    calls: list[str] = []
+
+    def translate_response(
+        *args: object, **_kwargs: object
+    ) -> translate.TranslationResponse:
+        """Codeが送信されず、通常の原文が直接送られることを検査する。"""
+
+        calls.append("translate")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["target"] == [
+            {"id": "label", "text": "U.S. manual.pdf"}
+        ]
+        return translate.TranslationResponse(
+            translations=[translate.TranslationItem(id="label", text="米国の手引書")]
+        )
+
+    def lite_response(
+        _url: str, _key: str | None, texts: list[str], **_kwargs: object
+    ) -> list[str]:
+        """LibreTranslateにも保護記号やCodeを送らない。"""
+
+        calls.append("translate")
+        assert texts == ["U.S. manual.pdf"]
+        return ["米国の手引書"]
+
+    def review_response(*args: object, **_kwargs: object) -> review.ReviewResponse:
+        """CHECKの根拠付きwarningを受け取り、モデルは追加指摘なしとする。"""
+
+        calls.append("review")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["automatic_findings"] == [
+            item.model_dump() for item in checks[2]
+        ]
+        return review.ReviewResponse()
+
+    def fix_response(*args: object, **_kwargs: object) -> fix.FixResponse:
+        """ラベルだけを修正し、Codeが修正対象へ混入しないことを検査する。"""
+
+        calls.append("fix")
+        assert isinstance(args[4], str)
+        payload = json.loads(args[4])
+        assert payload["translations"] == [{"id": "label", "text": "米国の手引書"}]
+        assert payload["findings"] == [item.model_dump() for item in checks[2]]
+        return fix.FixResponse(revisions=[fix.Revision(id="label", text="米国の資料")])
+
+    def verify_response(*args: object, **_kwargs: object) -> verify.VerifyResponse:
+        """既存VERIFY一回だけで警告付き候補を採用する。"""
+
+        calls.append("verify")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["findings"] == [
+            item.model_dump() for item in checks[2]
+        ]
+        return verify.VerifyResponse(approved=True)
+
+    monkeypatch.setattr(translate, "structured", translate_response)
+    monkeypatch.setattr(translate_lite, "translate_texts", lite_response)
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(review, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(review, "structured", review_response)
+    monkeypatch.setattr(fix, "structured", fix_response)
+    monkeypatch.setattr(verify, "structured", verify_response)
+    translated = (
+        translate.run(document, "rules", [], settings, tmp_path / "translate")
+        if backend == "llm"
+        else translate_lite.run(document, settings, tmp_path / "translate")
+    )
+    checks = check.run(translated, None, tmp_path / "check")
+    assert len(checks[2]) == 1
+    assert checks[2][0].severity == "warning"
+    assert checks[2][0].evidence == "manual.pdf"
+    assert checks[2][0].target_ids
+    stored = json.loads((tmp_path / "check/page-0002.json").read_text(encoding="utf-8"))
+    assert stored == [item.model_dump() for item in checks[2]]
+    findings = review.run(
+        translated, checks, "rules", [], settings, tmp_path / "review"
+    )
+    assert findings == checks
+    fixed = fix.run(translated, findings, "rules", settings, tmp_path / "fix")
+    verified = verify.run(fixed, findings, settings, tmp_path / "verify")
+    assert calls == ["translate", "review", "fix", "verify"]
+    rendered = markdown.render_document(verified)
+    assert "print('U.S.')" in rendered
+    assert "米国の資料" in rendered
+    source = tmp_path / "document.md"
+    source.write_text(rendered, encoding="utf-8")
+    output = tmp_path / "document.docx"
+    template = load_settings("convert", env={}).templates_dir / "template.docx"
+    pandoc.create_docx(source, output, template)
+    assert "print('U.S.')" in pandoc.docx_to_text(output)
+    assert "米国の資料" in pandoc.docx_to_text(output)
+    with zipfile.ZipFile(output) as archive:
+        assert (
+            "https://example.com"
+            in archive.read("word/_rels/document.xml.rels").decode()
+        )
+    report_path = report.run(
+        [], checks[2], findings[2], tmp_path / "report.md", tmp_path / "report"
+    )
+    assert "warning / literal-reference" in report_path.read_text(encoding="utf-8")
+    assert "manual.pdf" in report_path.read_text(encoding="utf-8")
+    stored_report = json.loads(
+        (tmp_path / "report/review.json").read_text(encoding="utf-8")
+    )
+    assert stored_report["counts"] == {"warning/literal-reference": 1}
+    assert stored_report["findings"] == [item.model_dump() for item in checks[2]]
+
+
+@pytest.mark.parametrize("failure", ["short", "long", "service"])
+def test_libre_failure_keeps_input_and_existing_artifacts(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """件数不一致とサービス障害でも入力や既存成果物を部分更新しない。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="body",
+                        order=0,
+                        kind="paragraph",
+                        source=[Inline(id="text", text="U.S.")],
+                    )
+                ],
+            )
+        ]
+    )
+    original = document.model_dump_json()
+    output = tmp_path / "translate"
+    output.mkdir()
+    previous = output / "previous.json"
+    previous.write_text("previous", encoding="utf-8")
+
+    def respond(*_args: object, **_kwargs: object) -> list[str]:
+        """一回のサービス障害または不正件数を返す。"""
+
+        if failure == "service":
+            message = "service unavailable"
+            raise OSError(message)
+        return [] if failure == "short" else ["米国", "余分"]
+
+    monkeypatch.setattr(translate_lite, "translate_texts", respond)
+    with pytest.raises(OSError if failure == "service" else ValueError):
+        translate_lite.run(document, settings_factory(), output)
+    assert document.model_dump_json() == original
+    assert previous.read_text(encoding="utf-8") == "previous"
+    assert list(output.iterdir()) == [previous]
 
 
 def test_fix_and_verify_adopt_valid_candidate(

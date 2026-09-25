@@ -14,6 +14,7 @@ from translate.common.fingerprint import (
     check_resume_compatibility,
     diff_snapshots,
 )
+from translate.common.lifecycle import fingerprint_for
 from translate.common.runs import RunRepository
 from translate.common.settings import load_settings, read_rules
 from translate.tasks import structure
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from translate.common.runs import Operation
     from translate.common.settings import Backend, Settings
 
 
@@ -72,11 +74,13 @@ def test_fingerprint_is_canonical_and_tracks_output_settings(
 
 
 @pytest.mark.parametrize("mode", ["task-default", "off"])
+@pytest.mark.parametrize("backend", ["llm", "libretranslate"])
 def test_rule_change_separates_public_fingerprint_and_workflow_thread(
     settings_factory: Callable[..., Settings],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
+    backend: Backend,
 ) -> None:
     """配布ルールの変更で公開Resumeを拒否し、Workflowも異なるthreadを選ぶことを確認する。"""
 
@@ -97,7 +101,7 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
 
         return build_fingerprint(
             operation="translate",
-            backend="llm",
+            backend=backend,
             input_hashes={"source": "synthetic"},
             settings=settings,
             rule_paths={"translation": rule},
@@ -118,13 +122,13 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
     metadata_path = repository.paths(saved.run_id).metadata
     original_metadata = metadata_path.read_bytes()
     with pytest.raises(RuntimeError, match="test stops at SPLIT"):
-        translation.run(source, tmp_path / "before", "llm", settings)
+        translation.run(source, tmp_path / "before", backend, settings)
     rule.write_text(
         rule.read_text(encoding="utf-8") + "\n追加の翻訳指示。\n", encoding="utf-8"
     )
     after = current()
     with pytest.raises(RuntimeError, match="test stops at SPLIT"):
-        translation.run(source, tmp_path / "after", "llm", settings)
+        translation.run(source, tmp_path / "after", backend, settings)
     assert before.value != after.value
     assert not check_resume_compatibility(saved, after).compatible
     assert metadata_path.read_bytes() == original_metadata
@@ -134,6 +138,55 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
     ]
     assert metadata[0]["translation_rules"] != metadata[1]["translation_rules"]
     assert metadata[0]["thread_id"] != metadata[1]["thread_id"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "backend"),
+    [("translate", "llm"), ("translate", "libretranslate"), ("review", "llm")],
+)
+def test_public_resume_rejects_old_literal_check_rules(
+    operation: Operation,
+    backend: Backend,
+    settings_factory: Callable[..., Settings],
+    tmp_path: Path,
+) -> None:
+    """公開操作が両Backendと比較のRule hash変更を既存APIで拒否する。"""
+
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    shipped = load_settings("convert", env={})
+    for name in ("structure", "translation", "review"):
+        (templates / f"{name}-rules.md").write_text(
+            read_rules(shipped, name), encoding="utf-8"
+        )
+    for name in ("glossary.csv", "template.docx"):
+        (templates / name).write_bytes((shipped.templates_dir / name).read_bytes())
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"synthetic source")
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"synthetic target")
+    inputs = (
+        {"source": source}
+        if operation == "translate"
+        else {"source": source, "target": target}
+    )
+    settings = settings_factory(templates_dir=templates, reasoning_mode="off")
+    selected = "translation" if operation == "translate" else "review"
+    rule = templates / f"{selected}-rules.md"
+    current_text = rule.read_text(encoding="utf-8")
+    rule.write_text(
+        "旧契約: 本文の保護記号と識別子を完全一致で維持する。", encoding="utf-8"
+    )
+    before = fingerprint_for(operation, inputs, settings, backend)
+    repository = RunRepository(tmp_path / "runs")
+    saved = repository.create(operation, inputs, before.snapshot, before.value)
+    metadata = repository.paths(saved.run_id).metadata.read_bytes()
+    rule.write_text(current_text, encoding="utf-8")
+    after = fingerprint_for(operation, inputs, settings, backend)
+    compatibility = check_resume_compatibility(saved, after)
+    assert not compatibility.compatible
+    assert [item.path for item in compatibility.differences] == [f"rules.{selected}"]
+    assert repository.paths(saved.run_id).metadata.read_bytes() == metadata
 
 
 def test_credentials_retry_observation_and_qdrant_are_excluded(

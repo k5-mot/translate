@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import re
 import time
-import unicodedata
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -15,7 +13,7 @@ from translate.adapters.qdrant import search
 from translate.common.workspace import atomic_directory, atomic_write_json
 from translate.document import Document, Inline, Page, page_text
 from translate.tasks.base import BaseTask
-from translate.tasks.check import GlossaryEntry, matching_glossary, protected_fragments
+from translate.tasks.check import GlossaryEntry, matching_glossary
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,15 +34,9 @@ class TranslationResponse(BaseModel):
     translations: list[TranslationItem] = Field(default_factory=list)
 
 
-TranslationFailureCause = Literal["TranslationIdMismatch", "ProtectedFragmentMissing"]
+TranslationFailureCause = Literal["TranslationIdMismatch"]
 
 _MAX_TRUNCATION_SPLIT_DEPTH = 2
-
-_PROTECTED_PLACEHOLDER_RE = re.compile(
-    r"__\s*protected\s*[_\-\s]+(?P<unit>\d+)\s*[_\-\s]+"
-    r"(?P<fragment>\d+)\s*__",
-    re.IGNORECASE,
-)
 
 
 def _is_text_output_truncated(error: LLMError) -> bool:
@@ -55,109 +47,6 @@ def _is_text_output_truncated(error: LLMError) -> bool:
         and error.failure_kind == "output-truncated"
         and error.finish_reason == "length"
     )
-
-
-def _protect_chunk_for_prompt(
-    chunk: list[tuple[str, str]],
-) -> tuple[list[tuple[str, str]], dict[str, str]]:
-    """通常・分割後の各Chunkで保護fragmentをplaceholder化し、復元用の対応表を返す。"""
-
-    protected: dict[str, str] = {}
-    result: list[tuple[str, str]] = []
-    for unit_number, (key, text) in enumerate(chunk):
-        value = text
-        for fragment_number, fragment in enumerate(protected_fragments(text)):
-            token = f"__PROTECTED_{unit_number}_{fragment_number}__"
-            value = value.replace(fragment, token, 1)
-            protected[token] = fragment
-        result.append((key, value))
-    return result, protected
-
-
-def _restore_chunk_placeholders(
-    response: TranslationResponse,
-    protected: dict[str, str],
-    *,
-    page: int,
-    target_id: str,
-) -> TranslationResponse:
-    """LLM応答内のplaceholderを正規化して原文fragmentへ戻す。
-
-    保護対象が空でも未知markerを拒否し、正常応答の表記は変更しない。
-    対象がある場合はmarkerの表記揺れを正規化し、Chunk全体で個数と未知tokenを
-    確認する。marker欠落時は原文断片が一度だけ現れる応答も認める。
-    原文値や生応答は例外へ含めない。
-    """
-
-    if not protected:
-        if any(
-            _PROTECTED_PLACEHOLDER_RE.search(unicodedata.normalize("NFKC", item.text))
-            for item in response.translations
-        ):
-            raise TranslationOutputError(
-                "ProtectedFragmentMissing", page=page, target_id=target_id
-            )
-        return response
-
-    expected = set(protected)
-    normalized: list[TranslationItem] = []
-    occurrences: dict[str, int] = dict.fromkeys(expected, 0)
-    for item in response.translations:
-        text = unicodedata.normalize("NFKC", item.text)
-        pieces: list[str] = []
-        cursor = 0
-        for match in _PROTECTED_PLACEHOLDER_RE.finditer(text):
-            unit = int(match.group("unit"))
-            fragment = int(match.group("fragment"))
-            token = f"__PROTECTED_{unit}_{fragment}__"
-            if token not in expected:
-                raise TranslationOutputError(
-                    "ProtectedFragmentMissing", page=page, target_id=target_id
-                )
-            occurrences[token] += 1
-            if occurrences[token] > 1:
-                raise TranslationOutputError(
-                    "ProtectedFragmentMissing", page=page, target_id=target_id
-                )
-            pieces.append(text[cursor : match.start()])
-            pieces.append(token)
-            cursor = match.end()
-        pieces.append(text[cursor:])
-        normalized.append(item.model_copy(update={"text": "".join(pieces)}))
-
-    missing = [token for token, count in occurrences.items() if count == 0]
-    if missing:
-        # A model may return a protected value verbatim instead of echoing its
-        # placeholder. Accept exactly one such occurrence; never invent or
-        # append a value that was absent from the response.
-        for token in missing:
-            fragment = protected[token]
-            matches = sum(item.text.count(fragment) for item in normalized)
-            if matches != 1:
-                raise TranslationOutputError(
-                    "ProtectedFragmentMissing", page=page, target_id=target_id
-                )
-
-    return response.model_copy(
-        update={
-            "translations": [
-                item.model_copy(
-                    update={
-                        "text": _restore_placeholders(item.text, protected),
-                    }
-                )
-                for item in normalized
-            ]
-        }
-    )
-
-
-def _restore_placeholders(text: str, protected: dict[str, str]) -> str:
-    """保護用tokenを保存済み原文断片へ置換し、翻訳出力へ元の表記を戻す。"""
-
-    for token, fragment in protected.items():
-        text = text.replace(token, fragment)
-    return text
 
 
 class TranslationOutputError(ValueError):
@@ -175,12 +64,12 @@ class TranslationOutputError(ValueError):
         page: int,
         target_id: str,
     ) -> None:
-        """翻訳出力検証の原因分類と対象だけを保持し、原文・応答・保護値の公開を防ぐ。"""
+        """翻訳出力検証の原因分類と対象だけを保持し、原文・応答の公開を防ぐ。"""
 
         self.cause_type = cause_type
         self.page = page
         self.target_id = target_id
-        # Keep raw response, prompt, source text, and protected values out of
+        # Keep raw response, prompt, and source text out of
         # the exception and every downstream failure artifact.
         super().__init__("translation output validation failed")
 
@@ -190,10 +79,22 @@ def units(page: Page) -> list[tuple[str, str]]:
 
     values: list[tuple[str, str]] = []
     for block in page.blocks:
-        values.extend((item.id, item.text) for item in block.source if item.text)
-        values.extend((item.id, item.text) for item in block.caption if item.text)
+        values.extend(
+            (item.id, item.text)
+            for item in block.source
+            if item.text and item.kind != "code"
+        )
+        values.extend(
+            (item.id, item.text)
+            for item in block.caption
+            if item.text and item.kind != "code"
+        )
         for cell in block.cells:
-            values.extend((item.id, item.text) for item in cell.source if item.text)
+            values.extend(
+                (item.id, item.text)
+                for item in cell.source
+                if item.text and item.kind != "code"
+            )
     return values
 
 
@@ -204,7 +105,13 @@ def apply_translations(page: Page, mapping: dict[str, str]) -> None:
         """原文Inlineを複製してID対応の訳文を設定し、対応のない要素は元のtextを保持する。"""
 
         return [
-            item.model_copy(update={"text": mapping.get(item.id, item.text)})
+            item.model_copy(
+                update={
+                    "text": item.text
+                    if item.kind == "code"
+                    else mapping.get(item.id, item.text)
+                }
+            )
             for item in values
         ]
 
@@ -219,33 +126,23 @@ def _chunks(
     values: list[tuple[str, str]], settings: Settings
 ) -> list[list[tuple[str, str]]]:
     # Note 1: The shared budget includes output, image, and tokenizer safety reserves.
-    """保護処理後のprompt文字量と件数の上限でInline列を分割し、単一Inlineの分断は避ける。"""
+    """原文の文字量と件数の上限でInline列を分割し、単一Inlineの分断は避ける。"""
 
     max_chars = min(4_000, max(1_000, settings.available_input_tokens * 2))
     result: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
     size = 0
     for item in values:
-        item_size = _prompt_item_size(item[1], len(current))
+        item_size = len(item[1])
         if current and (len(current) >= 20 or size + item_size > max_chars):
             result.append(current)
             current = []
             size = 0
         current.append(item)
-        size += _prompt_item_size(item[1], len(current) - 1)
+        size += item_size
     if current:
         result.append(current)
     return result
-
-
-def _prompt_item_size(text: str, unit_number: int) -> int:
-    """placeholder化後のprompt長をchunk budgetへ反映する。"""
-
-    value = text
-    for fragment_number, fragment in enumerate(protected_fragments(text)):
-        token = f"__PROTECTED_{unit_number}_{fragment_number}__"
-        value = value.replace(fragment, token, 1)
-    return len(value)
 
 
 def _validated_mapping(
@@ -263,11 +160,6 @@ def _validated_mapping(
         raise TranslationOutputError(
             "TranslationIdMismatch", page=page, target_id=target_id
         )
-    for key, original in chunk:
-        if any(value not in received[key] for value in protected_fragments(original)):
-            raise TranslationOutputError(
-                "ProtectedFragmentMissing", page=page, target_id=target_id
-            )
     return received
 
 
@@ -291,12 +183,11 @@ def _translate_page(
         split_depth: int = 0,
         force_no_reasoning: bool = False,
     ) -> dict[str, str]:
-        """参照検索と保護付き翻訳を行い、出力検証・切断時の有限回復を経たID対応の訳文を返す。"""
+        """参照検索と翻訳を行い、出力検証・切断時の有限回復を経たID対応の訳文を返す。"""
 
         source = "\n".join(text for _, text in chunk)
         terms = [item.model_dump() for item in matching_glossary(source, glossary)]
         target_id = f"page-{page.number:04d}-chunk-{chunk_label}"
-        prompt_chunk, protected = _protect_chunk_for_prompt(chunk)
         evidence = search(
             settings,
             source[:2_000],
@@ -305,8 +196,7 @@ def _translate_page(
         prompt = json.dumps(
             {
                 "previous_context": previous[-2_000:],
-                "target": [{"id": key, "text": text} for key, text in prompt_chunk],
-                "protected_placeholders": sorted(protected),
+                "target": [{"id": key, "text": text} for key, text in chunk],
                 "following_context": following[:2_000],
                 "glossary": terms,
                 "references": evidence,
@@ -387,9 +277,6 @@ def _translate_page(
                     return split_after_truncation(fallback_error)
             try:
                 # Note 2: Stable Inline IDs prevent a fluent response from shifting translations.
-                response = _restore_chunk_placeholders(
-                    response, protected, page=page.number, target_id=target_id
-                )
                 received = _validated_mapping(
                     response, chunk, page=page.number, target_id=target_id
                 )

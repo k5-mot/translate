@@ -147,7 +147,12 @@ class ReviewTask(BaseTask):
                         item.model_dump()
                         for item in matching_glossary(source, glossary)
                     ]
-                    page_findings: list[Finding] = []
+                    # Keep advisory references even when the model returns no finding.
+                    page_findings: list[Finding] = [
+                        item
+                        for item in checks.get(page.number, [])
+                        if item.kind == "literal-reference"
+                    ]
                     chunks = _review_chunks(
                         pairs, available_input_tokens=settings.available_input_tokens
                     )

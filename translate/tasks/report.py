@@ -73,7 +73,15 @@ class ReportTask(BaseTask):
         """対応、欠落候補、Finding集計を公開reportへ保存する。"""
 
         with self.measure():
-            findings = [*checks, *reviews]
+            # REVIEW forwards advisory references; count the original CHECK warning once.
+            findings = [
+                *checks,
+                *(
+                    item
+                    for item in reviews
+                    if item.kind != "literal-reference" or item not in checks
+                ),
+            ]
             counts = Counter(f"{item.severity}/{item.kind}" for item in findings)
             lines = ["# 翻訳レビュー", "", "## 集計", ""]
             lines.extend(

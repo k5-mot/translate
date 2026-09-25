@@ -51,6 +51,8 @@ def _apply(page: Page, mapping: dict[str, str], status: str, error: str | None) 
                     "fix_error": error,
                 }
             )
+            if item.kind != "code"
+            else item.model_copy()
             for item in values
         ]
 
@@ -66,10 +68,22 @@ def _translations(page: Page) -> list[tuple[str, str]]:
 
     values: list[tuple[str, str]] = []
     for block in page.blocks:
-        values.extend((item.id, item.text) for item in block.translated or [])
-        values.extend((item.id, item.text) for item in block.translated_caption or [])
+        values.extend(
+            (item.id, item.text)
+            for item in block.translated or []
+            if item.kind != "code"
+        )
+        values.extend(
+            (item.id, item.text)
+            for item in block.translated_caption or []
+            if item.kind != "code"
+        )
         for cell in block.cells:
-            values.extend((item.id, item.text) for item in cell.translated or [])
+            values.extend(
+                (item.id, item.text)
+                for item in cell.translated or []
+                if item.kind != "code"
+            )
     return values
 
 
