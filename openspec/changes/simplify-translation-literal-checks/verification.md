@@ -2,7 +2,7 @@
 
 ## 状態
 
-2026-09-25、applyの静的・合成回帰を実施。実装tasks 1.1〜2.3は完了、実成果物tasks 3.1〜3.3は未完了。正式verify、仕様同期、archive、main merge/pushの完了を意味しない。
+2026-09-25、applyの静的・合成回帰と新規実翻訳を完了。tasks 1.1〜3.1は完了、3.2の比較Reviewは実行中、3.3の利用者目視は未完了。後述の途中記録は履歴であり、最新状態は末尾の完了記録を正とする。正式verify、仕様同期、archive、main merge/pushの完了を意味しない。
 
 ## 実装と検査証拠
 
@@ -32,8 +32,8 @@
 
 ## 残る受入
 
-1. sample3.pdfを新規Run・reasoning OFF・逐次で翻訳する。既存失敗Runを再利用しない。
-2. 同じDOCXをMicrosoft Wordで別PDFへ変換し、原本PDFと生成PDFを比較Reviewする。診断保存Changeと証拠を共有する。
+1. 新規Runの翻訳とMicrosoft WordによるPDF作成は完了した。旧失敗Runは再利用していない。
+2. 原本PDFと生成PDFの比較Reviewの終了と指摘根拠を確認する。診断保存Changeと証拠を共有する。
 3. 利用者へDOCX/PDFを提示して目視を確認する。既知の表内画像・ALIGN・Template等の別件を合格扱いにしない。
 
 ## 実検証の開始記録
@@ -66,3 +66,41 @@
 CHECKの数値指摘は確定誤訳数ではない。原本第3ページの`#/texts/33`では「$7.4 billion」に対応して「74億ドル」があり、文字列7.4の欠落という指摘は換算表記による誤検出だった。同ページの意味Review結果は0件で、既存の意味確認がこの例を誤訳として残していない。他の数値指摘まで一括して誤検出と扱わない。
 
 最新確認時はFIX継続中。完了FixResponse 6件（合計37.264秒、最長20.695秒）を観測し、次の要求の完了を待っている。Python PID 19172とsession 75952のlive handleを確認済み。約3分の未完了期間をtimeout/停止とは判定せず、1800秒の要求timeout内で待機している。中断・再起動・同じRunの重複実行は行っていない。生成DOCX、Word PDF、比較Review、目視確認は依然未完了。
+
+### 翻訳完了・Word PDF作成（上記途中記録の更新）
+
+Run 01a0d8b6-c2ab-7c92-bed9-58403a8410b3はsession 75952のexit 0で完了した。TOTALは2366.730秒（約39分27秒）、FIX=1000.784秒、VERIFY=29.461秒、DOCX=0.406秒。起動したプロセスの終了も確認した。
+
+- Langfuse trace 56e4ac20ce055e2988a2f42e599bb1b6の最終llm.requestは97件（STRUCTURE 15、TRANSLATE 24、REVIEW 38、FIX 10、VERIFY 10）、全件終了済み、cursorなし。全97件のmetadataはreasoning=none / thinking=disabled。開始・終了区間の最大重なりは1だった。これは製品のLLM要求spanの計測であり、Provider内部retryやEmbeddingの実呼出し数まで97に含めたとはしない。通常CLIの外部呼出しcounterは未接続のため、その未計測値は不明のまま保持する。
+- Provider側でもreasoning_effort=none、temperature=0、max_completion_tokens=16384を確認した。推論token数は提供されておらず、実推論tokenが0という断定はしない。FIXの製品span最長は476.335秒。Provider observation 180a85d7c5961a3cは約472.856秒、入力1417・出力16384 tokenであり、少なくともこの長時間待機は出力上限までの生成を伴っていた。単にプロセスが固まったとは判定しない。
+- 最終単位状態はfixed 58、unchanged 123、skipped 64。VALIDATEはvalid=trueだがfix-skipped警告64件がある。第7・10・12・14ページでは修正候補の不採用があり、誤字・品質指摘が残る。exit 0を無誤訳や品質合格と同一視しない。
+- DOCXは3表・24画像。OOXMLのdirty field、instrText、外部relationshipは各0。表セルへの画像配置、表の意味的再現、Wordで警告ダイアログが一切ないことまでは、この静的検査だけで保証しない。
+- 原本とRun内入力コピーのSHA-256はともに5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f。
+- outputs/sample3-acceptance-off-literals/document.ja.docx: 3,656,615 bytes、SHA-256 78aeb3c5e50f8785e4a9b5dca1f64776355f9a96470ed090b357263764ca4d7d。
+- 同じDOCXをMicrosoft Word 16.0でread-onlyで開き、RepaginateとExportAsFixedFormatを実行した。28ページのdocument.ja.pdf: 1,541,242 bytes、SHA-256 57a19cc835e8cb637f9ac027b3b6f27458a1f21c191c213ade4f1950309ac21a。変換後DOCX hashは不変。製品の変換機能・依存は追加していない。
+- 最初のWord操作はApplication.Hwndの誤使用で文書を開く前に失敗した。新規作成した空Word PID 25540だけを所有確認後に終了した。Window.Hwndへ訂正した操作は所有PID 9484で成功し、そのWordも終了した。既存の利用者Word PID 9348は保持した。
+- DOCX/PDFのリンクを利用者へ提示し、表・図・表紙・一覧・見出しのページ別目視を依頼済み。返答前なのでtask 3.3を完了にしない。
+
+### 比較Reviewの実行記録
+
+最初の診断起動は補助コードの入力roleをsource/targetと誤ったため、Run 01a0d8df-90fc-7eb1-a686-cb8a59c2ab77がWorkflow開始前にKeyError・exit 1で終了した。これは検証側の呼出し誤りであり、製品回帰としない。comparison-terminal.jsonにはfailed・child PID 24760・exit 1・LLM/Embedding/Qdrant各0を保存できた。所有temp outputs/.sample3-review-ioed52ycは既存cleanupで削除済み。失敗Runと診断記録は保持した。同じ誤ったroleを使っていたfingerprint試験fixtureも公開CLIと同じ名前へ訂正する。
+
+訂正後は公開CLIと同じsource_en/translation_jaで、Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2を新規作成した。reasoning OFF、既存run_public_run_detachedで2026-09-25 14:03:05 UTCに開始。原本と上記Word PDFを入力とし、旧RunをResumeしていない。診断先は別名comparison-terminal-corrected.json、所有tempはoutputs/.sample3-review-h_pnez6s、監視対象child PID 53980（実Python PID 56052）。CHECK通知まで進み、14:07 UTC時点はrunning。途中のcounter=0は最終呼出し数を意味しない。Task 3.2と診断保存ChangeのE2E受入は、終了状態と報告内容を確認するまで未完了とする。
+
+### 最新成果物の読取り・目視（AIによる検査、利用者受入ではない）
+
+PDF全28ページを導入済みpypdfium2で読み、1・2・3・5・25・26・27・28ページを描画して確認した。検査用画像はoutputs/sample3-visual-n2xq2h91にのみ保存し、成果物とcommitへ混入させない。未導入のpymupdfは追加せず、既存Packageを使用した。
+
+- 表紙画像はPDF第1ページ、目次は第2ページで順序を確認。目次・図一覧・表一覧は日本語見出しで非空。図一覧は第3〜4ページ、表一覧は第5ページ、本文は第6ページからで、次の区分への改ページが確認できる。
+- 第25ページには4列表があり、以前の「表の全セルが縦に本文化する」状態とは異なる。ただしこれで全表を合格としない。
+- 第26ページのStatus/Progress表は枠と見出しがあるが、色丸を含む10セルが空。第27ページに黄・緑の丸10個が表外で縦に並ぶ。既知の表内画像の問題は未解消。
+- 図一覧の先頭はFigure 2で、本文側の図番号とCaption対応にもずれがある。図一覧へ長い本文がCaptionとして混入している箇所がある。目次にはCaptionはないが、本文由来と考えられる長い項目があり、STRUCTURE結果の別確認が必要。
+- 表一覧にはTable 1の1件だけがある。3表の存在だけで一覧の網羅を保証しない。第27〜28ページの金額表は表として出力されるが、原本の負数符号との照合が必要。
+- テンプレートの「○○システム」「SYS-DS-001」「社外秘 / ○○株式会社」がヘッダー・フッターに残る。既知のTemplate問題を解消済みとしない。
+- FIX Artifactでは第10・14ページにLLMErrorのskip理由があり、後続VERIFYで別の不採用理由へ置換される。最終Artifactだけでは最初のFIX障害理由を読み取れない。VERIFYは第7・10・12・14ページを戻している。全層を再帰集計すると同じInlineが重複するため、その数を64警告に加算しない。
+
+公開reviewの入力roleを訂正した後のtests/test_fingerprint.pyは17 passed（2.21秒）。対象Ruff check/format、全体ty、OpenSpec strict、git diff --check成功。文書Testは21 passed（0.90秒）。この試験fixtureの訂正で進行中の製品コードは変更していない。
+
+### 参考文献
+
+- [Microsoft Word Window.Hwnd](https://learn.microsoft.com/en-us/office/vba/api/word.window.hwnd): Automation対象のWindowから所有Processを確認するために使用。

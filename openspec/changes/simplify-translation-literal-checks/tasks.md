@@ -16,6 +16,6 @@
 
 ## 3. 実成果物の受入
 
-- [ ] 3.1 overwrite-diagnostic-json-in-placeの保存回帰確認後、sample3.pdfをreasoning OFF・逐次・新規Runで翻訳し、実送信設定、終了状態、呼出し数、所要時間、生成DOCXと原本のhashを記録する。旧Runを再利用しない（Q-FUNC/Q-PERF/Q-PORT）。
+- [x] 3.1 overwrite-diagnostic-json-in-placeの保存回帰確認後、sample3.pdfをreasoning OFF・逐次・新規Runで翻訳し、実送信設定、終了状態、呼出し数、所要時間、生成DOCXと原本のhashを記録する。旧Runを再利用しない（Q-FUNC/Q-PERF/Q-PORT）。
 - [ ] 3.2 同じDOCXをMicrosoft WordでPDF化し、原PDFと生成PDFで比較Reviewを実行する。入力の同一性・reportの根拠・警告を確認し、OFFと同時Model要求1を記録する。診断保存Changeとは同じE2E証拠を共有する（Q-FUNC/Q-USE）。
 - [ ] 3.3 DOCX/PDFを利用者へ提示し、表・図・表紙・一覧・見出しも含む目視結果を記録する。本Changeの受入と残る別件を分離し、正式verify/仕様同期/archiveへ進めるか判定をverification.mdに残す（供給・運用・保守）。
