@@ -72,3 +72,27 @@ uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-a
 ### 初期LLM観測（09:29 JST読取り）
 
 09:27:55.503〜09:28:58.144 JSTの終了済み`llm.request` 9件すべてにreasoning=none/thinking=disabledを確認した。対応時刻のProvider chat 9件は約3.7〜14.3秒で終了し、usageのtotalはinput+outputと一致した。ただし全9件で`output_reasoning_tokens`項目自体が省略されているため、推論tokenの実測0を証明したとは扱わない。本文を取得せず、既存観測を読むだけで確認した。進行中の後続要求と最終成果物の品質は別途検査する。
+
+## 実翻訳の終端と中間verify（09:31〜09:36 JST）
+
+**実検証失敗・archive不可。** session `98497`は09:31:39にexit 1で終了した。STRUCTUREは104.013秒で完了、TRANSLATEは120.656秒、TOTALは252.759秒。新規DOCXは存在せず、Word/PDF化とReviewは未実施。旧成果物を流用して後続Taskを合格にしない。09:36 JSTに対象CLI processがいないことも確認し、再起動・Resume・追加モデル要求は行っていない。
+
+| 観点 | 判定 |
+| --- | --- |
+| Completeness | 8/12。3.2〜3.5が未完了（CRITICAL） |
+| Correctness | OFF送信・実効観測・互換性の自動検査は成功。実翻訳は保護断片の欠落により失敗、Provider推論tokenの明示値は未取得 |
+| Coherence | 既定値・逐次実行・有限retry・旧Run保持を維持。保護値の追記、欠落許容、高推論への暗黙切替は行わない |
+
+### TRANSLATE-PROTECTED-OFF-001（CRITICAL・未解決）
+
+- failure.json: task=TRANSLATE、page=2、target=`page-0002-chunk-0001`、stage=text-parse、cause=ProtectedFragmentMissing。RunとCheckpointを保持し、失敗状態で停止している。
+- 追加LLM要求なしで、今回の既存Provider観測の入出力をメモリ内で解析した。本文・保護値・認証値は標準出力や診断文書へ出していない。観測IDは`7d02dd7371a3b3db`、`5cb343c46b07d7f0`、`7018b8932626480f`。
+- 初期試行では観測のJSON message envelope全体を翻訳schemaへ渡してしまい、既定の空配列となった。この結果は製品失敗の再現証拠から除外した。`json.loads(output)["content"]`を取り出して実Pydantic parserへ渡す正しい再検査では、3応答すべて14翻訳単位、期待14 IDと完全一致した。
+- 保存済みSTRUCTUREの第2ページを実`units`/`_chunks`/`_protect_chunk_for_prompt`へ渡し、送信対象14要素と保護token一覧3件が実Provider入力と完全一致することを確認した。
+- 正しい3応答を実`_restore_chunk_placeholders`へそれぞれ2回渡すと、6/6で同じProtectedFragmentMissingを再現した。再現CommandはPowerShell here-stringを`uv run python -X utf8 -`へ渡した読取り専用probeで、1回約2.4秒。製品CodeやArtifactは変更していない。
+- 全3応答で`__PROTECTED_5_0__`と`__PROTECTED_6_0__`が欠け、元の保護値も存在しなかった。NFKC前後とも件数0。未知markerは0。`__PROTECTED_10_0__`は1回保持されている。marker周辺の許容表記の違い・重複・ID移動ではなく、2断片の不出力が直接原因。
+- 失敗2件は本文中のdotted identifier/URL、成功1件はmarkerだけの要素だった。1要素＋その保護対応だけに縮小しても、欠落した2要素はRED、保持された1要素はGREENだった。実値は記録しない。
+- 実送信system指示にplaceholderの保持・所属ID・出現回数を明示した契約はなく、user JSONにtoken一覧があるだけだった。TRANSLATEの検証retryは同じ指示を再送し、3回とも同じ2断片が欠けた。OFFが品質低下の唯一の原因、または指示追加だけで必ず成功するとはまだ証明していない。
+- 是正候補: 既存の翻訳保護要求に沿って、元要素内の全markerを欠落・重複なく保持する送信指示を明示し、有限retryの回復をTestと実モデルで検証する。欠落値の無条件追記、検査無効化、highへの切替、新たな再開cacheは行わない。既存`protect-all-translation-chunks`との範囲を照合して次の是正計画を確定する。
+
+この実失敗はOFF設定追加の自動Test成功とは別の判定である。今回のChangeは3.2〜3.5を未完了とし、Word/PDFを利用者へ新規提示できる段階には達していない。表内画像、ALIGN、common整理とLangGraph統合など他の未解決事項も維持する。

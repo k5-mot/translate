@@ -378,3 +378,5 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 ### 利用者指示後の実行切替（09:27 JST）
 
 上記の「設定は変更しない」は原因診断時点の履歴である。その後、利用者の指示でsession `43282`を停止し、Checkpoint/Artifactを保持した。共通推論OFF設定を実装・自動検査した`11e8dd3`のworktreeから、新規Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`をsession `98497`で開始した。保存設定はoffで、export先は`outputs/sample3-acceptance-off`。進捗・Code同一性・実要求観測は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)を参照する。未解決の表内画像・ALIGN・利用者目視を含む14/16 tasksの判定は維持し、設定追加だけで解決とはしない。
+
+09:31:39 JSTに上記sessionはTRANSLATEのProtectedFragmentMissingでexit 1となった。新規DOCX/PDF/Reviewは未生成で、既存v2成果物を今回の合格証拠へ流用しない。直接原因は実応答から2つの保護断片が欠けたこと。読取り専用再現はリンク先のTRANSLATE-PROTECTED-OFF-001を参照し、本Changeの4.3/5.5と既存指摘は未完了のまま保持する。
