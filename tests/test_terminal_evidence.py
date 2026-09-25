@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
@@ -10,6 +12,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import portalocker
 import pytest
@@ -34,6 +37,7 @@ from translate.common.terminal_evidence import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from typing import TextIO
 
 
 def _evidence(run_id: str, operation: str = "translate") -> TerminalEvidence:
@@ -60,15 +64,15 @@ def test_evidence_io_holds_exactly_one_lock(
     store.write(evidence)
     depth = 0
     acquisitions = 0
-    original_read = terminal_evidence.load_json
-    original_write = terminal_evidence.atomic_write_json
+    original_open = Path.open
+    original_fsync = os.fsync
+    operations: list[str] = []
 
     @contextmanager
-    def tracked_lock(path: Path) -> Iterator[None]:
+    def tracked_lock(_path: Path) -> Iterator[None]:
         """取得回数と深さを記録して再入を拒否し、Evidence操作の排他範囲を可視化する。"""
 
         nonlocal depth, acquisitions
-        assert path == store.path
         assert depth == 0
         depth += 1
         acquisitions += 1
@@ -77,30 +81,36 @@ def test_evidence_io_holds_exactly_one_lock(
         finally:
             depth -= 1
 
-    def read(path: Path) -> object:
-        """
-        一つのlock保持を確認して実読込みへ委譲し、読込みが排他外へ漏れないか調べる。
-        """
+    @contextmanager
+    def open_file(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ) -> Iterator[TextIO]:
+        """実Fileを開いて閉じる間の排他を確認し、直接上書き境界を記録する。"""
 
         assert depth == 1
-        return original_read(path)
+        with original_open(path, mode, *args, **kwargs) as stream:
+            operations.append(mode)
+            yield stream
+        assert depth == 1
+        operations.append("closed")
 
-    def write(path: Path, value: object) -> None:
-        """一つのlock保持を確認して実保存へ委譲し、書込みが排他外へ漏れないか調べる。"""
+    def sync(descriptor: int) -> None:
+        """実fsyncへ委譲し、書込み完了の同期も同じlock内であることを確認する。"""
 
         assert depth == 1
-        original_write(path, value)
+        operations.append("fsync")
+        original_fsync(descriptor)
 
     monkeypatch.setattr(terminal_evidence, "_evidence_lock", tracked_lock)
-    monkeypatch.setattr(terminal_evidence, "load_json", read)
-    monkeypatch.setattr(terminal_evidence, "atomic_write_json", write)
+    monkeypatch.setattr(Path, "open", open_file)
+    monkeypatch.setattr(os, "fsync", sync)
     assert store.read() == evidence
     assert store.write(evidence) == evidence
-    assert depth == 0
     assert acquisitions == 2
+    assert operations[-3:] == ["w", "fsync", "closed"]
 
 
-@pytest.mark.parametrize("content", ['{"broken":', "[]", "{}"])
+@pytest.mark.parametrize("content", ["", '{"broken":', "[]", "{}"])
 def test_evidence_corruption_is_not_success(tmp_path: Path, content: str) -> None:
     """
     破損または不正なEvidenceを有効な終了記録として受け入れず、再開許可に使わないか確認す
@@ -117,7 +127,7 @@ def test_evidence_corruption_is_not_success(tmp_path: Path, content: str) -> Non
 def test_heartbeat_path_operations_are_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """実heartbeat経路のパス解決・存在確認も、置換と同じlock内で実行する。"""
+    """実heartbeat経路のパス解決・存在確認も、保存と同じlock内で実行する。"""
 
     path = tmp_path / "heartbeat.json"
     terminal = EvidenceStore(tmp_path / "terminal.json")
@@ -213,27 +223,232 @@ def test_evidence_normalizes_relative_paths_and_rejects_temp_alias(
     assert not (tmp_path / "temp" / "terminal.json").exists()
 
 
-def test_evidence_write_error_releases_lock_and_preserves_previous(
+def test_evidence_open_error_releases_lock_and_preserves_previous(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Evidence書込み失敗時に旧版を保持し、lock解放後の次の更新が成功するか検証する。"""
+    """truncate前のopen失敗では旧版を保持し、解放後に次の更新が成功する。"""
 
     store = EvidenceStore(tmp_path / "terminal.json")
     initial = _evidence(str(uuid7()))
     store.write(initial)
     failure = OSError("fixture write failure")
+    original_open = Path.open
 
-    def fail(_path: Path, _value: object) -> None:
-        """Evidence保存を指定例外で失敗させ、旧内容の保持とlock解放を試験する。"""
+    def fail(path: Path, mode: str = "r", *args: object, **kwargs: object) -> TextIO:
+        """対象Fileの書込みopenだけを失敗させ、実読取りは維持する。"""
 
-        raise failure
+        if path == store.path and mode == "w":
+            raise failure
+        return original_open(path, mode, *args, **kwargs)
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(terminal_evidence, "atomic_write_json", fail)
+        scoped.setattr(Path, "open", fail)
         with pytest.raises(OSError, match="fixture write failure"):
             store.write(initial.with_update(current=1))
     assert store.read() == initial
     assert store.write(initial.with_update(current=2)).current == 2
+
+
+def test_evidence_direct_overwrite_truncates_without_atomic_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """新規・既存JSONを直接保存し、短い更新で旧内容の末尾が残らないことを確認する。"""
+
+    forbidden = Mock(side_effect=AssertionError("atomic writer used for evidence"))
+    monkeypatch.setattr(terminal_evidence, "atomic_write_json", forbidden)
+    store = EvidenceStore(tmp_path / "terminal.json")
+    value = _evidence(str(uuid7()))
+    longer = value.with_update(task="X" * 80, current=99999)
+    store.write(longer)
+    length = store.path.stat().st_size
+    store.write(value)
+    assert store.path.stat().st_size < length
+    assert store.read() == value
+    assert json.loads(store.path.read_text(encoding="utf-8")) == value.model_dump(
+        mode="json"
+    )
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "terminal.json",
+        "terminal.json.lock",
+    ]
+    forbidden.assert_not_called()
+
+
+def test_evidence_serialization_failure_preserves_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON生成に失敗した場合は既存Fileをtruncateせず、例外と旧内容を保持する。"""
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    value = _evidence(str(uuid7()))
+    store.write(value)
+    failure = ValueError("fixture serialization failure")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(TerminalEvidence, "model_dump_json", Mock(side_effect=failure))
+        with pytest.raises(ValueError, match="fixture serialization failure") as raised:
+            store.write(value.with_update(current=1))
+        assert raised.value is failure
+    assert store.read() == value
+    assert store.write(value.with_update(current=2)).current == 2
+
+
+@pytest.mark.parametrize("phase", ["truncate", "write", "flush", "fsync"])
+def test_evidence_in_place_failure_propagates_and_unlocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    """更新途中の障害を伝播し、破損診断を拒否してlockを解放し次の更新を許可する。"""
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    value = _evidence(str(uuid7()))
+    store.write(value)
+    original_open = Path.open
+    failure = OSError(f"fixture {phase} failure")
+
+    @contextmanager
+    def faulty_open(
+        path: Path, mode: str = "r", *args: object, **kwargs: object
+    ) -> Iterator[TextIO]:
+        """対象の直接上書きでだけ障害を注入し、実際のtruncateと書込みを通す。"""
+
+        with original_open(path, mode, *args, **kwargs) as stream:
+            if path != store.path or mode != "w":
+                yield stream
+                return
+            if phase == "truncate":
+                raise failure
+            proxy = Mock(wraps=stream)
+
+            def partial_write(payload: str) -> int:
+                """不完全なJSONを実Fileへ書いた後で保存障害を発生させる。"""
+
+                stream.write(payload[:10])
+                stream.flush()
+                raise failure
+
+            proxy.write.side_effect = partial_write if phase == "write" else None
+            proxy.flush.side_effect = failure if phase == "flush" else None
+            yield proxy
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "open", faulty_open)
+        if phase == "fsync":
+            scoped.setattr(os, "fsync", Mock(side_effect=failure))
+        with pytest.raises(OSError, match=f"fixture {phase} failure") as raised:
+            store.write(value.with_update(current=1))
+        assert raised.value is failure
+    if phase in {"truncate", "write"}:
+        assert store.read() is None
+    assert not store.allows_public_resume()
+    assert store.write(value.with_update(current=2)).current == 2
+
+
+def test_watchdog_does_not_return_success_after_terminal_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """完了JSONが読めても最終保存が失敗したwatchdogは成功結果を返さない。"""
+
+    run_id = str(uuid7())
+    path = tmp_path / "terminal.json"
+    original_fsync = os.fsync
+    failure = OSError("fixture terminal fsync failure")
+
+    def child(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        """完了した合成childを模し、その後の親のfsyncだけを失敗させる。"""
+
+        completed = _evidence(run_id).with_update(
+            status="completed", finished_at=datetime.now(UTC), exit_code=0
+        )
+        EvidenceStore(path).write(completed)
+        monkeypatch.setattr(os, "fsync", Mock(side_effect=failure))
+        return SimpleNamespace(pid=123, returncode=0, poll=Mock(return_value=0))
+
+    monkeypatch.setattr(terminal_evidence.subprocess, "Popen", child)
+    with pytest.raises(OSError, match="fixture terminal fsync failure") as raised:
+        run_detached(
+            ["synthetic-child"],
+            run_id=run_id,
+            operation="translate",
+            evidence_path=path,
+            temp_root=tmp_path / "temp",
+        )
+    assert raised.value is failure
+    # 完全JSON単独は同期成功を証明しない。呼出しの例外を判定の根拠とする。
+    assert EvidenceStore(path).read().status == "completed"
+    monkeypatch.setattr(os, "fsync", original_fsync)
+
+
+def test_killed_evidence_writer_leaves_unknown_and_releases_lock(
+    tmp_path: Path,
+) -> None:
+    """実EvidenceStoreのwrite途中で所有childを終了し、破損拒否と再更新を確認する。"""
+
+    run_id = str(uuid7())
+    path = tmp_path / "terminal.json"
+    ready = tmp_path / "partial-ready"
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"synthetic input preserved")
+    code = '''
+# Pause the real EvidenceStore after a partial write; no model or user data.
+import os
+import sys
+import time
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock
+from translate.common.terminal_evidence import EvidenceStore, TerminalEvidence
+path = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+store = EvidenceStore(path)
+original_open = Path.open
+@contextmanager
+def paused_open(target, mode="r", *args, **kwargs):
+    """Pause only the diagnostic write after flushing an incomplete JSON."""
+    with original_open(target, mode, *args, **kwargs) as stream:
+        if target != path or mode != "w":
+            yield stream
+            return
+        def partial_write(payload):
+            """Signal a real partial write and wait for parent termination."""
+            stream.write(payload[:10])
+            stream.flush()
+            os.fsync(stream.fileno())
+            ready.write_text("ready", encoding="utf-8")
+            time.sleep(30)
+            raise RuntimeError("parent did not terminate the fixture")
+        proxy = Mock(wraps=stream)
+        proxy.write.side_effect = partial_write
+        yield proxy
+Path.open = paused_open
+store.write(TerminalEvidence(run_id=sys.argv[3], operation="translate",
+    status="completed", started_at=datetime.now(UTC), finished_at=datetime.now(UTC)))
+'''
+    process = subprocess.Popen(
+        [sys.executable, "-c", code, str(path), str(ready), run_id],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while (
+            not ready.exists()
+            and process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert ready.exists(), "child did not reach partial write"
+        assert process.poll() is None
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+    assert process.returncode != 0
+    store = EvidenceStore(path)
+    assert store.read() is None
+    assert not store.allows_public_resume()
+    assert source.read_bytes() == b"synthetic input preserved"
+    assert store.write(_evidence(run_id)).status == "running"
 
 
 def test_evidence_lock_uses_bounded_existing_library(

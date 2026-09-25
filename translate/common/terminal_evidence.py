@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 
 @contextmanager
 def _evidence_lock(path: Path) -> Iterator[None]:
-    """Evidenceの読取りhandleとatomic replaceを同時に開かない。"""
+    """Evidenceのパス解決・読取り・直接上書きを同じFile別lockで排他する。"""
 
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,7 +191,7 @@ class TerminalEvidence(BaseModel):
 
 
 class EvidenceStore:
-    """temp root外へTerminalEvidenceをatomic保存する。"""
+    """temp root外へ診断JSONを排他付きで直接保存し、破損は成功扱いしない。"""
 
     def __init__(self, path: Path, *, temp_root: Path | None = None) -> None:
         """Evidenceの保存先を絶対pathへ固定し、一時領域削除で検証結果まで失われる配置を拒否する。"""
@@ -203,8 +204,9 @@ class EvidenceStore:
             raise ValueError("terminal Evidence must be outside the temp Run root")
 
     def write(self, evidence: TerminalEvidence) -> TerminalEvidence:
-        """検証済みEvidenceをatomic writeする。"""
+        """JSON生成後に直接上書きする。書込み中断時の旧内容保持は保証しない。"""
 
+        payload = evidence.model_dump_json(indent=2) + "\n"
         with _evidence_lock(self.path):
             existing = self._read_locked()
             if (
@@ -215,7 +217,10 @@ class EvidenceStore:
                 # A stale parent heartbeat must never overwrite a terminal
                 # child result when both processes race on the evidence file.
                 return existing
-            atomic_write_json(self.path, evidence.model_dump(mode="json"))
+            with self.path.open("w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
         return evidence
 
     def read(self) -> TerminalEvidence | None:

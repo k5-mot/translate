@@ -167,3 +167,7 @@ session 64975はexit 0。別の合成Fileに完了JSONを置いた後、直接�
 grill-with-docsによる設計確認として、診断JSON更新中の中断では前の状態を失っても「状態不明・成功扱いしない」とする変更を利用者へ提示する。原子的保存を要求するpersist-detached-resume-terminal-evidence/design.mdとの変更関係を、採用時の別Changeで明示する。未回答の本文URL/ファイル名の厳密保護範囲とは分離する。
 
 製品Codeは未変更、Tasks 2.1/2.2は未完了。これは事前試験の記録であり、正式verify成功・archive可能・実translation→Word PDF→Review合格ではない。
+
+## 承認後の後継実装（2026-09-25）
+
+利用者が診断JSON直接上書きと中断時unknownを承認したため、[overwrite-diagnostic-json-in-place](../overwrite-diagnostic-json-in-place/verification.md)で実装した。本Changeの排他修正は保持するが、原子的置換および中断時の旧版保持を必須とする設計前提は後継設計で置き換える。新方式のRepository内実親子I/Oは3回成功した。過去の置換失敗を取り消したり、本Changeの旧条件での受入済みに変えたりしない。全体品質と実E2Eは後継のverificationで区別して追跡する。
