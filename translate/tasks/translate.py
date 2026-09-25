@@ -338,6 +338,8 @@ def _translate_page(
             )
             return left | right
 
+        # Already-disabled requests go directly to finite splitting on truncation.
+        force_no_reasoning = force_no_reasoning or settings.reasoning_mode == "off"
         attempts = max(1, settings.retry_attempts)
         truncation_fallback_used = False
         for attempt in range(attempts):

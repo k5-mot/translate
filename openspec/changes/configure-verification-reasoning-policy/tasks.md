@@ -2,16 +2,16 @@
 
 ## 1. 共通設定とLLM要求
 
-- [ ] 1.1 Settings/load_settingsへ`LLM_REASONING_MODE`（task-default/off、未指定task-default）を追加し、`tests/test_settings.py`で許容値、既定値、未知値の秘密非出力と外部要求前の拒否を確認する（Q-FUNC/Q-USE/Q-SEC）。
-- [ ] 1.2 `adapters/llm.py`の既存送信境界で実効reasoning/thinkingを適用し、`tests/test_adapter_retry.py`と`tests/test_langfuse.py`でhigh/low/none、schema/text/image要求、retryを含むOFF送信と実効metadata、default不変、Embedding不変を確認する（Q-FUNC/Q-SEC）。
-- [ ] 1.3 TRANSLATEの全体OFFを既存推論無効化回復へ接続し、`tests/test_translation_output_failures.py`でOFF→重複再送なしの有限分割、単一要素/深さ上限の失敗、非切断Error、defaultの従来回復を確認する（Q-REL/Q-PERF）。
+- [x] 1.1 Settings/load_settingsへ`LLM_REASONING_MODE`（task-default/off、未指定task-default）を追加し、`tests/test_settings.py`で許容値、既定値、未知値の秘密非出力と外部要求前の拒否を確認する（Q-FUNC/Q-USE/Q-SEC）。
+- [x] 1.2 `adapters/llm.py`の既存送信境界で実効reasoning/thinkingを適用し、`tests/test_adapter_retry.py`と`tests/test_langfuse.py`でhigh/low/none、schema/text/image要求、retryを含むOFF送信と実効metadata、default不変、Embedding不変を確認する（Q-FUNC/Q-SEC）。
+- [x] 1.3 TRANSLATEの全体OFFを既存推論無効化回復へ接続し、`tests/test_translation_output_failures.py`でOFF→重複再送なしの有限分割、単一要素/深さ上限の失敗、非切断Error、defaultの従来回復を確認する（Q-REL/Q-PERF）。
 
 ## 2. 互換性と利用手順
 
-- [ ] 2.1 公開fingerprintにOFFだけを識別する設定を反映し、`tests/test_fingerprint.py`と公開Run Testで旧default hash不変、default/off双方向拒否、off/off互換、Qdrant除外を確認する（Q-COMP/Q-REL）。
-- [ ] 2.2 両Workflowの識別へOFFを反映し、既存workspaceの異なる推論設定を書込み前に拒否する。Workflow Testでthread識別のdefault不変/OFF分離、直接呼出し拒否、Checkpoint/Artifact/cache不変、同設定Resumeを確認する。完了状態を新設しない（Q-COMP/Q-REL）。
-- [ ] 2.3 `.env.sample`、README、`tests/test_documentation.py`の許容設定を更新し、通常値維持・プロセス限定OFF・新規Run・通常への戻し方を文書Testで確認する。無関係な既存設定値は変更しない（Q-USE/Q-MAINT/運用・移行）。
-- [ ] 2.4 関連Testと全体pytest、ruff check、ruff format --check、ty check、OpenSpec strict、git diff --checkを実行し、既存未コミット差分を含む検証範囲と結果をverification.mdへ記録する（Q-MAINT/Q-PORT）。
+- [x] 2.1 公開fingerprintにOFFだけを識別する設定を反映し、`tests/test_fingerprint.py`と公開Run Testで旧default hash不変、default/off双方向拒否、off/off互換、Qdrant除外を確認する（Q-COMP/Q-REL）。
+- [x] 2.2 両Workflowの識別へOFFを反映し、既存workspaceの異なる推論設定を書込み前に拒否する。Workflow Testでthread識別のdefault不変/OFF分離、直接呼出し拒否、Checkpoint/Artifact/cache不変、同設定Resumeを確認する。完了状態を新設しない（Q-COMP/Q-REL）。
+- [x] 2.3 `.env.sample`、README、`tests/test_documentation.py`の許容設定を更新し、通常値維持・プロセス限定OFF・新規Run・通常への戻し方を文書Testで確認する。無関係な既存設定値は変更しない（Q-USE/Q-MAINT/運用・移行）。
+- [x] 2.4 関連Testと全体pytest、ruff check、ruff format --check、ty check、OpenSpec strict、git diff --checkを実行し、既存未コミット差分を含む検証範囲と結果をverification.mdへ記録する（Q-MAINT/Q-PORT）。
 
 ## 3. OFFでの新規実検証
 

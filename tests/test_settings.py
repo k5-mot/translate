@@ -41,6 +41,27 @@ def test_default_runs_dir_is_project_runs() -> None:
     assert settings.runs_dir == (PROJECT_ROOT / "runs").resolve()
 
 
+@pytest.mark.parametrize("mode", [None, "task-default", "off"])
+def test_reasoning_mode_is_explicit_and_defaults_to_task_policy(
+    mode: str | None,
+) -> None:
+    """設定追加は既定のTask方針を変えず、OFFだけを明示的に選択できる。"""
+
+    env = {} if mode is None else {"LLM_REASONING_MODE": mode}
+    settings = load_settings("convert", env=env)
+    assert settings.reasoning_mode == (mode or "task-default")
+
+
+@pytest.mark.parametrize("value", ["", "OFF", "high", "SECRET-INVALID"])
+def test_invalid_reasoning_mode_never_echoes_input(value: str) -> None:
+    """外部処理へ渡す設定を生成する前に、不正値を固定Errorで拒否する。"""
+
+    with pytest.raises(ValueError, match="LLM_REASONING_MODE") as captured:
+        load_settings("convert", env={"LLM_REASONING_MODE": value})
+    assert str(captured.value) == "LLM_REASONING_MODE must be task-default or off"
+    assert "SECRET-INVALID" not in "".join(traceback.format_exception(captured.value))
+
+
 @pytest.mark.parametrize(
     "configured",
     ["var/runs", "var\\runs"],

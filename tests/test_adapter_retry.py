@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -10,7 +11,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from translate.adapters import docling, libretranslate, llm
+from translate.adapters import docling, libretranslate, llm, qdrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -145,6 +146,100 @@ def test_llm_model_applies_zero_budget_only_when_thinking_is_disabled(
     assert calls[1]["extra_body"] == {"reasoning_effort": "high"}
     assert calls[0]["timeout"] == settings.request_timeout_seconds
     assert calls[1]["timeout"] == settings.request_timeout_seconds
+
+
+def test_reasoning_off_does_not_modify_embedding_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """LLM検証設定はEmbeddingの送信設定へ流入しない。"""
+
+    calls: list[dict[str, object]] = []
+
+    def client(**kwargs: object) -> SimpleNamespace:
+        """通信せずEmbedding Clientの構築引数だけを捕捉する。"""
+
+        calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(qdrant, "OpenAIEmbeddings", client)
+    settings = settings_factory(embedding_model="embedding-model")
+    qdrant._embeddings(settings)  # noqa: SLF001
+    qdrant._embeddings(settings.model_copy(update={"reasoning_mode": "off"}))  # noqa: SLF001
+    assert calls[0] == calls[1]
+    assert set(calls[0]) == {"model", "base_url", "api_key"}
+
+
+@pytest.mark.parametrize(
+    "case",
+    list(
+        product(
+            ["task-default", "off"],
+            ["high", "low", "none"],
+            ["prompt", "json-schema"],
+            [False, True],
+        )
+    ),
+)
+def test_reasoning_policy_reaches_client_on_initial_call_and_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    tmp_path: Path,
+    case: tuple[str, llm.ReasoningEffort, llm.StructuredOutputMode, bool],
+) -> None:
+    """全Taskの指定と画像/schema経路を実効設定で送信し、再試行でも変更しない。"""
+
+    mode, reasoning, schema_mode, with_image = case
+    constructions: list[dict[str, object]] = []
+    sent: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            """実Provider通信を避け、既存_modelから渡される設定を捕捉する。"""
+
+            constructions.append(kwargs)
+
+        def bind(self, **_kwargs: object) -> Client:
+            """Schema bindingを受け取り、同じ送信doubleを使用する。"""
+
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            """最初だけ通信Errorにして、再試行の実効Provider設定を記録する。"""
+
+            sent.append(constructions[-1])
+            if len(sent) == 1:
+                message = "offline retry"
+                raise httpx.ConnectError(message)
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "ChatOpenAI", Client)
+    settings = settings_factory(reasoning_mode=mode, retry_base_seconds=0)
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"offline image")
+    result = llm.structured(
+        settings,
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning=reasoning,
+        schema_mode=schema_mode,
+        image=image_path if with_image else None,
+    )
+    expected: dict[str, object] = {"reasoning_effort": reasoning}
+    if mode == "off":
+        expected = {
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "thinking_budget_tokens": 0,
+        }
+    assert result.value == "ok"
+    assert len(constructions) == 1
+    assert len(sent) == 2
+    assert all(call["extra_body"] == expected for call in sent)
+    assert constructions[0]["timeout"] == settings.request_timeout_seconds
+    assert constructions[0]["max_tokens"] == settings.output_tokens
 
 
 def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication(

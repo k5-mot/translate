@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 Backend = Literal["llm", "libretranslate"]
 Command = Literal["translate", "review", "register", "convert"]
+ReasoningMode = Literal["task-default", "off"]
 # The deployed Gemma endpoint exposes a 30,208-token context window.
 GEMMA_MAX_CONTEXT = 30_208
 # Keep generation finite while leaving room for input, schema instructions, and images.
@@ -65,6 +66,8 @@ class Settings(BaseModel):
     review_model: str | None = None
     fix_model: str | None = None
     embedding_model: str | None = None
+    # Verification can disable reasoning without changing each task's defaults.
+    reasoning_mode: ReasoningMode = "task-default"
 
     # Gemma has a 30,208-token hard ceiling in this deployment.
     context_tokens: int = GEMMA_MAX_CONTEXT
@@ -160,6 +163,17 @@ def _runs_dir(value: str | None) -> Path:
     return path.resolve()
 
 
+def _reasoning_mode(value: str) -> ReasoningMode:
+    """許容する推論方針だけを返し、不正な元入力はErrorへ含めない。"""
+
+    if value == "task-default":
+        return "task-default"
+    if value == "off":
+        return "off"
+    msg = "LLM_REASONING_MODE must be task-default or off"
+    raise ValueError(msg)
+
+
 def load_settings(
     command: Command,
     backend: Backend = "llm",
@@ -202,6 +216,7 @@ def load_settings(
         review_model=env.get("OPENAI_REVIEW_MODEL"),
         fix_model=env.get("OPENAI_FIX_MODEL") or env.get("OPENAI_REVISER_MODEL"),
         embedding_model=env.get("OPENAI_EMBEDDING_MODEL"),
+        reasoning_mode=_reasoning_mode(env.get("LLM_REASONING_MODE", "task-default")),
         context_tokens=context_tokens,
         output_tokens=output_tokens,
         image_tokens=image_tokens,

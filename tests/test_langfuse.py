@@ -162,9 +162,11 @@ def test_workflow_flushes_after_success_and_failure(
     assert events[-1] == "flush"
 
 
+@pytest.mark.parametrize("mode", ["task-default", "off"])
 def test_llm_call_is_observed_without_sending_prompt_body(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    mode: str,
 ) -> None:
     """LLM spanにはModel等の最小metadataだけを渡し、本文は渡さない。"""
 
@@ -188,7 +190,7 @@ def test_llm_call_is_observed_without_sending_prompt_body(
 
     monkeypatch.setattr(llm, "observe", fake_observe)
     monkeypatch.setattr(llm, "_model", lambda *_args: Client())
-    settings = settings_factory()
+    settings = settings_factory(reasoning_mode=mode)
 
     result = llm.structured(
         settings,
@@ -203,7 +205,11 @@ def test_llm_call_is_observed_without_sending_prompt_body(
     assert captured == {
         "as_type": "generation",
         "detached": True,
-        "metadata": {"reasoning": "low", "response_type": "_Response"},
+        "metadata": {
+            "reasoning": "none" if mode == "off" else "low",
+            "thinking": "disabled" if mode == "off" else "provider-default",
+            "response_type": "_Response",
+        },
         "model": "safe-model-name",
     }
     assert "secret" not in repr(captured)

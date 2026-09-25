@@ -93,6 +93,9 @@ def build_fingerprint(
             "url": settings.libretranslate_url if backend == "libretranslate" else None
         },
     }
+    # Missing means legacy task defaults; preserve existing hashes in that mode.
+    if settings.reasoning_mode == "off":
+        snapshot["llm_reasoning_mode"] = "off"
     if input_manifest is not None:
         snapshot["input_manifest"] = sorted(
             input_manifest,

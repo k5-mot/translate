@@ -77,6 +77,42 @@ def test_translation_checkpoint_contains_paths_not_document_bodies(
     )
 
 
+@pytest.mark.parametrize("workflow", ["translation", "comparison"])
+@pytest.mark.parametrize("saved_mode", ["task-default", "off"])
+def test_direct_workflow_rejects_changed_reasoning_before_touching_artifacts(
+    tmp_path: Path,
+    settings_factory: Callable[..., Settings],
+    workflow: str,
+    saved_mode: str,
+) -> None:
+    """直接Workflow呼出しでも、旧cacheやCheckpointに触る前に設定不一致を拒否する。"""
+
+    work = tmp_path / ".workspace"
+    work.mkdir()
+    saved = {} if saved_mode == "task-default" else {"llm_reasoning_mode": "off"}
+    (work / "workflow.json").write_text(json.dumps(saved), encoding="utf-8")
+    (work / "checkpoints.sqlite").write_bytes(b"checkpoint sentinel")
+    (work / "review.chunks").mkdir()
+    (work / "review.chunks/chunk.json").write_bytes(b"chunk sentinel")
+    before = {path: path.read_bytes() for path in work.rglob("*") if path.is_file()}
+    settings = settings_factory(
+        reasoning_mode="off" if saved_mode == "task-default" else "task-default"
+    )
+    if workflow == "translation":
+        with pytest.raises(ValueError, match="LLM_REASONING_MODE"):
+            translation.run(tmp_path / "source.pdf", tmp_path, "llm", settings)
+    else:
+        with pytest.raises(ValueError, match="LLM_REASONING_MODE"):
+            comparison_review.run(
+                tmp_path / "source.pdf",
+                tmp_path / "target.pdf",
+                tmp_path / "review.md",
+                settings,
+            )
+    after = {path: path.read_bytes() for path in work.rglob("*") if path.is_file()}
+    assert before == after
+
+
 def test_comparison_checkpoint_contains_paths_not_alignment_or_documents(
     tmp_path: Path,
 ) -> None:

@@ -329,6 +329,9 @@ def structured[ResponseT: BaseModel](
 ) -> ResponseT:
     """Pydantic schemaに従う応答をLangChain経由で取得する。"""
 
+    if settings.reasoning_mode == "off":
+        reasoning = "none"
+        thinking = "disabled"
     parser = PydanticOutputParser(pydantic_object=response_type)
     system_text = (
         system
@@ -433,7 +436,11 @@ def structured[ResponseT: BaseModel](
         "llm.request",
         as_type="generation",
         detached=True,
-        metadata={"reasoning": reasoning, "response_type": response_type.__name__},
+        metadata={
+            "reasoning": reasoning,
+            "thinking": thinking,
+            "response_type": response_type.__name__,
+        },
         model=model,
     ):
         return _invoke_with_retry(settings, invoke_and_parse)

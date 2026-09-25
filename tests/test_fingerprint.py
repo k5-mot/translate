@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+import pytest
+
 from translate.common.fingerprint import (
     Fingerprint,
     build_fingerprint,
@@ -18,8 +20,6 @@ from translate.tasks import structure
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
-
-    import pytest
 
     from translate.common.settings import Backend, Settings
 
@@ -159,12 +159,13 @@ def test_libretranslate_endpoint_only_affects_libre_backend(
     )
 
 
+@pytest.mark.parametrize("mode", ["task-default", "off"])
 def test_resume_accepts_equal_fingerprint_and_qdrant_change(
-    settings_factory: Callable[..., Settings], tmp_path: Path
+    settings_factory: Callable[..., Settings], tmp_path: Path, mode: str
 ) -> None:
     """QdrantのCollectionだけを変更したRunは互換性判定を通る。再実行は行わない。"""
 
-    settings = settings_factory(qdrant_collection="old")
+    settings = settings_factory(qdrant_collection="old", reasoning_mode=mode)
     saved_fingerprint = _fingerprint(settings, tmp_path)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"source")
@@ -182,6 +183,23 @@ def test_resume_accepts_equal_fingerprint_and_qdrant_change(
 
     assert compatibility.compatible
     assert not compatibility.reasons
+
+
+def test_reasoning_policy_changes_only_the_explicit_off_fingerprint(
+    settings_factory: Callable[..., Settings], tmp_path: Path
+) -> None:
+    """旧通常snapshotを維持し、OFFだけが一つの項目差として現れる。"""
+
+    default = _fingerprint(settings_factory(), tmp_path)
+    explicit = _fingerprint(settings_factory(reasoning_mode="task-default"), tmp_path)
+    off = _fingerprint(settings_factory(reasoning_mode="off"), tmp_path)
+    assert default == explicit
+    assert "llm_reasoning_mode" not in default.snapshot
+    assert off.snapshot == {**default.snapshot, "llm_reasoning_mode": "off"}
+    assert off.value != default.value
+    assert [item.path for item in diff_snapshots(default.snapshot, off.snapshot)] == [
+        "llm_reasoning_mode"
+    ]
 
 
 def test_resume_rejects_changed_settings_with_itemized_reason(

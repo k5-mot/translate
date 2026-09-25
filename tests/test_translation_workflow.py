@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -84,10 +86,12 @@ def test_failed_status_copies_safe_structure_diagnostics() -> None:
 
 
 @pytest.mark.parametrize("legacy_checkpoint", [False, True])
+@pytest.mark.parametrize("reasoning_mode", ["task-default", "off"])
 def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    reasoning_mode: str,
     *,
     legacy_checkpoint: bool,
 ) -> None:
@@ -289,7 +293,9 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     templates.mkdir()
     for name in ("structure", "translation", "review"):
         (templates / f"{name}-rules.md").write_text("rules", encoding="utf-8")
-    settings: Settings = settings_factory(templates_dir=templates)
+    settings: Settings = settings_factory(
+        templates_dir=templates, reasoning_mode=reasoning_mode
+    )
     source = tmp_path / "source.pdf"
     source.write_bytes(b"source")
 
@@ -307,6 +313,17 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         llm_result = translation.run(
             source, tmp_path / "llm", "llm", settings, llm_events.append
         )
+    metadata = json.loads((tmp_path / "llm/.workspace/workflow.json").read_text())
+    thread_id = metadata.pop("thread_id")
+    assert (
+        thread_id
+        == hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+    )
+    assert metadata.pop("llm_reasoning_mode", "task-default") == reasoning_mode
+    legacy_id = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True).encode()
+    ).hexdigest()
+    assert (thread_id == legacy_id) == (reasoning_mode == "task-default")
     libre_result = translation.run(
         source,
         tmp_path / "libre",

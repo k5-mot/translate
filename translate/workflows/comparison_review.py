@@ -417,6 +417,12 @@ def _run(
 
     work = workspace_dir or output.parent / ".workspace"
     work.mkdir(parents=True, exist_ok=True)
+    metadata_path = work / "workflow.json"
+    if metadata_path.exists():
+        saved = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if saved.get("llm_reasoning_mode", "task-default") != settings.reasoning_mode:
+            msg = "LLM_REASONING_MODE differs from saved workflow; use a new workspace"
+            raise ValueError(msg)
     fingerprint = {
         "source_hash": sha256_file(source),
         "target_hash": sha256_file(target),
@@ -425,6 +431,9 @@ def _run(
             read_rules(settings, "review").encode()
         ).hexdigest(),
     }
+    # A new thread alone would not isolate the existing workspace's chunk cache.
+    if settings.reasoning_mode == "off":
+        fingerprint["llm_reasoning_mode"] = "off"
     thread_id = hashlib.sha256(
         json.dumps(fingerprint, sort_keys=True).encode()
     ).hexdigest()

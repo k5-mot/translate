@@ -21,3 +21,26 @@
 - `git diff --check`: 指摘なし。
 - 製品Codeを変更していないため、今回の提案操作で全製品Test・ruff/ty・実モデル要求は実行していない。これらはapplyの未完了Taskに残す。
 - 既存configの`Unknown operation ID 'verify'`警告は継続。今回の設定追加とは無関係のためconfigを書き換えていない。
+
+## 2026-09-25: OFF設定の実装と自動検査
+
+### 実装範囲
+
+- 共通Settingsでtask-default/offを検証し、Adapterの送信・観測より前に実効none/disabledを決定する。既存のtemplate hintと整数thinking budget 0を再利用し、Embeddingは変更しない。
+- 公開fingerprint/両WorkflowはOFFだけに識別項目を追加し、通常の旧hash/thread IDを維持する。直接Workflow呼出しでも異なる設定のworkspaceをmetadata書換え前に拒否する。
+- TRANSLATEは全体OFFで同じ要求を無効化再試行せず、既存の有限・逐次分割を使う。単一要素/分割深さ上限/非切断Errorは失敗を保持する。
+- Settings・Adapter・観測・切断回復、公開Run、CLI/UI相互Resume、両Workflowと旧SQLite serializerの再接続をdefault/offで検査した。新しい依存、Module、再開台帳は追加していない。
+- README/.env.sampleに通常値と検証プロセス限定OFF、互換性、旧CodeへのRollback注意を記載した。
+
+### 検査結果と限界
+
+- 先行関連Test: 193 passed。追加した互換性/Workflow/公開Run Test: 42 passed。
+- 全体初回: 636 passed / 1 failed / 1 skipped、42.98秒。失敗は既存の秘密非出力Testで、実行中に同Test fileをformatした結果、tracebackの行番号と読み直されたsourceがずれてmarkerの代入行が表示された。製品からの実入力露出とは分離する。
+- 実行中のfile更新を止めて全体を再実行: **637 passed / 1 skipped、40.18秒**。初回失敗の事実は上記へ保持し、変更中のsourceを用いた検査を安定した証拠にしない。
+- `ruff check .`、`ruff format --check .`（336 files）、`ty check`、OpenSpec strict、`git diff --check`: 成功。
+- 全体検査は既存未コミットのcontext/timeout分類、REVIEW回復、Lifecycle、diagnostic I/Oの差分を含むworktreeを対象とした。今回のcommitにはOFF設定の差分だけを選び、既存差分は維持する。
+- 実装タスク1.1〜2.4は完了。新規実翻訳・Word PDF・Review・利用者目視は未完了で、正式verify/archiveはまだ不可。
+
+### 新規検証前の外部状態確認
+
+旧CLI translate/review processは存在しない。既存Langfuse Provider観測を本文なしで読取り、旧実行の最終chat（ID `3690d4572ad55107`）が09:05:43.740〜09:07:48.817 JSTで終端となったことを確認した。取得範囲08:55 JST以降のchatは5件、cursorなし。新しいモデル要求は発行していない。sample3の入力SHA-256は`5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f`、予定export先`outputs/sample3-acceptance-off`は09:26 JST時点で未存在。

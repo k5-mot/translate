@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.lifecycle import execute_run, prepare_run
+from translate.common.lifecycle import ResumeRejectedError, execute_run, prepare_run
 from translate.common.progress import ProgressEvent
 from translate.common.runs import RunRepository
 from translate.common.workspace import atomic_write_bytes
@@ -30,6 +30,51 @@ def _templates(root: Path) -> Path:
     )
     (root / "template.docx").write_bytes(b"template")
     return root
+
+
+@pytest.mark.parametrize("saved_mode", ["task-default", "off"])
+def test_public_resume_rejects_reasoning_change_without_modifying_run(
+    tmp_path: Path,
+    settings_factory: Callable[..., Settings],
+    saved_mode: str,
+) -> None:
+    """公開入口で設定変更を双方向に拒否し、同設定だけ同じRunを再開できる。"""
+
+    settings = settings_factory(
+        runs_dir=tmp_path / "runs",
+        templates_dir=_templates(tmp_path / "templates"),
+        reasoning_mode=saved_mode,
+    )
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"source")
+    repository = RunRepository(settings.runs_dir)
+    prepared = prepare_run(repository, "translate", {"source": source}, settings, "llm")
+    metadata = repository.paths(prepared.record.run_id).metadata
+    before = metadata.read_bytes()
+    changed = settings.model_copy(
+        update={
+            "reasoning_mode": "off" if saved_mode == "task-default" else "task-default"
+        }
+    )
+    with pytest.raises(ResumeRejectedError, match="llm_reasoning_mode"):
+        prepare_run(
+            repository,
+            "translate",
+            {"source": source},
+            changed,
+            "llm",
+            prepared.record.run_id,
+        )
+    assert metadata.read_bytes() == before
+    resumed = prepare_run(
+        repository,
+        "translate",
+        {"source": source},
+        settings,
+        "llm",
+        prepared.record.run_id,
+    )
+    assert resumed.record.run_id == prepared.record.run_id
 
 
 @pytest.mark.integration

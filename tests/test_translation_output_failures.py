@@ -143,6 +143,60 @@ def test_translation_output_truncation_retries_once_with_thinking_disabled(
     assert page.blocks[0].translated[0].text == "Translated"
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        (1, True, 1),
+        (8, True, 3),
+        (8, False, 1),
+    ],
+)
+def test_reasoning_off_recovery_stays_finite_and_preserves_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    case: tuple[int, bool, int],
+) -> None:
+    """OFFの単一要素・深さ上限・非切断Errorを、重複再送や成功扱いせず停止する。"""
+
+    unit_count, truncated, expected_calls = case
+    calls = 0
+
+    def structured(*_args: object, **kwargs: object) -> translate.TranslationResponse:
+        """全要求のOFFを確認して同じ分類の失敗を返し、有限性を測る。"""
+
+        nonlocal calls
+        calls += 1
+        assert kwargs["reasoning"] == "none"
+        assert kwargs["thinking"] == "disabled"
+        if truncated:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        stage = "text-invoke"
+        raise LLMError(stage, TimeoutError())
+
+    monkeypatch.setattr(translate, "structured", structured)
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    page = _page_with_units(unit_count)
+    with pytest.raises(LLMError):
+        translate._translate_page(  # noqa: SLF001
+            page,
+            "",
+            "",
+            "rules",
+            [],
+            settings_factory(reasoning_mode="off", retry_attempts=3),
+            tmp_path / "qdrant",
+        )
+    assert calls == expected_calls
+    assert page.blocks[0].translated is None
+
+
 def test_translation_output_truncation_fallback_is_bounded_and_safe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,10 +242,12 @@ def test_translation_output_truncation_fallback_is_bounded_and_safe(
     assert "PRIVATE" not in str(captured.value)
 
 
+@pytest.mark.parametrize("mode", ["task-default", "off"])
 def test_translation_output_truncation_splits_chunk_sequentially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    mode: str,
 ) -> None:
     """同じchunkのfallbackも枯渇したときはsub-chunkを順番に処理する。"""
 
@@ -203,7 +259,7 @@ def test_translation_output_truncation_splits_chunk_sequentially(
         """
 
         calls.append((str(kwargs.get("reasoning")), kwargs.get("thinking")))
-        if len(calls) <= 2:
+        if len(calls) <= (1 if mode == "off" else 2):
             stage = "text-output"
             raise LLMError(
                 stage,
@@ -233,16 +289,14 @@ def test_translation_output_truncation_splits_chunk_sequentially(
         "",
         "rules",
         [],
-        settings_factory(translation_model="translation", retry_attempts=3),
+        settings_factory(
+            translation_model="translation", retry_attempts=3, reasoning_mode=mode
+        ),
         tmp_path / "qdrant",
     )
 
-    assert calls == [
-        ("high", None),
-        ("none", "disabled"),
-        ("none", "disabled"),
-        ("none", "disabled"),
-    ]
+    expected = [] if mode == "off" else [("high", None)]
+    assert calls == expected + [("none", "disabled")] * 3
     assert page.blocks[0].translated is not None
     assert [item.text for item in page.blocks[0].translated] == [
         "Translated 0",

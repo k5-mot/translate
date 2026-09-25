@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -105,10 +107,12 @@ def test_comparison_split_failure_defaults_to_its_input_role(
 
 
 @pytest.mark.parametrize("legacy_checkpoint", [False, True])
+@pytest.mark.parametrize("reasoning_mode", ["task-default", "off"])
 def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    reasoning_mode: str,
     *,
     legacy_checkpoint: bool,
 ) -> None:
@@ -268,7 +272,9 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
     templates = tmp_path / "templates"
     templates.mkdir()
     (templates / "review-rules.md").write_text("rules", encoding="utf-8")
-    settings: Settings = settings_factory(templates_dir=templates)
+    settings: Settings = settings_factory(
+        templates_dir=templates, reasoning_mode=reasoning_mode
+    )
     source = tmp_path / "source.pdf"
     target = tmp_path / "target.pdf"
     source.write_bytes(b"source")
@@ -285,6 +291,17 @@ def test_comparison_resumes_only_failed_side_task(  # noqa: C901, PLR0915
             with pytest.raises(RuntimeError, match="POSITION"):
                 comparison_review.run(source, target, output, settings, events.append)
         result = comparison_review.run(source, target, output, settings, events.append)
+    metadata = json.loads((tmp_path / ".workspace/workflow.json").read_text())
+    thread_id = metadata.pop("thread_id")
+    assert (
+        thread_id
+        == hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+    )
+    assert metadata.pop("llm_reasoning_mode", "task-default") == reasoning_mode
+    legacy_id = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True).encode()
+    ).hexdigest()
+    assert (thread_id == legacy_id) == (reasoning_mode == "task-default")
 
     assert result == output
     assert output.is_file()

@@ -37,10 +37,12 @@ def _templates(root: Path) -> Path:
     return root
 
 
+@pytest.mark.parametrize("reasoning_mode", ["task-default", "off"])
 def test_cli_and_streamlit_resume_each_others_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    reasoning_mode: str,
 ) -> None:
     """翻訳を代替し、CLIとUIの共有入口が同じRunのArtifactと成果物を使うか確認する。"""
 
@@ -48,6 +50,7 @@ def test_cli_and_streamlit_resume_each_others_runs(
         runs_dir=tmp_path / "runs",
         templates_dir=_templates(tmp_path / "templates"),
         translation_model="model",
+        reasoning_mode=reasoning_mode,
     )
 
     def fake_translation(
