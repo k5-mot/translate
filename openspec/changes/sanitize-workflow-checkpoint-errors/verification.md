@@ -120,3 +120,41 @@ session 40709は終了コード0、TOTAL 10053.468秒で終了した。Runは`01
 - 現在の検索経路ではHTTP 500を再現できず、過去失敗の原因は未確定。失敗が検索系にあったとも、現在の成功で外部障害が修復済みとも断定しない。HTTP 500を安定再現するloopは得られていないため、仮説に基づく製品修正へ進んでいない。
 - 利用者へ2026-09-25 05:38:43前後（日本時間）のLM Studio側ログを、本文・prompt・秘密値を除いて共有するよう依頼した。timeout/retry、Server設定、失敗Runは変更せず、翻訳の再試行・新規Run作成も行わなかった。
 - 全検索診断の終端確認後、別の既存成果物を用いるComparison Reviewを開始した。[表・一覧Changeの実機継続記録](../restore-docx-tables-and-indexes/verification.md)を参照。旧翻訳成果物であるため、本Changeと後続入力コピー・有限設定修正を含む最新translation Gateの代替にしない。
+
+## 過去・最新Checkpointの影響監査完了（2026-09-25 10:07〜10:10 JST）
+
+Task 4.1の限定された読取り監査と元指摘への証拠対応を完了し、**7/11 tasks**とする。これは過去データの浄化完了や、本Change全体の受入合格ではない。最新の実翻訳は保護記号欠落で停止しており、3.1〜3.3と4.2は未完了である。
+
+### 対象と手順
+
+- 現在設定された共通root直下の`*/.workspace/checkpoints.sqlite`全10 DBを列挙した。対象CLI translate/review processがないことを確認した。別layout・削除済みDB・バックアップを対象とする全ディスク監査ではない。
+- 初回はSQLite URI `mode=ro`と`PRAGMA query_only=ON`でSELECTだけを実行した。既知Credential6値のbyte列と、各Runの保存済みInternal Documentから作った64文字窓（32文字刻み）をlogical text/BLOB列へ照合し、値自体は出力しなかった。
+- **初回監査の副作用**: 3 Run（`01a0d534-b9c9-7e60-9edf-7541d26b6e05`、`01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`、`01a0d60e-228b-7350-b800-e908a4177727`）ではSQLiteがWAL/SHM補助Fileを作成または更新した。SQLによるデータ書換えはしていないが、File一式の不変判定はFalseだった。DB本体の更新時刻は各実行終端のままで、補助Fileは10:07 JST、WALは0 bytes、SHMは32768 bytes。これを「全File無変更」と隠さず記録する。手動の削除・上書きは行っていない。
+- 全対象WALが存在しないか0 bytesであることを確認後、`mode=ro&immutable=1`で再監査した。比較Workflowはsource/targetそれぞれのload/document.jsonも照合対象へ追加した。非空WALがあればこの方法は使わない。
+- 再監査はcheckpoints/writesの非空文字列・BLOB **4728セル**を対象とし、全10 DBで既知Credential一致0、原文/訳文側PDFからの上記64文字窓一致0。DB/WAL/SHMの集合とSHA-256は再監査前後で全件一致した（約6.6秒、exit 0）。
+- 旧例外6行は導入済みormsgpackでplain文字列として読んだ。拡張hook、pickle、例外constructor、任意型復元は使わない。本文・args・秘密は表示せず、製品に実在する例外名のallowlist一致と文字数だけを確認した。
+
+### 例外行の比較
+
+| Run ID | Checkpoint数 | 例外行数 | 固定TaskError行 | 旧形式の分類 |
+| --- | ---: | ---: | ---: | --- |
+| 01a0c138-0e5f-7e62-b0a8-8f9fd1e5bfa5 | 9 | 1 | 0 | StructurePageError、85文字 |
+| 01a0c97c-f5cf-7031-b808-4ad545133925 | 9 | 1 | 0 | StructurePageError、85文字 |
+| 01a0d080-2c51-7da5-a91b-700b9a21e7a9 | 19 | 3 | 0 | TranslationOutputError 62文字、LLMError 74文字、ValueError 51文字 |
+| 01a0d2fc-f952-722c-86bc-866103f75773 | 20 | 1 | 0 | LLMError、76文字 |
+| 01a0d44f-1efa-7597-9d1b-0be4c5748b85 | 19 | 0 | 0 | なし |
+| 01a0d4f7-20bf-7ed0-b580-7ddd2cb6299d | 10 | 1 | 1 | なし |
+| 01a0d520-15a4-74a2-9eaf-afafa726a03a | 10 | 1 | 1 | なし |
+| 01a0d534-b9c9-7e60-9edf-7541d26b6e05 | 20 | 0 | 0 | なし |
+| 01a0d5f5-beb9-79d1-a1e4-f4300066b6b5 | 10 | 1 | 1 | なし |
+| 01a0d60e-228b-7350-b800-e908a4177727 | 10 | 1 | 1 | なし |
+
+旧形式の4 Run・6行は残存する。既知Credential/選択した本文窓との一致は旧6行でも0だが、64文字未満の断片、短い末尾、変形・別encoding、現在不明の秘密、SQLite空き領域の残留まで不在と証明するものではない。例外名が既知であることだけでも内容の安全性は証明できない。過去データを削除・sanitize済みにはせず、この限界を残す。
+
+### 実装・Test・最新実失敗の対応
+
+- 実装: `translate/adapters/checkpoint.py`の直接BaseException→固定TaskError変換を両Workflowから利用。保存・復元・完了管理はLangGraphへ委譲する。
+- 回帰: `uv run pytest tests/test_checkpoint.py tests/test_workflow_state.py tests/test_failure_contract.py -q`は**50 passed、5.63秒**。対象は既存未コミット差分を含むworktreeであり、今回新しい製品差分はない。
+- 実機: OFF Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`（起動HEAD `11e8dd3`）と`01a0d60e-228b-7350-b800-e908a4177727`（起動HEAD `fcc7947`）は、それぞれ実際のTRANSLATE/ProtectedFragmentMissingで停止し、例外行は正確に固定TaskErrorだった。公開FailureはTask/page/target/stage/causeを保持した。詳細は[OFF設定](../configure-verification-reasoning-policy/verification.md)と[翻訳指示修正](../clarify-translation-placeholder-instructions/verification.md)の終端記録へ対応する。
+- 上記は新規失敗書込みの保護が働いた証拠であり、失敗した翻訳・未生成DOCX・未実施Word PDF/Reviewの合格証明ではない。利用者目視も未完了。SECURITY-CHECKPOINT-001の最終解決、archive、main merge/pushは引き続き不可。
+- 記録更新後、文書Testは21 passed（0.30秒）、本Changeと元指摘ChangeのOpenSpec strictはvalid、git diff --checkは指摘なし。製品Code未変更のため全製品suiteは再実行していない。

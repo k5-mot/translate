@@ -65,6 +65,8 @@
 
 その後のapplyで保存境界を両Workflowへ接続し、実Graphの障害注入、公開診断、既存DBの再接続Resumeを検証した。全体441 passed / 1 skipped。過去5 DBの読取り専用検査では旧形式の例外行が4 Runに計6行残っている。修正後の実translation→Word PDF→Comparison Reviewと過去行の安全性確認は未完了であり、SECURITY-CHECKPOINT-001の最終解決は保留する。詳細・対象ID・検証範囲は同Changeの最新検証節を参照。
 
+10:07〜10:10 JSTの追加監査で、現行rootの全10 DBと4728非空文字列/BLOBセルを検査した。旧4 Run・6行は残存し、最新OFF実失敗2件は固定TaskErrorで保存されていた。既知Credential6値と64文字本文窓の一致0だが、未知秘密・短い断片・空き領域までは保証しない。監査中のSQLite補助File作成/更新と、WAL空確認後のimmutable再監査で全File hash不変だったことも[監査結果](../sanitize-workflow-checkpoint-errors/verification.md)へ記録した。Task 4.1の影響確認は完了したが、過去浄化・実成果物受入・本指摘の最終解決とは区別する。
+
 ### 配置と移行の状態
 
 - 現行共通root内にrun.jsonが8 files、新しいoutputs配下のmanifest.jsonは0 filesだった。これは有効性検証済みRun数ではなくFile件数。旧データを移動・削除していない。
