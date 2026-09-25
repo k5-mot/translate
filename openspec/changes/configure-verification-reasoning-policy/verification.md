@@ -100,3 +100,5 @@ uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-a
 ### 是正計画への引継ぎ
 
 [clarify-translation-placeholder-instructions](../clarify-translation-placeholder-instructions/proposal.md)で、既存翻訳ルールへ保護記号の同一ID内保持を明記する計画を作成した。復元検査・retry上限・OFF設定は変更せず、ルールhash変更後は旧Runを保持して新規検証する。計画のみであり、TRANSLATE-PROTECTED-OFF-001は未解決、3.2〜3.5も未完了のままとする。
+
+その後`fcc7947`で実装し、新規OFF Run `01a0d60e-228b-7350-b800-e908a4177727`を実行したが、09:58 JSTに同じ第2ページで保護記号1件が欠落して失敗した。新ルール到達と残る2記号保持は確認済みだが解消には至らず、Word/PDF/Reviewは未実施。[是正Changeの実検証結果](../clarify-translation-placeholder-instructions/verification.md)へ証拠を記録し、本指摘と3.2〜3.5を未完了のまま保持する。
