@@ -158,6 +158,8 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 診断runnerのTestでは、親のEvidenceStore.readがPath.read_textでPermissionErrorになるケースも再現した。前回のchild exit 2の直接原因と同一とは未確認。再実行成功で競合問題を閉じず、別途修正・回帰検証する。
 
+2026-09-25 10:21 JSTに[診断I/Oの再検証](../serialize-detached-evidence-io/verification.md)を記録した。実親子の3 Testを20回逐次反復して60/60成功、その後の全体Testは656 passed / 1 skipped。ただし排他修正後に発生した過去のWinError 5の原因は未確定であり、競合の指摘・archive保留は維持する。モデル要求、製品Code変更、旧Run変更は行っていない。
+
 - [ ] sample3のステータス表に含まれる黄・緑の丸は、既存Internal Documentでは独立したFigureになっている。セルへの関連付け・配置の保持は別途検証し、通常の表出力修正だけで解決としない。
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
 - [ ] 利用者による再生成Word/PDFの目視確認（表、一覧、改ページ、見出し、起動時ダイアログ）。
