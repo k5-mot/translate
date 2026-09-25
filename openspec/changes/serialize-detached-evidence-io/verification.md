@@ -77,3 +77,24 @@ Using change: `serialize-detached-evidence-io`。OpenSpec rootは当Repository�
 ### 参考資料
 
 - [CPython 3.12.9 posixmodule.c: os__getfinalpathname_impl](https://github.com/python/cpython/blob/v3.12.9/Modules/posixmodule.c#L4518-L4579): 使用中VersionのWindowsパス解決実装。先に参照した3.12.12ではなく3.12.9を根拠とした。
+
+## Apply: パス操作の排他拡張（2026-09-25）
+
+既存Changeの「全Evidence/heartbeat I/Oを直列化する」設計を補足し、Task 1.3を追加して実装した。constructorは指定Fileの既存lock内でPath.resolveを呼び、readの存在確認もlock内へ移した。既存portalocker、Path.resolve、atomic writeを再利用し、retry・依存・Module・公開仕様は追加していない。最終File symlinkの異名を使う場合のlock identityを今回統一したとは扱わない。
+
+### Test先行と回帰結果
+
+- 実`_read_heartbeat`を呼ぶ追加Testは旧実装で`heartbeat resolve outside lock`により失敗した（1 failed / 1 passed）。constructorだけ修正した段階でも`heartbeat exists outside lock`で失敗し、両箇所を直した後に成功した。Testは既存lockと標準Path APIへ委譲しつつ取得範囲を観測するもので、別の保存実装へ置換していない。
+- 解決失敗のPermissionError伝播と次のreaderの成功、相対pathの正規化、`..`経由のtemp内部Evidence拒否を追加確認した。未作成EvidenceのTestをtmp_path配下へ移し、constructorで作成するlock/親directoryをRepository直下へ残さないようにした。
+- 対象Testは最終**28 passed、6.82秒**。Test doubleのbool位置引数について初回Ruffが4件指摘したためkeyword-onlyへ修正し、Ruff check/formatを再実行して成功した。
+- 全体Ruff check、format（340 files）、ty、OpenSpec strict、git diff --checkは成功。`uv run pytest -q`は**659 passed / 1 skipped、41.05秒**、session 37579はexit 0。
+- OS一時領域でconstructor/readとwriteを競合させる実親子試験を6秒上限で3回行い、全child/parent exit 0。writer件数804/739/797、reader件数740/902/691でエラーなし（session 58547）。
+- 続いて元と同じRepository内・各12秒の再現試験を3回実行すると、**全試行でwriterのWinError 5が残った**。writer件数1927/812/251、childは全てexit 0。session 54188は失敗assertによりexit 1。全体Test成功やOS一時領域の非再現で、この結果を取り消さない。
+
+### 引継ぎと判定
+
+**3/5 Tasks完了。** 1.1/1.2の既存未commit修正と今回の1.3を、同じ診断I/Oの論理変更としてcommitする。別ChangeのFailureKindへのcontext-exceeded追加はindexから除外し、worktreeに保持する。LLM/REVIEW/Lifecycle、設定、`.agents`、サンプル、outputs/runsの差分は含めない。検査は既存の未commit差分を含むworktreeで行ったため、commit単独の検証とは区別する。
+
+検査時SHA-256: terminal_evidence.pyは`565b29f970313de1653e1601b6c1851f43fb59553cf715de12ca4ce89be9de18`、Testは`b1cd44ea4ebebf9b94444accba14b81a6876aaef021858fb18c30689f0902621`。製品Fileの値は上記の除外対象FailureKindも含むworktreeのhashである。
+
+Tasks 2.1/2.2は統合受入未完了を維持する。既知の排他漏れは回帰Test付きで修正したが、writer単独でも起きる置換失敗について原因・handle所有の追加確認が必要。任意のPermissionErrorを握り潰して合格にする修正は行わず、applyをここで中断する。translation→Word PDF→Reviewも未実施であり、正式verify・archive・main merge/pushは行わない。今回の試験用一時領域だけを自動cleanupし、利用者Runは変更・削除していない。

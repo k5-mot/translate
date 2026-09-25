@@ -15,6 +15,8 @@ proposal.mdのWhyを参照。EvidenceStore.writeはlock内でread/replaceする�
 3. 内部readはJSON parseとschema validationのValueErrorをNoneへ変換する。OSError/PermissionErrorは隠さない。未知・不正を成功扱いしない既存契約の実装漏れを補う。
 4. heartbeatもEvidenceStore経由で読書きする。終端Evidenceとheartbeatのlockを同時に保持せず、deadlockを避ける。未使用の_run_id_from_heartbeatは廃止する。
 5. grill-with-docsの判断木では「既存依存を再利用」「不正なEvidenceで成功にしない」「モデルは逐次」は確定済み要求。新しい配置/公開仕様/用語の判断はないため、CONTEXT/ADRの追加は不要。前回の設計質問は未回答のまま別途保持。
+6. 実機診断でconstructorのpath.resolveもFile handleを開くことが分かったため、指定pathの既存File別lockを取得してから正規化し、readの存在確認もlock内へ移す。標準Path.resolveへの委譲とtemp root外の判定を維持し、文字列だけの絶対path変換へ弱めない。constructorもlock Fileと親directoryを作る場合があるので、未作成EvidenceのTestも所有するtmp_path内で実行する。異なるFile symlink名から同じtargetへ入る場合のlock identityは、この修正だけで統一したと扱わない。
+7. 排他の追加は協調する診断処理間の競合を防ぐもので、Repository内のwriter単独でも起きた置換失敗まで直す証拠にはならない。外部handle等の未確定要因を追跡し、全体受入では残件を明示する。任意のPermissionErrorをretry/無視する修正は追加しない。
 
 ## Quality Attribute Design
 

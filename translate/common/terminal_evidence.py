@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self, cast, get_args
 from uuid import RFC_4122, UUID
 
+import portalocker
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from translate.common.workspace import atomic_write_json, load_json
@@ -26,32 +26,14 @@ if TYPE_CHECKING:
 
 @contextmanager
 def _evidence_lock(path: Path) -> Iterator[None]:
-    """複数processのEvidence更新を一つずつ実行する。"""
+    """Evidenceの読取りhandleとatomic replaceを同時に開かない。"""
 
     lock_path = path.with_name(path.name + ".lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as handle:
-        handle.seek(0)
-        handle.write(b"0")
-        handle.flush()
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt  # noqa: PLC0415
-
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl  # noqa: PLC0415
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    # 小さいJSON I/O専用。従来Windows lockの約10秒の上限を維持し、
+    # 短い競合は10ms間隔で待つ。モデル要求のtimeoutとは独立している。
+    with portalocker.Lock(lock_path, mode="a+b", timeout=10, check_interval=0.01):
+        yield
 
 
 TerminalStatus = Literal[
@@ -213,7 +195,9 @@ class EvidenceStore:
     def __init__(self, path: Path, *, temp_root: Path | None = None) -> None:
         """Evidenceの保存先を絶対pathへ固定し、一時領域削除で検証結果まで失われる配置を拒否する。"""
 
-        self.path = path.resolve()
+        # Windowsのresolveもhandleを開くため、JSONのread/writeと排他する。
+        with _evidence_lock(path):
+            self.path = path.resolve()
         self.temp_root = temp_root.resolve() if temp_root is not None else None
         if self.temp_root is not None and self.path.is_relative_to(self.temp_root):
             raise ValueError("terminal Evidence must be outside the temp Run root")
@@ -222,7 +206,7 @@ class EvidenceStore:
         """検証済みEvidenceをatomic writeする。"""
 
         with _evidence_lock(self.path):
-            existing = self.read()
+            existing = self._read_locked()
             if (
                 existing is not None
                 and existing.status not in {"running", "unknown"}
@@ -237,10 +221,18 @@ class EvidenceStore:
     def read(self) -> TerminalEvidence | None:
         """壊れたまたは未作成Evidenceを成功扱いせずNoneで返す。"""
 
-        value = load_json(self.path)
-        if not isinstance(value, Mapping):
-            return None
+        with _evidence_lock(self.path):
+            if not self.path.exists():
+                return None
+            return self._read_locked()
+
+    def _read_locked(self) -> TerminalEvidence | None:
+        """取得済みlock内でのみ読む。writeからの二重lockを避ける。"""
+
         try:
+            value = load_json(self.path)
+            if not isinstance(value, Mapping):
+                return None
             return TerminalEvidence.model_validate(value)
         except (TypeError, ValueError):
             return None
@@ -574,21 +566,6 @@ def run_detached(
     return DetachedResult(evidence=result, exit_code=exit_code)
 
 
-def _run_id_from_heartbeat(path: Path | None) -> str | None:
-    """Heartbeat内のRun IDをUUIDv7として検証し、未指定・不正な記録は採用しない。"""
-
-    if path is None:
-        return None
-    value = load_json(path)
-    if not isinstance(value, Mapping):
-        return None
-    raw = value.get("run_id")
-    try:
-        return _canonical_run_id(raw) if isinstance(raw, str) else None
-    except ValueError:
-        return None
-
-
 def _read_heartbeat(
     heartbeat_path: Path | None, store: EvidenceStore
 ) -> TerminalEvidence | None:
@@ -596,17 +573,15 @@ def _read_heartbeat(
 
     if heartbeat_path is None:
         return None
-    value = load_json(heartbeat_path)
-    if not isinstance(value, Mapping):
+    value = EvidenceStore(heartbeat_path).read()
+    if value is None:
         return None
     try:
         previous = store.read()
-        return TerminalEvidence.model_validate(value).with_update(
+        return value.with_update(
             status="running",
-            run_id=previous.run_id if previous is not None else value["run_id"],
-            operation=previous.operation
-            if previous is not None
-            else value["operation"],
+            run_id=previous.run_id if previous is not None else value.run_id,
+            operation=previous.operation if previous is not None else value.operation,
         )
     except (TypeError, ValueError):
         return None
@@ -695,6 +670,7 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
         settings = load_settings(operation, backend)
         started_at = datetime.now(UTC)
         store = EvidenceStore(evidence_path, temp_root=paths.root)
+        heartbeat_store = EvidenceStore(heartbeat_path)
 
         def callback(event: object) -> None:
             """製品の進捗を本文なしのheartbeatへ変換し、外部Evidenceと監視用Fileへ保存する。"""
@@ -707,7 +683,7 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
                 previous=store.read(),
             )
             store.write(heartbeat)
-            atomic_write_json(heartbeat_path, heartbeat.model_dump(mode="json"))
+            heartbeat_store.write(heartbeat)
 
         initial = TerminalEvidence(
             run_id=run_id,
@@ -717,7 +693,7 @@ def _child_entry(spec_path: Path) -> int:  # noqa: PLR0911
             heartbeat_at=started_at,
         )
         store.write(initial)
-        atomic_write_json(heartbeat_path, initial.model_dump(mode="json"))
+        heartbeat_store.write(initial)
         with bind_call_counts() as call_counts:
             try:
                 execute_public_run(repository, prepared, settings, backend, callback)

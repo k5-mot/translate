@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import sys
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
+import portalocker
 import pytest
 from pydantic import ValidationError
 from uuid_utils.compat import uuid7
@@ -29,6 +32,9 @@ from translate.common.terminal_evidence import (
     workspace_counts,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 def _evidence(run_id: str, operation: str = "translate") -> TerminalEvidence:
     """指定Runと操作の実行中Evidenceを作り、終了状態や安全な更新の試験の基準にする。"""
@@ -39,6 +45,295 @@ def _evidence(run_id: str, operation: str = "translate") -> TerminalEvidence:
         status="running",
         started_at=datetime.now(UTC),
     )
+
+
+def test_evidence_io_holds_exactly_one_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Evidenceの読書きがそれぞれ単一の排他保持中に行われ、lockが入れ子にならないか検査する
+    。
+    """
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    evidence = _evidence(str(uuid7()))
+    store.write(evidence)
+    depth = 0
+    acquisitions = 0
+    original_read = terminal_evidence.load_json
+    original_write = terminal_evidence.atomic_write_json
+
+    @contextmanager
+    def tracked_lock(path: Path) -> Iterator[None]:
+        """取得回数と深さを記録して再入を拒否し、Evidence操作の排他範囲を可視化する。"""
+
+        nonlocal depth, acquisitions
+        assert path == store.path
+        assert depth == 0
+        depth += 1
+        acquisitions += 1
+        try:
+            yield
+        finally:
+            depth -= 1
+
+    def read(path: Path) -> object:
+        """
+        一つのlock保持を確認して実読込みへ委譲し、読込みが排他外へ漏れないか調べる。
+        """
+
+        assert depth == 1
+        return original_read(path)
+
+    def write(path: Path, value: object) -> None:
+        """一つのlock保持を確認して実保存へ委譲し、書込みが排他外へ漏れないか調べる。"""
+
+        assert depth == 1
+        original_write(path, value)
+
+    monkeypatch.setattr(terminal_evidence, "_evidence_lock", tracked_lock)
+    monkeypatch.setattr(terminal_evidence, "load_json", read)
+    monkeypatch.setattr(terminal_evidence, "atomic_write_json", write)
+    assert store.read() == evidence
+    assert store.write(evidence) == evidence
+    assert depth == 0
+    assert acquisitions == 2
+
+
+@pytest.mark.parametrize("content", ['{"broken":', "[]", "{}"])
+def test_evidence_corruption_is_not_success(tmp_path: Path, content: str) -> None:
+    """
+    破損または不正なEvidenceを有効な終了記録として受け入れず、再開許可に使わないか確認す
+    る。
+    """
+
+    path = tmp_path / "terminal.json"
+    path.write_text(content, encoding="utf-8")
+    store = EvidenceStore(path)
+    assert store.read() is None
+    assert not store.allows_public_resume()
+
+
+def test_heartbeat_path_operations_are_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """実heartbeat経路のパス解決・存在確認も、置換と同じlock内で実行する。"""
+
+    path = tmp_path / "heartbeat.json"
+    terminal = EvidenceStore(tmp_path / "terminal.json")
+    value = _evidence(str(uuid7()))
+    EvidenceStore(path).write(value)
+    terminal.write(value)
+    original_resolve = Path.resolve
+    original_exists = Path.exists
+    original_lock = terminal_evidence._evidence_lock  # noqa: SLF001
+    held: set[Path] = set()
+    operations: list[str] = []
+
+    @contextmanager
+    def tracked_lock(target: Path) -> Iterator[None]:
+        """既存lockを取得し、再入と取得範囲を検査して必ず記録を解放する。"""
+
+        assert target not in held
+        with original_lock(target):
+            held.add(target)
+            try:
+                yield
+            finally:
+                held.remove(target)
+
+    def resolve(target: Path, *, strict: bool = False) -> Path:
+        """heartbeatの正規化時に同じFileのlockがあることを確認して標準APIへ委譲する。"""
+
+        if target == path:
+            assert path in held, "heartbeat resolve outside lock"
+            operations.append("resolve")
+        return original_resolve(target, strict=strict)
+
+    def exists(target: Path) -> bool:
+        """heartbeatの存在確認が排他外へ漏れないことを検査する。"""
+
+        if target == path:
+            assert path in held, "heartbeat exists outside lock"
+            operations.append("exists")
+        return original_exists(target)
+
+    monkeypatch.setattr(terminal_evidence, "_evidence_lock", tracked_lock)
+    monkeypatch.setattr(Path, "resolve", resolve)
+    monkeypatch.setattr(Path, "exists", exists)
+    actual = terminal_evidence._read_heartbeat(path, terminal)  # noqa: SLF001
+    assert actual == value
+    assert operations[0] == "resolve"
+    assert "exists" in operations
+    assert not held
+
+
+def test_evidence_resolve_failure_releases_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """パス解決失敗を隠さず伝え、後続readerを妨げるlockを残さない。"""
+
+    path = tmp_path / "terminal.json"
+    value = _evidence(str(uuid7()))
+    EvidenceStore(path).write(value)
+    original_resolve = Path.resolve
+    failure = PermissionError("fixture resolve failure")
+
+    def resolve(target: Path, *, strict: bool = False) -> Path:
+        """対象Fileの正規化だけを失敗させ、無関係な標準API利用は維持する。"""
+
+        if target == path:
+            raise failure
+        return original_resolve(target, strict=strict)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "resolve", resolve)
+        with pytest.raises(PermissionError) as raised:
+            EvidenceStore(path)
+        assert raised.value is failure
+    assert EvidenceStore(path).read() == value
+
+
+def test_evidence_normalizes_relative_paths_and_rejects_temp_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """排他範囲の拡張後も相対pathを正規化し、別表記のtemp内部Evidenceを拒否する。"""
+
+    monkeypatch.chdir(tmp_path)
+    store = EvidenceStore(Path("evidence") / ".." / "terminal.json")
+    assert store.path == tmp_path / "terminal.json"
+    value = _evidence(str(uuid7()))
+    store.write(value)
+    assert EvidenceStore(tmp_path / "terminal.json").read() == value
+    with pytest.raises(ValueError, match="outside"):
+        EvidenceStore(
+            Path("outside") / ".." / "temp" / "terminal.json",
+            temp_root=tmp_path / "temp",
+        )
+    assert not (tmp_path / "temp" / "terminal.json").exists()
+
+
+def test_evidence_write_error_releases_lock_and_preserves_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evidence書込み失敗時に旧版を保持し、lock解放後の次の更新が成功するか検証する。"""
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    initial = _evidence(str(uuid7()))
+    store.write(initial)
+    failure = OSError("fixture write failure")
+
+    def fail(_path: Path, _value: object) -> None:
+        """Evidence保存を指定例外で失敗させ、旧内容の保持とlock解放を試験する。"""
+
+        raise failure
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(terminal_evidence, "atomic_write_json", fail)
+        with pytest.raises(OSError, match="fixture write failure"):
+            store.write(initial.with_update(current=1))
+    assert store.read() == initial
+    assert store.write(initial.with_update(current=2)).current == 2
+
+
+def test_evidence_lock_uses_bounded_existing_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    既存portalockerに渡す有限待機設定を捕捉し、独自の無期限lock待機を使わないか確認する
+    。
+    """
+
+    original = portalocker.Lock
+    options = []
+
+    def capture(path: Path, **kwargs: object) -> portalocker.Lock:
+        """実Lockへ委譲しながら要求設定を記録し、Test自体の待機は0秒に固定する。"""
+
+        options.append(kwargs)
+        return original(path, mode="a+b", timeout=0)
+
+    monkeypatch.setattr(portalocker, "Lock", capture)
+    with terminal_evidence._evidence_lock(tmp_path / "evidence.json"):  # noqa: SLF001
+        pass
+    assert options == [{"mode": "a+b", "timeout": 10, "check_interval": 0.01}]
+
+
+def test_evidence_terminal_survives_stale_running_update(tmp_path: Path) -> None:
+    """
+    完了済みEvidenceを古いrunning更新が巻き戻さず、有効な終了記録を維持するか調べる。
+    """
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    running = _evidence(str(uuid7()))
+    completed = running.with_update(
+        status="completed", finished_at=datetime.now(UTC), exit_code=0
+    )
+    store.write(completed)
+    assert store.write(running) == completed
+    assert store.read() == completed
+    assert store.allows_public_resume()
+
+
+def test_evidence_permission_failure_is_not_hidden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Evidence読込みの権限障害を欠落や成功へ変換せず、同じ例外として伝えるか検査する。
+    """
+
+    store = EvidenceStore(tmp_path / "terminal.json")
+    store.write(_evidence(str(uuid7())))
+    failure = PermissionError("fixture permission failure")
+
+    def fail(_path: Path) -> object:
+        """読込み時に同じPermissionErrorを投げ、障害が握りつぶされないか確認する。"""
+
+        raise failure
+
+    monkeypatch.setattr(terminal_evidence, "load_json", fail)
+    with pytest.raises(PermissionError) as raised:
+        store.read()
+    assert raised.value is failure
+
+
+def test_detached_high_frequency_evidence_and_heartbeat_io(tmp_path: Path) -> None:
+    """モデルを起動せず、既存の親子監視で両JSONの競合を検証する。"""
+
+    run_id = str(uuid7())
+    evidence = tmp_path / "terminal.json"
+    heartbeat = tmp_path / "heartbeat.json"
+    code = """
+# Exercise only diagnostic I/O; do not create model or embedding clients.
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from translate.common.terminal_evidence import EvidenceStore, TerminalEvidence
+store = EvidenceStore(Path(sys.argv[2]))
+heartbeat = EvidenceStore(Path(sys.argv[3]))
+current = TerminalEvidence(run_id=sys.argv[1], operation='translate',
+    status='running', started_at=datetime.now(UTC), total=100)
+for number in range(1, 101):
+    current = current.with_update(current=number, heartbeat_at=datetime.now(UTC))
+    store.write(current)
+    heartbeat.write(current)
+store.write(current.with_update(status='completed', finished_at=datetime.now(UTC)))
+"""
+    result = run_detached(
+        [sys.executable, "-c", code, run_id, str(evidence), str(heartbeat)],
+        run_id=run_id,
+        operation="translate",
+        evidence_path=evidence,
+        heartbeat_path=heartbeat,
+        temp_root=tmp_path / "temp",
+        timeout_seconds=10,
+        poll_seconds=0.001,
+    )
+    assert result.exit_code == 0
+    assert result.evidence.status == "completed"
+    assert result.evidence.current == result.evidence.total == 100
+    assert EvidenceStore(evidence).allows_public_resume()
+    assert EvidenceStore(heartbeat).read().current == 100
 
 
 def test_terminal_evidence_forbids_arbitrary_fields_and_unsafe_names() -> None:
@@ -64,14 +359,14 @@ def test_evidence_store_rejects_temp_root_and_invalid_terminal(tmp_path: Path) -
     """
 
     run_id = str(uuid7())
-    temp_root = Path("temp")
+    temp_root = tmp_path / "temp"
     with pytest.raises(ValueError, match="outside"):
         EvidenceStore(temp_root / "evidence.json", temp_root=temp_root)
     evidence = _evidence(run_id)
-    missing = EvidenceStore(Path("missing.json"))
+    missing = EvidenceStore(tmp_path / "missing.json")
     assert not missing.contains_valid_terminal()
     assert not missing.allows_public_resume()
-    assert not EvidenceStore(Path("missing.json")).allows_public_resume()
+    assert not EvidenceStore(tmp_path / "missing.json").allows_public_resume()
     completed = evidence.with_update(
         status="completed", exit_code=0, finished_at=datetime.now(UTC)
     )
