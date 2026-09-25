@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -14,8 +15,9 @@ from translate.common.fingerprint import (
     diff_snapshots,
 )
 from translate.common.runs import RunRepository
-from translate.common.settings import load_settings
+from translate.common.settings import load_settings, read_rules
 from translate.tasks import structure
+from translate.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -67,6 +69,71 @@ def test_fingerprint_is_canonical_and_tracks_output_settings(
     assert first.value != changed.value
     differences = diff_snapshots(first.snapshot, changed.snapshot)
     assert [item.path for item in differences] == ["models.translation"]
+
+
+@pytest.mark.parametrize("mode", ["task-default", "off"])
+def test_rule_change_separates_public_fingerprint_and_workflow_thread(
+    settings_factory: Callable[..., Settings],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    """配布ルールの変更で公開Resumeを拒否し、Workflowも異なるthreadを選ぶことを確認する。"""
+
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    shipped = load_settings("convert", env={})
+    for name in ("structure", "translation", "review"):
+        (templates / f"{name}-rules.md").write_text(
+            read_rules(shipped, name), encoding="utf-8"
+        )
+    settings = settings_factory(templates_dir=templates, reasoning_mode=mode)
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"synthetic source")
+    rule = templates / "translation-rules.md"
+
+    def current() -> Fingerprint:
+        """ルールを上書きせず、既存APIで現在の公開fingerprintを取得する。"""
+
+        return build_fingerprint(
+            operation="translate",
+            backend="llm",
+            input_hashes={"source": "synthetic"},
+            settings=settings,
+            rule_paths={"translation": rule},
+        )
+
+    def stop_before_external_call(*_args: object, **_kwargs: object) -> None:
+        """Graphの初回Taskを停止し、外部通信なしで保存済みWorkflow識別を検査する。"""
+
+        msg = "test stops at SPLIT"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(translation.split, "run", stop_before_external_call)
+    before = current()
+    repository = RunRepository(tmp_path / "runs")
+    saved = repository.create(
+        "translate", {"source": source}, before.snapshot, before.value
+    )
+    metadata_path = repository.paths(saved.run_id).metadata
+    original_metadata = metadata_path.read_bytes()
+    with pytest.raises(RuntimeError, match="test stops at SPLIT"):
+        translation.run(source, tmp_path / "before", "llm", settings)
+    rule.write_text(
+        rule.read_text(encoding="utf-8") + "\n追加の翻訳指示。\n", encoding="utf-8"
+    )
+    after = current()
+    with pytest.raises(RuntimeError, match="test stops at SPLIT"):
+        translation.run(source, tmp_path / "after", "llm", settings)
+    assert before.value != after.value
+    assert not check_resume_compatibility(saved, after).compatible
+    assert metadata_path.read_bytes() == original_metadata
+    metadata = [
+        json.loads((tmp_path / name / ".workspace/workflow.json").read_text())
+        for name in ("before", "after")
+    ]
+    assert metadata[0]["translation_rules"] != metadata[1]["translation_rules"]
+    assert metadata[0]["thread_id"] != metadata[1]["thread_id"]
 
 
 def test_credentials_retry_observation_and_qdrant_are_excluded(

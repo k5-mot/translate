@@ -9,6 +9,7 @@ import pytest
 
 from translate.adapters.llm import LLMError, LLMOutputTruncatedError
 from translate.common.lifecycle import FailureRecord, _safe_diagnostics
+from translate.common.settings import load_settings, read_rules
 from translate.common.terminal_evidence import evidence_from_failure
 from translate.document import Block, Document, Inline, Page
 from translate.tasks import translate
@@ -53,6 +54,142 @@ def _page_with_units(count: int) -> Page:
             )
         ],
     )
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "targetだけ",
+        "すべてのid",
+        "空でない訳文",
+        "同じid",
+        "__PROTECTED_<unit>_<fragment>__",
+        "各1回",
+        "一字も変更せず",
+        "省略・重複・別idへの移動",
+        "実値を推測",
+        "本文の途中",
+    ],
+)
+def test_shipped_translation_rules_describe_placeholder_contract(
+    instruction: str,
+) -> None:
+    """実loaderが読む配布指示に、対象と保護記号の扱いが明記されているか確認する。"""
+
+    rules = read_rules(load_settings("convert", env={}), "translation")
+    assert instruction in rules
+
+
+@pytest.mark.parametrize("mode", ["task-default", "off"])
+@pytest.mark.parametrize("route", ["initial", "retry", "split"])
+def test_shipped_rules_reach_all_protected_translation_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    mode: str,
+    route: str,
+) -> None:
+    """配布指示と所属IDが通常・欠落retry・逐次分割で保たれることをTask境界で検査する。"""
+
+    settings = settings_factory(
+        templates_dir=load_settings("convert", env={}).templates_dir,
+        reasoning_mode=mode,
+        retry_attempts=2,
+        retry_base_seconds=0,
+    )
+    rules = read_rules(settings, "translation")
+    sources = [
+        "Use config.yaml here.",
+        "Visit https://example.invalid/guide for details.",
+        "https://example.invalid/only",
+        "Compare first.ini and second.ini here.",
+    ]
+    page = _page_with_units(len(sources))
+    for inline, source in zip(page.blocks[0].source, sources, strict=True):
+        inline.text = source
+    calls: list[list[str]] = []
+    policies: list[tuple[object, object]] = []
+    truncations = 1 if mode == "off" else 2
+
+    def structured(*args: object, **kwargs: object) -> translate.TranslationResponse:
+        """要求を捕捉し、指定経路だけ失敗させた後に記号を保持した合成訳を返す。"""
+
+        assert args[3] == rules
+        assert "同じid" in str(args[3])
+        payload = json.loads(str(args[4]))
+        target = payload["target"]
+        calls.append([item["id"] for item in target])
+        policies.append((kwargs.get("reasoning"), kwargs.get("thinking")))
+        markers = re.findall(
+            r"__PROTECTED_\d+_\d+__", " ".join(item["text"] for item in target)
+        )
+        assert sorted(markers) == payload["protected_placeholders"]
+        assert len(markers) == len(set(markers))
+        assert payload["previous_context"] == "Context only"
+        assert payload["following_context"] == "Following only"
+        if route == "split" and len(calls) <= truncations:
+            stage = "text-output"
+            raise LLMError(
+                stage,
+                LLMOutputTruncatedError(),
+                failure_kind="output-truncated",
+                finish_reason="length",
+            )
+        response = translate.TranslationResponse(
+            translations=[
+                translate.TranslationItem(id=item["id"], text="訳 " + item["text"])
+                for item in target
+            ]
+        )
+        if route == "retry" and len(calls) == 1:
+            response.translations[0].text = "欠落した訳"
+        return response
+
+    # No service request is made: only the actual translation Task is exercised.
+    monkeypatch.setattr(translate, "structured", structured)
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    translate._translate_page(  # noqa: SLF001
+        page, "Context only", "Following only", rules, [], settings, tmp_path / "qdrant"
+    )
+    translated = page.blocks[0].translated
+    assert translated is not None
+    assert [(item.id, item.text) for item in translated] == [
+        (f"inline-{index}", "訳 " + source) for index, source in enumerate(sources)
+    ]
+    ids = [f"inline-{index}" for index in range(len(sources))]
+    assert calls == (
+        [ids] * truncations + [ids[:2], ids[2:]]
+        if route == "split"
+        else [ids] * (2 if route == "retry" else 1)
+    )
+    assert policies == (
+        [("none", "disabled")] * len(calls)
+        if mode == "off"
+        else [("high", None)] + [("none", "disabled")] * (len(calls) - 1)
+        if route == "split"
+        else [("high", None)] * len(calls)
+    )
+
+
+def test_protected_markers_moved_to_another_id_are_rejected() -> None:
+    """全記号の個数が正しくても、別IDへ移した応答を最終対応検査で拒否する。"""
+
+    chunk = [("first", "Use first.ini here."), ("second", "Use second.ini here.")]
+    protected_chunk, protected = translate._protect_chunk_for_prompt(chunk)  # noqa: SLF001
+    response = translate.TranslationResponse(
+        translations=[
+            translate.TranslationItem(id="first", text=protected_chunk[1][1]),
+            translate.TranslationItem(id="second", text=protected_chunk[0][1]),
+        ]
+    )
+    restored = translate._restore_chunk_placeholders(  # noqa: SLF001
+        response, protected, page=2, target_id="synthetic-chunk"
+    )
+    with pytest.raises(translate.TranslationOutputError) as captured:
+        translate._validated_mapping(  # noqa: SLF001
+            restored, chunk, page=2, target_id="synthetic-chunk"
+        )
+    assert captured.value.cause_type == "ProtectedFragmentMissing"
 
 
 def test_translation_output_mismatch_retries_same_chunk_then_succeeds(

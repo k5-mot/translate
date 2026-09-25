@@ -2,10 +2,10 @@
 
 ## 1. 翻訳指示と回帰検査
 
-- [ ] 1.1 配布translation-rules.mdにtarget/文脈の区別、全IDの非空訳、同じID内の保護記号の無変更・一対一保持を追加する。実read_rulesで読み込むTestで各指示が欠けた旧ルールでは失敗し、新ルールで成功することを確認する（Q-FUNC/Q-MAINT）。
-- [ ] 1.2 既存の翻訳出力Testへ合成の本文中URL・識別子、記号のみ、複数記号を追加し、通常/OFF、検証retry、切断分割後の送信に配布ルールが届き、復元結果が同じIDに保持されることを確認する。欠落・重複・未知記号・別ID移動の拒否と、有限回数・逐次順序・公開前失敗の既存Testも通す（Q-FUNC/Q-REL/Q-PERF/Q-SEC）。
-- [ ] 1.3 ルール変更が公開fingerprintとWorkflow識別へ反映されることを既存Testで確認し、不足分だけ追加する。新しい互換性管理を作らず、Qdrant状態を識別へ含めない（Q-COMP/移行）。
-- [ ] 1.4 関連Test、全体pytest、ruff check、ruff format --check、ty check、OpenSpec strict、git diff --checkを実施し、実行時の既存未コミット差分と結果をverification.mdに記録する。今回の差分だけをcommitする（Q-MAINT/Q-PORT/供給）。
+- [x] 1.1 配布translation-rules.mdにtarget/文脈の区別、全IDの非空訳、同じID内の保護記号の無変更・一対一保持を追加する。実read_rulesで読み込むTestで各指示が欠けた旧ルールでは失敗し、新ルールで成功することを確認する（Q-FUNC/Q-MAINT）。
+- [x] 1.2 既存の翻訳出力Testへ合成の本文中URL・識別子、記号のみ、複数記号を追加し、通常/OFF、検証retry、切断分割後の送信に配布ルールが届き、復元結果が同じIDに保持されることを確認する。欠落・重複・未知記号・別ID移動の拒否と、有限回数・逐次順序・公開前失敗の既存Testも通す（Q-FUNC/Q-REL/Q-PERF/Q-SEC）。
+- [x] 1.3 ルール変更が公開fingerprintとWorkflow識別へ反映されることを既存Testで確認し、不足分だけ追加する。新しい互換性管理を作らず、Qdrant状態を識別へ含めない（Q-COMP/移行）。
+- [x] 1.4 関連Test、全体pytest、ruff check、ruff format --check、ty check、OpenSpec strict、git diff --checkを実施し、実行時の既存未コミット差分と結果をverification.mdに記録する。今回の差分だけをcommitする（Q-MAINT/Q-PORT/供給）。
 
 ## 2. OFFでの実成果物検証
 
