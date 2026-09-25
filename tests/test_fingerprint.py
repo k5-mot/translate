@@ -168,7 +168,7 @@ def test_public_resume_rejects_old_literal_check_rules(
     inputs = (
         {"source": source}
         if operation == "translate"
-        else {"source": source, "target": target}
+        else {"source_en": source, "translation_ja": target}
     )
     settings = settings_factory(templates_dir=templates, reasoning_mode="off")
     selected = "translation" if operation == "translate" else "review"
