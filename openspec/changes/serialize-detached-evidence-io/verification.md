@@ -137,3 +137,33 @@ git check-ignoreでruns側は除外対象、outputs側は非除外と確認し�
 
 - [Microsoft: RmGetList](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmgetlist)、[RM_PROCESS_INFO](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/ns-restartmanager-rm_process_info)、[RmRegisterResources](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmregisterresources)、[RmStartSession](https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmstartsession): 使用した照会APIの型・引数・戻り値。
 - [Microsoft: Process Monitor](https://learn.microsoft.com/en-us/sysinternals/downloads/procmon): File操作とprocess情報を観測する追加手段。未導入・未実行。
+
+## 既存Fileへの直接上書きの事前確認（2026-09-25）
+
+利用者から「既存のファイルに書き込むのはダメなの？」との指摘を受け、原子的置換の原因追跡だけでなく、診断JSONに限定した直接上書きを候補として確認した。Process Monitorの導入・採取は保留する。前節の「非原子的保存へ弱めない」は当時の設計前提であり、利用者との設計変更の検討まで禁止するものではない。現時点で新方式の採用・実装・受入を完了したとは扱わない。
+
+### 標準APIだけの事前試験
+
+Repository直下に所有するTemporaryDirectoryを作り、既存の合成status.jsonをopen("w", encoding="utf-8") → write → flush → fsync → closeで更新した。各更新後に標準jsonで再読し、送信値との一致を確認した。4096文字のpaddingの有無を交互に変えて、短いJSONへ更新した際の残尾も検査した。製品Module・外部Package・reader子process・LLMは使っていない。
+
+| 試行 | 時間 | 上書きと再読の成功件数 | I/Oエラー |
+| --- | --- | --- | --- |
+| 1 | 5.0秒 | 903 | なし |
+| 2 | 5.0秒 | 1437 | なし |
+| 3 | 5.0秒 | 1644 | なし |
+
+session 64975はexit 0。別の合成Fileに完了JSONを置いた後、直接上書きで不完全JSONを書き、JSONDecodeErrorで拒否されることも確認した。これは途中書込み相当の内容を作る試験であり、OSによる強制終了試験ではない。単独writerの短時間試験なので、親子競合、実EvidenceStore、任意のWindows共有条件での成功を証明しない。以前の置換失敗と今回の上書き成功では試行時刻も異なり、原因processの特定とも扱わない。
+
+所有一時領域だけを自動cleanupした。入力・成果物・Checkpointを変更・削除していない。
+
+### 設計変更で失う保証と残す境界
+
+- 現行EvidenceStoreは同じsidecar lockの中で旧状態読取り・終端保護・保存を行う。上書きでもこの排他を維持する必要がある。
+- 直接上書きではtruncate後の失敗時に前のJSONを保持できない。lock非協調readerには途中内容が見え得る。破損前の終端状態もJSON単体から復元できない。
+- 現行_read_lockedは不正JSON/schemaをNoneにし、有効なcompleted、exit 0、終了時刻がなければGateを通さない。I/O例外は欠落扱いせず伝播する。この境界は維持する候補とする。
+- tests/test_terminal_evidence.pyの単一lock検査と書込み失敗Testはatomic_write_jsonをspyしているため、方式変更時は実write境界へ更新が必要。書込み前の失敗とtruncate後の失敗を分け、空File・部分書込み・短い値への更新・lock解放・実親子I/Oを検証する。
+- 対象は診断Evidence/heartbeatのみ。workspaceの汎用atomic writer、子process要求File、利用者入力・成果物・LangGraph Checkpointへの一括適用は含めない。新依存、独自retry、例外の握り潰しは不要。
+
+grill-with-docsによる設計確認として、診断JSON更新中の中断では前の状態を失っても「状態不明・成功扱いしない」とする変更を利用者へ提示する。原子的保存を要求するpersist-detached-resume-terminal-evidence/design.mdとの変更関係を、採用時の別Changeで明示する。未回答の本文URL/ファイル名の厳密保護範囲とは分離する。
+
+製品Codeは未変更、Tasks 2.1/2.2は未完了。これは事前試験の記録であり、正式verify成功・archive可能・実translation→Word PDF→Review合格ではない。
