@@ -35,3 +35,16 @@
 1. sample3.pdfを新規Run・reasoning OFF・逐次で翻訳する。既存失敗Runを再利用しない。
 2. 同じDOCXをMicrosoft Wordで別PDFへ変換し、原本PDFと生成PDFを比較Reviewする。診断保存Changeと証拠を共有する。
 3. 利用者へDOCX/PDFを提示して目視を確認する。既知の表内画像・ALIGN・Template等の別件を合格扱いにしない。
+
+## 実検証の開始記録
+
+実装commit 17ebaf2と上記既存差分を含むworktreeで、新規公開CLI翻訳を2026-09-25 13:17:31 UTCに開始した。入力SHA-256は5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f。旧Runや既存exportは上書きしていない。
+
+- Run: 01a0d8b6-c2ab-7c92-bed9-58403a8410b3、tool session: 75952。
+- 入力: inputs/sample3.pdf。export先: outputs/sample3-acceptance-off-literals。
+- LLM_REASONING_MODE=off。保存snapshotもoff。context/output/image=30208/16384/2048、request timeout=1800秒、Task deadline=21600秒、retry=3。
+- 起動系列: uv PID 49236 → Python launcher PID 41572 → Python PID 19172。プロセス数はModel並行数を意味しない。
+- SPLIT〜LOAD完了、DOCLING=26.987秒、STRUCTURE=104.580秒。前回失敗した第2ページを通過し、第4ページのTRANSLATEまで進行中。この途中記録はWorkflow成功証拠ではない。終了handleと最新結果を確認するまで再起動・Resumeしない。
+- この翻訳は通常CLIで起動したためdetached childの呼出しcounterは未接続。未取得の呼出し数を0と記録しない。後続の実比較は既存診断runnerを使用し、診断保存Changeとの共通証拠を得る。
+- 読取り専用Langfuse v2 observations照会で、trace 56e4ac20ce055e2988a2f42e599bb1b6の終了済み18 llm.request（STRUCTURE 15、TRANSLATE 3）のmetadataが全てreasoning=none / thinking=disabledであることを確認した。取得時点の件数であり最終件数ではない。Provider内部の推論token実測0は主張しない。旧trace一覧APIはv4 events_only環境の404を返したため、導入済みSDKのv2 observationsへ切り替えた。診断照会はModel要求を追加していない。
+- QdrantClientからAPI keyを暗号化されていない接続で使用する旨の警告が出た。処理停止は起きていない。接続設定を無断変更せず、Security受入の残確認として保持する。
