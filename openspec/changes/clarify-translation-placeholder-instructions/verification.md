@@ -81,3 +81,26 @@ Checkpoint SQLite（86016 bytes）、入力copy、STRUCTUREまでのArtifactを�
 親子で異なる文字コード設定を持つCLI隔離Testが初回に失敗した。通常環境では再現せず全体656 passedだが、任意の親環境での安定性は未保証。必要な是正は今回の翻訳指示修正と分離して扱う。
 
 **最終判定: 実検証失敗、archive不可。** Deltaはskip_specsのためなし。既存正式仕様の保護対象保持要求と、design/tasksの実検証条件へ照合した。Word/PDF/Reviewを省略して合格にすることはない。
+
+## 次の是正案に向けた既存API調査（2026-09-25）
+
+現在のretryは同じ要求を繰り返しており、検証で分かった情報を次回へ渡していない。新たなretry機構を再開発しないため、grill-with-docsの事実調査として導入済みAPIを読取り専用で比較した。モデル/Embedding要求、製品Code変更、新Change作成は行っていない。
+
+導入済みVersion: langchain 1.4.2、langchain-core 1.6.3、langchain-openai 1.6.2、langgraph 1.2.11、pydantic 2.13.5、tenacity 9.1.4。調査はこの導入済みAPIと現行呼出し境界の比較であり、全Packageに同等機能が存在しないとの主張ではない。
+
+| API / 現行境界 | 確認結果 |
+| --- | --- |
+| PydanticOutputParser（langchain_core/output_parsers/pydantic.py:25） | model_validateによるshape検査。Task固有の期待ID/marker mapを渡しておらず、形状適合・記号欠落の合成応答はparser成功後のTask検証で失敗する |
+| RunnableRetry（langchain_core/runnables/retry.py:179） | 同じinputを再invokeする。回数/待機制御はあるが検証feedback生成はない |
+| LangGraph RetryPolicy（langgraph/types.py:418） | node/task入力の再実行。既存Task内retryへ追加すると範囲・回数が変わり、今回の局所的な要求補足にはならない |
+| OutputParserException(send_to_llm=True) | 情報を保持する例外。現在のAdapterにfeedback consumerはなく、フラグだけでは要求を変更しない。llm_output必須なので生応答を避ける本案には不要 |
+| ToolStrategy(handle_errors=...)（langchain/agents/structured_output.py:196） | create_agent/tool-calling内ではToolMessageによるfeedbackがある。現在のprompt parserへそのまま適用できず、Agent loopと動的Task検証の接続が必要 |
+| 現行structured / TRANSLATE | adapters/llm.py:345でshape検査、tasks/translate.py:77/251で保護・ID検査、同396行で検証失敗を捕捉。既存のTask loop内で次回要求だけを変える余地がある |
+
+上記Package参照は`.venv/Lib/site-packages/`配下のローカルSourceを指す。旧RetryOutputParser/OutputFixingParserを持つlangchain_classicは未導入で、これだけのために依存を増やさない。
+
+### 利用者へ提示した方針（回答待ち）
+
+推奨は、既存の有限retry上限内で、検証失敗の固定分類と各IDに必要な保護記号を次回要求へ追加し、同じChunk全体を再生成すること。初回・通信retry・分割上限・逐次実行・OFFを維持する。既存検証関数を正本とし、feedback生成用に別の合否判定を再実装しない。生応答・原文保護値・例外全文は転記せず、feedbackは蓄積せず置換し、永続Cacheや完了台帳を作らない。
+
+代替は欠落した翻訳単位だけ再生成する案だが、部分応答の保持・統合と文脈の扱いを追加設計する必要がある。利用者へ全Chunk再生成案を提示しており、回答前に採用済みとしない。新Changeは方針確認後に作成する。今回の元指摘・未完了Taskは変わらない。
