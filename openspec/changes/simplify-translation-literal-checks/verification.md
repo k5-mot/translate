@@ -101,6 +101,14 @@ PDF全28ページを導入済みpypdfium2で読み、1・2・3・5・25・26・2
 
 公開reviewの入力roleを訂正した後のtests/test_fingerprint.pyは17 passed（2.21秒）。対象Ruff check/format、全体ty、OpenSpec strict、git diff --check成功。文書Testは21 passed（0.90秒）。この試験fixtureの訂正で進行中の製品コードは変更していない。
 
+### 実データで再確認した別件（本Changeへ無断で取り込まない）
+
+1. **金額表の負数符号欠落（未解決）**: 原本第16ページの画像には−766、−1,796、−749などの負数があるが、生成PDF第28ページでは正数表示となる。原本第16ページも同じ描画器で目視した。Docling part-0002/unpacked/document.json内の該当text/origは既に766、1,796であり、MERGE、POSITION、NORMALIZE、LOAD、STRUCTURE、TRANSLATE、FIX、VERIFYでも同値を確認した。翻訳モデルがマイナスを消したと断定せず、Docling応答と原PDFからの数値保持を別Changeで診断・修正する必要がある。欠落符号が別要素へ分離された可能性を含め、発生原因の確定は未完了。
+2. **用語集の部分一致による誤指摘（未解決）**: 原文「Complete a Capital Asset Management Plan and certify the Earned Value Management System.」に用語API→APIを適用すると、deterministic_findingsはglossary/APIを返すが、既存matching_glossaryは0件を返す。Capital内のapiへの部分一致であり、単語境界を考慮する既存APIとの不一致を外部呼出しなしで再現した。実データの第14ページでもAPI指摘をVERIFYが無関係と判定している。今回の文字列保護廃止とは別の用語集検査問題である。
+3. **比較ALIGNの誤対応（既知問題の再現）**: 訂正後の比較Runは290 Groupを生成した。logs/run.logに2026-09-25 23:04:17 JSTの「ALIGN model fallback failed; using deterministic order」があり、LangfuseのAlignmentResponseは0.741秒でERROR/LLMError。原因の詳細はこの安全な観測値だけでは確定できない。alignment/14はDepartment of Energy→図一覧、alignment/18はOVERVIEW→大統領によるクリーンな石炭へのコミットメントとなり、別内容同士を比較している。後続reportの総件数を誤訳数・品質合格の根拠にしない。
+
+14:14 UTCの比較trace fe87686a81b37a939449aaa97b608a4eでは完了要求12件（ALIGN 1、REVIEW 11）、すべてreasoning=none。比較Runはrunning、親のheartbeatは更新されている。Evidenceのtask=CHECKは最後の完了通知であり、run.jsonのlast_task=REVIEWと区別する。途中counter=0も実呼出し0を意味しない。既存の進捗表示・再開状態整理の課題として残し、比較の二重起動・中断は行わない。
+
 ### 参考文献
 
 - [Microsoft Word Window.Hwnd](https://learn.microsoft.com/en-us/office/vba/api/word.window.hwnd): Automation対象のWindowから所有Processを確認するために使用。

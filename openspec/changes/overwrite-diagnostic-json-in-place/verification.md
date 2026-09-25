@@ -34,3 +34,11 @@ session 17073はexit 0、合計7039 write / 6107 read。全child handleを回収
 検査対象はHEAD 31f2851に既存未commit差分と今回の修正を含むworktreeであり、commit単独の検証ではない。SHA-256はterminal_evidence.pyが6464434b7de49c983c42793c453a9e102973c020a2d014266b90591321863738、Testがda0395515c0def54f4f1834afa93de6664ce64444c8701860af37f791369e6c6。製品Fileのhashには別件のFailureKind/context-exceededも含むが、その1行は今回のcommitから除外しworktreeへ保持する。他のLLM/Review/Lifecycle差分、.agents、サンプル、outputs/runsも含めない。
 
 7/8 Tasks完了。reasoning OFFのsample3翻訳→Microsoft Word PDF→比較Reviewは、simplify-translation-literal-checksの実装後に同じ実行で検証する。Task 2.4は未完了であり、正式verify成功・archive可能とは判定しない。
+
+### 共通実E2Eの進捗（2026-09-25更新）
+
+[文字列検査簡素化の実検証記録](../simplify-translation-literal-checks/verification.md)に、翻訳Run 01a0d8b6-c2ab-7c92-bed9-58403a8410b3のexit 0（2366.730秒）、実LLM要求97件のreasoning OFF、DOCXとWord PDFのhashを記録した。翻訳は通常CLIであり、この保存境界の実親子検査は後続比較へ接続している。
+
+最初の比較起動は検証側の入力role誤りで、Run 01a0d8df-90fc-7eb1-a686-cb8a59c2ab77がKeyError・child exit 1で終了した。comparison-terminal.jsonへ安全なfailed終端と各外部呼出し0を保存し、所有tempのみcleanupできた。これを成功のE2Eとしない。
+
+公開CLIと同じroleへ訂正した新規比較Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は、別名comparison-terminal-corrected.jsonへ既存lock下でheartbeatを直接保存しながら実行中。14:14 UTC時点で共有I/O障害は観測していないが、終了・最終counter・cleanup・成果物整合は未確認。Task 2.4は未完了のままとし、途中保存の成功を終端回収の成功へ読み替えない。ALIGN誤対応などの品質問題も共通記録で保持する。
