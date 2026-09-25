@@ -46,3 +46,34 @@ Using change: `serialize-detached-evidence-io`。OpenSpec rootは当Repository�
 **WARNING:** 実translation→Microsoft Word PDF→Comparison Reviewは未実施。最新OFF翻訳が保護記号欠落で停止している別問題を本Testで代替しない。今回の変更は検証記録だけで、common配置・再開の二重管理・利用者判断待ちも解決済みにしない。
 
 **最終判定: 自動検査は成功、Changeの正式verifyは未合格。archive/main merge/push不可。** 元の監査指摘には本節を参照し、既存の未完了Checkboxは維持する。
+
+## 追加診断: lock外のパス解決を含む置換競合（2026-09-25）
+
+`diagnosing-bugs`に従って既存Testの反復から、モデル・Workflow・watchdogを除いた合成JSONの実親子I/Oへ縮小した。PowerShell here-stringを`uv run python -X utf8 -`へ渡し、所有するTemporaryDirectory内で既存EvidenceStoreを呼んだ。子processは期限付きで終了を回収し、既存Runは使わない。製品Code、Test File、設定は変更していない。
+
+### 再現と比較
+
+1. Repository直下の一時領域で、parentはEvidenceStore.write、childはEvidenceStore(path).readを繰り返した。各12秒上限の3試行中**2試行でwriterのPermissionError / WinError 5**。失敗前のwrite件数は847、223、非再現試行は1253。childは全試行exit 0で、JSON読取りエラーは0。session 66199は終端exit 0で、試験scriptの終了値ではなく各試行のerror欄を判定した。
+2. 仮説を利用者へ「constructorのresolve」「exists/read」「reader以外の置換障害」の順に提示し、childの処理だけを替えた。Repository内ではresolve-onlyは2/2失敗（各22 write後）、exists-onlyは1/2失敗、reader使い回しは1/2失敗、writer単独も2/2失敗した。従って、この場所の全障害をresolve一つに帰属させることはできない。session 57248は全childを回収してexit 0。
+3. writer単独へ縮小し、例外の型・WinError・直前phase・関数名/行だけを観測した。Repository内は3試行中1失敗（881 write後）、OS一時領域は3試行とも非再現（1060/1092/1170 write）。失敗位置は`EvidenceStore.write → atomic_write_json → atomic_write_text → atomic_write_bytes:71 → Path.replace`、phase=replace。session 97252はexit 0。保存先以外にも時刻・OS負荷が変わる少数試行なので、特定の監視ソフトや保存先そのものを原因と断定しない。
+4. OS一時領域でchildのresolveを既存lockで囲む差分だけを比較した。各5秒上限の結果は次のとおり。session 56291はexit 0、全childもexit 0。
+
+| childの操作 | 試行1 / parent write件数 | 試行2 / parent write件数 |
+| --- | --- | --- |
+| path.resolveのみ、lock外 | WinError 5 / 22 | WinError 5 / 28 |
+| 同じpath.resolveを既存_evidence_lock内で実行 | エラーなし / 661 | エラーなし / 653 |
+| path.existsのみ、lock外 | エラーなし / 666 | エラーなし / 745 |
+
+実際のheartbeat読取りは毎回`EvidenceStore(heartbeat_path)`を作り、そのconstructorは`path.resolve()`をlock外で実行する。上記はこの標準APIに起因する競合条件を実機で再現しており、「JSON本文のread/writeだけを排他すれば十分」という前提を否定する証拠である。存在確認だけの非再現は、そのAPIの任意条件での安全性を証明しない。
+
+### 標準APIの根拠と結論
+
+実行Pythonは3.12.9。対応するCPython公式Sourceの`os__getfinalpathname_impl`はCreateFileWのshare modeに0を渡し、最終path取得後にhandleを閉じる。パス解決は単なる文字列処理ではなく、その間の共有を制限するFile操作を含む。この実装と差分試験は、lock外のresolveが置換と競合する説明に整合する。一方、Repository内のwriter単独失敗にはreaderのresolveがないので、追加原因の切分けが必要である。
+
+**次の修正・検証範囲:** Tasks 2.1/2.2は未完了を維持する。constructor/heartbeatのパス解決を含むhandle取得と存在確認を排他設計へ含め、同じ競合を検出する回帰Testを追加する。パス正規化・リンク・temp root外という既存安全境界を暗黙に変えず、readerを使い回すだけで全経路が直るとは扱わない。writer単独の失敗は別に追跡し、根拠のないPermissionError無視・無制限retryは追加しない。
+
+今回は診断のみであり、修正済み・正式verify成功・archive可能とは判定しない。所有する試験用TemporaryDirectoryは各試行終了後に自動削除され、再現用の合成JSONだけが対象である。利用者の入力・成果物・Checkpointを削除していない。
+
+### 参考資料
+
+- [CPython 3.12.9 posixmodule.c: os__getfinalpathname_impl](https://github.com/python/cpython/blob/v3.12.9/Modules/posixmodule.c#L4518-L4579): 使用中VersionのWindowsパス解決実装。先に参照した3.12.12ではなく3.12.9を根拠とした。

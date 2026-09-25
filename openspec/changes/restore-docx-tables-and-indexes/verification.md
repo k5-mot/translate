@@ -160,6 +160,8 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 2026-09-25 10:21 JSTに[診断I/Oの再検証](../serialize-detached-evidence-io/verification.md)を記録した。実親子の3 Testを20回逐次反復して60/60成功、その後の全体Testは656 passed / 1 skipped。ただし排他修正後に発生した過去のWinError 5の原因は未確定であり、競合の指摘・archive保留は維持する。モデル要求、製品Code変更、旧Run変更は行っていない。
 
+続く同日の追加診断では、合成JSONだけの実親子I/OでWinError 5を3試行中2回再現した。OS一時領域の比較ではlock外のpath.resolveが2/2失敗、同じresolveを既存lockで囲むと2/2非再現となり、本文read/write以外のhandle操作も排他範囲へ含める必要性を確認した。ただしRepository内のwriter単独でも置換失敗があり、これを同一原因と断定しない。修正と追加切分けは未完了で、詳細は上記診断記録の最新節を参照。
+
 - [ ] sample3のステータス表に含まれる黄・緑の丸は、既存Internal Documentでは独立したFigureになっている。セルへの関連付け・配置の保持は別途検証し、通常の表出力修正だけで解決としない。
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
 - [ ] 利用者による再生成Word/PDFの目視確認（表、一覧、改ページ、見出し、起動時ダイアログ）。
