@@ -48,3 +48,13 @@
 - この翻訳は通常CLIで起動したためdetached childの呼出しcounterは未接続。未取得の呼出し数を0と記録しない。後続の実比較は既存診断runnerを使用し、診断保存Changeとの共通証拠を得る。
 - 読取り専用Langfuse v2 observations照会で、trace 56e4ac20ce055e2988a2f42e599bb1b6の終了済み18 llm.request（STRUCTURE 15、TRANSLATE 3）のmetadataが全てreasoning=none / thinking=disabledであることを確認した。取得時点の件数であり最終件数ではない。Provider内部の推論token実測0は主張しない。旧trace一覧APIはv4 events_only環境の404を返したため、導入済みSDKのv2 observationsへ切り替えた。診断照会はModel要求を追加していない。
 - QdrantClientからAPI keyを暗号化されていない接続で使用する旨の警告が出た。処理停止は起きていない。接続設定を無断変更せず、Security受入の残確認として保持する。
+
+### TRANSLATE/CHECK完了時点（Workflow継続中）
+
+同じsession 75952のlive handleからTRANSLATE=805.803秒、CHECK=0.098秒の完了通知を取得した。旧失敗の第2ページを含む全本文ページを処理し、REVIEWへ進んだ。DOCX生成・Workflow終了はまだ確認していないためtask 3.1は未完了のままとする。
+
+- 翻訳Artifactの非空原文Inline 245件に対して、同じIDの訳文欠落0、空白だけの訳文0。構造化Codeの変更検出0（このsampleの検出範囲であり、全Code形式の保証ではない）。
+- U.S.を含む6単位中5単位で米国の表記を確認。略語の自然な訳による停止は起きなかった。
+- TRANSLATEは基本Chunk 24に対して完了llm.request 24件。観測された生成区間の合計639.689秒、最長40.898秒。Task全体との差166.114秒には検索・I/O等が含まれ、その個別内訳は未計測。構造推定15件と開始済みReview 4件を含む取得済み43件は全てnone/disabled、v2 cursorなし。
+- CHECKは85指摘（warning/untranslated 15、error/number-unit 60、error/glossary 6、error/negation 2、error/comparison 1、error/condition 1）。literal-reference警告はこのsampleでは0であり、URL/ファイル名warningの実発生例を得たとはしない。警告経路は合成統合Testで別途確認済み。数値等の指摘は未判定で、品質合格を意味しない。
+- 中間構造には主要3表（7×4、3×6、21×5セル）がある。表内画像・Word上の配置の合格証拠には使用しない。
