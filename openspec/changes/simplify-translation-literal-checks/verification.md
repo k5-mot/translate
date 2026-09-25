@@ -117,6 +117,18 @@ PDF全28ページを導入済みpypdfium2で読み、1・2・3・5・25・26・2
 
 14:18 UTC時点で比較child PID 53980/56052と親PID 55584の生存を確認。完了ReviewResponseは14件、対応する既存Chunk Artifactも14件へ増加している。未知の終了コードや中間counter値を成功扱いせず、同じ実行を継続する。
 
+### ALIGN修正に向けた読取り専用の設計調査
+
+grill-with-docsの事実調査として、補助AgentがCode/Test/実Artifactを読んだ。書込み・モデル呼出し・稼働中SQLiteの読取りは行っていない。
+
+- 原本264対象unit、生成PDF289対象unitに対し、Groupは290件（番号等の一致0.95が83、順序対応0.6が180、source_only 1、target_only 26）。IDの全包含は意味的対応の正しさを保証しない。
+- 現ALIGNは全文を単一要求へ渡し、入力予算の事前検査を持たない。既存Settings.available_input_tokensは今回10,752であり、追加依存なしで利用できる。失敗原因がcontext超過だったかは現ログだけでは断定できない。
+- source p7の#/texts/80は、target #/texts/159と#/texts/164に分割された内容があるが、現在は後半だけに対応している。1対多を単純なID一意性検査だけで保証できない実例である。
+- source p2のCaptionは、target p3の図一覧にもp6/p7の本文Captionにも現れる。source p6の「Due to open in 2010.」もp3一覧とp13本文Captionにある一方、現ALIGNは2010だけが共通する無関係な長文へ対応付けている。これを一律に「抽出の重複」と断定せず、一覧への正当な再掲載と本文の役割を区別する必要がある。
+- page/kind/見出し情報は候補情報として保持する余地があるが、固定ページ境界・数字一致・局所windowだけで任意PDFの対応を確定できるという保証はない。既存LangChainのtoken概算APIはあるが、Gemmaの厳密計数と同一視しない。独立した再開Cacheを新設する理由にはならない。
+
+利用者へ「有限retry後も不確定ならALIGN停止・Resume可能にするか、不完全reportを出すか」と「生成された一覧を本文の対応先にせず追加要素として別表示するか」を確認中。未回答を承認とせず、ALIGN修正Changeはまだ作成しない。独立した用語集の既存API不一致は[align-glossary-source-matching](../align-glossary-source-matching/proposal.md)として提案のみ作成した。
+
 ### 参考文献
 
 - [Microsoft Word Window.Hwnd](https://learn.microsoft.com/en-us/office/vba/api/word.window.hwnd): Automation対象のWindowから所有Processを確認するために使用。
