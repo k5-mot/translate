@@ -41,3 +41,5 @@ OpenSpec statusはmysddのproposal/specs/design/tasksの4/4 artifacts complete�
 tasks 2.2〜2.3は未完了。新Ruleの新規翻訳→Word PDF→比較Reviewと、利用者の目視が必要である。先行比較の診断counter=0と実LLM観測39件の不整合は別件として[診断保存Change](../overwrite-diagnostic-json-in-place/verification.md)へ記録し、本件に診断機構の修正を混入させない。
 
 2026-09-26 11:35 UTC、診断入口修正a222a9b後に新規翻訳Run 01a0dd7f-a0a9-75f0-bc80-4693ee212389をreasoning OFFで開始した。[共通実検証記録](../reuse-canonical-detached-child-module/verification.md)で追跡する。現時点は実行中であり、用語集の実成果物合格・目視受入は未確定。
+
+同Runは12:30 UTCにSTRUCTURE/page 2/text-invokeのOpenAIAPIErrorでfailed、exit 1となった。用語検査へ到達せず、DOCX/PDF/比較Reviewは生成していない。上記の実行中記録をこの終端結果で更新し、Task 2.2〜2.3は未完了とする。入力とCheckpoint等は保持されており、詳細と診断counterの限界は共通実検証記録を参照する。

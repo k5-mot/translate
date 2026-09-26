@@ -58,3 +58,13 @@ Langfuseの読取りでは、provider側の終了済み要求が4件へ増加し
 現行実装ではAdapterのSDK retryは0、外側の有限retryは設定3回。STRUCTUREは画像付き要求のLLMError後にテキスト要求へ逐次fallbackする。この制御と今回の時系列は整合するが、製品spanにはvision/text識別がなく、provider spanとの直接の親子関係もないため、4件を厳密な製品試行数やfallbackの確定証拠としては扱わない。provider要求の約134秒と開始間隔の約544〜545秒の差も、現在の観測だけでサーバー内部retry・通信待機などへ確定分類できない。
 
 今回の確認は実際の接続関連500と有限処理の経過を示す。context超過やreasoning ON、計数修正による性能劣化と断定しない。終端counter・成果物・Word PDF・Comparison Reviewは引き続き未確認で、Task 2.2を完了にしない。
+
+### 新規実E2Eの失敗終端（12:30 UTC）
+
+同じsession 86144からexit 1を直接取得した。Run `01a0dd7f-a0a9-75f0-bc80-4693ee212389`はfailed/STRUCTURE、page 2、stage=text-invoke、cause=OpenAIAPIError、error=StructurePageErrorで停止した。開始11:35:25.946730〜終了12:30:26.709268 UTC、3300.762538秒。新しいDOCXは生成されず、Word PDF化・Comparison Reviewには進んでいない。Task 2.2は未完了のまま。
+
+終端JSONのllm_calls=6、embedding_calls=0、qdrant_calls=0を確認した。製品traceの2番目のllm.request（3f35508c206baa9d）は12:03:11.286〜12:30:25.456 UTC、1634.170秒でERROR。前の製品要求と重ならず、providerの終了済みchat観測も6件で全件HTTP 500/接続関連・reasoning_effort=noneだった。最後の2件はab79edc471c3aea5（12:12:15.627〜12:14:30.500）と502f783ffb0d60dc（12:21:21.958〜12:23:35.267）。今回の公開失敗経路では、実際のLLM試行が0と保存される不整合は再発していない。これは翻訳品質や全E2Eの成功を意味しない。
+
+対象PID 7704/22180/30444/5692/35512の不在と、所有temp outputs/.sample3-counter-cjvct6cyのcleanupを確認した。Runの入力コピー、.workspace/failure.json、77,824 bytesのcheckpoints.sqlite、workflow.json、およびSPLIT〜LOADのdirectoryは保持されている。入力hashは開始時と同一。既存Runを削除せず、Resumeの実行確認はまだ行っていない。
+
+**診断値の限界:** 終端JSONのcheckpoint_count/artifact_countは0だが、失敗経路ではworkspace_countsを再計測せず以前の値を継承する実装である。したがって0をCheckpointや中間成果物の不在と解釈してはならない。ファイルの保持と実際のResume成功も区別する。この計測不足はcanonical module修正と別の未解決事項として保持し、本Changeで無断に修正範囲を広げない。
