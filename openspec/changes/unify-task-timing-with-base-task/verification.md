@@ -74,3 +74,7 @@ grill-with-docsの読取り専用事実調査で、cli.py:280/main.py:387のTOTA
 既存contextlib.suppress(BrokenPipeError)でprintだけを囲む最小候補はあるが、閉じたstreamのValueError・他のOSError・終了時の遅延flushまで保証するものではない。Taskの処理・時計・成果物保存をまとめて抑制してはならない。TOTALの現Testも文字列の静的存在確認だけで、通知故障と終了コードの動的検査が不足する。
 
 「Task/CLI/UIのTIME表示が失敗しても本体結果を維持し、表示だけを諦めるか」を利用者へ確認中。元例外保持の実装修正と、成功時の終了コード/出力障害範囲の新しい保証を区別し、未回答を承認しない。新Change作成・Code修正はまだ行っておらず、Spec変更なしと先に決めない。稼働中の新規翻訳RunのSTRUCTURE待機とは別件である。
+
+### 承認後の修正計画（2026-09-26）
+
+直近の確認に対する利用者の「ok」を受け、計測表示だけを省略して本体結果を維持する方針を[別Change](../preserve-results-on-timing-output-failure/proposal.md)へ具体化した。同期的なstream障害を対象とし、保存失敗・中断は抑制しない。proposal/spec/design/tasksを作成した段階であり、Code未変更、TASK-TIMING-001は未解消。利用者のWord/PDF目視承認や他の保留判断への回答としては扱わない。
