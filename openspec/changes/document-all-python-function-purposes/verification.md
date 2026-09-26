@@ -278,3 +278,33 @@ grill-with-docsの環境事実調査として、外部Serviceを呼ばないメ�
 実sample3への発生件数や修正結果はまだ未確認。最新実translationは別のHTTP 500で停止しており、[実機記録](../sanitize-workflow-checkpoint-errors/verification.md)を参照。本調査を実translation→Word PDF→Comparison Reviewの代替証拠とせず、CONTENT-MERGE-001とtask 2.3は未完了に維持する。
 
 記録更新後の既存文書/POSITION Testは25 passed（0.37秒）、本ChangeのOpenSpec strict validationはvalid、git diff --checkは指摘なし。POSITION Testは結合後の値・body参照等を検査するがLOADとの連続実行や上記の追加条件を含まない。この既存Testの成功は不具合がないことの証明ではなく、修正前に統合回帰Testを追加して失敗を確認する必要がある。
+
+### CONTENT-MERGE-001の実sample3影響確認（2026-09-26、未解決）
+
+前節の合成再現を繰り返して修正済みとはせず、既存の完了済みOFF翻訳Run `01a0d8b6-c2ab-7c92-bed9-58403a8410b3` の保存Artifactを読取りで照合した。現在のCodeはc072161で、POSITION/LOAD/NORMALIZEにHEADからの差分はない。新規翻訳・外部Model要求・Word PDF生成は行わず、本文を診断出力へ転記していない。
+
+| 確認境界 | 観測 |
+| --- | --- |
+| POSITION report | 結合19件、すべてlabel=text、warning 0件。実Runでは表の結合記録なし |
+| LOAD | 全156 Block中、結合元17件とそれぞれの結合先が共存。17件すべてで結合元の非空source文字列が結合先source文字列にも含まれる |
+| STRUCTURE/VERIFY/VALIDATE | 結合元17件と結合先が引き続き共存。STRUCTURE以降のsource文字列包含は13件で、残る4件について文字列一致だけで意味の重複を断定しない |
+| 既存Markdown | 最終Documentの既存render_blockをメモリ上で適用し、13組で結合元/結合先の両方の非空描画文字列が保存済みMarkdownに存在することを確認。17組すべてのDOCX/PDF表示を目視確認した証拠ではない |
+| 残る結合元2件 | `#/texts/96`と`#/texts/98`、元ページ7。LOADのpicture配下内容の除外集合に含まれ、caption所有/目次ページ除外ではない。結合が正当かをこれだけで承認しない |
+
+再出現17件の元ページ別内訳は、2:4件、3:2件、4:2件、5:1件、6:2件、7:1件、8:1件、9:2件、11:1件、12:1件。例として`#/texts/27→#/texts/26`（ページ2）の結合元と結合先がLOAD以降にも残る。内容が同じという推測ではなく、POSITIONのfrom/into ID対応とLOAD Block IDを照合した。
+
+読取前後の対象Artifact hashは不変。再照合用SHA-256:
+
+- `.workspace/position/report.json`: `282a3e23b80924532189c0647d9b75d6258bc1ef527f7d02b315541a2c037656`
+- `.workspace/verify/document.json`および`validate/document.json`: `2aaebd292e1f69bb99bbcf8b89255961c590e0ee3663214dcf48b224a7587485`
+- `.workspace/markdown/document.ja.md`: `7251a91831914f26251b44dd48a21311e8318d052315df55b44647374de159c3`
+
+#### 参照書換えによる本文改変の追加事実
+
+grillingの限定した読取りsub-agentが`position._rewrite_ref`と実`_merge_table`をメモリ上で検査し、main agentも前者を再現した。`_rewrite_ref`（position.py:91）はself_ref/$refだけでなくセル全体の全文字列に部分一致replaceを行う。`#/tables/1`から`#/tables/0`への付替えで、合成セル本文`literal #/tables/10 then #/tables/1`は`literal #/tables/00 then #/tables/1`へ変化する。実_merge_tableでも結合先へコピーしたセル本文が同じように変化する一方、元セルはdeep copyで保持される。
+
+これは合成例での不具合証拠であり、今回の実Runは表結合0件なので実sample3にこの本文改変が発生したとは主張しない。結合元の除外だけを直すのではなく、参照フィールド限定・参照境界一致・cell ID衝突・gridとの整合を修正計画へ含める必要がある。既存POSITION Test 4件には参照風の本文保存、LOADとの連続検査がない。導入済環境を再確認してもdocling_coreは未導入であり、新しい依存を追加したり既存Libraryで解決済みと仮定したりしない。
+
+#### 未回答の判断と計画境界
+
+実データへの影響が確認できたため優先度は維持する。ただし「複数親・Caption/子要素の帰属が曖昧なとき、結合せず保持＋警告で続行するか、Workflowを停止するか」は未回答のまま。grill-with-docsの判断待ちとして、製品変更・方針を確定した新Change作成は行わない。推奨は前節と同じく前者で、これは曖昧な結合の回避であって、17件の再出現を許容する意味ではない。確定した結合元は一度だけ扱い、正当な未参照内容は保持するという修正目的を変えない。
