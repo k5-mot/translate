@@ -31,3 +31,11 @@
 設定はreasoning_mode=off、request timeout=1800秒、Task deadline/watchdog=21600秒。保存先は未使用だったoutputs/sample3-acceptance-off-counter、終端Evidenceは同directoryのtranslation-terminal.json。所有tempはoutputs/.sample3-counter-cjvct6cy。既存のRun rootと出力命名を使用しており、希望のoutputs新構成を実装済みとはしない。
 
 11:35:42 UTC確認ではRunはrunning/DOCLING、直近完了通知はSPLIT 1/17。親uv PID7704→Python22180→30444、child launcher5692→Python35512が生存していた。途中counter=0は今回も確定値ではなく、終端保存で検証する。Word変換・比較Review・成果物検査は未実施であり、Task 2.2を完了にしない。
+
+### STRUCTURE待機中の観測（11:42 UTC）
+
+同じsession 86144を継続pollし、親30444/child35512の生存とheartbeat更新を確認した。Runはrunning/STRUCTURE、完了通知はLOAD 7/17で、STRUCTUREのページ成果物はまだない。processのCPUが低いことだけで停止とは判定しない。新規Run起動・既存Run再開・実行中Code変更は行っていない。
+
+Langfuse読取りで今回の製品traceは9737d6c01fd035071ef4ac25d6e7a61e、LOADまでのTask終了を確認。別のprovider trace 889de226b6ed86e258dfc0754552fb18のobservation fb026fbc38103359は、11:35:57.335〜11:38:11.508 UTC（134.173秒）でERROR、InternalServerError/HTTP 500。error messageの分類にはconnectionを含む。raw本文/stack/endpointは記録しない。送信パラメータはreasoning_effort=none、max_completion_tokens=16384、temperature=0だった。
+
+11:42 UTCの再取得でも終了済みprovider要求は上記1件で、製品llm.requestの終端観測はまだ取得できていない。provider側のERRORとクライアント側の終了を同一視せず、実際の再試行回数・停止原因・最終counterは未確定とする。接続関連のHTTP 500だけを根拠に製品Codeの不具合、context超過、reasoning ONと断定しない。request timeout 1800秒・watchdog 21600秒の既存上限を変更せず、同じprocessの結果を待つ。
