@@ -13,7 +13,7 @@
 
 ## 3. 実成果物での正式検証
 
-- [ ] 3.1 既存Review session 12758の終端を確認してから、最新製品Codeでinputs/sample3.pdfを実translationする。モデル/Embeddingは逐次、設定・Code同一性・Run ID・終了状態・成果物hashを秘密/本文なしで記録する。失敗時はResume状態を保持し未完了とする
+- [x] 3.1 既存Review session 12758の終端を確認してから、最新製品Codeでinputs/sample3.pdfを実translationする。モデル/Embeddingは逐次、設定・Code同一性・Run ID・終了状態・成果物hashを秘密/本文なしで記録する。失敗時はResume状態を保持し未完了とする
 - [ ] 3.2 3.1のDOCXをMicrosoft Wordでユーザ操作を模してPDFへ出力し、両成果物のhashと実行順を記録する。表・目次・表紙・番号・改ページを確認し、Word/PDFを利用者へ提示して目視結果を記録する。PDF生成を製品仕様/依存へ追加しない
-- [ ] 3.3 3.2のPDFと入力sample3.pdfを実reviewし、公開Markdownと診断JSONのFinding全項目・対応ラベルを照合する。COMPARE-ALIGN-001に由来する誤判定を区別し、全体の品質不合格をREPORT修正だけで合格に変えない。外部障害や未確認は未完了のまま記録する
+- [x] 3.3 3.2のPDFと入力sample3.pdfを実reviewし、公開Markdownと診断JSONのFinding全項目・対応ラベルを照合する。COMPARE-ALIGN-001に由来する誤判定を区別し、全体の品質不合格をREPORT修正だけで合格に変えない。外部障害や未確認は未完了のまま記録する
 - [ ] 3.4 正式verifyで要求・Code・Test・実成果物を対応付け、COMPARE-REPORT-001の解消証拠を元verification.mdへ反映する。残る指摘は保持し、当該Changeの必要条件を満たしてからarchive、PR/CI、mainへのmerge、originへのpushを行い、その結果を記録する。サンプル・成果物・.agents・無関係な差分はコミットしない

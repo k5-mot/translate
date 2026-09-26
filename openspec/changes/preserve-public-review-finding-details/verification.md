@@ -2,7 +2,7 @@
 
 ## 状態
 
-実装と自動回帰検査まで完了（5/9 tasks）。正式verify・archive・main merge・pushは未実施。COMPARE-REPORT-001は実成果物での検証を残しており、[元の指摘](../restore-docx-tables-and-indexes/verification.md)を正式解決済みにしていない。
+2026-09-26更新: 7/9 tasks。末尾のVerify再確認で、最新翻訳→Word PDF→比較の実成果物における公開情報保持を確認した。利用者目視とrelease手順が残り、正式verifyは未合格、archive・main merge・pushは未実施。先行節は当時の検証履歴として保持する。
 
 ## 調査根拠
 
@@ -165,3 +165,40 @@ request timeout=1800秒、Task期限=21600秒、retry=3、available_input_tokens
 ### 後続の完了済みOFF実検証への参照（2026-09-26）
 
 上記は旧失敗Runの履歴である。その後の新規翻訳01a0d8b6-c2ab-7c92-bed9-58403a8410b3→Word PDF→比較01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は終了し、[OFF設定のVerify更新](../configure-verification-reasoning-policy/verification.md)へ実効設定・hash・終端と公開Finding詳細の証拠を集約した。515指摘の対象ID・存在する根拠/提案の保持と、ALIGNの意味的誤対応・旧診断counter不整合を区別する。本Changeの正式verifyと利用者目視結果は未完了であり、この参照追加だけではarchiveしない。
+
+## Verify再確認（2026-09-26）
+
+| 観点 | 判定 |
+| --- | --- |
+| Completeness | 7/9 tasks。実行・Artifact照合が済んだ3.1/3.3を完了へ更新。3.2の利用者目視と3.4のrelease完了は未達 |
+| Correctness | skip_specsでDeltaなし。既存comparison-reviewの公開Finding要求をCode/Test/実JSON・Markdownで確認。COMPARE-REPORT-001の情報欠落は確認範囲で0件 |
+| Coherence | 既存Task内の描画、関数/class入口、atomic保存を維持。新規依存・再開台帳・HTML変換なし。後続simplify-translation-literal-checksの同一literal-reference警告の重複排除は、描画前の共通Finding列へ適用されJSON/Markdownで一致する |
+
+### Codeと自動Testの対応
+
+report.pyの_literal/_finding_lines/ReportTask.runを確認した。tests/test_comparison_capability.pyのCHECK/REVIEW両経路（126行）、任意値/未指定（164行）、対応label/順序（192行）、特殊文字のparser検査（243行）、実REPORT→CLI/UI/export（276行）が設計境界に対応する。現在のreport.pyは17ebaf2から差分なし、SHA-256は7357f68f8749a8f2b0e757b6ed0ed34148fa7ebd1301e99058a144d65d7fd6a3。元修正e88a835と後続17ebaf2は、下記実翻訳/比較の開始前である。
+
+### Task 3.1の実行順と証拠
+
+session 12758の終端は先行節に記録済み。後続の新規翻訳01a0d8b6-c2ab-7c92-bed9-58403a8410b3は2026-09-25 13:17:31.195268〜13:56:57.912623 UTCにcompleted/DOCX、session 75952 exit 0。Word PDF作成は同日14:00:14 UTC、比較01a0d8e0-73da-73e0-97b9-e1d0bcf442f2の開始は14:03:03.534312 UTC、終端は14:25:52.669267 UTCのchild exit 0。新規OFF実行・入力/成果物hash・Model要求の逐次性は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)と[共通実行記録](../simplify-translation-literal-checks/verification.md)へ対応する。旧REPORTで終了したsession 12758のArtifactを修正後検証へ流用しない。
+
+### Task 3.3の実成果物をparserで照合
+
+比較Runの.workspace/report/review.json（SHA-256 08222631fbfd057707afdc4193c9c92933238bbd3e8f851503ab3bd93f0d5582）と、公開export review.md（SHA-256 0f7ca98be7ee70ea00736f8dee8f3f1f10b3eb0a27ff90e65b879e391830eb19）を読んだ。導入済みMarkdownItのCommonMark parserでh3見出しごとに分割し、各指摘内のfence content列をJSONから期待する重大度/種別、message、全target_ids、存在するevidence/suggestionの順序付き列と完全照合した。CRLF/CRは表示上のLFへ正規化し、fieldの空白・改行はstripしない。全体の部分文字列検索だけで検査していない。
+
+- 515 Finding区画の内容/順序不一致0件。
+- 290 alignment区画のsource_ids/target_ids列不一致0件。
+- alignment/0〜289、指摘1〜515の見出し順序がJSONと一致。
+- 保存Findingから計算したCounter、JSON counts、公開集計の各fenceが一致。
+- raw HTML token 0件。None/空文字の固定表示は既存境界Testで検査しており、今回の非空field照合だけで全任意値ケースを証明したとはしない。
+- Run outputs/review.mdとexport先のbytesは完全一致。過去Artifactの再生成・上書き、追加LLM要求はしていない。
+
+3.2のうちWord PDF作成は完了しているため、その実PDFに対する3.3は確認できた。一方、3.2は利用者の目視結果記録も要求するため未完了を維持する。ALIGN誤対応のある515指摘を真の翻訳欠陥数とは解釈しない。旧診断counter 0の不整合も保持し、REPORTの内容保持と別判定にする。
+
+### 残る指摘と最終判定
+
+- CRITICAL 1: Task 3.2。提示済みWord/PDFへの利用者目視結果を取得し、表・一覧・表紙・番号・改ページの残る不備を確認する。無回答を合格にしない。
+- CRITICAL 2: Task 3.4。最終受入後のarchive、PR/CI、main merge、pushは未実施。元指摘には今回の解消証拠だけを追記し、release完了とはしない。
+- WARNING: COMPARE-ALIGN-001、表品質、旧counter不整合は別Changeの未解決事項。REPORT成功を比較品質全体の合格へ読み替えない。
+
+直近の全体Test/Ruff/format/tyの結果は[計数修正の検証](../reuse-canonical-detached-child-module/verification.md)を参照し、本ターンに全suiteを再実行したとはしない。今回はSource/Test/Spec照合と実Artifactの読取り検査であり、本Changeとrestore-docx-tables-and-indexesのOpenSpec strictはvalid、git diff --checkも成功。別Runの実翻訳は同じsession 86144で稼働中。正式verifyはCRITICAL 2件で未合格、archive不可。

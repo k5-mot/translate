@@ -392,3 +392,7 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 ### 後続の完了済みOFF実検証への参照（2026-09-26）
 
 上記失敗後、新規翻訳01a0d8b6-c2ab-7c92-bed9-58403a8410b3からWord PDFを作成し、新規比較01a0d8e0-73da-73e0-97b9-e1d0bcf442f2まで終了した。[OFF設定のVerify更新](../configure-verification-reasoning-policy/verification.md)へ実効設定と現在のArtifact hash照合を追記した。Word PDFは28ページ、DOCXは3表・24画像を再確認したが、表内画像・図採番・仮ヘッダー・負数符号・ALIGN誤対応・利用者目視未確認は残る。OFF指定やプロセス終了だけで本Changeの品質を合格とせず、archiveしない。
+
+### COMPARE-REPORT-001の実成果物での解消証拠（2026-09-26）
+
+[公開ReviewのVerify再確認](../preserve-public-review-finding-details/verification.md)で、上記比較の公開MarkdownをCommonMark parserで解析し、515指摘のfield列、290対応のID列、見出し順序、集計、Run/export bytesの一致を確認した。欠落/不一致0件、生HTML token 0件。公開fieldを落とす不具合はこの実成果物で解消を確認した。一方、COMPARE-ALIGN-001、表内画像等、利用者目視とrelease手順は未完了で、元Change全体の合格やarchiveを意味しない。
