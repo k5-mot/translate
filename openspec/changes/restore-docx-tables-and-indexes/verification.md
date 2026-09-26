@@ -168,6 +168,8 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 
 - [ ] sample3のステータス表に含まれる黄・緑の丸は、既存Internal Documentでは独立したFigureになっている。セルへの関連付け・配置の保持は別途検証し、通常の表出力修正だけで解決としない。
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
+
+2026-09-26の読取り診断で、表紙の単独画像がPandocのFigure ASTになり、DOCX後処理でCaptionを除いても本文採番が2のまま残ることを確認した。標準escaped spaceを表紙画像の直後へ置く合成DOCXでは、descr=表紙を維持し本文Figure 1になった。既存TestはFigure 2を期待しており修正検出になっていない。[exclude-cover-from-figure-numbering](../exclude-cover-from-figure-numbering/proposal.md)へ計画化したが、製品Code未変更・正式受入未実施のため上記指摘は未解決。
 - [ ] 利用者による再生成Word/PDFの目視確認（表、一覧、改ページ、見出し、起動時ダイアログ）。
 - [ ] テンプレート由来のヘッダー・フッターに「○○システム」「○○株式会社」「SYS-DS-001」が残るため、製品成果物での扱いを確認する。
 
