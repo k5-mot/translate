@@ -66,3 +66,11 @@ design.mdの「元例外を伝播する」との差であり、コメントの�
 最新の全体品質Gateは[計数修正の記録](../reuse-canonical-detached-child-module/verification.md)の732 passed / 1 skipped、Ruff/format/ty成功を参照する。本ターンではその全suiteを再実行したとはしない。今回のOpenSpec strictはvalid、git diff --check成功。Code/Test/設計照合、完了済み実ArtifactとWord metadataの再確認、出力故障の合成再現を実施した。
 
 CRITICAL 1件、WARNING 1件のため正式検証は未合格。Task 2.2の完了を、当該Changeまたは翻訳品質全体の合格に読み替えない。
+
+## TASK-TIMING-001の修正前確認
+
+grill-with-docsの読取り専用事実調査で、cli.py:280/main.py:387のTOTAL出力にも同じfinally内printがあると確認した。Taskだけを修正しても、公開入口で元例外が再び置換され得る。既存loggerはstderr/任意File、日時・level付きの形式であり、そのまま置換するとTIMEの出力先と形式を変更する。新しい共通Moduleを増やす必要はない。
+
+既存contextlib.suppress(BrokenPipeError)でprintだけを囲む最小候補はあるが、閉じたstreamのValueError・他のOSError・終了時の遅延flushまで保証するものではない。Taskの処理・時計・成果物保存をまとめて抑制してはならない。TOTALの現Testも文字列の静的存在確認だけで、通知故障と終了コードの動的検査が不足する。
+
+「Task/CLI/UIのTIME表示が失敗しても本体結果を維持し、表示だけを諦めるか」を利用者へ確認中。元例外保持の実装修正と、成功時の終了コード/出力障害範囲の新しい保証を区別し、未回答を承認しない。新Change作成・Code修正はまだ行っておらず、Spec変更なしと先に決めない。稼働中の新規翻訳RunのSTRUCTURE待機とは別件である。
