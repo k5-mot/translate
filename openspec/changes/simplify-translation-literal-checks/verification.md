@@ -173,6 +173,19 @@ SHA-256:
 
 **判定: 強制OCRの一律適用だけでは解決しない。** 図形の符号を取得できる例は増えたが、符号の重複・underscore化・横線の文字化が残る。任意の線やunderscoreをminusへ置換する独自補正、全文の強制OCR既定化、既存Runの書換えは行わない。OCR／表セルへの対応付けのどちらで誤認識が生じるかをさらに切り分ける必要がある。製品修正、実Translation→Word PDF→Review、利用者目視受入は未完了。診断成果物は再照合用に保持するがcommit対象外とし、新しいTest File・Dependency・共通Layerは追加していない。
 
+### 表セル割当optionの切り分け（2026-09-26）
+
+基点`b5e2e7a`。稼働中のローカルPython／uv実行がないことを再確認し、設定済みDocling Serveの`/openapi.json`をGETした。Service申告versionは1.31.0。公開schemaの`table_cell_matching`はbooleanで、falseは既存PDFセルとの照合を使わず表構造Model側のセルを利用するoptionとして定義されていた。
+
+前節の同じ1ページPDF・force_ocr=true・Tesseract/engを保持し、診断process内の`unittest.mock.patch.object`で既存`DoclingClient._request`へ渡るPOSTの`table_cell_matching`だけをfalseへ変えた。他の送信値とsubmit/poll/downloadは既存Adapterへ委譲した。製品Source、Settings、環境Fileに変更はない。保存先は同じ診断directory内の新しい`matching-off/`で、前2回の応答を上書きしていない。
+
+- 開始: 2026-09-26 13:45:08.084717 UTC。job `c5b6b9d1-cadb-44f8-a32a-90cafbdef387`、success、poll 10回。DOCLING＋UNPACK 11.297秒、session `13828`はexit 0で回収した。追加LLM／Embedding・並行解析・upload再送なし。
+- 表は21行×5列。table_cellsは85から103へ変わったが、grid全105セルの文字列差分は**0件**だった。
+- 製品LOAD後も既知負数の一つの符号＋数値の保持は**7/9**。失敗セルは同じ(17,4) `—-1,371`、(19,1) `_766`。横線の(13,1) `ee`と正数対照(18,4) `749`も変わらなかった。
+- `matching-off/part-0001/unpacked/document.json`のSHA-256: `3a1e17dd7af10fff54fa468305924e91dab6e0e12711a792e797d511a1494646`。
+
+**判定: 表セル照合の有効／無効の切替えでも、対象の文字認識誤りは解消しない。** 応答には表セルへ集約する前の対象OCR文字列が独立して残らず、texts配列にも対象数値の出現はなかった。この比較だけでTesseract単体とDocling内部後処理の責任を確定しない。既存APIから取得できる中間診断、または承認されたOCR構成での対照が必要である。意味のある差があるtable_cellsの変化を無視して製品既定をfalseへ変更せず、取得済みの不正な数値を置換して実検証を合格にすることも行わない。
+
 14:18 UTC時点で比較child PID 53980/56052と親PID 55584の生存を確認。完了ReviewResponseは14件、対応する既存Chunk Artifactも14件へ増加している。未知の終了コードや中間counter値を成功扱いせず、同じ実行を継続する。
 
 ### ALIGN修正に向けた読取り専用の設計調査
