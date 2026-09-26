@@ -501,9 +501,10 @@ def render_document(
 
     parts: list[tuple[str, bool]] = []
     if cover_path is not None:
+        # 標準escaped spaceで表紙を通常Imageにし、本文Figureの採番を消費させない。
         parts.extend(
             [
-                (f"![表紙]({_escape(cover_path.as_posix())}){{width=100%}}", False),
+                (f"![表紙]({_escape(cover_path.as_posix())}){{width=100%}}\\ ", False),
                 ("```{=openxml}", False),
                 ('<w:p><w:r><w:br w:type="page"/></w:r></w:p>', False),
                 ("```", False),

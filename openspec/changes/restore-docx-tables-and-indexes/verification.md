@@ -170,6 +170,8 @@ ARCH-003の23 diagnosticsは`restore-typed-internal-call-contracts`で修正し�
 - [ ] 表紙がPandocの図番号に数えられ、最初の本文図がFigure 2となる点を確認・修正する。表紙Captionの除去と本文図の採番は別の問題として追跡する。
 
 2026-09-26の読取り診断で、表紙の単独画像がPandocのFigure ASTになり、DOCX後処理でCaptionを除いても本文採番が2のまま残ることを確認した。標準escaped spaceを表紙画像の直後へ置く合成DOCXでは、descr=表紙を維持し本文Figure 1になった。既存TestはFigure 2を期待しており修正検出になっていない。[exclude-cover-from-figure-numbering](../exclude-cover-from-figure-numbering/proposal.md)へ計画化したが、製品Code未変更・正式受入未実施のため上記指摘は未解決。
+
+同日後続の[Apply結果](../exclude-cover-from-figure-numbering/verification.md)で製品表紙構文を修正し、Figure 1期待の先行失敗9件→関連34件成功、全体811 passed / 1 skippedを確認した。表紙あり/なしの本文番号差は0。修正後の新規sample3→Word PDF→Reviewと利用者目視は未完了のため、上記Checkboxは最終受入待ちとして残す。旧PDFのFigure 2や他の図表指摘が解消済みになったとはしない。
 - [ ] 利用者による再生成Word/PDFの目視確認（表、一覧、改ページ、見出し、起動時ダイアログ）。
 - [ ] テンプレート由来のヘッダー・フッターに「○○システム」「○○株式会社」「SYS-DS-001」が残るため、製品成果物での扱いを確認する。
 

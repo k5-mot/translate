@@ -477,7 +477,7 @@ def test_generated_table_and_indexes_survive_real_docx_conversion(
         ["".join(p.itertext()) for p in index.findall("w:p", ns)] for index in indexes
     ] == [
         ["目次", "1. 見出し"],
-        ["図一覧", "Figure\u00a02: 図の題名"],
+        ["図一覧", "Figure\u00a01: 図の題名"],
         ["表一覧", "Table\u00a01: 表の題名"],
     ]
     for level in range(1, 10):
@@ -487,6 +487,92 @@ def test_generated_table_and_indexes_survive_real_docx_conversion(
         assert style.find("w:pPr/w:outlineLvl", ns) is not None
     assert settings.find("w:updateFields", ns) is None
     assert not root.findall(".//*[@w:dirty]", ns)
+
+
+@pytest.mark.parametrize("filename", ["picture.png", "表紙 画像.png"])
+@pytest.mark.parametrize("figure_count", [0, 1, 2])
+@pytest.mark.parametrize("extras", [False, True])
+def test_cover_preserves_body_figure_numbers(
+    tmp_path: Path, filename: str, figure_count: int, *, extras: bool
+) -> None:
+    """表紙の有無による採番差を実変換で検査し、画像・元Captionも保持する。"""
+
+    picture = tmp_path / filename
+    Image.new("RGB", (10, 10), "white").save(picture)
+    blocks = [
+        Block(
+            id=f"figure-{index}",
+            kind="figure",
+            order=index,
+            asset_path=filename,
+            caption=[Inline(id=f"caption-{index}", text=f"Figure 7: 元の題名 {index}")],
+        )
+        for index in range(figure_count)
+    ]
+    if extras:
+        blocks.extend(
+            [
+                Block(id="uncaptioned", kind="figure", order=10, asset_path=filename),
+                Block(
+                    id="table",
+                    kind="table",
+                    order=11,
+                    caption=[Inline(id="tc", text="表の題名")],
+                    cells=[
+                        TableCell(
+                            row=0, column=0, source=[Inline(id="cell", text="値")]
+                        )
+                    ],
+                ),
+            ]
+        )
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    template = Path(__file__).parents[1] / "translate/templates/template.docx"
+    ns = {
+        "w": pandoc.W_NS,
+        "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    }
+    expected = [
+        f"Figure\u00a0{index + 1}: Figure 7: 元の題名 {index}"
+        for index in range(figure_count)
+    ]
+    results = []
+    for with_cover in (False, True):
+        markdown = tmp_path / f"document-{with_cover}.md"
+        markdown.write_text(
+            render_document(document, picture if with_cover else None), encoding="utf-8"
+        )
+        output = markdown.with_suffix(".docx")
+        pandoc.create_docx(markdown, output, template)
+        with zipfile.ZipFile(output) as archive:
+            root = ET.fromstring(archive.read("word/document.xml"))  # noqa: S314
+        body = root.find("w:body", ns)
+        assert body is not None
+        captions = [
+            "".join(p.itertext())
+            for p in body.findall("w:p", ns)
+            if p.find("w:pPr/w:pStyle[@w:val='ImageCaption']", ns) is not None
+        ]
+        indexes = [
+            ["".join(p.itertext()) for p in index.findall("w:p", ns)]
+            for index in body.findall("w:sdt/w:sdtContent", ns)
+        ]
+        assert captions == expected
+        assert indexes[1] == ["図一覧", *expected]
+        assert indexes[2] == ["表一覧", *(["Table\u00a01: 表の題名"] if extras else [])]
+        assert len(body.findall(".//wp:docPr", ns)) == figure_count + int(extras) + int(
+            with_cover
+        )
+        results.append((captions, indexes))
+        if with_cover:
+            assert body[0].find(".//wp:docPr[@descr='表紙']", ns) is not None
+            extent = body[0].find(".//wp:extent", ns)
+            assert extent is not None
+            # 修正前も同じ10 px画像は127000 EMU。幅指定と実寸を変えない。
+            assert int(extent.attrib["cx"]) == 127000
+            assert "{width=100%}" in markdown.read_text(encoding="utf-8")
+            assert body[1].find(".//w:br[@w:type='page']", ns) is not None
+    assert results[0] == results[1]
 
 
 @pytest.mark.parametrize(
