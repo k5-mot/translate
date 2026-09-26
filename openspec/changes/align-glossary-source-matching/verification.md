@@ -2,7 +2,7 @@
 
 ## 状態
 
-2026-09-25の提案時点。製品Code・Ruleは未変更、実装Taskは0/6。正式verify成功・受入・archive可能という意味ではない。
+2026-09-26、実装と静的・合成回帰まで完了し、Taskは4/6。修正後の新規実E2Eと利用者受入は未完了。正式verify成功・archive可能という意味ではない。以下の提案時記録は履歴として保持する。
 
 ## 再現根拠
 
@@ -20,3 +20,22 @@
 ## 提案文書の検査
 
 OpenSpec statusはmysddのproposal/specs/design/tasksの4/4 artifacts complete、strict validationはvalid。既存tests/test_documentation.pyは21 passed（0.28秒）、git diff --check成功。これは計画文書の検査だけで、6件の実装Taskはすべて未完了。Code未変更のため製品全suiteを新たに実行したとは記録しない。
+
+## Apply結果
+
+比較Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は2026-09-25 14:25:52 UTCにcompleted・child exit 0を保存し、対象の親子Processが存在しないことを確認してから製品Code/Ruleを変更した。比較の旧結果を本修正後の合格証拠には使わない。
+
+- check.pyの原語選択を既存matching_glossaryへ委譲した。独自の単純部分一致2行を置換し、指定訳の包含条件・Findingの形式は維持した。新Helper・Module・依存・再開状態を追加していない。
+- 配布review Ruleへ語境界と正規化を明記。既存Rule hashを使用し、fingerprintの構造・Workflow状態を新設していない。
+- 先行Testは10 failed / 71 passed。Capital/API等の誤一致7条件と本文/Caption/セルの3ケースで現行不具合を検出した（空白を含む2条件は必要な指摘の見落としであり、10件すべてが誤指摘ではない）。
+- 修正後の関連4 Fileは120 passed（3.90秒）。16条件×指定訳あり/なし、3領域×原語あり/なし、Rule変更の公開互換性と両Workflow識別を検査した。領域別CHECK→report試験ではsocket接続を禁止し、追加サービス呼出し0、両Document不変、真の指摘の対象ID・根拠・修正提案を確認した。実PDF解析の代替ではない。
+- LLM/LibreTranslateと比較の公開fingerprintはdefault/OFFで旧Ruleと非互換、同Ruleと互換。翻訳の両Backendと比較WorkflowのthreadもRule変更で分離した。既存の正常な用語集・数値・否定・条件・URL警告の試験は維持した。
+- Testの初回Lint指摘はTest引数の組み合わせ・例外文字列・fixture構築を整理して解消し、規約の無効化は行っていない。
+- 全体pytestの最初のsession 65636は観測handleが失われ、終了結果を取得できなかった。Process一覧でpytest/uv/pythonが稼働していないことを確認した後に再実行し、session 35617は728 passed / 1 skipped、48.48秒、exit 0。skipはWindows上のPOSIX PTY試験。
+- 全体Ruff check、format（359 files）、ty、OpenSpec strict、git diff --checkが成功。全体suiteは秘密情報・例外・関数説明の既存回帰を含む。
+
+検査基点は27667caに既存差分と今回の変更を含むworktreeである。AGENTS/config、LLM/Review/診断/過去記録などの既存変更と未追跡Changeは本commitへ含めない。今回のCode/Ruleと4 Test File、当該tasks/verificationだけを対象とし、.agents・PDF/DOCX・outputs/runsを除外する。
+
+## 残る受入
+
+tasks 2.2〜2.3は未完了。新Ruleの新規翻訳→Word PDF→比較Reviewと、利用者の目視が必要である。先行比較の診断counter=0と実LLM観測39件の不整合は別件として[診断保存Change](../overwrite-diagnostic-json-in-place/verification.md)へ記録し、本件に診断機構の修正を混入させない。

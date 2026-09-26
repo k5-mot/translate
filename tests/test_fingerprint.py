@@ -74,16 +74,25 @@ def test_fingerprint_is_canonical_and_tracks_output_settings(
 
 
 @pytest.mark.parametrize("mode", ["task-default", "off"])
-@pytest.mark.parametrize("backend", ["llm", "libretranslate"])
+@pytest.mark.parametrize(
+    "rule_backend",
+    [
+        ("translation", "llm"),
+        ("translation", "libretranslate"),
+        ("review", "llm"),
+        ("review", "libretranslate"),
+    ],
+)
 def test_rule_change_separates_public_fingerprint_and_workflow_thread(
     settings_factory: Callable[..., Settings],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
-    backend: Backend,
+    rule_backend: tuple[str, Backend],
 ) -> None:
     """配布ルールの変更で公開Resumeを拒否し、Workflowも異なるthreadを選ぶことを確認する。"""
 
+    rule_name, backend = rule_backend
     templates = tmp_path / "templates"
     templates.mkdir()
     shipped = load_settings("convert", env={})
@@ -94,7 +103,7 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
     settings = settings_factory(templates_dir=templates, reasoning_mode=mode)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"synthetic source")
-    rule = templates / "translation-rules.md"
+    rule = templates / f"{rule_name}-rules.md"
 
     def current() -> Fingerprint:
         """ルールを上書きせず、既存APIで現在の公開fingerprintを取得する。"""
@@ -104,7 +113,7 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
             backend=backend,
             input_hashes={"source": "synthetic"},
             settings=settings,
-            rule_paths={"translation": rule},
+            rule_paths={rule_name: rule},
         )
 
     def stop_before_external_call(*_args: object, **_kwargs: object) -> None:
@@ -115,6 +124,7 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
 
     monkeypatch.setattr(translation.split, "run", stop_before_external_call)
     before = current()
+    assert before == current()
     repository = RunRepository(tmp_path / "runs")
     saved = repository.create(
         "translate", {"source": source}, before.snapshot, before.value
@@ -127,6 +137,7 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
         rule.read_text(encoding="utf-8") + "\n追加の翻訳指示。\n", encoding="utf-8"
     )
     after = current()
+    assert after == current()
     with pytest.raises(RuntimeError, match="test stops at SPLIT"):
         translation.run(source, tmp_path / "after", backend, settings)
     assert before.value != after.value
@@ -136,22 +147,26 @@ def test_rule_change_separates_public_fingerprint_and_workflow_thread(
         json.loads((tmp_path / name / ".workspace/workflow.json").read_text())
         for name in ("before", "after")
     ]
-    assert metadata[0]["translation_rules"] != metadata[1]["translation_rules"]
+    assert metadata[0][f"{rule_name}_rules"] != metadata[1][f"{rule_name}_rules"]
     assert metadata[0]["thread_id"] != metadata[1]["thread_id"]
 
 
 @pytest.mark.parametrize(
-    ("operation", "backend"),
+    "operation_backend",
     [("translate", "llm"), ("translate", "libretranslate"), ("review", "llm")],
 )
-def test_public_resume_rejects_old_literal_check_rules(
-    operation: Operation,
-    backend: Backend,
+@pytest.mark.parametrize("contract", ["literal", "glossary"])
+@pytest.mark.parametrize("mode", ["task-default", "off"])
+def test_public_resume_rejects_old_quality_check_rules(
+    operation_backend: tuple[Operation, Backend],
     settings_factory: Callable[..., Settings],
     tmp_path: Path,
+    contract: str,
+    mode: str,
 ) -> None:
     """公開操作が両Backendと比較のRule hash変更を既存APIで拒否する。"""
 
+    operation, backend = operation_backend
     templates = tmp_path / "templates"
     templates.mkdir()
     shipped = load_settings("convert", env={})
@@ -170,16 +185,28 @@ def test_public_resume_rejects_old_literal_check_rules(
         if operation == "translate"
         else {"source_en": source, "translation_ja": target}
     )
-    settings = settings_factory(templates_dir=templates, reasoning_mode="off")
-    selected = "translation" if operation == "translate" else "review"
+    settings = settings_factory(templates_dir=templates, reasoning_mode=mode)
+    selected = (
+        "translation"
+        if operation == "translate" and contract == "literal"
+        else "review"
+    )
     rule = templates / f"{selected}-rules.md"
     current_text = rule.read_text(encoding="utf-8")
+    if contract == "glossary":
+        assert "単語境界" in current_text
     rule.write_text(
-        "旧契約: 本文の保護記号と識別子を完全一致で維持する。", encoding="utf-8"
+        (
+            "旧契約: 本文の保護記号と識別子を完全一致で維持する。"
+            if contract == "literal"
+            else "旧契約: 用語の原語は単語内部にも部分一致させる。"
+        ),
+        encoding="utf-8",
     )
     before = fingerprint_for(operation, inputs, settings, backend)
     repository = RunRepository(tmp_path / "runs")
     saved = repository.create(operation, inputs, before.snapshot, before.value)
+    assert check_resume_compatibility(saved, before).compatible
     metadata = repository.paths(saved.run_id).metadata.read_bytes()
     rule.write_text(current_text, encoding="utf-8")
     after = fingerprint_for(operation, inputs, settings, backend)
@@ -187,6 +214,8 @@ def test_public_resume_rejects_old_literal_check_rules(
     assert not compatibility.compatible
     assert [item.path for item in compatibility.differences] == [f"rules.{selected}"]
     assert repository.paths(saved.run_id).metadata.read_bytes() == metadata
+    new_record = repository.create(operation, inputs, after.snapshot, after.value)
+    assert check_resume_compatibility(new_record, after).compatible
 
 
 def test_credentials_retry_observation_and_qdrant_are_excluded(

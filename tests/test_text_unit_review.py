@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 
 from translate.document import (
+    AlignmentGroup,
     Block,
     Document,
     Finding,
@@ -296,3 +298,71 @@ def test_comparison_aligns_non_body_units_and_reports_unmatched(
     rendered = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert group.kind in rendered
     assert f"/{suffix}" in rendered
+
+
+@pytest.mark.parametrize("kind", ["body", "caption", "cell"])
+@pytest.mark.parametrize("source_text", ["Capital plan", "API plan"])
+def test_glossary_scope_is_shared_by_quality_units_and_comparison(
+    kind: str, source_text: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """実CHECKと比較REPORTで領域別の誤一致を防ぎ、真の違反のID・根拠を残す。"""
+
+    connection = Mock(
+        side_effect=AssertionError("quality checks must not call services")
+    )
+    monkeypatch.setattr("socket.socket.connect", connection)
+    glossary = tmp_path / "glossary.csv"
+    glossary.write_text(
+        ",".join(check.GLOSSARY_FIELDS) + "\nAPI,,指定訳,,,,,\n", encoding="utf-8"
+    )
+    documents: list[Document] = []
+    for side, text in (("source", source_text), ("target", "計画")):
+        block = Block(
+            id=side,
+            order=0,
+            kind={"body": "paragraph", "caption": "figure", "cell": "table"}[kind],
+            source=_inlines(text) if kind == "body" else [],
+            translated=_inlines("計画") if kind == "body" else None,
+            caption=_inlines(text) if kind == "caption" else [],
+            translated_caption=_inlines("計画") if kind == "caption" else None,
+            cells=[
+                TableCell(
+                    row=0,
+                    column=0,
+                    source=_inlines(text),
+                    translated=_inlines("計画"),
+                ),
+            ]
+            if kind == "cell"
+            else [],
+        )
+        documents.append(Document(pages=[Page(number=2, blocks=[block])]))
+    source, target = documents
+    original = [document.model_dump_json() for document in documents]
+    source_unit = next(block_text_units(source.pages[0].blocks[0]))
+    target_unit = next(block_text_units(target.pages[0].blocks[0]))
+    findings = check.run(source, glossary, tmp_path / "translation-check")[2]
+    expected_ids = [[source_unit.id]] if source_text == "API plan" else []
+    assert [item.target_ids for item in findings] == expected_ids
+    groups = [
+        AlignmentGroup(source_ids=[source_unit.id], target_ids=[target_unit.id]),
+    ]
+    comparison = _comparison_document(source, target, groups)
+    findings = check.run(comparison, glossary, tmp_path / "comparison-check")[2]
+    output = tmp_path / "review.md"
+    report.run(groups, findings, [], output, tmp_path / "report")
+    stored = json.loads((tmp_path / "report/review.json").read_text(encoding="utf-8"))
+    if source_text == "API plan":
+        assert len(findings) == 1
+        assert findings[0].kind == "glossary"
+        assert findings[0].severity == "error"
+        assert findings[0].target_ids == ["alignment/0"]
+        assert findings[0].evidence == "API"
+        assert findings[0].suggestion == "指定訳"
+        assert "API" in output.read_text(encoding="utf-8")
+        assert stored["findings"] == [findings[0].model_dump()]
+    else:
+        assert findings == []
+        assert stored["findings"] == []
+    assert [document.model_dump_json() for document in documents] == original
+    connection.assert_not_called()

@@ -36,6 +36,48 @@ EXPECTED_NODES = {
 } | {"align", "check", "review", "report"}
 
 
+@pytest.mark.parametrize("mode", ["task-default", "off"])
+def test_review_rule_change_separates_comparison_thread(
+    mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """比較のRule契約変更が既存thread識別へ反映され、同契約では識別が安定する。"""
+
+    templates = tmp_path / "templates"
+    templates.mkdir()
+    rule = templates / "review-rules.md"
+    rule.write_text("旧契約: 原語の部分一致", encoding="utf-8")
+    source, target = tmp_path / "source.pdf", tmp_path / "target.pdf"
+    source.write_bytes(b"source")
+    target.write_bytes(b"target")
+    settings = settings_factory(templates_dir=templates, reasoning_mode=mode)
+
+    def stop(*_args: object, **_kwargs: object) -> None:
+        """外部解析前に停止し、実Workflowの識別生成だけを試験する。"""
+
+        message = "stop before external parsing"
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(comparison_review.split, "run", stop)
+    metadata = []
+    for name in ("old", "new", "same"):
+        if name == "new":
+            rule.write_text("新契約: 原語の単語境界", encoding="utf-8")
+        output = tmp_path / name / "review.md"
+        with pytest.raises(RuntimeError, match="stop before external parsing"):
+            comparison_review.run(source, target, output, settings)
+        metadata.append(
+            json.loads(
+                (output.parent / ".workspace/workflow.json").read_text(encoding="utf-8")
+            )
+        )
+    assert metadata[0]["review_rules"] != metadata[1]["review_rules"]
+    assert metadata[0]["thread_id"] != metadata[1]["thread_id"]
+    assert metadata[1]["thread_id"] == metadata[2]["thread_id"]
+
+
 def test_comparison_graph_has_independent_branch_nodes(
     settings_factory: Callable[..., Settings],
 ) -> None:

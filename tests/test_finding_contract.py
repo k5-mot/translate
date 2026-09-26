@@ -89,6 +89,56 @@ def test_existing_semantic_checks_keep_their_severity() -> None:
     assert all(item.severity == "error" for item in findings)
 
 
+@pytest.mark.parametrize("target", ["訳文", "指定訳を使用する"])
+@pytest.mark.parametrize(
+    ("source", "term", "applicable"),
+    [
+        ("Capital", "API", False),
+        ("APIs", "API", False),
+        ("API_key", "API", False),
+        ("myAPI", "API", False),
+        ("API", "API", True),
+        ("api", "API", True),
+        ("(API)", "API", True),
+        ("Use API, please.", "API", True),
+        ("Asset Management", "asset management", True),
+        ("Asset  Management", "asset management", True),
+        ("Asset\nManagement", "asset management", True),
+        ("Asset Managements", "asset management", False),
+        ("Use C++.", "C++", True),
+        ("Use Cxx.", "C++", False),
+        ("(A.B)", "A.B", True),
+        ("AxB", "A.B", False),
+    ],
+)
+def test_glossary_findings_share_source_selection_boundaries(
+    source: str, term: str, target: str, *, applicable: bool
+) -> None:
+    """選択とCHECKが語境界・空白・句読点で一致し、真の指定訳欠落だけを返す。"""
+
+    entry = check.GlossaryEntry(source=term, target="指定訳")
+    assert check.matching_glossary(source, [entry]) == ([entry] if applicable else [])
+    findings = [
+        item
+        for item in check.deterministic_findings(source, target, [entry])
+        if item.kind == "glossary"
+    ]
+    expected = (
+        [
+            Finding(
+                kind="glossary",
+                severity="error",
+                message=f"指定訳が使われていない: {term} → 指定訳",
+                evidence=term,
+                suggestion="指定訳",
+            ),
+        ]
+        if applicable and "指定訳" not in target
+        else []
+    )
+    assert findings == expected
+
+
 def test_finding_round_trip_across_check_review_and_report(tmp_path: Path) -> None:
     """CHECK/REVIEW/REPORTが同じFinding JSONを共有する。"""
 

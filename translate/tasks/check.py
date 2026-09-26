@@ -275,8 +275,8 @@ def deterministic_findings(
         )
     # 短い断片で誤検知しないよう、長さ比検査には最低文字数を設ける。
     findings.extend(_length_findings(source, target))
-    for entry in glossary:
-        if entry.source.casefold() in source.casefold() and entry.target not in target:
+    for entry in matching_glossary(source, glossary):
+        if entry.target not in target:
             findings.append(
                 Finding(
                     kind="glossary",
