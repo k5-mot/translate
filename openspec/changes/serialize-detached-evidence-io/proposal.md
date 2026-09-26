@@ -4,6 +4,8 @@
 
 ## What Changes
 
+保存方式については利用者承認済みの後継[overwrite-diagnostic-json-in-place](../overwrite-diagnostic-json-in-place/proposal.md)を適用する。以下の排他修正は維持し、初期のatomic公開を前提とする説明は[design.md](design.md)の後継関係と合わせて読む。
+
 - Evidenceとheartbeatの読取り/書込みを同じファイル別lockで直列化する。
 - OS別に自作したlockを、導入済みportalockerによる有限待機へ置き換える。
 - writerの読取り・終端保護・公開を一つのcritical sectionに保ち、二重lockを避ける。

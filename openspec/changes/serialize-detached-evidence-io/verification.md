@@ -1,5 +1,41 @@
 # Verification: serialize-detached-evidence-io
 
+## 承認済み後継方式での統合検証完了（2026-09-26）
+
+**本Changeの5/5 Tasks完了。診断I/Oの自動統合検査は成功。全体の正式受入・archive・main merge/pushは未実施。** 以下の旧原子的置換の失敗記録は保持し、原因processの特定や旧方式の修復に成功したとは報告しない。
+
+保存方式の変更は今回の独断ではなく、利用者承認後に実装済みの[overwrite-diagnostic-json-in-place/design.md](../overwrite-diagnostic-json-in-place/design.md)に基づく。本Changeの排他修正と後継の直接上書きを組み合わせた現行実装で、残るTasks 2.1/2.2を検査した。旧proposal/designのatomic記述との関係を両File冒頭にも明記し、未完了条件を黙って削除していない。
+
+### Task 2.1: 実親子の逐次反復
+
+- 既存Python/uv processがないことをCIMで確認してから開始。所有TemporaryDirectory `outputs/.evidence-io-k9wd7za2/` の各round別pathで、既存tests/test_terminal_evidence.pyの3 Testを別pytest processで10回逐次実行した。失敗時はsubprocess.run(check=True)で反復を止める構成であり、失敗をretryで隠していない。
+- 対象は `test_detached_high_frequency_evidence_and_heartbeat_io`、`test_detached_watchdog_collects_completion_without_stdout`、`test_public_detached_runner_executes_existing_convert_lifecycle`。製品の既存run_detached/run_public_run_detached/EvidenceStoreを使い、LLM・Embedding clientは起動しない。
+- **10/10回、30/30 Test成功**。各回3 passed / 38 deselected、5.86〜9.54秒。親scriptのsession 80968はexit 0を直接回収した。
+- 高頻度Testはchildがterminal/heartbeatをそれぞれ100回更新し、親が1ms間隔で監視する。各回のchild exit 0、completed、current=total=100、終端再読取り、heartbeatの100を確認する。別Testはstdoutなしでも終端を回収し、convert Testは実childから既存公開処理へ委譲して合成MarkdownからDOCXを生成し、Run completedと成果物存在を確認する。これらを実PDF翻訳の成功へ読み替えない。
+- 所有一時rootは終了後にcleanupされ、script内と後続Test-Pathで不存在を確認。消したものは今回の合成JSON・lock・合成convert Run/DOCXだけ。既存利用者Run・入力・成果物は変更/移行/削除していない。
+
+### Task 2.2: 品質と適用範囲
+
+| 検査 | 結果 |
+| --- | --- |
+| uv run pytest -q（反復終了後に開始） | **811 passed / 1 skipped、54.02秒**、session 21420 exit 0 |
+| 対象terminal_evidence.py / test_terminal_evidence.pyのRuff check | 成功 |
+| 対象2 FileのRuff format --check | 2 files already formatted |
+| 全体ty check | 成功 |
+| OpenSpec validate serialize-detached-evidence-io --strict | valid、skip_specs=trueのためDeltaなし |
+| git diff --check | 成功 |
+
+全体Testには単一lock深さ・有限取得待ち・例外時解放・終端保護・不正JSON/schema拒否・途中書込みchild強制終了・fsync失敗非成功等が含まれる。反復非再現だけを競合不存在の証明にせず、既存の決定的境界Testと組み合わせる。別名symlinkやlock非協調reader、任意のOS共有条件まで保証を広げない。
+
+検査CodeはHEAD `1c0cafc`＋既存未commit差分で、commit単独の検査ではない。terminal_evidence.pyの唯一の未commit差分は別件FailureKind/context-exceeded追加であり、今回のcommitへ含めない。検査前後のhashは一致:
+
+- terminal_evidence.py: `ac595e2e298bc2cdc62ebe82e53586fe63131e9c6fdf1b6ff9bcc83f175470f1`
+- tests/test_terminal_evidence.py: `88e115a36f176d0639b746793be940a4e372a3af0e2fdb21b49760d50d97412b`
+
+本ターンの変更はOpenSpecの後継関係・Tasks・検証記録・該当監査参照だけで、製品Code/Test/schemaを変更していない。.agents、inputs、outputs、runs、PDF/DOCX、秘密値、他の未commit差分をcommitへ含めない。common配置の承認・LangGraph二重管理・Evidence identity等を今回解決したとはしない。
+
+後継のoverwrite-diagnostic-json-in-place Task 2.4とreuse-canonical-detached-child-moduleの実E2Eは未完了のまま維持する。最新の生成要求はタイムアウトであり、新規sample3→Microsoft Word PDF→原本Reviewと利用者目視を、このモデルなしの統合Testで代替しない。正式verify・archiveはその受入条件を確認してから判定する。
+
 ## 中間判定（2026-09-25）
 
 **検証失敗・未完了。archive不可。** 利用者の設計確認への回答を優先するため、製品修正は途中状態で保持する。

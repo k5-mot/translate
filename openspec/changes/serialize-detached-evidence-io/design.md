@@ -2,6 +2,12 @@
 
 proposal.mdのWhyを参照。EvidenceStore.writeはlock内でread/replaceするがreadは無排他。heartbeatは直接load_json/atomic_write_jsonを呼ぶ。Windowsでは開いた読取りhandleとreplaceが競合し得る。既存portalockerのLock APIをインストール済みsourceで確認した。
 
+### 承認済み後継設計との関係（2026-09-26整理）
+
+上記と以下のread/replace・atomic公開に関する記述は初期設計の経緯である。利用者承認後の[overwrite-diagnostic-json-in-place/design.md](../overwrite-diagnostic-json-in-place/design.md)が、診断JSONだけを同じlock内で直接上書きし、truncate後の旧版保持を保証せず破損をunknownとする保存契約へ置き換えた。本Changeのportalocker排他、constructor/read/write境界、有限待機、終端保護は維持する。
+
+Tasks 2.1/2.2の現行統合検証は、この承認済み後継実装に対して行う。過去の原子的置換でのWinError 5を非発生と読み替えたり、原因processの特定完了と報告したりしない。任意のPermissionErrorの握り潰し、汎用Artifact・入力・成果物・Checkpointの直接上書きへの拡張は行わない。実E2Eと最終受入は後継ChangeのTask 2.4および全体目標で引き続き追跡する。
+
 ## Goals / Non-Goals
 
 **Goals:** 全Evidence/heartbeat I/Oをファイル別に直列化し、終端判定と不正Evidenceの扱いを維持する。

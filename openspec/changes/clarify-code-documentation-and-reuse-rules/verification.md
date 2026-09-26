@@ -39,6 +39,8 @@
 - [配置監査](../restore-docx-tables-and-indexes/architecture-audit.md)のdocument_processing/4file新設案は撤回済み。utils/redaction.pyの独立性は未承認。今回は配置を変更しない。
 - 診断I/Oの間欠障害、表を含む内容検証、Run排他の指摘も本Changeで修正していない。
 
+2026-09-26追記: 診断I/Oの排他は[serialize-detached-evidence-ioの統合結果](../serialize-detached-evidence-io/verification.md)へ対応付けた。承認済み後継の直接上書き方式でRepository内の実親子3 Test×10回が30/30成功し、全体811 passed / 1 skipped。これは該当保存境界の自動検証であり、旧原子的置換の原因特定、common配置、独自Resume廃止、Evidence identityや全体E2E受入の完了を意味しない。
+
 ## 判定
 
 実処理の証拠不足につき正式verify・archive・mainへのマージは未実施。文書検査の合格を製品の検証合格へ読み替えない。

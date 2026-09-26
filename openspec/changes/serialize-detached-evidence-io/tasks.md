@@ -6,5 +6,5 @@
 
 ## 2. 統合検証と移行確認
 
-- [ ] 2.1 モデルを呼ばない実親子processで高頻度のEvidence/heartbeat I/Oを反復検証し、完了結果とexit 0を保持することを確認する。
-- [ ] 2.2 対象Ruff/format、全体ty/pytest、OpenSpec strictを実行してverification.mdへ記録する。旧schema/Run/未commit差分を保持し、監査の該当項目だけ更新する。
+- [x] 2.1 モデルを呼ばない実親子processで高頻度のEvidence/heartbeat I/Oを反復検証し、完了結果とexit 0を保持することを確認する。
+- [x] 2.2 対象Ruff/format、全体ty/pytest、OpenSpec strictを実行してverification.mdへ記録する。旧schema/Run/未commit差分を保持し、監査の該当項目だけ更新する。
