@@ -39,3 +39,22 @@
 Langfuse読取りで今回の製品traceは9737d6c01fd035071ef4ac25d6e7a61e、LOADまでのTask終了を確認。別のprovider trace 889de226b6ed86e258dfc0754552fb18のobservation fb026fbc38103359は、11:35:57.335〜11:38:11.508 UTC（134.173秒）でERROR、InternalServerError/HTTP 500。error messageの分類にはconnectionを含む。raw本文/stack/endpointは記録しない。送信パラメータはreasoning_effort=none、max_completion_tokens=16384、temperature=0だった。
 
 11:42 UTCの再取得でも終了済みprovider要求は上記1件で、製品llm.requestの終端観測はまだ取得できていない。provider側のERRORとクライアント側の終了を同一視せず、実際の再試行回数・停止原因・最終counterは未確定とする。接続関連のHTTP 500だけを根拠に製品Codeの不具合、context超過、reasoning ONと断定しない。request timeout 1800秒・watchdog 21600秒の既存上限を変更せず、同じprocessの結果を待つ。
+
+### STRUCTURE待機の追跡（12:07〜12:09 UTC）
+
+同じsession 86144のpollは継続中を返し、親30444/child35512の生存、terminal heartbeat更新、Runのrunning/STRUCTUREを再確認した。直近完了通知はLOAD 7/17のまま。再起動・追加Model要求・Code変更はしていない。
+
+Langfuseの読取りでは、provider側の終了済み要求が4件へ増加していた。各件はInternalServerError/HTTP 500で、秘密を出さず分類したerror messageはいずれもconnectionを含む。reasoning_effort=none、max_completion_tokens=16384を4件とも確認した。
+
+| Provider observation | 開始UTC | 終了UTC | 秒 |
+| --- | --- | --- | --- |
+| fb026fbc38103359 | 11:35:57.335 | 11:38:11.508 | 134.173 |
+| fe3e533a4babe972 | 11:45:01.686 | 11:47:16.197 | 134.511 |
+| 94f8ef3f1e01c32c | 11:54:07.003 | 11:56:20.964 | 133.961 |
+| 9b3b5978f276477d | 12:03:11.094 | 12:05:25.732 | 134.638 |
+
+製品trace 9737d6c01fd035071ef4ac25d6e7a61eのllm.request observation d7769acce95418a9も取得できた。11:35:56.892〜12:03:11.285 UTC、1634.393秒でLLMError、reasoning=none/thinking=disabledだった。したがって「製品側の最初のLLM処理がまだ終わっていない」という11:42時点の観測は更新されるが、STRUCTURE全体の終端は未観測である。
+
+現行実装ではAdapterのSDK retryは0、外側の有限retryは設定3回。STRUCTUREは画像付き要求のLLMError後にテキスト要求へ逐次fallbackする。この制御と今回の時系列は整合するが、製品spanにはvision/text識別がなく、provider spanとの直接の親子関係もないため、4件を厳密な製品試行数やfallbackの確定証拠としては扱わない。provider要求の約134秒と開始間隔の約544〜545秒の差も、現在の観測だけでサーバー内部retry・通信待機などへ確定分類できない。
+
+今回の確認は実際の接続関連500と有限処理の経過を示す。context超過やreasoning ON、計数修正による性能劣化と断定しない。終端counter・成果物・Word PDF・Comparison Reviewは引き続き未確認で、Task 2.2を完了にしない。
