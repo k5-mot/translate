@@ -138,6 +138,41 @@ PDF全28ページを導入済みpypdfium2で読み、1・2・3・5・25・26・2
 
 次は既存の`force_ocr`設定／Docling APIで原本第16ページだけを逐次解析し、画像由来の符号と数値が同じセルへ保持されるか、正数や罫線を誤って負数化しないかを確認する。短いPATHを独自の幾何規則だけでminusへ変換する案や、推測した数値の置換は採用していない。強制OCRの効果・所要時間・失敗条件を確認する前に全文強制OCRを製品既定へ変更しない。負数欠落の指摘と本Changeの最終受入は未完了を維持する。
 
+### 既存Doclingによる単一ページOCR比較（2026-09-26）
+
+上記の次診断を基点`7a7c0c3`で実施した。所有するローカルPython／uv実行がないことを確認し、pypdfium2の`import_pages`で原本第16ページだけを新しい診断directory `outputs/.minus-ocr-d_k44px5/page16.pdf`へ複製した。元PDF・既存Run・既存DOCX/PDFは変更していない。
+
+製品の`docling.run()` → `unpack.run()`をそのまま利用し、`force_ocr=false`の終了・展開後に`force_ocr=true`を実行した。両方ともTesseract／eng、`pdf_backend=docling_parse`、`table_cell_matching=true`、同じ1ページ入力で、比較する抽出設定は`force_ocr`だけ。設定は診断process内だけに適用し、`.env`や製品既定値を変更していない。LLM／Embeddingを起動せず、reasoning設定はoff。診断の通信再試行は1 attempt、request timeout 1,800秒、deadline 21,600秒とした。
+
+| 条件 | 開始UTC | Docling job | 結果 | DOCLING＋UNPACK実測 |
+| --- | --- | --- | --- | --- |
+| 通常OCR | 13:40:58.495632 | `596ec24c-2dea-46a3-b0d1-72576cfa510b` | success、poll 7回 | 7.610秒 |
+| 強制OCR | 13:41:06.110348 | `9b97084a-2a2e-46fc-bdf4-b46b5a573eef` | success、poll 10回 | 11.078秒 |
+
+tool session `40011`は両方の終了を回収してexit 0。job.jsonの`attempts`はpoll回数であり、upload再送回数ではない。両応答は21行×5列、table_cells 85個、grid 105セルで行列位置が一致した。対応表は0始まり座標。
+
+| セル | 原本の値 | 通常OCR | 強制OCR |
+| --- | --- | --- | --- |
+| (13,4) | −749 | 749 | —749 |
+| (17,1) | −766 | 766 | —766 |
+| (17,2) | −1,796 | 1,796 | -1,796 |
+| (17,3) | −1,357 | 1,357 | —1,357 |
+| (17,4) | −1,371 | 1,371 | **—-1,371** |
+| (19,1) | −766 | 766 | **_766** |
+| (19,2) | −1,796 | 1,796 | —1,796 |
+| (19,3) | −1,357 | 1,357 | —1,357 |
+| (19,4) | −622 | 622 | —622 |
+
+保存した実応答を製品`load_document()`へ渡して再検査した。既知9負数について、minus／hyphen／en dash／em dashのいずれか**一つ**と元の数値がセル内に保持される条件は通常0/9、強制7/9。強制OCRで9/9というassertは(17,4)と(19,1)の2セルで失敗し、Internal Documentにもそのまま残った。正数対照(18,4)の749は両方で749を保持。一方、数値なしの横線を持つ(13,1)は通常`-`、強制`ee`となり、新たな誤認識を確認した。ここで7/9を負数の完全な構造化・意味品質の合格とはみなさない。
+
+SHA-256:
+
+- 1ページ診断PDF: `b3a9c35166ddd509c817ea2e50e3c3aef69df3e5ad164ed9d9007217eb20160e`
+- 通常OCR `baseline/part-0001/unpacked/document.json`: `afee07e06a9f615036310c119a88a6e6919ea0651bad5ea850edc03c63716c05`
+- 強制OCR `forced/part-0001/unpacked/document.json`: `a257d4f8db52f136b56773c072c730f6620306df76bf170e934c9cac0ac11a4a`
+
+**判定: 強制OCRの一律適用だけでは解決しない。** 図形の符号を取得できる例は増えたが、符号の重複・underscore化・横線の文字化が残る。任意の線やunderscoreをminusへ置換する独自補正、全文の強制OCR既定化、既存Runの書換えは行わない。OCR／表セルへの対応付けのどちらで誤認識が生じるかをさらに切り分ける必要がある。製品修正、実Translation→Word PDF→Review、利用者目視受入は未完了。診断成果物は再照合用に保持するがcommit対象外とし、新しいTest File・Dependency・共通Layerは追加していない。
+
 14:18 UTC時点で比較child PID 53980/56052と親PID 55584の生存を確認。完了ReviewResponseは14件、対応する既存Chunk Artifactも14件へ増加している。未知の終了コードや中間counter値を成功扱いせず、同じ実行を継続する。
 
 ### ALIGN修正に向けた読取り専用の設計調査
