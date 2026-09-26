@@ -102,3 +102,58 @@ uv run python cli.py translate inputs/sample3.pdf --output-dir outputs/sample3-a
 [clarify-translation-placeholder-instructions](../clarify-translation-placeholder-instructions/proposal.md)で、既存翻訳ルールへ保護記号の同一ID内保持を明記する計画を作成した。復元検査・retry上限・OFF設定は変更せず、ルールhash変更後は旧Runを保持して新規検証する。計画のみであり、TRANSLATE-PROTECTED-OFF-001は未解決、3.2〜3.5も未完了のままとする。
 
 その後`fcc7947`で実装し、新規OFF Run `01a0d60e-228b-7350-b800-e908a4177727`を実行したが、09:58 JSTに同じ第2ページで保護記号1件が欠落して失敗した。新ルール到達と残る2記号保持は確認済みだが解消には至らず、Word/PDF/Reviewは未実施。[是正Changeの実検証結果](../clarify-translation-placeholder-instructions/verification.md)へ証拠を記録し、本指摘と3.2〜3.5を未完了のまま保持する。
+
+## 2026-09-26: 完了済みOFF実検証との照合によるVerify更新
+
+先行節は当時の履歴として保持する。その後、利用者の方針により厳密な本文保護記号を廃止した[simplify-translation-literal-checks](../simplify-translation-literal-checks/verification.md)で、新規OFF翻訳→Microsoft Word PDF→原本との比較Reviewを完了した。旧失敗RunをResume・成功扱いしたのではない。TRANSLATE-PROTECTED-OFF-001は旧保護契約の失敗履歴であり、現在の方針は保護記号の強化ではない。
+
+今回は計画4文書、現行Code/Test、完了Run metadata、実Artifact hash/構造、Langfuse観測を読取り照合した。稼働中の別Run 01a0dd7f-a0a9-75f0-bc80-4693ee212389の成果を先取りせず、追加Model要求・Word操作・Code変更・全suite実行はしていない。
+
+| 観点 | 判定 |
+| --- | --- |
+| Completeness | 12/12 tasks。3.2〜3.5の実行・検査・提示・引継ぎを以下の証拠で完了へ更新。利用者の目視承認や製品全体の受入完了ではない |
+| Correctness | Delta 3 Requirement / 11 Scenarioに実装とTestの対応を確認。OFF送信、default互換、切断回復、実効観測は整合。Providerの実推論tokenは未測定 |
+| Coherence | 既存Settings/Adapter再利用、既定値、依存追加なし、逐次実行を維持。独立Page/Chunk cacheとcommon整理は別の未解決事項 |
+
+### 要求とCode/Testの対応
+
+| Requirement / Scenario群 | 確認した境界 |
+| --- | --- |
+| 明示OFF: 省略/default、不正値、OFF送信、切断回復 | settings.py:166/219、llm.py:248/359、translate.py:232。test_settings.pyの許容値・秘密非出力、test_adapter_retry.pyのdefault/off×high/low/none×prompt/schema×画像有無と初回/再試行、Embedding不変、test_translation_output_failures.pyの有限分割・非切断伝播 |
+| 実効値と実測の区別: high上書き、推論token不明 | llm.pyのobserveには適用後reasoning/thinkingを渡す。test_langfuse.py:193付近でlow→none/disabledと秘密/本文非出力を検査。READMEと本節でも送信値・実推論量・品質を区別する |
+| Fingerprint: 同設定、変更拒否、Qdrant除外、旧default、新規OFF | fingerprint.py:97、translation.py:472/494、comparison_review.py:423/435。test_fingerprint.py:339、test_run_failure_resume.py:36の双方向拒否/同設定Resume、test_workflow_state.py:82の保存前拒否/Artifact不変、両Workflowのdefault ID不変/OFF分離、test_run_interoperability.py:41のCLI/UI相互利用 |
+
+### 3.2: OFF指定・実測値・翻訳終端
+
+- 新規翻訳01a0d8b6-c2ab-7c92-bed9-58403a8410b3はcompleted/DOCX、設定off。2026-09-25 13:17:31.195268〜13:56:57.912623 UTC。session 75952 exit 0、TOTAL 2366.730秒の取得済み証拠は共通実検証記録を参照する。
+- 今回再取得した製品trace 56e4ac20ce055e2988a2f42e599bb1b6はllm.request 97/97終了、全件none/disabled、要求区間の最大重なり1、cursorなし。
+- 同日13:17〜13:57 UTCのProvider chat 97件も全件reasoning_effort=none。usageはinput/output/totalのみで、推論token内訳はない。時間窓集計はinput 314,233、output 62,038、total 376,271 token、Provider span合計1968.726秒。時間窓の観測集計であり、直接trace親子関係による帰属や通常出力/推論内訳を保証しない。TOTALへ重ねて加算しない。
+- 初回Provider観測7c255aa6b353f7fbは13:17:59.470〜13:18:05.198 UTC、input/output/total=1670/91/1761。最終cc54beaa018fdd59は13:56:54.304〜13:56:57.016 UTC、2128/55/2183。推論tokenと推論を除いた通常出力tokenは分離取得不能で、実測0とはしない。
+
+### 3.3: DOCX・Word PDF・提示
+
+今回再計算したhashは共通記録と一致した。
+
+| Artifact | bytes | SHA-256 |
+| --- | --- | --- |
+| inputs/sample3.pdf | 5,284,914 | 5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f |
+| outputs/sample3-acceptance-off-literals/document.ja.docx | 3,656,615 | 78aeb3c5e50f8785e4a9b5dca1f64776355f9a96470ed090b357263764ca4d7d |
+| 同directoryのdocument.ja.pdf | 1,541,242 | 57a19cc835e8cb637f9ac027b3b6f27458a1f21c191c213ade4f1950309ac21a |
+
+DOCXは3表・24画像、instrText/dirty属性0を標準XML readerで再確認した。PDFは28ページ、Creator/Producer Microsoft Word 2024、作成時刻2026-09-25 23:00:14 JST。Wordの実操作・所有Process確認・DOCX非変更の証拠は共通記録を参照する。初回読取りprobeは未導入lxmlで失敗したが、依存を追加せず標準XML readerで確認した。
+
+本文・表紙・一覧・番号・改ページの検査と不備は共通記録および[表出力の検証](../restore-docx-tables-and-indexes/verification.md)へ残す。成果物は利用者へ提示済みで、Taskの「検査して提示する」は完了したが、目視承認は未取得。表内画像・図番号・仮ヘッダー等を修正済みとはしない。
+
+### 3.4: 新規Comparison Review
+
+Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2はcompleted/REPORT、設定off。入力は上記原本とWord PDFで、入力コピーhash一致は共通記録で確認済み。今回も公開review.mdは194,084 bytes、SHA-256 0f7ca98be7ee70ea00736f8dee8f3f1f10b3eb0a27ff90e65b879e391830eb19、指摘515区分で一致した。対象ID515、根拠383、提案120の個別区分照合結果は同hashの共通記録を参照する。
+
+製品trace fe87686a81b37a939449aaa97b608a4eを再取得し、39/39件終了、全件none/disabled、最大重なり1を確認した。child終端completed/exit 0、所要1367.293秒は共通記録の証拠。診断counterの0は誤値であり、外部要求なしと解釈しない。修正後の実検証は[計数Change](../reuse-canonical-detached-child-module/verification.md)で別Runとして継続中。
+
+### 指摘と最終判定
+
+- CRITICAL（最終受入）: 表内画像・負数符号・図採番/仮ヘッダー・ALIGN誤対応と利用者目視未確認が残る。対応Changeの修正、実成果物再検査と利用者確認後にarchive可否を再判定する。12/12は本Changeの実施項目完了であり、品質合格ではない。
+- WARNING（証拠の制約）: 比較診断counterは旧実装で不整合。非ゼロLangfuse観測と分離し、計数Changeの新規E2E終端を取得する。OFF送信確認に誤った0値を使わない。
+- Provider推論内訳の未提供はSpecが予定する「実測未確認」であり、勝手に0や異常へ分類しない。LangGraph再開二重管理・common整理などGoal全体の指摘も維持する。
+
+直近全体Gateは[計数Changeの自動検査](../reuse-canonical-detached-child-module/verification.md)の732 passed / 1 skipped、Ruff/format/ty成功を参照する。今回は読取り検証であり、全suiteを再実行したとはしない。本Changeと参照先2 ChangeのOpenSpec strictはvalid、git diff --checkも成功。関連記録への参照を含む文書差分だけをcommit対象とした。正式verifyの最終受入は未合格、archive/main merge/pushは行わない。

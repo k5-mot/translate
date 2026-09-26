@@ -161,3 +161,7 @@ request timeout=1800秒、Task期限=21600秒、retry=3、available_input_tokens
 `11e8dd3`で共通推論OFF設定を実装し、全体637 passed / 1 skippedを確認した。その後、旧要求のProvider側終端も確認して新規Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`（session `98497`）を開始した。`--resume`なし、export先は`outputs/sample3-acceptance-off`。旧Runは保持し再利用しない。入力/実行Code/設定の同一性と進捗は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)を参照する。本Changeの実成果物Taskはまだ完了にせず、翻訳→Word PDF→Reviewの終端と内容検査を待つ。
 
 09:31:39 JST、上記sessionはexit 1で終了した。第2ページのTRANSLATEで保護断片が3応答とも欠落し、DOCX未生成のためWord/PDFとReviewへ進めなかった。実応答の読取り専用再現と是正候補はリンク先のTRANSLATE-PROTECTED-OFF-001に記録した。tasks 3.1〜3.4は未完了、正式verifyは不合格のままとする。
+
+### 後続の完了済みOFF実検証への参照（2026-09-26）
+
+上記は旧失敗Runの履歴である。その後の新規翻訳01a0d8b6-c2ab-7c92-bed9-58403a8410b3→Word PDF→比較01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は終了し、[OFF設定のVerify更新](../configure-verification-reasoning-policy/verification.md)へ実効設定・hash・終端と公開Finding詳細の証拠を集約した。515指摘の対象ID・存在する根拠/提案の保持と、ALIGNの意味的誤対応・旧診断counter不整合を区別する。本Changeの正式verifyと利用者目視結果は未完了であり、この参照追加だけではarchiveしない。
