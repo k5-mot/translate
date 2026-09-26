@@ -9,5 +9,5 @@
 ## 2. 検証と引継ぎ
 
 - [x] 2.1 全体pytest、対象Ruff lint/format、ty、OpenSpec strictを実行し、結果と既存の未解決指摘をverification.mdへ記録する
-- [ ] 2.2 class化後の実translation→Microsoft WordでPDF化→入力PDFと生成PDFのreviewを逐次実行し、実行順と成果物の証拠を記録する
+- [x] 2.2 class化後の実translation→Microsoft WordでPDF化→入力PDFと生成PDFのreviewを逐次実行し、実行順と成果物の証拠を記録する
 - [ ] 2.3 Word/PDFを利用者へ提示して目視結果を記録し、既存入口・データを保持したことと旧重複計測の廃止を正式verifyする
