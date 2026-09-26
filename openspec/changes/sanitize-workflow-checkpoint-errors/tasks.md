@@ -14,9 +14,9 @@
 
 ## 3. 実成果物による受入れ
 
-- [ ] 3.1 既存session 40709の終端をlive handleで確認し、修正後のコードを読み込んだprocessから`inputs/sample3.pdf`の実translationを逐次実行する。run ID・コード版・終了状態・成果物hashを記録し、旧process結果を修正後の証拠に流用しない
+- [x] 3.1 既存session 40709の終端をlive handleで確認し、修正後のコードを読み込んだprocessから`inputs/sample3.pdf`の実translationを逐次実行する。run ID・コード版・終了状態・成果物hashを記録し、旧process結果を修正後の証拠に流用しない
 - [ ] 3.2 DOCXの表・表紙順序・日本語目次/図一覧/表一覧・改ページ・見出し番号を検査し、自分で起動した非表示Microsoft WordでPDFを作成する。対象DOCX/PDFをユーザへ提示し、目視結果と残課題をverification.mdへ記録する。PDF変換を製品機能へ追加しない
-- [ ] 3.3 3.2の生成PDFと元の`inputs/sample3.pdf`をComparison Reviewで逐次比較し、入力hash、run ID、終了状態、reportを記録する。修正後Checkpointに本文がないことを秘密非表示の方法で検査する
+- [x] 3.3 3.2の生成PDFと元の`inputs/sample3.pdf`をComparison Reviewで逐次比較し、入力hash、run ID、終了状態、reportを記録する。修正後Checkpointに本文がないことを秘密非表示の方法で検査する
 
 ## 4. 指摘解消と完了判定
 

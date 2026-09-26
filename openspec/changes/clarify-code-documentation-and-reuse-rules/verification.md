@@ -67,6 +67,8 @@
 
 10:07〜10:10 JSTの追加監査で、現行rootの全10 DBと4728非空文字列/BLOBセルを検査した。旧4 Run・6行は残存し、最新OFF実失敗2件は固定TaskErrorで保存されていた。既知Credential6値と64文字本文窓の一致0だが、未知秘密・短い断片・空き領域までは保証しない。監査中のSQLite補助File作成/更新と、WAL空確認後のimmutable再監査で全File hash不変だったことも[監査結果](../sanitize-workflow-checkpoint-errors/verification.md)へ記録した。Task 4.1の影響確認は完了したが、過去浄化・実成果物受入・本指摘の最終解決とは区別する。
 
+2026-09-26の追加監査では、修正後の完了済みOFF翻訳・Word PDF比較と直近STRUCTURE失敗の3 DBをimmutableで検査した。state/pending writeの949値はpathと許可済小metadataへ分類され、1568 logicalセルの既知秘密/本文窓一致0、最新失敗1行は固定TaskError、全DB一式のhash不変だった。[同Changeの正式verify](../sanitize-workflow-checkpoint-errors/verification.md)で実E2Eと対応付け、9/11 tasksへ更新した。新規例外保存の保護は実成功・実失敗で確認済みだが、利用者目視と旧例外行監査の限界は残り、過去浄化・Goal全体の完了とはしない。
+
 ### 配置と移行の状態
 
 - 現行共通root内にrun.jsonが8 files、新しいoutputs配下のmanifest.jsonは0 filesだった。これは有効性検証済みRun数ではなくFile件数。旧データを移動・削除していない。

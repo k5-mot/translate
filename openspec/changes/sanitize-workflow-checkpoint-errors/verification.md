@@ -158,3 +158,61 @@ Task 4.1の限定された読取り監査と元指摘への証拠対応を完了
 - 実機: OFF Run `01a0d5f5-beb9-79d1-a1e4-f4300066b6b5`（起動HEAD `11e8dd3`）と`01a0d60e-228b-7350-b800-e908a4177727`（起動HEAD `fcc7947`）は、それぞれ実際のTRANSLATE/ProtectedFragmentMissingで停止し、例外行は正確に固定TaskErrorだった。公開FailureはTask/page/target/stage/causeを保持した。詳細は[OFF設定](../configure-verification-reasoning-policy/verification.md)と[翻訳指示修正](../clarify-translation-placeholder-instructions/verification.md)の終端記録へ対応する。
 - 上記は新規失敗書込みの保護が働いた証拠であり、失敗した翻訳・未生成DOCX・未実施Word PDF/Reviewの合格証明ではない。利用者目視も未完了。SECURITY-CHECKPOINT-001の最終解決、archive、main merge/pushは引き続き不可。
 - 記録更新後、文書Testは21 passed（0.30秒）、本Changeと元指摘ChangeのOpenSpec strictはvalid、git diff --checkは指摘なし。製品Code未変更のため全製品suiteは再実行していない。
+
+## 2026-09-26: 完了済み実E2Eと最新失敗Checkpointの正式verify
+
+先行の実行中・未生成の記録は当時の履歴である。修正後のCodeで完了した実E2Eと今回の読取り監査を対応付け、Task 3.1と3.3を完了へ更新した。9/11 tasksであり、利用者目視・最終受入の完了を意味しない。追加のModel要求、Word変換、Run再開、製品Code変更は今回行っていない。
+
+### 実装版と実Artifactの対応
+
+例外保存境界の実装commitは419b6e1（2026-09-25 04:49 JST）。そのcommitが後続翻訳起動基点17ebaf2の祖先であること、translate/adapters/checkpoint.pyに当該commitからの差分がないことを確認した。現在の同File SHA-256は30d4e20cfd159e0001a25405f414191bcb9bda266ad289a57a7f714abb041ff0。両Workflowのopen_checkpoint利用も再確認した。先行session 40709の修正前結果は証拠に流用しない。
+
+- 翻訳Run `01a0d8b6-c2ab-7c92-bed9-58403a8410b3`: 2026-09-25 13:17:31〜13:56:57 UTC、completed/DOCX、reasoning OFF。session 75952のexit 0とTOTAL 2366.730秒は[実検証記録](../simplify-translation-literal-checks/verification.md)に対応する。旧失敗RunのResumeではない。
+- 上記DOCXを、自分で起動したMicrosoft WordでPDF化し、元DOCXを保存し直していない。Word操作・所有Processの終了、28ページ、表3個・画像24個、表紙と一覧の順序・非空・改ページ等の検査は[OFF検証記録](../configure-verification-reasoning-policy/verification.md)と[表の検証記録](../restore-docx-tables-and-indexes/verification.md)に対応する。表内画像・図番号・仮ヘッダー等の不備は残る。
+- 比較Run `01a0d8e0-73da-73e0-97b9-e1d0bcf442f2`: 14:03:05〜14:25:52 UTC、completed/REPORT、child exit 0、1367.293秒、reasoning OFF。原本と上記Word PDFの入力コピーhashが再計算で一致した。親tool handleの終了結果は未取得であり、child終端と区別する。
+- 公開review.mdのhashは下表と一致し、515件の指摘・290組の対応詳細とJSONの一致検査は[公開Reportの検証](../preserve-public-review-finding-details/verification.md)に対応する。実比較の実行完了を、ALIGNや翻訳品質の合格と読み替えない。
+
+| Artifact | 今回再計算したSHA-256 |
+| --- | --- |
+| inputs/sample3.pdfおよび比較source_en入力copy | 5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34f |
+| outputs/sample3-acceptance-off-literals/document.ja.docx | 78aeb3c5e50f8785e4a9b5dca1f64776355f9a96470ed090b357263764ca4d7d |
+| 同directoryのdocument.ja.pdfおよび比較translation_ja入力copy | 57a19cc835e8cb637f9ac027b3b6f27458a1f21c191c213ade4f1950309ac21a |
+| 同directoryのcomparison-review/review.md | 0f7ca98be7ee70ea00736f8dee8f3f1f10b3eb0a27ff90e65b879e391830eb19 |
+
+### 成功・失敗3 DBの秘密非表示監査
+
+Python/uv製品Processの不在、対象run.jsonのcompleted/failed、非空WALの不在を先に確認した。SQLiteをmode=ro&immutable=1で読み、ormsgpackのplain decodeと標準jsonだけで値の形状を検査した。pickle、拡張hook、例外constructor、任意型の復元は使用しない。監査前後のDB/WAL/SHMのFile集合とSHA-256は全3件で一致し、前回の通常mode=roで生じた補助File更新も今回は発生していない。
+
+| Run ID | checkpoints行 | writes行 | 例外行 / 固定TaskError | 検査したstate値 | 非空文字列/BLOBセル |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 01a0d8b6-c2ab-7c92-bed9-58403a8410b3 | 19 | 109 | 0 / 0 | 397 | 750 |
+| 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2 | 20 | 61 | 0 / 0 | 394 | 467 |
+| 01a0dd7f-a0a9-75f0-bc80-4693ee212389 | 9 | 51 | 1 / 1 | 158 | 351 |
+
+- checkpointのchannel_valuesと全pending write（__start__内も含む）949値は、Run内の存在するpath・path列、許可済Task名、整数進捗、backend、空の分岐通知、固定TaskErrorに分類できた。未知値・未知encoding・decode失敗は0。本文や画像のpayloadをstateへ持ち込んだ値は検出しなかった。
+- metadataは全件parents/source/stepのみで、parentsは空、sourceは許可済分類、stepは整数。checkpoint外枠のkeyも既知のLibrary fieldだけだった。
+- load/structure/translate/fix/verifyと比較source/target loadの保存Documentから本文・Caption・表セルの原文/翻訳/最終層を読んだ。対象Artifact数は順に5/2/1、64文字窓（32文字刻み）は1868/2083/1369個。全1568セルで本文窓一致0、既知Credential6値の一致0、DB一式のraw bytesでも既知Credential一致0。本文や秘密値そのものは出力しない。
+- 直近失敗RunはSTRUCTURE/page 2/text-invoke/OpenAIAPIError、child exit 1。失敗情報は許可済分類を維持し、Checkpoint例外は正確に固定TaskErrorだった。[LLM障害の終端記録](../reuse-canonical-detached-child-module/verification.md)に対応する。終端Evidenceのcheckpoint_count=0は未再計測値であり、実DBの9行の不在を意味しない。比較のcheckpoint_count=222もworkspace File数であり、実Graph行数20と混同しない。
+
+この監査は上記3 DBのlogical値と既知秘密を対象とする。未知の秘密、64文字未満や変形した断片、任意のSQLite空き領域、別layout・バックアップの全てが安全という保証へ拡張しない。過去の4 Run・旧例外6行は今回書換え・削除せず、前回監査の限界を維持する。
+
+### Completeness / Correctness / Coherence
+
+| 観点 | 判定 |
+| --- | --- |
+| Completeness | 9/11。3.1の新規実翻訳と3.3の実比較・修正後DB検査を証拠で完了へ更新 |
+| Correctness | skip_specsのため新Deltaなし。既存run-lifecycleの秘密/本文非保存・Task単位Checkpoint要求に対し、直接例外の固定化、path中心state、公開診断、再接続Resumeの証拠あり |
+| Coherence | 既存SqliteSaver/JsonPlusSerializerへ委譲し、元例外や制御フローを変えない。新しい再開台帳・Dependency・common Moduleを追加しない設計に一致 |
+
+現行のtest_checkpoint.py、test_workflow_state.py、test_failure_contract.pyを再確認・実行し、50 passed（5.24秒）。通常値の互換性、例外repr/dataclass/chain、制御例外、型指定retry、実Graphと公開Failureを検査した。別接続Resumeの証拠はtest_translation_workflow.pyとtest_comparison_workflow.pyであり、両Fileも再確認・実行して15 passed（2.95秒）。既存/新serializerとdefault/OFFの組合せで、翻訳COVER・比較TARGET-POSITIONの失敗Taskだけが追加実行され、先行Taskの呼出数が増えないことを確認した。全体の最新Gateは[計測出力修正](../preserve-results-on-timing-output-failure/verification.md)の799 passed / 1 skipped、Ruff/format/ty成功を参照し、本ターンに全suiteを再実行したとはしない。
+
+### 指摘と最終判定
+
+- CRITICAL: Task 3.2はWord PDF化・検査・提示まで実施済みだが、利用者の目視結果が未取得。表内画像等の残課題を明示した成果物の目視結果を記録し、必要な修正後に再提示する。
+- CRITICAL: Task 4.2は上記受入と全指摘解消を前提とする正式verify・archive・PR/CI・main merge/pushが未完了。検査実施済みTaskの増加だけでarchiveへ進めない。
+- WARNING: 過去4 Run・旧例外6行の新規防止と過去浄化は別であり、限定監査から安全性を全面保証しない。浄化が必要と判断する場合は、対象と保持方針を利用者へ提示し、無断改変しない。
+- 独立Page/Chunk Cache、completed_tasks、commonの責務整理は別の未解決事項。本Changeの保存保護をLangGraph正本化の完了証拠に使わない。
+
+CRITICAL 2件・WARNING 1件のため正式検証は未合格。今回の変更は検証記録とTask状態だけで、生成物・.agents・既存未commit差分を含めない。
+
+文書Testは21 passed（0.32秒）、本Changeと元指摘ChangeのOpenSpec strict validationはvalid、git diff --checkは成功した。
