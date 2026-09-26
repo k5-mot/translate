@@ -78,3 +78,7 @@ grill-with-docsの読取り専用事実調査で、cli.py:280/main.py:387のTOTA
 ### 承認後の修正計画（2026-09-26）
 
 直近の確認に対する利用者の「ok」を受け、計測表示だけを省略して本体結果を維持する方針を[別Change](../preserve-results-on-timing-output-failure/proposal.md)へ具体化した。同期的なstream障害を対象とし、保存失敗・中断は抑制しない。proposal/spec/design/tasksを作成した段階であり、Code未変更、TASK-TIMING-001は未解消。利用者のWord/PDF目視承認や他の保留判断への回答としては扱わない。
+
+### TASK-TIMING-001の実装修正と回帰確認
+
+上記計画の[Apply検証](../preserve-results-on-timing-output-failure/verification.md)でTask/CLI/UIのprintだけを保護した。先行48件の失敗を再現後、関連114件と全体799件が成功（既存1件skip）し、成功結果・元例外・終了通知を計測stream障害へ置換しないことを確認した。同期的計測出力に関する当該Code指摘は修正済み。製品Processの終了時flushや一般stdoutの復旧を保証する変更ではない。修正後の実E2Eと利用者のWord/PDF目視はまだ未完了であり、Change全体の正式合格・archiveを意味しない。

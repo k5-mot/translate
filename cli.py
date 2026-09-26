@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Annotated
 
@@ -277,4 +278,6 @@ if __name__ == "__main__":
         app()
     finally:
         end = time.perf_counter()
-        print(f"[TIME] TOTAL: {end - start:.3f} s")  # noqa: T201
+        # 計測表示のstream障害で本体の例外・終了通知を置き換えない。
+        with suppress(OSError, ValueError):
+            print(f"[TIME] TOTAL: {end - start:.3f} s")  # noqa: T201

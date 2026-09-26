@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
@@ -17,12 +17,13 @@ class BaseTask:
 
     @contextmanager
     def measure(self) -> Iterator[None]:
-        """成功・失敗のどちらでも経過時間を計測し、標準出力へ通知する。"""
+        """経過時間を標準出力へ通知し、stream障害で本体結果を置き換えない。"""
 
         start = time.perf_counter()
         try:
             yield
         finally:
             elapsed = time.perf_counter() - start
-            # 時間の通知は成功通知ではなく、成果物やCheckpointを更新しない。
-            print(f"[TIME] {self.name} page=- group=-: {elapsed:.3f} s")  # noqa: T201
+            # 表示だけの障害を省略し、本体・時計・必須保存の失敗は抑制しない。
+            with suppress(OSError, ValueError):
+                print(f"[TIME] {self.name} page=- group=-: {elapsed:.3f} s")  # noqa: T201
