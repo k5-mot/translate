@@ -400,3 +400,32 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 ### COMPARE-REPORT-001の実成果物での解消証拠（2026-09-26）
 
 [公開ReviewのVerify再確認](../preserve-public-review-finding-details/verification.md)で、上記比較の公開MarkdownをCommonMark parserで解析し、515指摘のfield列、290対応のID列、見出し順序、集計、Run/export bytesの一致を確認した。欠落/不一致0件、生HTML token 0件。公開fieldを落とす不具合はこの実成果物で解消を確認した。一方、COMPARE-ALIGN-001、表内画像等、利用者目視とrelease手順は未完了で、元Change全体の合格やarchiveを意味しない。
+
+## 表内画像の既存API適合性を追加確認（2026-09-26）
+
+基点`75b0bc0`。`openspec-propose`／`grill-with-docs`の事前調査として、最新の完了済み翻訳Run `01a0d8b6-c2ab-7c92-bed9-58403a8410b3`を読取り検査した。表内画像の曖昧時方針は未承認であり、新Changeの正式作成・製品修正には進んでいない。
+
+### 明示参照の有無
+
+- `.workspace/docling/part-0002/unpacked/document.json`のローカル`pictures[3..12]`（MERGE後は`pictures[13..22]`）はすべて`parent=#/body`。`children`／`references`／`annotations`は空で、JSON全体で丸への`$ref`があるのは`body.children`だけだった。表セルの明示参照へ委譲すれば解決できる状態ではない。
+- 対象表は`tables[1]`、3行×6列、文字入り`table_cells` 7個。丸の置かれる10空セルには`bbox`／`$ref`／`children`／`image`がない。10画像ファイルはすべて実在し、各画像のprovenance bboxから原本上の幅・高さを取得できる。最初の丸は19.11431884765625×19.424774169921875pt。
+- 導入済み環境と依存宣言には`docling`／`docling_core`はなく、既存AdapterはDocling ServeのHTTP利用である。ローカルDocling APIで所属セルが自動取得できることは確認できていない。
+
+### 既存Pandocで10画像のセル位置・寸法を保持できるか
+
+新しいFileや製品Codeを作らず、メモリ内の3×6 Pandoc Table ASTを既存`table_to_markdown()`へ渡した。10画像のセル位置は先行調査の対応を**検証入力として明示指定**したもので、自動所属判定を実装・検証したものではない。見出し文字列は合成値、画像はMERGEの既存asset、幅・高さは元bboxのpt値とした。
+
+得られたgrid Markdownを実Pandocの`markdown-smart` → `docx+native_numbering`へ標準入力で渡し、`--output=-`のDOCX bytesをメモリ内で展開して確認した。
+
+- Word表1個、指定した10セル内の画像10個、表外画像0個。
+- 全画像の`wp:extent`と原本寸法×12,700 EMU/ptとの差は最大0.9984130859375 EMU（1 EMU以内）。画像のpixel数をそのまま寸法にしていない。
+- 中間Markdownに`<img`／`<table`なし。HTML、新規Dependency、LLM／Embedding、独自のWord表描画を使用していない。
+- 読取り対象MERGE JSONのSHA-256は`989b39b390a42e5a99a94c349ab02cf18fa6f12fa7817d284b44090b4d5c70d6`。実験前後でJSONと10画像のhashは不変。DOCXを既存成果物へ上書きしていない。
+
+これは既存の表直列化とPandoc writerの適合性確認であり、製品`create_docx()`の後処理、Microsoft WordでのPDF化、表示の目視受入、新しいTranslation→Reviewの合格を証明するものではない。
+
+### 修正案に必要な範囲と未決事項
+
+`TableCell`には画像を保持するfieldがないため、LOADで関連付けるだけでなく、Internal Documentの保存・再読込みでも保持できる契約が必要。既存`markdown._table_row()`は文字Inlineだけを描画し、`markdown._validate_block()`のasset存在検査と`validate._canonicalize_assets()`も独立Blockの`asset_path`だけを扱う。変更時はセル内画像も既存の検査・描画境界へ含め、割当済み画像を表外へ重複出力しないことを確認する必要がある。別保存Layerやcommon Module新設を必要とする根拠はない。
+
+利用者へ、所属セルを一意に特定できない場合に「Workflow停止・状態保持」（推奨）か「警告・表外保持で続行」かを再確認した。回答前に停止仕様／警告仕様のどちらも採用しない。新たな用語合意や採用判断はなく、Glossary／ADRも追加していない。表内画像の指摘と14/16 Taskの未完了判定を維持する。
