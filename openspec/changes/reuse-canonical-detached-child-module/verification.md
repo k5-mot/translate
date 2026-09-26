@@ -23,3 +23,11 @@
 - EmbeddingはClient生成試行数、Qdrantは登録Client生成と検索retry外のhook回数。物理通信回数や同時実行数の証拠にはならない。この粒度の課題は本修正では未解決。
 - 途中heartbeatは計数を更新しないため、強制終了/timeoutの0値も未呼出しを証明しない。今回確認した終端保存は成功とPublicRunErrorの経路。
 - Task 2.2はreasoning OFF・逐次のsample3新規Translation→Word PDF→Comparison Reviewで検査する。旧結果は修正後の実E2E証拠に流用しない。用語集Changeの受入と共有し、ALIGN/表内画像/利用者目視などの未解決指摘を保持する。
+
+## 新規実E2E開始
+
+実装commit a222a9b後、2026-09-26 11:35 UTCに新規翻訳Run `01a0dd7f-a0a9-75f0-bc80-4693ee212389`を開始した。旧Runは再利用せず、既存prepare_run→run_public_run_detached→成功時export_runを使用する。tool sessionは86144。入力sample3.pdfのSHA-256は5ccb472e2b072a83713814d13ceb303957b1a9b3dcb2740fe1bf55d95d79b34fで前回と一致する。
+
+設定はreasoning_mode=off、request timeout=1800秒、Task deadline/watchdog=21600秒。保存先は未使用だったoutputs/sample3-acceptance-off-counter、終端Evidenceは同directoryのtranslation-terminal.json。所有tempはoutputs/.sample3-counter-cjvct6cy。既存のRun rootと出力命名を使用しており、希望のoutputs新構成を実装済みとはしない。
+
+11:35:42 UTC確認ではRunはrunning/DOCLING、直近完了通知はSPLIT 1/17。親uv PID7704→Python22180→30444、child launcher5692→Python35512が生存していた。途中counter=0は今回も確定値ではなく、終端保存で検証する。Word変換・比較Review・成果物検査は未実施であり、Task 2.2を完了にしない。
