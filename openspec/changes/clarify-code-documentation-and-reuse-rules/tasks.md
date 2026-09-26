@@ -14,7 +14,7 @@
 
 ## 3. 明文化した仕様に対する未実装事項
 
-- [ ] 3.1 GraphStateの独自完了一覧、WorkflowProgressの再集計、RunRecord.status/last_taskの利用を棚卸しし、register/convertと既存UUIDv7データの扱いを含む移行設計を確定する
+- [ ] 3.1 GraphStateの独自完了一覧、WorkflowProgressの再集計、RunRecord.status/last_taskの利用を棚卸しし、register/convertを含む新構成のみの設計を確定する。2026-09-27承認に従い、旧形式loader/Resume、移行機能、互換分岐、旧実装を残さない。削除対象未指定の既存利用者データは無断削除しない
 - [ ] 3.2 再開位置・完了履歴・進捗表示をLangGraphの正本へ統合し、STRUCTURE Page/REVIEW Chunkの独自再開記録を既存の再開粒度を失わず置き換える
 - [ ] 3.3 commonのlogger/settings以外を、具体的な利用元と責務を説明して確定した配置へ整理し、不要な機能を廃止する（未承認の4file新設案を採用しない）
 - [ ] 3.4 障害注入、公開直後の中断、CLI/UI相互Resumeと副作用の重複防止を検証し、deltaの全Scenarioに実装証拠を対応付ける

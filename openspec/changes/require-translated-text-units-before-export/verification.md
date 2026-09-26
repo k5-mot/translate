@@ -1,5 +1,17 @@
 <!-- markdownlint-disable MD013 MD041 -->
 
+## 方針承認と計画確定（2026-09-27）
+
+利用者が空訳停止を承認したため、proposalを更新し、pdf-translation delta、design、tasksを作成した。本文・Caption・表セルの非空白原文に対する出力訳の未作成/空配列/空文字/空白のみを拒否し、表紙と空原文を除外する。過去の「回答待ち」「Artifact未作成」は当時の記録であり、現在の計画状態ではない。
+
+現行`validate._require_translations`、`document.block_text_units`/`TextUnit`/`inline_text`、Markdownの3種の層選択、実GraphのVALIDATE→MARKDOWN→DOCX境界と既存Testを再読した。grillingの限定した読取りsub-agent調査でも同じ層選択の不整合と既存APIの再利用先を確認した。新しいDomain用語や不可逆な設計判断は追加しないため、Glossary/ADRは新設していない。
+
+承認された他の5方針と旧形式非対応の指定は[承認記録](../clarify-code-documentation-and-reuse-rules/verification.md)に集約する。本Changeだけで表内画像・ALIGN・POSITION・保存構成の是正を完了扱いにしない。
+
+実装は0/8 tasks。製品Code/Test、設定、既存Run/成果物は変更していない。新規LLM/Embedding要求も送っていない。計画Artifactの完成は実E2E・正式verify・archiveの合格ではない。
+
+計画確認: OpenSpec statusは4/4 Artifact complete。本Changeとclarify-code-documentation-and-reuse-rulesのstrict validation成功、文書Test 21 passed（1.21秒）、git diff --check成功。対象のOpenSpec文書だけをcommitし、既存未commitの製品差分・.agents・サンプル・outputs/runsは含めない。
+
 ## 計画段階の診断（2026-09-25）
 
 CONTENT-VALIDATE-001は未解決。提案は作成途中で、製品コード・Testは未変更。正式verify、archive、main merge、pushの条件を満たしていない。
