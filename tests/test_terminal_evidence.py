@@ -724,6 +724,61 @@ def test_cleanup_detached_temp_preserves_external_evidence(tmp_path: Path) -> No
     assert evidence.exists()
 
 
+@pytest.mark.parametrize("error_type", [OSError, RuntimeError, KeyboardInterrupt])
+def test_monitor_failure_preserves_live_child_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error_type: type[BaseException]
+) -> None:
+    """監視例外で実childが生存中なら、再回収に必要な一時Fileを消さない。"""
+
+    root = tmp_path / "temp"
+    evidence_path = tmp_path / "terminal.json"
+    owned_children: list[subprocess.Popen[bytes]] = []
+    original_popen = subprocess.Popen
+    error = error_type("synthetic monitor failure")
+
+    def start_owned_child(
+        _command: object, **kwargs: object
+    ) -> subprocess.Popen[bytes]:
+        """製品の起動境界を通し、外部通信しない所有childだけを生成する。"""
+
+        child = original_popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"], **kwargs
+        )
+        owned_children.append(child)
+        return child
+
+    def fail_monitor(*_args: object) -> None:
+        """子が実際に生存する監視境界で元例外を注入する。"""
+
+        assert owned_children[0].poll() is None
+        raise error
+
+    monkeypatch.setattr(terminal_evidence.subprocess, "Popen", start_owned_child)
+    monkeypatch.setattr(terminal_evidence, "_read_heartbeat", fail_monitor)
+    try:
+        with pytest.raises(error_type, match="synthetic monitor failure") as caught:
+            run_public_run_detached(
+                tmp_path / "runs",
+                str(uuid7()),
+                "convert",
+                "llm",
+                evidence_path=evidence_path,
+                temp_root=root,
+            )
+        assert caught.value is error
+        assert len(owned_children) == 1
+        assert owned_children[0].poll() is None
+        assert (root / ".detached-temp-root").is_file()
+        assert (root / "detached-request.json").is_file()
+        assert not EvidenceStore(evidence_path).allows_public_resume()
+    finally:
+        # 本Testが起動したchildだけを回収してからpytestのtmp cleanupへ返す。
+        for child in owned_children:
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=10)
+
+
 def test_detached_watchdog_collects_completion_without_stdout(tmp_path: Path) -> None:
     """
     標準出力を使わず終了Evidenceを書くchildを実行し、watchdogが完了と終了codeを回収する
@@ -803,8 +858,15 @@ def test_detached_watchdog_never_promotes_missing_terminal(
     assert result.evidence.status == expected
 
 
+@pytest.mark.parametrize(
+    ("status", "exit_code"),
+    [("completed", 0), ("failed", 2), ("unexpected-exit", 0), ("timeout", 1)],
+)
 def test_public_detached_runner_uses_existing_lifecycle_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: terminal_evidence.TerminalStatus,
+    exit_code: int,
 ) -> None:
     """公開診断runnerがchild起動用要求を渡し、終了後に要求Fileを除去するか検査する。"""
 
@@ -813,15 +875,17 @@ def test_public_detached_runner_uses_existing_lifecycle_once(
 
     def fake_watchdog(command: list[str], **kwargs: object) -> DetachedResult:
         """
-        childを起動せずcommandと引数を捕捉し、異常終了結果を返してrunnerの後片付けを調べ
+        childを起動せずcommandと引数を捕捉し、回収済み終端を返してrunnerの後片付けを調べ
         る。
         """
 
         captured["command"] = command
         captured.update(kwargs)
         return DetachedResult(
-            evidence=_evidence(run_id).with_update(status="unexpected-exit"),
-            exit_code=2,
+            evidence=_evidence(run_id).with_update(
+                status=status, exit_code=exit_code, finished_at=datetime.now(UTC)
+            ),
+            exit_code=exit_code,
         )
 
     monkeypatch.setattr(
@@ -836,7 +900,8 @@ def test_public_detached_runner_uses_existing_lifecycle_once(
         evidence_path=tmp_path / "evidence.json",
         temp_root=temp_root,
     )
-    assert result.exit_code == 2
+    assert result.exit_code == exit_code
+    assert result.evidence.status == status
     command = captured["command"]
     assert isinstance(command, list)
     assert "--child" in command
@@ -844,6 +909,7 @@ def test_public_detached_runner_uses_existing_lifecycle_once(
     assert not request.exists()
     assert captured["run_id"] == run_id
     assert captured["operation"] == "translate"
+    assert not temp_root.exists()
 
 
 def test_public_detached_runner_executes_existing_convert_lifecycle(

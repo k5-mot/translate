@@ -20,6 +20,8 @@ Evidence pathはtemp Run rootの外側に置き、`atomic_write_json()`で同一
 
 ### 2. Detached childとwatchdogを分離する
 
+2026-09-26補足: `run_public_run_detached()`はwatchdogが終端結果を返した後だけrequest／heartbeat／temp rootを削除する。監視例外や`KeyboardInterrupt`で戻らない場合、childの終了を確認できないため、それらを保持して元例外を伝播する。無条件の`finally`による削除はしない。この保持だけではparentのhard crash後の再回収、PID再利用を含む所有確認や明示cleanupの安全性は満たさず、Task 2.5の残件とする。Evidence／heartbeatの保存方式は[後継Change](../overwrite-diagnostic-json-in-place/design.md)の承認済み直接上書きを適用し、本書の旧atomic方式とは区別する。
+
 親は`subprocess.Popen`でchildを起動し、stdout／stderrを保存せず`DEVNULL`へ接続する。childは既存のtemp clone／`execute_public_run()`を一度だけ実行し、progress callbackと例外境界で外部sinkへsafe updateする。親は一定間隔でchild handleをpollし、heartbeatとcheckpoint／Artifactの数だけを更新する。handleが終了した場合はexit codeを読み、childが書いたterminal record、Run statusおよびFailureを検査してterminal statusを確定する。
 
 watchdogが先にstaleを検出した場合は、直ちにchildを再起動せず`watchdog-timeout`をEvidenceへatomicに記録し、childの停止を待ってからcleanupする。親が落ちてもchildとEvidenceは独立して残るため、PTY session消失を実処理Failureと混同しない。`Start-Process`だけでfire-and-forgetする案はprocess handleとexit codeを失うため採用しない。

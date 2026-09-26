@@ -413,28 +413,28 @@ def run_public_run_detached(
             "heartbeat_path": str(heartbeat_path),
         },
     )
-    try:
-        return run_detached(
-            [
-                sys.executable,
-                "-m",
-                "translate.common.terminal_evidence",
-                "--child",
-                str(request_path),
-            ],
-            run_id=run_id,
-            operation=operation,
-            evidence_path=evidence_path,
-            temp_root=temp_root,
-            timeout_seconds=timeout_seconds,
-            poll_seconds=poll_seconds,
-            heartbeat_path=heartbeat_path,
-            cwd=cwd,
-        )
-    finally:
-        request_path.unlink(missing_ok=True)
-        heartbeat_path.unlink(missing_ok=True)
-        cleanup_detached_temp(temp_root)
+    result = run_detached(
+        [
+            sys.executable,
+            "-m",
+            "translate.common.terminal_evidence",
+            "--child",
+            str(request_path),
+        ],
+        run_id=run_id,
+        operation=operation,
+        evidence_path=evidence_path,
+        temp_root=temp_root,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        heartbeat_path=heartbeat_path,
+        cwd=cwd,
+    )
+    # 終端回収が返るまではchildの生存が不明。監視例外時は再回収用Fileを保持する。
+    request_path.unlink(missing_ok=True)
+    heartbeat_path.unlink(missing_ok=True)
+    cleanup_detached_temp(temp_root)
+    return result
 
 
 def cleanup_detached_temp(temp_root: Path) -> bool:

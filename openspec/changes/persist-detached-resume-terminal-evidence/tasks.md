@@ -14,6 +14,7 @@
 - [x] 2.3 childの正常終了、`PublicRunError`、non-zero exit、hard crash、Qdrant／LLM／checkpoint failureを分類し、Run内Failureと外部terminal Evidenceへ安全に反映するFailure-injection Testを追加する
 - [x] 2.4 watchdog timeout／heartbeat staleを検出した際に`watchdog-timeout`または`unknown`をatomicに記録して停止を待ち、再起動・追加Model request・正本Resumeを行わないことをTestで確認する
 - [ ] 2.5 parent process終了後もchild／Evidenceを回収でき、child終了後にだけcleanupへ進む境界を作り、parent crash・child crash・lock競合のWindows／PowerShell相当Testを追加する
+  - 2026-09-26部分実装: 監視例外時の早すぎるtemp削除を修正し、生存中の実childを使う3ケースを検証した。parent hard crash後の再回収・所有確認は未完了。[検証記録](verification.md)を参照する。
 
 ## 3. Evidence漏えい防止とcleanup
 
