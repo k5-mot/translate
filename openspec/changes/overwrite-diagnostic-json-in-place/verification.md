@@ -50,3 +50,7 @@ session 17073はexit 0、合計7039 write / 6107 read。全child handleを回収
 終端Evidenceのllm_calls/embedding_calls/qdrant_callsはすべて0だったが、同じRunのLangfuseにはLLM要求39件がある。したがって、終端保存そのものと計測値の正しさは区別し、Task 2.4は未完了のまま保持する。
 
 コードではdebug childをpython -m translate.common.terminal_evidenceとして実行する一方、adapterは同Moduleを通常名でimportする。外部通信なしのrunpy切分けでは、同じFileを別Module名でロードすると_CALL_COUNTSは別objectとなり、別名側でbindして通常名側でcountすると0、同じ通常名側でbind/countすると1だった。これはmodule identityによるcounter分離を再現する合成証拠であり、実childの全計測経路を修正検証したものではない。新しい独立counterや再開台帳を追加する対処は行っておらず、別Changeまたは責務整理で既存の状態共有境界を是正する必要がある。
+
+### 計数入口の修正（2026-09-26）
+
+[reuse-canonical-detached-child-module](../reuse-canonical-detached-child-module/verification.md)で実-m childの成功/公開失敗時の0件を再現し、通常importした既存mainへの委譲で既知hook回数が保存されることを確認した。新規状態管理は追加していない。旧JSONは未変更。LLMはinvoke試行数、Embedding/QdrantはClient生成等の異なる粒度であり、timeout途中値も完全な計数ではない。物理通信回数の正確性まで解決したとはしない。修正後の新規実E2Eが必要であり、本ChangeのTask 2.4は未完了のまま保持する。

@@ -734,4 +734,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Adapterと同じmoduleのContextVarへ束縛し、-m実行側との計数分離を避ける。
+    from translate.common import terminal_evidence  # noqa: PLW0406
+
+    terminal_evidence.main()

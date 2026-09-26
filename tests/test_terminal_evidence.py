@@ -7,18 +7,21 @@ import os
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
+import httpx
 import portalocker
 import pytest
-from pydantic import ValidationError
+from langchain_core.messages import AIMessage
+from pydantic import BaseModel, ValidationError
 from uuid_utils.compat import uuid7
 
+from translate.adapters import llm
 from translate.common import terminal_evidence
 from translate.common.lifecycle import FailureRecord
 from translate.common.runs import RunRepository
@@ -870,3 +873,126 @@ def test_public_detached_runner_executes_existing_convert_lifecycle(
     assert repository.load(record.run_id).status == "completed"
     assert (repository.paths(record.run_id).outputs / "source.docx").exists()
     assert settings.templates_dir.exists()
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+def test_module_child_preserves_canonical_call_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """実-m子processの既存hook計数が成功/公開失敗の終端JSONへ届くか検査する。"""
+
+    # 子processだけにfixtureを注入し、製品入口とwatchdogは差し替えない。
+    injection = tmp_path / "injection"
+    injection.mkdir()
+    (injection / "sitecustomize.py").write_text(
+        '''import socket
+from datetime import UTC, datetime
+from pathlib import Path
+from unittest.mock import Mock
+
+socket.socket.connect = Mock(side_effect=AssertionError("network forbidden"))
+socket.socket.connect_ex = Mock(side_effect=AssertionError("network forbidden"))
+
+from translate.common import lifecycle, settings
+from translate.common.terminal_evidence import count_external_call
+
+settings.load_settings = Mock(return_value=settings.Settings(
+    templates_dir=Path.cwd() / "translate/templates"
+))
+
+def execute(repository, prepared, configuration, backend, callback):
+    """Emit known counts once without invoking any product service."""
+    marker = prepared.paths.root / "fixture-invoked"
+    with marker.open("x", encoding="utf-8") as stream:
+        stream.write("once")
+    for kind in ("llm", "llm", "embedding", "qdrant", "qdrant", "qdrant"):
+        count_external_call(kind)
+    if OUTCOME == "failed":
+        raise lifecycle.PublicRunError(lifecycle.FailureRecord(
+            run_id=prepared.record.run_id, task="REVIEW",
+            error_type="LLMError", reason="SECRET-COUNTER-FIXTURE",
+            failed_at=datetime.now(UTC)
+        ))
+
+lifecycle.execute_public_run = execute
+'''.replace("OUTCOME", repr(outcome)),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(injection), str(Path.cwd()))))
+    source = tmp_path / "source.md"
+    source.write_text("fixture", encoding="utf-8")
+    repository = RunRepository(tmp_path / "runs")
+    record = repository.create("convert", {"source": source}, {}, "test")
+    evidence_path = tmp_path / "evidence.json"
+    temp_root = tmp_path / "temp"
+
+    result = run_public_run_detached(
+        repository.root,
+        record.run_id,
+        "convert",
+        "llm",
+        evidence_path=evidence_path,
+        temp_root=temp_root,
+        timeout_seconds=60,
+        poll_seconds=0.02,
+    )
+
+    assert result.evidence.status == outcome
+    assert result.exit_code == (0 if outcome == "completed" else 1)
+    marker = repository.paths(record.run_id).root / "fixture-invoked"
+    assert marker.read_text(encoding="utf-8") == "once"
+    assert not temp_root.exists()
+    serialized = evidence_path.read_text(encoding="utf-8")
+    assert "SECRET-COUNTER-FIXTURE" not in serialized
+    expected = {"llm_calls": 2, "embedding_calls": 1, "qdrant_calls": 3}
+    assert result.evidence.model_dump(include=set(expected)) == expected
+    assert {key: json.loads(serialized)[key] for key in expected} == expected
+
+
+class CounterResponse(BaseModel):
+    """実Adapterのparseを通すための小さい応答fixture。"""
+
+    value: str
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed"])
+def test_call_counter_tracks_llm_retry_attempts_without_cross_run_leak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """実Adapterの有限retryを計数し、成功/失敗後の次の束縛へ値が漏れないか確認する。"""
+
+    forbidden = Mock(side_effect=AssertionError("network forbidden"))
+    monkeypatch.setattr("socket.socket.connect", forbidden)
+    monkeypatch.setattr("socket.socket.connect_ex", forbidden)
+    monkeypatch.setattr(llm, "observe", Mock(return_value=nullcontext()))
+    settings = Settings(templates_dir=tmp_path, retry_attempts=3, retry_base_seconds=0)
+    transport_error = httpx.ConnectError("SECRET-COUNTER-TRANSPORT")
+    captured_counts: list[dict[str, int]] = []
+    for _ in range(2):
+        responses = (
+            [transport_error, AIMessage(content='{"value":"ok"}')]
+            if outcome == "completed"
+            else [transport_error] * 3
+        )
+        client = Mock()
+        client.invoke.side_effect = responses
+        monkeypatch.setattr(llm, "_model", Mock(return_value=client))
+        context = pytest.raises(llm.LLMError) if outcome == "failed" else nullcontext()
+        with terminal_evidence.bind_call_counts() as counts, context:
+            response = llm.structured(
+                settings, "fixture", CounterResponse, "system", "user", reasoning="none"
+            )
+            assert response.value == "ok"
+        expected = 2 if outcome == "completed" else 3
+        assert client.invoke.call_count == expected
+        assert dict(counts) == {
+            "llm_calls": expected,
+            "embedding_calls": 0,
+            "qdrant_calls": 0,
+        }
+        captured_counts.append(dict(counts))
+        # 束縛解除後のhookは終了済みの辞書も次回の辞書も変更しない。
+        terminal_evidence.count_external_call("llm")
+        assert dict(counts) == captured_counts[-1]
+    assert captured_counts[0] == captured_counts[1]
+    forbidden.assert_not_called()
