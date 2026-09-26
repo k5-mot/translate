@@ -1,5 +1,39 @@
 <!-- markdownlint-disable MD013 MD041 -->
 
+## 正式Verify（2026-09-26、Code 05c7a80）
+
+**検証失敗（受入未完了）：CRITICAL 2、WARNING 0、SUGGESTION 0。archive不可。** 仕様の実装不足を新たに検出したという意味ではなく、必須の実E2E・目視受入が未完了である。製品差分を追加せず、Codeと記録を照合した。
+
+| 観点 | 判定 |
+| --- | --- |
+| Completeness | 4/6 tasks。追加Requirement 1件の実装あり、必須受入2項目が未完了 |
+| Correctness | 1/1 Requirement、4/4 ScenarioにCodeと実Pandoc回帰Testの対応あり。新規sample3・Word表示の証拠なし |
+| Coherence | 標準escaped space、既存Pandoc採番・正規化再利用、最小差分という設計に一致。新規依存/Module/採番後処理なし |
+
+### Requirement・Scenario対応
+
+Requirement「表紙を本文図の採番へ含めない」はtranslate/tasks/markdown.py:486のrender_document、同:507の表紙画像構文に対応する。translate/adapters/pandoc.py:68のcreate_docxはdocx+native_numberingを使用し、同:407の_is_cover_paragraphはdescr=表紙を維持した通常画像を識別、同:436の_reorder_front_matterは先頭と改ページを保持する。採番済み本文Captionを同:353の_index_entriesで図・表別に取り出し、同:377の_populate_front_matterへ渡す。これらの既存Adapterを変更していないこともgit diffで確認した。
+
+| Scenario | 検証Code |
+| --- | --- |
+| 表紙に続いて本文図を出力する | tests/test_output_contract.py:390の実変換Testが本文図に対応する図一覧Figure 1を確認。同:495では本文ImageCaptionと図一覧を両方照合 |
+| 表紙の有無を比較する | 同:495で同一Documentを表紙なし/ありで変換し、Caption/一覧の完全一致、先頭descr、改ページ、画像数・幅を確認 |
+| 複数図と表を含む | 同Testのfigure_count=2かつextras=TrueでFigure 1/2、元Caption文字列、表一覧Table 1を確認。表一覧は本文TableCaptionから生成される |
+| 採番対象の本文図がない | 同Testのfigure_count=0で表紙だけ、Captionなし画像＋表の場合を確認。本文ImageCaptionと図一覧項目は空、画像は保持 |
+
+### 必須残件
+
+1. **CRITICAL COVER-NUMBER-E2E-001 — tasks.md:12（2.2）未完了。** 接続回復確認後、05c7a80以降の新規sample3翻訳→Microsoft Word PDF→原本Reviewを推論OFF・逐次で完了し、Run ID・hash・終端と採番を記録する。修正前の完成Runを代用しない。
+2. **CRITICAL COVER-NUMBER-ACCEPTANCE-001 — tasks.md:13（2.3）未完了。** そのWord/PDFを利用者へ提示し、実表示の目視結果を得て元指摘へ紐付ける。本Verifyを実施したことだけで複合Task全体を完了扱いにしない。
+
+### 外部状態の再確認と検査範囲
+
+2026-09-26 13:06:30.316558 UTC、稼働中のローカルPython/uvプロセスがないことを確認して、設定済STRUCTURE Modelへ合成の「OKのみ返す」要求を1回だけ送信した。製品の既存_modelを利用し、reasoning=none、thinking=disabled、max_tokens=32、SDK retry=0。診断要求だけのtimeout=30秒で **30.032秒後にOpenAITimeoutError（cause: APITimeoutError）** となり、session 67763はexit 0で診断終了した。exit 0は例外種類を安全に記録できたことを示し、生成成功ではない。製品の1800秒timeoutは変更していない。
+
+続く読取りGET /modelsは **HTTP 200、0.218秒、7モデル、設定済STRUCTURE Modelの掲載あり**。接続先APIの到達性は確認できるが、推論遅延・内部障害・モデル実行状態を区別する根拠にはならない。短いtimeoutだけでモデル停止とは断定しない。タイムアウトした要求がサーバー内でも終了したとは確認できないため、生成要求を重ねず、新しい製品Runも開始しなかった。
+
+Code 05c7a80の対象Code/TestはHEADから未変更、markdown.py hashは下記Apply記録と一致。関連Test＋文書Testを再実行し **55 passed（4.57秒）**。全811 passed / 1 skipped、Ruff/format/tyは直前Applyの実行結果を参照し、本ターンに再実行したとはしない。秘密値・入力本文・応答本文は診断出力していない。実PDF・Word・利用者目視は未実施と明記し、全体目標は未達のまま維持する。
+
 ## Apply結果（2026-09-26）
 
 **4/6 tasks完了。製品修正と自動回帰は成功。新規sample3 E2E・利用者目視・正式verifyは未完了で、archive不可。** 以下の計画時点の「未変更」は過去記録として保持する。
