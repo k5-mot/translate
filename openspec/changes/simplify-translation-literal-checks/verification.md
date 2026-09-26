@@ -2,7 +2,7 @@
 
 ## 状態
 
-2026-09-25、applyの静的・合成回帰と新規実翻訳を完了。tasks 1.1〜3.1は完了、3.2の比較Reviewは実行中、3.3の利用者目視は未完了。後述の途中記録は履歴であり、最新状態は末尾の完了記録を正とする。正式verify、仕様同期、archive、main merge/pushの完了を意味しない。
+2026-09-26更新。applyの静的・合成回帰と新規実翻訳、Word PDF化、比較Reviewの実行は完了。tasks 1.1〜3.1は完了、3.2は診断計測の不整合が残り、3.3の利用者目視は未完了。後述の途中記録は履歴であり、最新状態は末尾の完了記録を正とする。正式verify、仕様同期、archive、main merge/pushの完了を意味しない。
 
 ## 実装と検査証拠
 
@@ -128,6 +128,19 @@ grill-with-docsの事実調査として、補助AgentがCode/Test/実Artifactを
 - page/kind/見出し情報は候補情報として保持する余地があるが、固定ページ境界・数字一致・局所windowだけで任意PDFの対応を確定できるという保証はない。既存LangChainのtoken概算APIはあるが、Gemmaの厳密計数と同一視しない。独立した再開Cacheを新設する理由にはならない。
 
 利用者へ「有限retry後も不確定ならALIGN停止・Resume可能にするか、不完全reportを出すか」と「生成された一覧を本文の対応先にせず追加要素として別表示するか」を確認中。未回答を承認とせず、ALIGN修正Changeはまだ作成しない。独立した用語集の既存API不一致は[align-glossary-source-matching](../align-glossary-source-matching/proposal.md)として提案のみ作成した。
+
+### 比較Reviewの終端回収（2026-09-26確認）
+
+訂正後Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は2026-09-25 14:25:52.669267 UTCにcompleted・child exit 0を保存した。開始から終端まで1367.293秒（約22分47秒）。Run自身もcompleted/REPORTで、対象親子PID 44548/48764/55584/53980/56052は存在しない。元toolの親handleは継続観測できなかったため、親の終了コードを直接取得したとはしない。所有temp outputs/.sample3-review-h_pnez6sの削除を確認した。
+
+- 原本とWord PDFの現hashは上記値と不変。Run入力のsource_en/translation_jaも同hashだった。
+- 公開review.mdは194,084 bytes、SHA-256 0f7ca98be7ee70ea00736f8dee8f3f1f10b3eb0a27ff90e65b879e391830eb19。既存export_runで未使用outputs/sample3-acceptance-off-literals/comparison-review/review.mdへエクスポートし、同hashを確認した。
+- reportのalignmentは290件、Findingは515件。全515件に対象IDがあり、根拠383件、修正提案120件。公開Markdownを指摘見出しごとに515区分へ分け、各Finding自身の区分内で対象ID・存在する根拠・提案の文字列欠落0を確認した。別指摘への偶然の文字列一致だけで合格とする検査ではない。
+- literal-reference/warningは3件。うち2件は同じ対象alignment/20とwww.energy.govを持つ別Findingで、もう1件はalignment/134とwww.whitehouse.gov/omb/budget/。warningを保持して完了したが、ALIGN誤対応があるため真のURL欠落の証拠とは断定しない。
+- 最終Langfuse trace fe87686a81b37a939449aaa97b608a4eのllm.requestは39件（ALIGN 1、REVIEW 38）、cursorなし、全件reasoning=none。LLM要求区間の最大重なり1。Provider内部retry・Embeddingの件数/同時性はこの件数から推定しない。
+- terminal JSONはLLM/Embedding/Qdrant各counterが0で、実LLM観測39件と矛盾する。0を実測値として採用せず、診断の整合性は未合格。[診断保存Change](../overwrite-diagnostic-json-in-place/verification.md)に原因切分けと未完了条件を残した。後続モデル要求の実同時性をこのcounterで証明したとはしない。
+
+比較のプロセス完了と公開Finding詳細の保持は確認できたが、ALIGN誤対応・表品質・診断計測・利用者目視を残したまま品質全体を合格へ変更しない。用語集修正はこの終了後にのみ実装を始め、旧比較へ読み込み途中のCode/Rule変更を混在させていない。
 
 ### 参考文献
 

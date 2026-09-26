@@ -42,3 +42,11 @@ session 17073はexit 0、合計7039 write / 6107 read。全child handleを回収
 最初の比較起動は検証側の入力role誤りで、Run 01a0d8df-90fc-7eb1-a686-cb8a59c2ab77がKeyError・child exit 1で終了した。comparison-terminal.jsonへ安全なfailed終端と各外部呼出し0を保存し、所有tempのみcleanupできた。これを成功のE2Eとしない。
 
 公開CLIと同じroleへ訂正した新規比較Run 01a0d8e0-73da-73e0-97b9-e1d0bcf442f2は、別名comparison-terminal-corrected.jsonへ既存lock下でheartbeatを直接保存しながら実行中。14:14 UTC時点で共有I/O障害は観測していないが、終了・最終counter・cleanup・成果物整合は未確認。Task 2.4は未完了のままとし、途中保存の成功を終端回収の成功へ読み替えない。ALIGN誤対応などの品質問題も共通記録で保持する。
+
+### 終端回収とcounter不整合（2026-09-26）
+
+上記比較Runはcompleted・child exit 0・finished_at=2026-09-25 14:25:52.669267 UTCを保存し、対象親子Processは終了、所有tempもcleanup済みだった。共有I/O例外の記録はない。公開reportと入力hashの確認は[共通E2E記録](../simplify-translation-literal-checks/verification.md)へ記載した。元toolの親handleが失われたため、親の終了コードを直接取得したとはしない。
+
+終端Evidenceのllm_calls/embedding_calls/qdrant_callsはすべて0だったが、同じRunのLangfuseにはLLM要求39件がある。したがって、終端保存そのものと計測値の正しさは区別し、Task 2.4は未完了のまま保持する。
+
+コードではdebug childをpython -m translate.common.terminal_evidenceとして実行する一方、adapterは同Moduleを通常名でimportする。外部通信なしのrunpy切分けでは、同じFileを別Module名でロードすると_CALL_COUNTSは別objectとなり、別名側でbindして通常名側でcountすると0、同じ通常名側でbind/countすると1だった。これはmodule identityによるcounter分離を再現する合成証拠であり、実childの全計測経路を修正検証したものではない。新しい独立counterや再開台帳を追加する対処は行っておらず、別Changeまたは責務整理で既存の状態共有境界を是正する必要がある。
