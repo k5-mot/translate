@@ -36,6 +36,8 @@ Code 05c7a80の対象Code/TestはHEADから未変更、markdown.py hashは下記
 
 ## Apply結果（2026-09-26）
 
+後続の接続診断更新: 13:06の短時間probeについて、時間帯が対応するProvider observationが13:08:46.818 UTCにERROR終端となったことを確認した。その後13:49 UTCに、製品timeout=1800秒・32 tokens・推論OFF・SDK retryなしの単発合成要求を実行したが、clientは544.282秒後にHTTP 500で終了した。対応時間帯のProvider観測は134.193秒で接続関連500。差の約410秒の責任箇所は未確定である。詳細は[単発接続確認の記録](../reuse-canonical-detached-child-module/verification.md)を参照。生成成功・新規翻訳・Word PDF・Reviewの証拠は増えておらず、本ChangeのTask 2.2/2.3とarchive不可判定は変更しない。
+
 **4/6 tasks完了。製品修正と自動回帰は成功。新規sample3 E2E・利用者目視・正式verifyは未完了で、archive不可。** 以下の計画時点の「未変更」は過去記録として保持する。
 
 ### 変更と再現証拠

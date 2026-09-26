@@ -68,3 +68,18 @@ Langfuseの読取りでは、provider側の終了済み要求が4件へ増加し
 対象PID 7704/22180/30444/5692/35512の不在と、所有temp outputs/.sample3-counter-cjvct6cyのcleanupを確認した。Runの入力コピー、.workspace/failure.json、77,824 bytesのcheckpoints.sqlite、workflow.json、およびSPLIT〜LOADのdirectoryは保持されている。入力hashは開始時と同一。既存Runを削除せず、Resumeの実行確認はまだ行っていない。
 
 **診断値の限界:** 終端JSONのcheckpoint_count/artifact_countは0だが、失敗経路ではworkspace_countsを再計測せず以前の値を継承する実装である。したがって0をCheckpointや中間成果物の不在と解釈してはならない。ファイルの保持と実際のResume成功も区別する。この計測不足はcanonical module修正と別の未解決事項として保持し、本Changeで無断に修正範囲を広げない。
+
+### 製品timeoutでの単発接続確認（2026-09-26 13:49 UTC）
+
+短い診断timeoutと接続障害を区別するため、既存LLM Adapterの`_model(...).invoke()`で合成要求「Reply with OK only.」を1回送信した。製品設定のrequest timeout=1800秒を維持し、reasoning_mode=off、出力上限32 tokens、SDK retry=0、外側の製品retryなし。入力文書・画像・用語集・RAGは渡さず、Embeddingも呼ばない。新規Runや翻訳Workflowは開始していない。
+
+- client開始: 13:49:24.691012 UTC。session 41953から **544.282秒後、exit 1** を直接取得した。例外はOpenAIAPIError、HTTP 500、内部原因InternalServerError。1800秒のtimeout到達ではない。
+- 同じ時間帯のProvider observation `cdef950f696a9860`（trace `0e3ff2656316e31b0e4d7d8b58df5e41`）は13:49:24.914〜13:51:39.107 UTC、**134.193秒でERROR/HTTP 500**。秘密を出さず分類したerror messageはconnection/connectを含む。reasoning_effort=none、max_completion_tokens=32、temperature=0を確認した。
+- Providerエラー記録からclient例外まで約410秒の差がある。時間帯の対応は確認できるが、直接の親子相関IDはなく、この差をProvider内部retry・Proxy・通信・client終了処理のいずれかへ確定分類する証拠はない。
+- 終了後の同時間帯の観測は1件、未終了0件。ローカルPython/uv processも不在だった。応答本文、入力本文、接続先、認証値、raw stackは記録していない。
+
+事前に、前の短時間probeに時間帯が対応するobservation `076334b3ce1b183d`が13:06:30.369〜13:08:46.818 UTCでERROR終端になったことを確認した。13:10〜13:49:06.480 UTCの観測は0件、ローカルPython/uvも不在だったため、その確認後に今回の単発要求を開始した。以前の「サーバー終端未確認」は当時の記録として保持し、この追跡結果で更新する。
+
+出力32 tokens・推論OFF・長いtimeoutでも接続関連500が再現した。timeout延長だけでの回復は確認できず、製品不具合・context超過・推論ONとは断定しない。LM Studio側の22:49:24〜22:51:39 JST付近の到達/エラーログとの照合が必要。追加生成、全文翻訳、Word変換、Comparison Reviewは行わず、Task 2.2と実E2E受入は未完了のままとする。
+
+記録更新の検査は文書Test 21 passed（0.29秒）、本Changeとexclude-cover-from-figure-numberingのOpenSpec strict validation成功、git diff --check成功。製品Code・設定・既存Runは変更せず、検証記録2件だけをcommit対象とする。
