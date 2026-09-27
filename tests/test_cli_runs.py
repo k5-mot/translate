@@ -69,7 +69,9 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
     monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: current[0])
     monkeypatch.setattr(translation_workflow, "run", _fake_translation)
     # lifecycle imports the callable directly, so replace that binding as well.
-    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(
+        "translate_v1.common.lifecycle.run_translation", _fake_translation
+    )
     monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     source = tmp_path / "source.pdf"
@@ -150,7 +152,9 @@ def test_interactive_same_input_requires_y_and_supports_candidate_selection(
         translation_model="model-a",
     )
     monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(
+        "translate_v1.common.lifecycle.run_translation", _fake_translation
+    )
     monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     source = tmp_path / "source.pdf"
@@ -195,7 +199,9 @@ def test_noninteractive_same_input_always_creates_new_run(
         templates_dir=_templates(tmp_path / "templates"),
     )
     monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(
+        "translate_v1.common.lifecycle.run_translation", _fake_translation
+    )
     monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"same input")
