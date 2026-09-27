@@ -21,12 +21,12 @@ from langchain_core.messages import AIMessage
 from pydantic import BaseModel, ValidationError
 from uuid_utils.compat import uuid7
 
-from translate.adapters import llm
-from translate.common import terminal_evidence
-from translate.common.lifecycle import FailureRecord
-from translate.common.runs import RunRepository
-from translate.common.settings import Settings
-from translate.common.terminal_evidence import (
+from translate_v1.adapters import llm
+from translate_v1.common import terminal_evidence
+from translate_v1.common.lifecycle import FailureRecord
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.settings import Settings
+from translate_v1.common.terminal_evidence import (
     DetachedResult,
     EvidenceStore,
     TerminalEvidence,
@@ -399,7 +399,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock
-from translate.common.terminal_evidence import EvidenceStore, TerminalEvidence
+from translate_v1.common.terminal_evidence import EvidenceStore, TerminalEvidence
 path = Path(sys.argv[1])
 ready = Path(sys.argv[2])
 store = EvidenceStore(path)
@@ -526,7 +526,7 @@ def test_detached_high_frequency_evidence_and_heartbeat_io(tmp_path: Path) -> No
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from translate.common.terminal_evidence import EvidenceStore, TerminalEvidence
+from translate_v1.common.terminal_evidence import EvidenceStore, TerminalEvidence
 store = EvidenceStore(Path(sys.argv[2]))
 heartbeat = EvidenceStore(Path(sys.argv[3]))
 current = TerminalEvidence(run_id=sys.argv[1], operation='translate',
@@ -792,7 +792,7 @@ def test_detached_watchdog_collects_completion_without_stdout(tmp_path: Path) ->
         "from datetime import UTC, datetime; "
         "from pathlib import Path; "
         "import sys; "
-        "from translate.common.terminal_evidence import "
+        "from translate_v1.common.terminal_evidence import "
         "EvidenceStore, TerminalEvidence; "
         "e=TerminalEvidence(run_id=sys.argv[1], operation='translate', "
         "status='completed', "
@@ -889,7 +889,7 @@ def test_public_detached_runner_uses_existing_lifecycle_once(
         )
 
     monkeypatch.setattr(
-        "translate.common.terminal_evidence.run_detached", fake_watchdog
+        "translate_v1.common.terminal_evidence.run_detached", fake_watchdog
     )
     temp_root = tmp_path / "temp"
     result = run_public_run_detached(
@@ -923,7 +923,7 @@ def test_public_detached_runner_executes_existing_convert_lifecycle(
     source = tmp_path / "source.md"
     source.write_text("# detached\n\ncontent\n", encoding="utf-8")
     repository = RunRepository(tmp_path / "runs")
-    settings = Settings(templates_dir=Path("translate/templates"))
+    settings = Settings(templates_dir=Path("translate_v1/templates"))
     record = repository.create("convert", {"source": source}, {}, "test")
     result = run_public_run_detached(
         repository.root,
@@ -959,11 +959,11 @@ from unittest.mock import Mock
 socket.socket.connect = Mock(side_effect=AssertionError("network forbidden"))
 socket.socket.connect_ex = Mock(side_effect=AssertionError("network forbidden"))
 
-from translate.common import lifecycle, settings
-from translate.common.terminal_evidence import count_external_call
+from translate_v1.common import lifecycle, settings
+from translate_v1.common.terminal_evidence import count_external_call
 
 settings.load_settings = Mock(return_value=settings.Settings(
-    templates_dir=Path.cwd() / "translate/templates"
+    templates_dir=Path.cwd() / "translate_v1/templates"
 ))
 
 def execute(repository, prepared, configuration, backend, callback):

@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from translate.adapters.checkpoint import open_checkpoint
-from translate.common.workspace import atomic_write_json, sha256_file
-from translate.document import inline_text
-from translate.tasks import load, normalize, position
-from translate.workflows import translation
+from translate_v1.adapters.checkpoint import open_checkpoint
+from translate_v1.common.workspace import atomic_write_json, sha256_file
+from translate_v1.document import inline_text
+from translate_v1.tasks import load, normalize, position
+from translate_v1.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from langchain_core.runnables import RunnableConfig
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _cell_image_document() -> dict[str, Any]:

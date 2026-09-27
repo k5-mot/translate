@@ -8,18 +8,18 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common import lifecycle
-from translate.common.lifecycle import FailureRecord, PreparedRun, PublicRunError
-from translate.common.progress import ProgressEvent, TaskStatusEvent, report_task_status
-from translate.common.runs import RunRepository
-from translate.common.workspace import OutputInUseError, OutputLock, atomic_write_json
+from translate_v1.common import lifecycle
+from translate_v1.common.lifecycle import FailureRecord, PreparedRun, PublicRunError
+from translate_v1.common.progress import ProgressEvent, TaskStatusEvent, report_task_status
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import OutputInUseError, OutputLock, atomic_write_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from translate.common.progress import ProgressCallback
-    from translate.common.runs import Operation, RunRecord
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.progress import ProgressCallback
+    from translate_v1.common.runs import Operation, RunRecord
+    from translate_v1.common.settings import Backend, Settings
 
 
 @pytest.fixture(params=["translate", "review", "register", "convert"])

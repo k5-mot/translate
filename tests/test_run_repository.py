@@ -10,9 +10,9 @@ from uuid import RFC_4122, UUID
 import pytest
 from uuid_utils.compat import uuid7
 
-from translate.common import runs
-from translate.common.runs import RunRepository
-from translate.common.workspace import OutputLock
+from translate_v1.common import runs
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import OutputLock
 
 if TYPE_CHECKING:
     from pathlib import Path

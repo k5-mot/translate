@@ -8,24 +8,24 @@ from uuid import UUID
 
 import pytest
 
-from translate.common.fingerprint import (
+from translate_v1.common.fingerprint import (
     Fingerprint,
     build_fingerprint,
     check_resume_compatibility,
     diff_snapshots,
 )
-from translate.common.lifecycle import fingerprint_for
-from translate.common.runs import RunRepository
-from translate.common.settings import load_settings, read_rules
-from translate.tasks import structure
-from translate.workflows import translation
+from translate_v1.common.lifecycle import fingerprint_for
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.settings import load_settings, read_rules
+from translate_v1.tasks import structure
+from translate_v1.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.runs import Operation
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.runs import Operation
+    from translate_v1.common.settings import Backend, Settings
 
 
 def _fingerprint(

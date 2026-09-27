@@ -12,15 +12,15 @@ import pytest
 from langchain_core.documents import Document
 from typer.testing import CliRunner
 
-import cli
-from translate.adapters import qdrant
-from translate.common.runs import RunRepository
+import cli_v1
+from translate_v1.adapters import qdrant
+from translate_v1.common.runs import RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 @dataclass
@@ -286,17 +286,17 @@ def test_public_cli_directory_reregistration_replaces_across_runs(
         embedding_model="embedding",
         retry_base_seconds=0,
     )
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
 
     first = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source_dir), "--source-id", "product-guides"],
     )
     source.write_text("second revision", encoding="utf-8")
     second = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source_dir), "--source-id", "product-guides"],
     )
 
@@ -710,12 +710,12 @@ def test_public_cli_resumes_failed_middle_batch_with_same_run_id(
         retry_base_seconds=0,
     )
     monkeypatch.setattr(qdrant, "RecursiveCharacterTextSplitter", ManyChunks)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     _FakeClient.fail_write_call = 2
     runner = CliRunner()
 
-    failed = runner.invoke(cli.app, ["register", str(source)])
+    failed = runner.invoke(cli_v1.app, ["register", str(source)])
     record = RunRepository(settings.runs_dir).list_runs().records[0]
     partial_ids = set(_FakeClient.points)
 
@@ -728,7 +728,7 @@ def test_public_cli_resumes_failed_middle_batch_with_same_run_id(
     _FakeClient.fail_write_call = None
     _FakeClient.write_calls = 0
     resumed = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source), "--resume", record.run_id],
     )
     completed = RunRepository(settings.runs_dir).load(record.run_id)

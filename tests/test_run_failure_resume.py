@@ -6,17 +6,17 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.lifecycle import ResumeRejectedError, execute_run, prepare_run
-from translate.common.progress import ProgressEvent
-from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_write_bytes
+from translate_v1.common.lifecycle import ResumeRejectedError, execute_run, prepare_run
+from translate_v1.common.progress import ProgressEvent
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import atomic_write_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.progress import ProgressCallback
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.progress import ProgressCallback
+    from translate_v1.common.settings import Backend, Settings
 
 
 def _templates(root: Path) -> Path:
@@ -128,7 +128,7 @@ def test_external_failure_stops_run_and_resumes_after_qdrant_change(
             callback(ProgressEvent("DOCX", 17, 17, "DOCX 完了"))
         return result
 
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", workflow)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", workflow)
 
     with pytest.raises(OSError, match="Qdrant"):
         execute_run(repository, prepared, settings)

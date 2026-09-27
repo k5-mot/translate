@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image
 
-from translate.adapters import pandoc
-from translate.common.settings import load_settings
-from translate.document import (
+from translate_v1.adapters import pandoc
+from translate_v1.common.settings import load_settings
+from translate_v1.document import (
     Block,
     CellImage,
     Document,
@@ -21,7 +21,7 @@ from translate.document import (
     TableCell,
     page_text,
 )
-from translate.tasks import (
+from translate_v1.tasks import (
     check,
     cover,
     fix,
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.settings import Backend, Settings
 
 
 @pytest.mark.parametrize("backend", ["llm", "libretranslate"])

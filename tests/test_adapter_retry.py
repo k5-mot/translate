@@ -11,13 +11,13 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from translate.adapters import docling, libretranslate, llm, qdrant
+from translate_v1.adapters import docling, libretranslate, llm, qdrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _response(
@@ -538,6 +538,56 @@ def test_llm_schema_mode_does_not_retry_permanent_400(
     assert "SECRET-PROVIDER-REJECTION" not in str(captured.value)
 
 
+def test_llm_context_exceeded_is_safe_non_retryable_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Providerのcontext超過はretryせず、安全な分類だけを返す。"""
+
+    calls = 0
+    error_type = type("OpenAIInvalidRequestError", (Exception,), {})
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            """schema指定を受理し、context超過例外の分類を調べるdoubleへ接続する。"""
+
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            """
+            秘密値を含むProvider context超過を発生させ、再送抑止と安全な原因分類を検証す
+            る。
+            """
+
+            nonlocal calls
+            calls += 1
+            message = (
+                "Engine protocol predict stream returned an error: "
+                "Context size has been exceeded; SECRET-PROMPT"
+            )
+            raise error_type(message)
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=3),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+            thinking="disabled",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-invoke"
+    assert captured.value.cause_type == "LLMContextExceededError"
+    assert captured.value.failure_kind == "context-exceeded"
+    assert "SECRET-PROMPT" not in str(captured.value)
+
+
 @pytest.mark.parametrize(
     ("module", "expected"),
     [
@@ -664,6 +714,44 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
     assert captured.value.stage == "text-invoke"
     assert captured.value.cause_type == "ConnectError"
     assert "persistent" not in str(captured.value)
+
+
+def test_llm_retries_provider_timeout_by_type_name(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """LM Studio/OpenAI互換のtimeout型も有限retryする。"""
+
+    calls = 0
+
+    class OpenAITimeoutError(RuntimeError):
+        pass
+
+    class Client:
+        def invoke(self, _messages: object) -> AIMessage:
+            """
+            Provider固有名のtimeout例外を二回投げ、型名による再試行分類を検証する。
+            """
+
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise OpenAITimeoutError
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+    monkeypatch.setattr(llm.time, "sleep", lambda _value: None)
+    result = llm.structured(
+        settings_factory(retry_attempts=3, retry_base_seconds=0),
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning="low",
+    )
+
+    assert result.value == "ok"
+    assert calls == 3
 
 
 def test_llm_retries_boundary_type_and_parse_errors_without_leaking_content(

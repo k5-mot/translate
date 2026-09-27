@@ -9,23 +9,23 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.adapters.checkpoint import open_checkpoint
-from translate.common.lifecycle import (
+from translate_v1.adapters.checkpoint import open_checkpoint
+from translate_v1.common.lifecycle import (
     PublicRunError,
     execute_public_run,
     format_failure,
     load_failure,
     prepare_run,
 )
-from translate.common.runs import RunRepository
-from translate.common.workspace import (
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import (
     atomic_write_bytes,
     atomic_write_json,
     sha256_file,
 )
-from translate.document import Block, CellImage, Document, Inline, Page, TableCell
-from translate.tasks import load, validate
-from translate.workflows import translation
+from translate_v1.document import Block, CellImage, Document, Inline, Page, TableCell
+from translate_v1.tasks import load, validate
+from translate_v1.workflows import translation
 
 TEXT_TARGETS = ["body", "figure-caption", "table-caption", "cell", "cell-image-caption"]
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 
     from langchain_core.runnables import RunnableConfig
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document_with_unit(

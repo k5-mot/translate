@@ -16,22 +16,22 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from PIL import Image
 
-from translate.adapters import llm
-from translate.adapters.langfuse import bind_observation_context
-from translate.common import lifecycle
-from translate.common.lifecycle import PreparedRun, PublicRunError, execute_public_run
-from translate.common.logger import configure_logging
-from translate.common.progress import TaskStatusEvent, bind_task_status
-from translate.common.runs import RunRepository
-from translate.common.workspace import OutputLock, atomic_write_json
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import structure
-from translate.workflows import translation
+from translate_v1.adapters import llm
+from translate_v1.adapters.langfuse import bind_observation_context
+from translate_v1.common import lifecycle
+from translate_v1.common.lifecycle import PreparedRun, PublicRunError, execute_public_run
+from translate_v1.common.logger import configure_logging
+from translate_v1.common.progress import TaskStatusEvent, bind_task_status
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import OutputLock, atomic_write_json
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import structure
+from translate_v1.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 _SCALAR_PATHS = {

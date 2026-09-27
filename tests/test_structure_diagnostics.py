@@ -7,15 +7,15 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image, ImageDraw
 
-from translate.adapters.llm import LLMError
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import cover, structure
+from translate_v1.adapters.llm import LLMError
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import cover, structure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document() -> Document:

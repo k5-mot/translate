@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.workspace import (
+from translate_v1.common.workspace import (
     atomic_publish_directory,
     atomic_write_bytes,
     atomic_write_json,
@@ -49,7 +49,7 @@ def test_file_publish_preserves_old_complete_artifact_on_failure(
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)
 
-    monkeypatch.setattr("translate.common.workspace._phase", fail)
+    monkeypatch.setattr("translate_v1.common.workspace._phase", fail)
 
     with pytest.raises(RuntimeError, match="injected"):
         _publish_file(kind, target)
@@ -89,7 +89,7 @@ def test_directory_publish_preserves_old_complete_artifact_on_failure(
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)
 
-    monkeypatch.setattr("translate.common.workspace._phase", fail)
+    monkeypatch.setattr("translate_v1.common.workspace._phase", fail)
 
     with pytest.raises(RuntimeError, match="injected"):
         atomic_publish_directory(target, build, validate)

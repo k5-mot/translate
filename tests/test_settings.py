@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from translate.common.settings import (
+from translate_v1.common.settings import (
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     GEMMA_MAX_CONTEXT,
     LLM_SAFETY_TOKENS,
@@ -18,7 +18,7 @@ from translate.common.settings import (
     Settings,
     load_settings,
 )
-from translate.tasks import translate
+from translate_v1.tasks import translate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -193,7 +193,10 @@ def test_invalid_service_seconds_are_rejected(
 def test_direct_settings_reject_nonfinite_seconds(field: str, value: float) -> None:
     """通常のModel構築でも全秒数fieldの非有限値を拒否する。"""
 
-    values = {"templates_dir": PROJECT_ROOT / "translate" / "templates", field: value}
+    values = {
+        "templates_dir": PROJECT_ROOT / "translate_v1" / "templates",
+        field: value,
+    }
     with pytest.raises(ValidationError, match=field):
         Settings.model_validate(values)
 
@@ -226,7 +229,7 @@ def test_internal_zero_retry_and_long_defaults_are_preserved() -> None:
     """公開envの正数制約と内部Testの待機なし設定を区別し、長い既定値を維持する。"""
 
     settings = Settings(
-        templates_dir=PROJECT_ROOT / "translate" / "templates",
+        templates_dir=PROJECT_ROOT / "translate_v1" / "templates",
         retry_base_seconds=0,
         retry_max_seconds=0,
     )

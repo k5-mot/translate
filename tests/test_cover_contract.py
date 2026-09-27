@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image
 
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import cover, markdown
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import cover, markdown
 
 if TYPE_CHECKING:
     from pathlib import Path

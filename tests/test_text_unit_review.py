@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from translate.document import (
+from translate_v1.document import (
     AlignmentGroup,
     Block,
     Document,
@@ -19,14 +19,14 @@ from translate.document import (
     TextUnit,
     block_text_units,
 )
-from translate.tasks import align, check, report, review, verify
-from translate.workflows.comparison_review import _comparison_document
+from translate_v1.tasks import align, check, report, review, verify
+from translate_v1.workflows.comparison_review import _comparison_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _inlines(text: str) -> list[Inline]:

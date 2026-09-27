@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain_core.documents import Document
 
-from translate.adapters import qdrant
+from translate_v1.adapters import qdrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def test_search_retries_and_records_reproducible_artifact(

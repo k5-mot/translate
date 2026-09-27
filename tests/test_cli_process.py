@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import cli
+import cli_v1
 
 
 def _command(source: Path, output: Path) -> list[str]:
@@ -19,7 +19,7 @@ def _command(source: Path, output: Path) -> list[str]:
 
     return [
         sys.executable,
-        str(cli.__file__),
+        str(cli_v1.__file__),
         "convert",
         str(source),
         "--output",
@@ -42,7 +42,7 @@ def _run_noninteractive(
 
     return subprocess.run(
         _command(source, output),
-        cwd=Path(cli.__file__).parent,
+        cwd=Path(cli_v1.__file__).parent,
         env=_environment(runs),
         capture_output=True,
         text=True,
@@ -117,7 +117,7 @@ def test_real_cli_rejects_invalid_seconds_without_echoing_input(
     )
     result = subprocess.run(
         _command(source, output),
-        cwd=Path(cli.__file__).parent,
+        cwd=Path(cli_v1.__file__).parent,
         env=environment,
         capture_output=True,
         text=True,
@@ -163,7 +163,7 @@ def test_posix_pty_selects_candidate_then_answers_yes_or_no(  # noqa: PLR0915
         master, slave = pty.openpty()
         process = subprocess.Popen(
             _command(source, output),
-            cwd=Path(cli.__file__).parent,
+            cwd=Path(cli_v1.__file__).parent,
             env=_environment(runs),
             stdin=slave,
             stdout=slave,

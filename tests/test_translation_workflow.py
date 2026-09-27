@@ -11,21 +11,21 @@ from typing import TYPE_CHECKING
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from translate.common.progress import bind_task_status
-from translate.common.workspace import (
+from translate_v1.common.progress import bind_task_status
+from translate_v1.common.workspace import (
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
 )
-from translate.document import Document, Finding, Page
-from translate.workflows import translation
+from translate_v1.document import Document, Finding, Page
+from translate_v1.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from translate.common.progress import ProgressEvent, TaskStatusEvent
-    from translate.common.settings import Settings
+    from translate_v1.common.progress import ProgressEvent, TaskStatusEvent
+    from translate_v1.common.settings import Settings
 
 
 EXPECTED_NODES = {

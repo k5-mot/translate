@@ -16,9 +16,9 @@ from langgraph.errors import GraphBubbleUp, GraphInterrupt, NodeCancelledError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Interrupt, RetryPolicy
 
-from translate.adapters.checkpoint import CheckpointSerializer, open_checkpoint
-from translate.common.settings import Settings
-from translate.workflows import comparison_review, translation
+from translate_v1.adapters.checkpoint import CheckpointSerializer, open_checkpoint
+from translate_v1.common.settings import Settings
+from translate_v1.workflows import comparison_review, translation
 
 if TYPE_CHECKING:
     from pathlib import Path

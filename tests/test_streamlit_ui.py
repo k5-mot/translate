@@ -9,13 +9,13 @@ from unittest.mock import Mock
 import pytest
 from streamlit.testing.v1 import AppTest
 
-import main
-from translate.common.lifecycle import FailureRecord, PublicRunError
-from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_write_bytes
+import main_v1
+from translate_v1.common.lifecycle import FailureRecord, PublicRunError
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import atomic_write_bytes
 
 if TYPE_CHECKING:
-    from translate.common.runs import RunRecord
+    from translate_v1.common.runs import RunRecord
 
 
 def _completed_run(root: Path, source: Path) -> RunRecord:
@@ -45,7 +45,7 @@ def test_streamlit_lists_downloads_and_deletes_only_after_explicit_confirmation(
     record = _completed_run(runs, source)
     monkeypatch.setenv("TRANSLATE_RUNS_DIR", str(runs))
 
-    app = AppTest.from_file(str(Path(main.__file__))).run(timeout=10)
+    app = AppTest.from_file(str(Path(main_v1.__file__))).run(timeout=10)
 
     assert not app.exception
     assert any(widget.label == "Run一覧" for widget in app.selectbox)
@@ -77,10 +77,10 @@ def test_streamlit_lists_downloads_and_deletes_only_after_explicit_confirmation(
 def test_streamlit_entrypoint_uses_uploaded_file_and_segmented_backend() -> None:
     """main.pyが起動し、UploadedFile型とsegmented controlを公開する。"""
 
-    app = AppTest.from_file(str(Path(main.__file__))).run(timeout=10)
+    app = AppTest.from_file(str(Path(main_v1.__file__))).run(timeout=10)
 
     assert not app.exception
-    assert main._save.__annotations__["upload"] == "UploadedFile"  # noqa: SLF001
+    assert main_v1._save.__annotations__["upload"] == "UploadedFile"  # noqa: SLF001
     assert any(widget.label == "翻訳バックエンド" for widget in app.segmented_control)
 
 
@@ -106,11 +106,11 @@ def test_streamlit_invalid_seconds_stop_before_repository_and_network(
     monkeypatch.setenv(name, value)
     repository = Mock(side_effect=AssertionError("Repository must not be opened"))
     request = Mock(side_effect=AssertionError("External HTTP must not be used"))
-    monkeypatch.setattr("translate.common.runs.RunRepository", repository)
+    monkeypatch.setattr("translate_v1.common.runs.RunRepository", repository)
     # AppTest needs Windows loopback sockets for its event loop, not service HTTP.
     monkeypatch.setattr("httpx.Client.send", request)
 
-    app = AppTest.from_file(str(Path(main.__file__))).run(timeout=10)
+    app = AppTest.from_file(str(Path(main_v1.__file__))).run(timeout=10)
 
     assert len(app.exception) == 1
     assert app.exception[0].value == f"{name} must be a finite positive number"
@@ -136,11 +136,11 @@ def test_streamlit_registration_requires_confirmed_source_id(
             return b"guide"
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(main.st, "file_uploader", lambda *_args, **_kwargs: [Upload()])
-    monkeypatch.setattr(main.st, "text_input", lambda *_args, **_kwargs: "library")
-    monkeypatch.setattr(main.st, "checkbox", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(main_v1.st, "file_uploader", lambda *_args, **_kwargs: [Upload()])
+    monkeypatch.setattr(main_v1.st, "text_input", lambda *_args, **_kwargs: "library")
+    monkeypatch.setattr(main_v1.st, "checkbox", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
-        main,
+        main_v1,
         "load_settings",
         lambda *_args, **_kwargs: type("Settings", (), {"runs_dir": tmp_path})(),
     )
@@ -160,8 +160,8 @@ def test_streamlit_registration_requires_confirmed_source_id(
         captured["inputs"] = inputs
         captured["source_id"] = source_id
 
-    monkeypatch.setattr(main, "_execute_ui", capture)
-    main._register()  # noqa: SLF001
+    monkeypatch.setattr(main_v1, "_execute_ui", capture)
+    main_v1._register()  # noqa: SLF001
 
     assert captured["source_id"] == "library"
     assert len(captured["inputs"]) == 1  # type: ignore[arg-type]
@@ -182,10 +182,10 @@ def test_streamlit_failure_boundary_displays_only_safe_run_context(
     )
     shown: list[str] = []
     settings = type("Settings", (), {"runs_dir": tmp_path})()
-    monkeypatch.setattr(main, "_resume_choice", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(main.st, "button", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(main, "_progress_callback", lambda: None)
-    monkeypatch.setattr(main.st, "error", shown.append)
+    monkeypatch.setattr(main_v1, "_resume_choice", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(main_v1.st, "button", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(main_v1, "_progress_callback", lambda: None)
+    monkeypatch.setattr(main_v1.st, "error", shown.append)
 
     def fail(*_args: object, **_kwargs: object) -> object:
         """
@@ -194,8 +194,8 @@ def test_streamlit_failure_boundary_displays_only_safe_run_context(
 
         raise PublicRunError(failure)
 
-    monkeypatch.setattr(main, "_run_selected", fail)
-    result = main._execute_ui(  # noqa: SLF001
+    monkeypatch.setattr(main_v1, "_run_selected", fail)
+    result = main_v1._execute_ui(  # noqa: SLF001
         "review",
         {"source_en": tmp_path / "en.pdf", "translation_ja": tmp_path / "ja.pdf"},
         settings,  # type: ignore[arg-type]
@@ -219,8 +219,8 @@ def test_streamlit_apptest_renders_structured_failure() -> None:
 
     script = """
 from pathlib import Path
-import main
-from translate.common.lifecycle import FailureRecord, PublicRunError
+import main_v1 as main
+from translate_v1.common.lifecycle import FailureRecord, PublicRunError
 
 failure = FailureRecord(
     run_id="run-app-test",
@@ -261,7 +261,7 @@ def test_streamlit_apptest_requires_resume_confirmation() -> None:
 
     script = """
 from pathlib import Path
-import main
+import main_v1 as main
 
 settings = type("Settings", (), {"runs_dir": Path("runs-resume-test")})()
 record = type("Record", (), {"run_id": "existing-run"})()

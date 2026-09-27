@@ -6,18 +6,18 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.adapters.llm import LLMError, LLMOutputTruncatedError
-from translate.common.lifecycle import FailureRecord, _safe_diagnostics
-from translate.common.settings import load_settings, read_rules
-from translate.common.terminal_evidence import evidence_from_failure
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import translate
+from translate_v1.adapters.llm import LLMError, LLMOutputTruncatedError
+from translate_v1.common.lifecycle import FailureRecord, _safe_diagnostics
+from translate_v1.common.settings import load_settings, read_rules
+from translate_v1.common.terminal_evidence import evidence_from_failure
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import translate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _page(text: str = "Source") -> Page:

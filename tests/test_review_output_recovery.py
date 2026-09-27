@@ -5,14 +5,18 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.adapters.llm import LLMError, LLMOutputTruncatedError
-from translate.document import Block, Document, Finding, Inline, Page
-from translate.tasks import review
+from translate_v1.adapters.llm import (
+    LLMContextExceededError,
+    LLMError,
+    LLMOutputTruncatedError,
+)
+from translate_v1.document import Block, Document, Finding, Inline, Page
+from translate_v1.tasks import review
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _pairs(count: int, size: int = 2_500) -> list[dict[str, str]]:
@@ -71,6 +75,29 @@ def _truncated() -> LLMError:
     )
 
 
+class OpenAITimeoutError(RuntimeError):
+    """Provider-shaped timeout used without depending on a live endpoint."""
+
+
+def _timed_out() -> LLMError:
+    """Provider timeout相当の公開LLM障害を作り、切断とは別の回復分類を検証する。"""
+
+    return LLMError("text-invoke", OpenAITimeoutError())
+
+
+def _context_exceeded() -> LLMError:
+    """
+    context超過の分類と入力token数を持つLLM障害を作り、Reviewの分割回復を試験する。
+    """
+
+    return LLMError(
+        "text-invoke",
+        LLMContextExceededError(),
+        failure_kind="context-exceeded",
+        input_tokens=12_000,
+    )
+
+
 def test_review_chunks_are_deterministic_and_budget_bounded() -> None:
     """
     小さい入力予算で比較対の順序を保って分割し、安定したChunk IDになることを検査する。
@@ -86,6 +113,62 @@ def test_review_chunks_are_deterministic_and_budget_bounded() -> None:
     ]
     assert len(chunks) == 3
     assert review._chunk_id(2, "0001") == "page-0002-review-0001"  # noqa: SLF001
+
+
+def test_review_partitions_findings_once_across_chunks() -> None:
+    """
+    対象付き・対象なしのCHECK指摘が、Chunk間へ過不足なく一度ずつ割り当てられるか調べる。
+    """
+
+    chunks = [
+        [{"id": "block-0", "source": "s", "translation": "t"}],
+        [{"id": "block-1", "source": "s", "translation": "t"}],
+    ]
+    findings = [
+        {"kind": "check", "target_ids": ["block-1"], "message": "scoped"},
+        {"kind": "check", "target_ids": [], "message": "unscoped-a"},
+        {"kind": "check", "target_ids": [], "message": "unscoped-b"},
+    ]
+
+    result = review._partition_findings(findings, chunks)  # noqa: SLF001
+
+    assert result[1][0]["message"] == "scoped"
+    assert sorted(item["message"] for bucket in result for item in bucket) == sorted(
+        item["message"] for item in findings
+    )
+
+
+def test_review_context_exceeded_splits_without_public_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    context超過時に比較対を逐次二分し、単独要求の指摘を順序通りに集約するか検証する。
+    """
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(review, "search", lambda *_args, **_kwargs: [])
+
+    def fake_structured(*args: object, **_kwargs: object) -> review.ReviewResponse:
+        """複数対の要求だけcontext超過にし、分割後の単独要求には対象別指摘を返す。"""
+
+        prompt = json.loads(str(args[4]))
+        ids = [item["id"] for item in prompt["pairs"]]
+        calls.append(ids)
+        if len(ids) > 1:
+            raise _context_exceeded()
+        return review.ReviewResponse(findings=[_finding(ids[0])])
+
+    monkeypatch.setattr(review, "structured", fake_structured)
+    settings: Settings = __import__(
+        "translate_v1.common.settings", fromlist=["Settings"]
+    ).Settings(templates_dir=tmp_path, retry_attempts=1, retry_base_seconds=0)
+
+    result = review.run(
+        _document(_pairs(2, size=2_500)), {}, "rules", [], settings, tmp_path / "review"
+    )
+
+    assert [item.target_ids for item in result[2]] == [["block-0"], ["block-1"]]
+    assert calls == [["block-0", "block-1"], ["block-0"], ["block-1"]]
 
 
 def test_review_truncation_retries_then_splits(
@@ -113,7 +196,7 @@ def test_review_truncation_retries_then_splits(
     monkeypatch.setattr(review, "search", fake_search)
     monkeypatch.setattr(review, "structured", fake_structured)
     settings: Settings = __import__(
-        "translate.common.settings", fromlist=["Settings"]
+        "translate_v1.common.settings", fromlist=["Settings"]
     ).Settings(templates_dir=tmp_path, retry_attempts=2, retry_base_seconds=0)
 
     result = review.run(
@@ -127,6 +210,64 @@ def test_review_truncation_retries_then_splits(
         ["block-0"],
         ["block-1"],
     ]
+
+
+def test_review_timeout_splits_without_publishing_partial_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """複数対のtimeoutから逐次分割して回復し、単独要求の指摘を集約するか検証する。"""
+
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(review, "search", lambda *_args, **_kwargs: [])
+
+    def fake_structured(*args: object, **_kwargs: object) -> review.ReviewResponse:
+        """複数対ではtimeout、単独対では正常指摘を返し、回復時の送信順を記録する。"""
+
+        prompt = json.loads(str(args[4]))
+        ids = [item["id"] for item in prompt["pairs"]]
+        calls.append(ids)
+        if len(ids) > 1:
+            raise _timed_out()
+        return review.ReviewResponse(findings=[_finding(ids[0])])
+
+    monkeypatch.setattr(review, "structured", fake_structured)
+    settings: Settings = __import__(
+        "translate_v1.common.settings", fromlist=["Settings"]
+    ).Settings(templates_dir=tmp_path, retry_attempts=1, retry_base_seconds=0)
+
+    result = review.run(
+        _document(_pairs(2, size=2_500)), {}, "rules", [], settings, tmp_path / "review"
+    )
+
+    assert [item.target_ids for item in result[2]] == [["block-0"], ["block-1"]]
+    assert calls == [["block-0", "block-1"], ["block-0"], ["block-1"]]
+
+
+def test_review_timeout_at_minimum_chunk_stops_without_public_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """
+    最小Chunkのtimeoutで停止し、公開結果を作らず既存の非公開Chunk領域が残るか調べる。
+    """
+
+    monkeypatch.setattr(review, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        review,
+        "structured",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(_timed_out()),
+    )
+    settings: Settings = __import__(
+        "translate_v1.common.settings", fromlist=["Settings"]
+    ).Settings(templates_dir=tmp_path, retry_attempts=1, retry_base_seconds=0)
+    output = tmp_path / "review"
+
+    with pytest.raises(LLMError) as captured:
+        review.run(_document(_pairs(1, size=2_500)), {}, "rules", [], settings, output)
+
+    assert captured.value.cause_type == "OpenAITimeoutError"
+    assert not output.exists()
+    assert (tmp_path / ".review.chunks").exists()
 
 
 def test_review_cache_reuses_completed_chunk_without_public_partial_artifact(
@@ -160,7 +301,7 @@ def test_review_cache_reuses_completed_chunk_without_public_partial_artifact(
 
     monkeypatch.setattr(review, "structured", fake_structured)
     settings: Settings = __import__(
-        "translate.common.settings", fromlist=["Settings"]
+        "translate_v1.common.settings", fromlist=["Settings"]
     ).Settings(
         templates_dir=tmp_path,
         retry_attempts=1,

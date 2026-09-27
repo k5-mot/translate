@@ -6,10 +6,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from translate.adapters import langfuse
-from translate.common.logger import configure_logging
-from translate.common.redaction import OMITTED, REDACTED, safe_error
-from translate.common.runs import RunRepository
+from translate_v1.adapters import langfuse
+from translate_v1.common.logger import configure_logging
+from translate_v1.common.redaction import OMITTED, REDACTED, safe_error
+from translate_v1.common.runs import RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 class _Observation:

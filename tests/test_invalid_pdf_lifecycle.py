@@ -7,20 +7,20 @@ from typing import TYPE_CHECKING
 import pypdfium2 as pdfium
 import pytest
 
-from translate.adapters import pdf
-from translate.common.lifecycle import (
+from translate_v1.adapters import pdf
+from translate_v1.common.lifecycle import (
     PublicRunError,
     execute_public_run,
     load_failure,
     prepare_run,
 )
-from translate.common.runs import Operation, RunRepository
+from translate_v1.common.runs import Operation, RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _templates(root: Path) -> Path:

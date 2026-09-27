@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.document import AlignmentGroup, Block, Document, Inline, Page
-from translate.tasks import align
+from translate_v1.document import AlignmentGroup, Block, Document, Inline, Page
+from translate_v1.tasks import align
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document(prefix: str, texts: list[str]) -> Document:

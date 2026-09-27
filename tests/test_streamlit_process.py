@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-import main
+import main_v1
 
 
 def _free_port() -> int:
@@ -36,13 +36,13 @@ def test_streamlit_headless_process_health_and_safe_shutdown(tmp_path: Path) -> 
             "-m",
             "streamlit",
             "run",
-            str(main.__file__),
+            str(main_v1.__file__),
             "--server.headless=true",
             f"--server.port={port}",
             "--server.address=127.0.0.1",
             "--browser.gatherUsageStats=false",
         ],
-        cwd=Path(main.__file__).parent,
+        cwd=Path(main_v1.__file__).parent,
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

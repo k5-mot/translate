@@ -10,20 +10,20 @@ import pytest
 from markdown_it import MarkdownIt
 from typer.testing import CliRunner
 
-import cli
-import main
-from translate.common.lifecycle import export_run
-from translate.common.runs import RunRepository
-from translate.common.workspace import sha256_file
-from translate.document import AlignmentGroup, Block, Document, Finding, Inline, Page
-from translate.tasks import align, check, report, review
-from translate.workflows.comparison_review import _comparison_document
+import cli_v1
+import main_v1
+from translate_v1.common.lifecycle import export_run
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import sha256_file
+from translate_v1.document import AlignmentGroup, Block, Document, Finding, Inline, Page
+from translate_v1.tasks import align, check, report, review
+from translate_v1.workflows.comparison_review import _comparison_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document(block_id: str, text: str) -> Document:
@@ -313,14 +313,14 @@ def test_real_report_bytes_reach_cli_ui_and_export(
             tmp_path / "diagnostic",
         )
 
-    monkeypatch.setattr("translate.common.lifecycle.run_review", finish_review)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_review", finish_review)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     request = Mock(side_effect=AssertionError("External HTTP must not be used"))
     monkeypatch.setattr("httpx.Client.send", request)
     output = tmp_path / "public.md"
     result = CliRunner().invoke(
-        cli.app,
+        cli_v1.app,
         [
             "review",
             str(source),
@@ -340,8 +340,8 @@ def test_real_report_bytes_reach_cli_ui_and_export(
     assert len(exported) == 1
     assert exported[0].read_bytes() == expected
     download = Mock()
-    monkeypatch.setattr(main.st, "download_button", download)
-    main._downloads((internal,), "review")  # noqa: SLF001
+    monkeypatch.setattr(main_v1.st, "download_button", download)
+    main_v1._downloads((internal,), "review")  # noqa: SLF001
     download.assert_called_once_with(
         "review.md をダウンロード",
         expected,

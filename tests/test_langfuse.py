@@ -23,20 +23,20 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from PIL import Image
 from pydantic import BaseModel
 
-from translate.adapters import langfuse, llm
-from translate.common.lifecycle import execute_run, prepare_run
-from translate.common.progress import bind_task_status
-from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_write_bytes, atomic_write_json
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import structure
-from translate.workflows import translation as translation_workflow
+from translate_v1.adapters import langfuse, llm
+from translate_v1.common.lifecycle import execute_run, prepare_run
+from translate_v1.common.progress import bind_task_status
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import atomic_write_bytes, atomic_write_json
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import structure
+from translate_v1.workflows import translation as translation_workflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from translate.common.progress import ProgressCallback
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.progress import ProgressCallback
+    from translate_v1.common.settings import Backend, Settings
 
 
 class _Response(BaseModel):
@@ -1240,7 +1240,7 @@ def test_lifecycle_persists_duplicate_langfuse_warning_once(
         atomic_write_bytes(output, b"complete")
         return output
 
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", workflow)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", workflow)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"fixture")
     repository = RunRepository(settings.runs_dir)

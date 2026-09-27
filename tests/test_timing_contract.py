@@ -15,9 +15,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from translate.document import Document, Page
-from translate.tasks import base, check, docx
-from translate.tasks.base import BaseTask
+from translate_v1.document import Document, Page
+from translate_v1.tasks import base, check, docx
+from translate_v1.tasks.base import BaseTask
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -67,8 +67,8 @@ def broken_timing_print(request: pytest.FixtureRequest) -> Mock:
 def _run_public_boundary(name: str, body: Mock, output: Mock) -> None:
     """実Moduleのimportと__main__節を使い、処理本体だけを隔離して動的に実行する。"""
 
-    module = importlib.import_module(name)
-    path = PROJECT_ROOT / f"{name}.py"
+    module = importlib.import_module(f"{name}_v1")
+    path = PROJECT_ROOT / f"{name}_v1.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     boundary = tree.body[-1]
     assert isinstance(boundary, ast.If)
@@ -245,7 +245,7 @@ def test_every_task_uses_shared_timing_without_another_state_store() -> None:
 
     task_modules = {
         path.stem: path.read_text(encoding="utf-8")
-        for path in (PROJECT_ROOT / "translate" / "tasks").glob("*.py")
+        for path in (PROJECT_ROOT / "translate_v1" / "tasks").glob("*.py")
         if path.stem not in {"__init__", "base"}
     }
 
@@ -253,9 +253,9 @@ def test_every_task_uses_shared_timing_without_another_state_store() -> None:
     assert all("perf_counter" not in source for source in task_modules.values())
     assert all("with self.measure():" in source for source in task_modules.values())
     assert "time.perf_counter()" in inspect.getsource(base)
-    assert "translate.common" not in inspect.getsource(base)
-    assert "translate.workflows" not in inspect.getsource(base)
-    for entry_point in (PROJECT_ROOT / "cli.py", PROJECT_ROOT / "main.py"):
+    assert "translate_v1.common" not in inspect.getsource(base)
+    assert "translate_v1.workflows" not in inspect.getsource(base)
+    for entry_point in (PROJECT_ROOT / "cli_v1.py", PROJECT_ROOT / "main_v1.py"):
         source = entry_point.read_text(encoding="utf-8")
         assert "time.perf_counter()" in source
         assert "[TIME] TOTAL" in source
@@ -269,7 +269,7 @@ def test_function_delegates_all_typed_arguments_to_task(
 ) -> None:
     """全具体Taskの継承・signature・戻り値と既定値を含む転送を確認する。"""
 
-    module: ModuleType = importlib.import_module(f"translate.tasks.{name}")
+    module: ModuleType = importlib.import_module(f"translate_v1.tasks.{name}")
     task_type = getattr(
         module, "".join(part.title() for part in name.split("_")) + "Task"
     )
@@ -345,7 +345,7 @@ def test_timing_finishes_after_atomic_publication(
 ) -> None:
     """従来は内側で終了していた計測が最終directory公開後に終わる。"""
 
-    module = importlib.import_module(f"translate.tasks.{name}")
+    module = importlib.import_module(f"translate_v1.tasks.{name}")
     output_dir = tmp_path / name
     published = output_dir / "document.json"
     clock_calls = []

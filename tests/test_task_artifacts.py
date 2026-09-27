@@ -7,14 +7,17 @@ from pathlib import Path
 
 import pytest
 
-from translate.tasks import position
+from translate_v1.tasks import position
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.parametrize(
     "directory",
-    [PROJECT_ROOT / "translate" / "tasks", PROJECT_ROOT / "translate" / "adapters"],
+    [
+        PROJECT_ROOT / "translate_v1" / "tasks",
+        PROJECT_ROOT / "translate_v1" / "adapters",
+    ],
     ids=["tasks", "adapters"],
 )
 def test_modules_do_not_publish_with_direct_path_writes(directory: Path) -> None:
@@ -50,7 +53,7 @@ def test_task_directory_is_not_replaced_before_validation(
             msg = "injected replace failure"
             raise RuntimeError(msg)
 
-    monkeypatch.setattr("translate.common.workspace._phase", fail)
+    monkeypatch.setattr("translate_v1.common.workspace._phase", fail)
 
     with pytest.raises(RuntimeError, match="injected"):
         position.run(source, output)

@@ -8,17 +8,17 @@ from unittest.mock import Mock
 import pytest
 from typer.testing import CliRunner
 
-import cli
-from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_write_bytes
-from translate.workflows import translation as translation_workflow
+import cli_v1
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import atomic_write_bytes
+from translate_v1.workflows import translation as translation_workflow
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.progress import ProgressCallback
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.progress import ProgressCallback
+    from translate_v1.common.settings import Backend, Settings
 
 
 def _templates(root: Path) -> Path:
@@ -66,18 +66,18 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
             translation_model="model-a",
         )
     ]
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: current[0])
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: current[0])
     monkeypatch.setattr(translation_workflow, "run", _fake_translation)
     # lifecycle imports the callable directly, so replace that binding as well.
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", _fake_translation)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     source = tmp_path / "source.pdf"
     source.write_bytes(b"source")
     exported = tmp_path / "exported"
 
     first = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["translate", str(source), "--output-dir", str(exported)],
     )
 
@@ -88,7 +88,7 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
     assert (exported / "document.ja.docx").read_bytes() == b"completed document"
 
     resumed = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "translate",
             str(source),
@@ -102,12 +102,12 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
     assert f"run_id={record.run_id} mode=resume" in resumed.output
     assert len(repository.list_runs().records) == 1
 
-    listed = runner.invoke(cli.app, ["runs"])
+    listed = runner.invoke(cli_v1.app, ["runs"])
     assert listed.exit_code == 0, listed.output
     assert record.run_id in listed.output
     secondary_export = tmp_path / "secondary-export"
     exported_again = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["export", record.run_id, "--output-dir", str(secondary_export)],
     )
     assert exported_again.exit_code == 0, exported_again.output
@@ -115,7 +115,7 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
 
     current[0] = current[0].model_copy(update={"translation_model": "model-b"})
     rejected = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "translate",
             str(source),
@@ -129,7 +129,7 @@ def test_cli_explicit_resume_compatibility_export_and_delete(
     assert "models.translation" in rejected.output
 
     current[0] = current[0].model_copy(update={"translation_model": "model-a"})
-    deleted = runner.invoke(cli.app, ["delete-run", record.run_id, "--confirm"])
+    deleted = runner.invoke(cli_v1.app, ["delete-run", record.run_id, "--confirm"])
     assert deleted.exit_code == 0, deleted.output
     assert not repository.paths(record.run_id).root.exists()
     assert (exported / "document.ja.docx").is_file()
@@ -149,16 +149,16 @@ def test_interactive_same_input_requires_y_and_supports_candidate_selection(
         templates_dir=templates,
         translation_model="model-a",
     )
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", _fake_translation)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     source = tmp_path / "source.pdf"
     source.write_bytes(b"same input")
 
     for number in (1, 2):
         result = runner.invoke(
-            cli.app,
+            cli_v1.app,
             [
                 "translate",
                 str(source),
@@ -171,9 +171,9 @@ def test_interactive_same_input_requires_y_and_supports_candidate_selection(
     records = repository.list_runs().records
     selected = records[-1].run_id
 
-    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: True)
     resumed = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["translate", str(source), "--output-dir", str(tmp_path / "selected")],
         input=f"{selected}\ny\n",
     )
@@ -194,16 +194,16 @@ def test_noninteractive_same_input_always_creates_new_run(
         runs_dir=tmp_path / "runs",
         templates_dir=_templates(tmp_path / "templates"),
     )
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", _fake_translation)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", _fake_translation)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"same input")
     runner = CliRunner()
 
     results = [
         runner.invoke(
-            cli.app,
+            cli_v1.app,
             [
                 "translate",
                 str(source),
@@ -232,8 +232,8 @@ def test_cli_invalid_duration_prevents_run_and_external_calls(
     monkeypatch.setenv("TRANSLATE_REQUEST_TIMEOUT_SECONDS", value)
     prepare = Mock(side_effect=AssertionError("Run preparation must not start"))
     execute = Mock(side_effect=AssertionError("External work must not start"))
-    monkeypatch.setattr(cli, "_prepare", prepare)
-    monkeypatch.setattr(cli, "execute_public_run", execute)
+    monkeypatch.setattr(cli_v1, "_prepare", prepare)
+    monkeypatch.setattr(cli_v1, "execute_public_run", execute)
     arguments = {
         "translate": [str(source), "--output-dir", str(tmp_path / "export")],
         "review": [str(source), str(source), "--output", str(tmp_path / "review.md")],
@@ -241,7 +241,7 @@ def test_cli_invalid_duration_prevents_run_and_external_calls(
         "convert": [str(source), "--output", str(tmp_path / "output.docx")],
     }
 
-    result = CliRunner().invoke(cli.app, [operation, *arguments[operation]])
+    result = CliRunner().invoke(cli_v1.app, [operation, *arguments[operation]])
 
     assert result.exit_code == 1
     assert isinstance(result.exception, ValueError)

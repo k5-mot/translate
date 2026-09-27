@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.document import inline_text
-from translate.tasks import load, markdown, normalize, position
+from translate_v1.document import inline_text
+from translate_v1.tasks import load, markdown, normalize, position
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from translate.document import Document
+    from translate_v1.document import Document
 
 
 def _item(

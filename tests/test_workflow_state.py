@@ -11,19 +11,19 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from typer.testing import CliRunner
 
-import cli
-from translate.common.lifecycle import load_failure
-from translate.common.runs import RunRepository
-from translate.common.workspace import atomic_directory, atomic_write_bytes
-from translate.workflows import comparison_review, translation
-from translate.workflows.comparison_review import ComparisonState
-from translate.workflows.translation import TranslationState
+import cli_v1
+from translate_v1.common.lifecycle import load_failure
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import atomic_directory, atomic_write_bytes
+from translate_v1.workflows import comparison_review, translation
+from translate_v1.workflows.comparison_review import ComparisonState
+from translate_v1.workflows.translation import TranslationState
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _checkpoint(
@@ -317,7 +317,7 @@ def test_cli_real_graph_preserves_diagnostics_without_persisting_body(  # noqa: 
         templates_dir=templates, runs_dir=tmp_path / "runs", openai_api_key=markers[1]
     )
     # 環境値だけをTestへ固定し、Run準備・実行・公開Error処理は実装を使う。
-    monkeypatch.setattr(cli, "load_settings", lambda *_args: settings)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args: settings)
     source = tmp_path / "source.pdf"
     source.write_text(markers[0], encoding="utf-8")
     target = tmp_path / "target.pdf"
@@ -334,7 +334,7 @@ def test_cli_real_graph_preserves_diagnostics_without_persisting_body(  # noqa: 
         ]
     )
 
-    result = CliRunner().invoke(cli.app, arguments)
+    result = CliRunner().invoke(cli_v1.app, arguments)
 
     assert result.exit_code == 1
     repository = RunRepository(settings.runs_dir)

@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
-from translate.document import AlignmentGroup, Finding
-from translate.tasks import check, report, review
+from translate_v1.document import AlignmentGroup, Finding
+from translate_v1.tasks import check, report, review
 
 if TYPE_CHECKING:
     from pathlib import Path

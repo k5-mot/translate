@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.settings import Settings
+from translate_v1.common.settings import Settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable

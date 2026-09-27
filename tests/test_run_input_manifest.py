@@ -12,21 +12,21 @@ from uuid import UUID
 
 import pytest
 
-from translate.common import runs
-from translate.common.lifecycle import (
+from translate_v1.common import runs
+from translate_v1.common.lifecycle import (
     ResumeRejectedError,
     export_run,
     fingerprint_for,
     prepare_run,
 )
-from translate.common.runs import InputSource, RunRepository, collect_input_sources
-from translate.common.workspace import atomic_write_bytes, atomic_write_json
+from translate_v1.common.runs import InputSource, RunRepository, collect_input_sources
+from translate_v1.common.workspace import atomic_write_bytes, atomic_write_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from io import BufferedIOBase
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
