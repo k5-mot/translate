@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, cast
 
 from translate.common.workspace import atomic_directory, atomic_write_text
 from translate.document import (
     Block,
     BlockKind,
+    CellImage,
     Document,
     Inline,
     InlineKind,
@@ -387,20 +391,6 @@ def _picture_content_refs(document: dict[str, Any]) -> set[str]:
     return result
 
 
-def _integer(value: Any, default: int) -> int:
-    """Docling値がintのインスタンスなら保持し、それ以外は既定値へ置き換える。
-
-    Args:
-        value: 変換候補。
-        default: int以外の場合の値。
-
-    Returns:
-        整数値。
-    """
-
-    return value if isinstance(value, int) else default
-
-
 def _cell_text(cell: dict[str, Any]) -> str:
     """Docling table cellから文字列を得る。
 
@@ -415,76 +405,423 @@ def _cell_text(cell: dict[str, Any]) -> str:
     return str(value)
 
 
-def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
-    """既知のDocling table schemaをTableCell列へ変換する。
+@dataclass
+class _CellSource:
+    """LOAD呼出中だけ、論理セルとDoclingの別表現・参照根拠を対応させる。"""
 
-    Args:
-        item: Docling table要素。
-        ref: tableの安定ID。
+    cell: TableCell
+    variants: list[dict[str, Any]] = field(default_factory=list)
+    refs: set[str] = field(default_factory=set)
 
-    Returns:
-        行列位置を持つcell列。
 
-    Raises:
-        ValueError: 対応するcell配列がない場合。
-    """
+class TableImageOwnershipError(ValueError):
+    """本文やasset pathを公開せず、所属失敗の対象だけを診断へ渡す。"""
+
+    def __init__(self, page: int | None, ref: str) -> None:
+        """検証済み形式のDocling IDとページを保持し、任意文字列IDを公開しない。"""
+
+        self.page = page
+        self.target_id = (
+            ref if re.fullmatch(r"#/(?:tables|pictures)/[0-9]+", ref) else "unknown"
+        )
+        self.cause_type = "TableImageOwnership"
+        super().__init__(
+            f"table image ownership validation failed: page={page} target={self.target_id}"
+        )
+
+
+@contextmanager
+def _ownership_context(page: int | None, ref: str) -> Iterator[None]:
+    """所属検証の詳細例外を、内容を含まない対象付き診断へ正規化する。"""
+
+    try:
+        yield
+    except ValueError as error:
+        raise TableImageOwnershipError(page, ref) from error
+
+
+def _cell_shape(
+    raw: dict[str, Any], row: int, column: int
+) -> tuple[int, int, int, int]:
+    """半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。"""
+
+    start_row = raw.get("start_row_offset_idx", raw.get("row", row))
+    start_col = raw.get("start_col_offset_idx", raw.get("col", column))
+    if any(type(value) is not int or value < 0 for value in (start_row, start_col)):
+        raise ValueError("invalid table cell position")
+    row_span, col_span = raw.get("row_span", 1), raw.get("col_span", 1)
+    if any(type(value) is not int or value < 1 for value in (row_span, col_span)):
+        raise ValueError("invalid table cell span")
+    end_row = raw.get("end_row_offset_idx", start_row + row_span)
+    end_col = raw.get("end_col_offset_idx", start_col + col_span)
+    if (
+        any(type(value) is not int for value in (end_row, end_col))
+        or end_row <= start_row
+        or end_col <= start_col
+        or ("row_span" in raw and end_row - start_row != row_span)
+        or ("col_span" in raw and end_col - start_col != col_span)
+    ):
+        raise ValueError("conflicting table cell span")
+    return start_row, start_col, end_row - start_row, end_col - start_col
+
+
+def _raw_cells(
+    data: dict[str, Any], ref: str
+) -> Iterator[tuple[dict[str, Any], int, int, str, str]]:
+    """gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。"""
+
+    grid = data.get("grid")
+    if isinstance(grid, list):
+        for row_index, row in enumerate(grid):
+            if not isinstance(row, list):
+                raise ValueError("invalid table grid row")
+            for column_index, raw in enumerate(row):
+                if not isinstance(raw, dict):
+                    raise ValueError("invalid table grid cell")
+                yield (
+                    raw,
+                    row_index,
+                    column_index,
+                    f"{ref}/data/grid/{row_index}/{column_index}",
+                    f"{ref}/cell/{row_index}/{column_index}",
+                )
+    has_cells = isinstance(grid, list)
+    for name in ("table_cells", "cells"):
+        values = data.get(name)
+        if values is None:
+            continue
+        if not isinstance(values, list):
+            raise ValueError("invalid table cells")
+        has_cells = True
+        for index, raw in enumerate(values):
+            if not isinstance(raw, dict):
+                raise ValueError("invalid table cell")
+            yield raw, 0, 0, f"{ref}/data/{name}/{index}", f"{ref}/cell/{index}"
+    if not has_cells:
+        raise ValueError("unsupported Docling table cells")
+
+
+def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
+    """同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。"""
 
     data = item.get("data")
     if not isinstance(data, dict):
-        msg = f"unsupported Docling table: {ref}"
-        raise ValueError(msg)
-    cells: list[TableCell] = []
-    grid = data.get("grid")
-    if isinstance(grid, list):
-        # 旧grid形式にはspan情報がないため、配列位置をそのまま座標にする。
-        for row_index, row in enumerate(grid):
-            if not isinstance(row, list):
-                continue
-            for column_index, cell in enumerate(row):
-                if isinstance(cell, dict):
-                    typed_cell = cast("dict[str, Any]", cell)
-                    cell_ref = f"{ref}/cell/{row_index}/{column_index}"
-                    cells.append(
-                        TableCell(
-                            row=row_index,
-                            column=column_index,
-                            header=bool(
-                                typed_cell.get("column_header")
-                                or typed_cell.get("row_header")
-                            ),
-                            source=_inline(cell_ref, _cell_text(typed_cell)),
-                        )
-                    )
-        return cells
-    values = data.get("table_cells") or data.get("cells")
-    if not isinstance(values, list):
-        msg = f"unsupported Docling table: {ref}"
-        raise ValueError(msg)
-    # 新形式は半開区間のoffsetからrowspan/colspanを復元する。
-    for index, cell in enumerate(values):
-        if not isinstance(cell, dict):
+        raise ValueError("unsupported Docling table")
+    cells: dict[tuple[int, int], _CellSource] = {}
+    occupied: dict[tuple[int, int], tuple[int, int]] = {}
+    for raw, row, column, path, inline_ref in _raw_cells(data, ref):
+        start_row, start_col, rowspan, colspan = _cell_shape(raw, row, column)
+        key = (start_row, start_col)
+        for size, end in (
+            (data.get("num_rows"), start_row + rowspan),
+            (data.get("num_cols"), start_col + colspan),
+        ):
+            if size is not None and (type(size) is not int or size < end):
+                raise ValueError("table cell exceeds table dimensions")
+        cell = TableCell(
+            row=start_row,
+            column=start_col,
+            rowspan=rowspan,
+            colspan=colspan,
+            header=bool(raw.get("column_header") or raw.get("row_header")),
+            source=_inline(inline_ref, _cell_text(raw)),
+        )
+        if key in cells:
+            previous = cells[key].cell
+            if (
+                previous.rowspan,
+                previous.colspan,
+                previous.header,
+                inline_text(previous.source),
+            ) != (rowspan, colspan, cell.header, inline_text(cell.source)):
+                raise ValueError("conflicting table cell representations")
+            previous_raw = cells[key].variants[0]
+            if any(
+                bool(previous_raw.get(name)) != bool(raw.get(name))
+                for name in ("row_header", "column_header")
+            ):
+                raise ValueError("conflicting table cell header roles")
+        else:
+            cells[key] = _CellSource(cell)
+        if "/data/grid/" in path and not (
+            start_row <= row < start_row + rowspan
+            and start_col <= column < start_col + colspan
+        ):
+            raise ValueError("grid cell lies outside its span")
+        for r in range(start_row, start_row + rowspan):
+            for c in range(start_col, start_col + colspan):
+                if (r, c) in occupied and occupied[r, c] != key:
+                    raise ValueError("overlapping table cell spans")
+                occupied[r, c] = key
+        cells[key].variants.append(raw)
+        cells[key].refs.add(path)
+        if isinstance(raw.get("self_ref"), str):
+            cells[key].refs.add(raw["self_ref"])
+    return list(cells.values())
+
+
+def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
+    """別表現の重複を除いた論理セルを内部文書へ渡す。"""
+
+    with _ownership_context(_page_number(item), ref):
+        return [source.cell for source in _normalized_cells(item, ref)]
+
+
+def _top_left_box(raw: Any, page: Page) -> tuple[float, float, float, float] | None:
+    """存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。"""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("invalid image ownership geometry")
+    try:
+        left, top, right, bottom = (float(raw[key]) for key in ("l", "t", "r", "b"))
+    except (KeyError, ValueError, TypeError) as error:
+        raise ValueError("invalid image ownership geometry") from error
+    if raw.get("coord_origin") == "BOTTOMLEFT":
+        if page.height is None or not math.isfinite(page.height) or page.height <= 0:
+            raise ValueError("missing page height for image ownership")
+        top, bottom = page.height - top, page.height - bottom
+    elif raw.get("coord_origin") != "TOPLEFT":
+        raise ValueError("unknown image ownership coordinate origin")
+    if (
+        not all(math.isfinite(value) for value in (left, top, right, bottom))
+        or left >= right
+        or top >= bottom
+    ):
+        raise ValueError("invalid image ownership geometry")
+    return left, top, right, bottom
+
+
+def _item_box(
+    item: dict[str, Any], page: Page
+) -> tuple[float, float, float, float] | None:
+    """所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。"""
+
+    provenance = item.get("prov") or []
+    boxes = {
+        _top_left_box(value.get("bbox"), page)
+        for value in provenance
+        if isinstance(value, dict) and value.get("page_no") == page.number
+    }
+    boxes.discard(None)
+    if len(boxes) > 1:
+        raise ValueError("conflicting image ownership provenance")
+    return next(iter(boxes), None)
+
+
+def _contains(
+    outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]
+) -> bool:
+    """距離閾値を使わず矩形全体の包含を判定する。"""
+
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[2] >= inner[2]
+        and outer[3] >= inner[3]
+    )
+
+
+def _cell_box(
+    raw: dict[str, Any], page: Page
+) -> tuple[float, float, float, float] | None:
+    """セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。"""
+
+    if ("page_no" in raw and raw["page_no"] != page.number) or any(
+        not isinstance(value, dict) or value.get("page_no") != page.number
+        for value in raw.get("prov", []) or []
+    ):
+        raise ValueError("cell ownership references another page")
+    box = _top_left_box(raw.get("bbox"), page)
+    provenance = _item_box(raw, page)
+    if box is not None and provenance is not None and box != provenance:
+        raise ValueError("conflicting cell ownership provenance")
+    return box or provenance
+
+
+def _geometric_cell(
+    cells: list[_CellSource], box: tuple[float, float, float, float], page: Page
+) -> set[int]:
+    """セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。"""
+
+    direct: set[int] = set()
+    rows: set[int] = set()
+    columns: set[int] = set()
+    center_x, center_y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    for index, source in enumerate(cells):
+        cell = source.cell
+        boxes = {_cell_box(raw, page) for raw in source.variants}
+        boxes.discard(None)
+        if len(boxes) > 1:
+            raise ValueError("conflicting cell ownership geometry")
+        cell_box = next(iter(boxes), None)
+        if cell_box is None:
             continue
-        typed_cell = cast("dict[str, Any]", cell)
-        row = _integer(typed_cell.get("start_row_offset_idx", typed_cell.get("row")), 0)
-        column = _integer(
-            typed_cell.get("start_col_offset_idx", typed_cell.get("col")), 0
+        if _contains(cell_box, box):
+            direct.add(index)
+        if (
+            any(raw.get("column_header") for raw in source.variants)
+            and cell_box[0] < center_x < cell_box[2]
+        ):
+            columns.update(range(cell.column, cell.column + cell.colspan))
+        if (
+            any(raw.get("row_header") for raw in source.variants)
+            and cell_box[1] < center_y < cell_box[3]
+        ):
+            rows.update(range(cell.row, cell.row + cell.rowspan))
+    intersections = {
+        index
+        for index, source in enumerate(cells)
+        if any(
+            source.cell.row <= row < source.cell.row + source.cell.rowspan
+            and source.cell.column <= column < source.cell.column + source.cell.colspan
+            for row in rows
+            for column in columns
         )
-        row_end = _integer(typed_cell.get("end_row_offset_idx"), row + 1)
-        column_end = _integer(typed_cell.get("end_col_offset_idx"), column + 1)
-        cell_ref = f"{ref}/cell/{index}"
-        cells.append(
-            TableCell(
-                row=row,
-                column=column,
-                rowspan=max(1, row_end - row),
-                colspan=max(1, column_end - column),
-                header=bool(
-                    typed_cell.get("column_header") or typed_cell.get("row_header")
-                ),
-                source=_inline(cell_ref, _cell_text(typed_cell)),
+    }
+    if (
+        len(direct) > 1
+        or len(intersections) > 1
+        or (direct and intersections and direct != intersections)
+    ):
+        raise ValueError("ambiguous table image cell")
+    return direct or intersections
+
+
+def _explicit_image_owners(
+    sources: dict[str, list[_CellSource]], pictures: dict[str, dict[str, Any]]
+) -> dict[str, set[tuple[str, int]]]:
+    """セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。"""
+
+    owners: dict[str, set[tuple[str, int]]] = {}
+    refs: dict[str, set[tuple[str, int]]] = {}
+    for table_ref, cells in sources.items():
+        for index, source in enumerate(cells):
+            owner = (table_ref, index)
+            for ref in source.refs:
+                refs.setdefault(ref, set()).add(owner)
+            for raw in source.variants:
+                children = raw.get("children", [])
+                if not isinstance(children, list):
+                    raise TableImageOwnershipError(None, table_ref)
+                for value in children:
+                    ref = value.get("$ref") if isinstance(value, dict) else None
+                    if not isinstance(ref, str):
+                        raise TableImageOwnershipError(None, table_ref)
+                    if isinstance(ref, str) and ref.startswith("#/pictures/"):
+                        if ref not in pictures:
+                            raise TableImageOwnershipError(None, table_ref)
+                        owners.setdefault(ref, set()).add(owner)
+    for picture_ref, picture in pictures.items():
+        parent = picture.get("parent")
+        parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
+        if parent is not None and not isinstance(parent_ref, str):
+            raise TableImageOwnershipError(_page_number(picture), picture_ref)
+        if parent_ref in refs:
+            owners.setdefault(picture_ref, set()).update(refs[parent_ref])
+        elif (
+            isinstance(parent_ref, str)
+            and parent_ref.startswith("#/tables/")
+            and parent_ref not in sources
+        ):
+            raise TableImageOwnershipError(_page_number(picture), picture_ref)
+    for ref, value in owners.items():
+        if len(value) != 1:
+            raise TableImageOwnershipError(_page_number(pictures[ref]), ref)
+    return owners
+
+
+def _assign_cell_images(document: dict[str, Any], pages: dict[int, Page]) -> None:
+    """一意に確定した画像だけを表セルへ移し、body/collection由来の独立図を除く。"""
+
+    tables = {
+        str(item.get("self_ref")): item
+        for item in document.get("tables", [])
+        if isinstance(item, dict)
+    }
+    pictures = {
+        str(item.get("self_ref")): item
+        for item in document.get("pictures", [])
+        if isinstance(item, dict)
+    }
+    sources = {ref: _normalized_cells(item, ref) for ref, item in tables.items()}
+    explicit = _explicit_image_owners(sources, pictures)
+    for page in pages.values():
+        page_tables = {
+            block.id: block for block in page.blocks if block.kind == "table"
+        }
+        consumed: set[str] = set()
+        for figure in (block for block in page.blocks if block.kind == "figure"):
+            declared = explicit.get(figure.id, set())
+            if not page_tables and not declared:
+                continue
+            picture = pictures[figure.id]
+            parent = picture.get("parent")
+            parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
+            declared_ref = next(iter(declared))[0] if declared else None
+            if declared_ref is not None and declared_ref not in page_tables:
+                raise TableImageOwnershipError(page.number, figure.id)
+            with _ownership_context(page.number, figure.id):
+                box = _item_box(picture, page)
+            if box is None:
+                raise TableImageOwnershipError(page.number, figure.id)
+            containing = []
+            for ref in page_tables:
+                with _ownership_context(page.number, ref):
+                    table_box = _item_box(tables[ref], page)
+                if table_box is None:
+                    if declared_ref is None:
+                        raise TableImageOwnershipError(page.number, ref)
+                    if ref == declared_ref:
+                        containing.append(ref)
+                    continue
+                if _contains(table_box, box):
+                    containing.append(ref)
+                elif max(table_box[0], box[0]) < min(table_box[2], box[2]) and max(
+                    table_box[1], box[1]
+                ) < min(table_box[3], box[3]):
+                    raise TableImageOwnershipError(page.number, figure.id)
+            if len(containing) > 1:
+                raise TableImageOwnershipError(page.number, figure.id)
+            if parent_ref in sources and containing != [parent_ref]:
+                raise TableImageOwnershipError(page.number, figure.id)
+            if not containing:
+                if declared:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                continue
+            ref = containing[0]
+            with _ownership_context(page.number, figure.id):
+                candidates = _geometric_cell(sources[ref], box, page)
+            if declared:
+                declared_ref, index = next(iter(declared))
+                if declared_ref != ref or (candidates and candidates != {index}):
+                    raise TableImageOwnershipError(page.number, figure.id)
+                for raw in sources[ref][index].variants:
+                    with _ownership_context(page.number, figure.id):
+                        cell_box = _cell_box(raw, page)
+                    if cell_box is not None and not _contains(cell_box, box):
+                        raise TableImageOwnershipError(page.number, figure.id)
+            elif len(candidates) == 1:
+                index = next(iter(candidates))
+            else:
+                raise TableImageOwnershipError(page.number, figure.id)
+            sources[ref][index].cell.images.append(
+                CellImage(
+                    id=figure.id,
+                    asset_path=figure.asset_path or "",
+                    width_pt=box[2] - box[0],
+                    height_pt=box[3] - box[1],
+                    alt_text=figure.alt_text or "",
+                    caption=figure.caption,
+                )
             )
-        )
-    return cells
+            consumed.add(figure.id)
+        for ref, block in page_tables.items():
+            block.cells = [source.cell for source in sources[ref]]
+        page.blocks = [block for block in page.blocks if block.id not in consumed]
+        for order, block in enumerate(page.blocks):
+            block.order = order
 
 
 def _block(
@@ -683,6 +1020,7 @@ def load_document(document: dict[str, Any]) -> Document:
         if block is not None:
             pages[number].blocks.append(block)
             page_orders[number] += 1
+    _assign_cell_images(document, pages)
     return Document(pages=[pages[number] for number in sorted(pages)])
 
 

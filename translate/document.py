@@ -49,6 +49,22 @@ class Inline(BaseModel):
     fix_error: str | None = None
 
 
+class CellImage(BaseModel):
+    """セルが所有する画像の参照・原本pt寸法とCaptionの翻訳層。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    asset_path: str = Field(min_length=1)
+    # Pixel数ではなくPDFページ上の寸法を使い、非有限値や零面積を拒否する。
+    width_pt: float = Field(gt=0, allow_inf_nan=False)
+    height_pt: float = Field(gt=0, allow_inf_nan=False)
+    alt_text: str = ""
+    caption: list[Inline] = Field(default_factory=list)
+    translated_caption: list[Inline] | None = None
+    final_caption: list[Inline] | None = None
+
+
 class TableCell(BaseModel):
     """表内の一つのセルと翻訳状態を表す。"""
 
@@ -60,6 +76,7 @@ class TableCell(BaseModel):
     source: list[Inline] = Field(default_factory=list)
     translated: list[Inline] | None = None
     final: list[Inline] | None = None
+    images: list[CellImage] = Field(default_factory=list)
 
 
 class Block(BaseModel):
@@ -178,6 +195,16 @@ def block_text_units(block: Block) -> Iterator[TextUnit]:
         )
         # 結合範囲へ展開せず、保存済みの起点セルだけを読む。
         for cell in sorted(block.cells, key=lambda cell: (cell.row, cell.column))
+    )
+    units.extend(
+        TextUnit(
+            f"{image.id}/caption",
+            image.caption,
+            image.translated_caption,
+            image.final_caption,
+        )
+        for cell in sorted(block.cells, key=lambda cell: (cell.row, cell.column))
+        for image in cell.images
     )
     for unit in units:
         if unit.source or unit.translated or unit.final:

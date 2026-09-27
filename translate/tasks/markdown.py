@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import itertools
 import json
+import math
 import re
 import shutil
 from typing import TYPE_CHECKING
@@ -17,6 +18,8 @@ from translate.tasks.base import BaseTask
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
+
+    from translate.document import CellImage
 
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
@@ -124,7 +127,7 @@ def _cell_current(cell: TableCell) -> list[Inline]:
     )
 
 
-def _caption_current(block: Block) -> list[Inline]:
+def _caption_current(block: Block | CellImage) -> list[Inline]:
     """図表題の最終出力に使うInline列を選ぶ。
 
     Args:
@@ -165,7 +168,8 @@ def _render_table(block: Block) -> str:
             cell for cell in block.cells if cell.row <= row < cell.row + cell.rowspan
         ]
         if not any(cell.header for cell in covering) or any(
-            not cell.header and inline_text(_cell_current(cell)).strip()
+            not cell.header
+            and (inline_text(_cell_current(cell)).strip() or cell.images)
             for cell in covering
         ):
             break
@@ -210,7 +214,9 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
         cell = starts.get(column)
         if cell is None and column in occupied:
             continue
-        inlines = _table_inlines(_cell_current(cell)) if cell else []
+        inlines: list[dict[str, object]] = (
+            _table_inlines(_cell_current(cell)) if cell else []
+        )
         if cell is not None and cell.header and inlines:
             inlines = [{"t": "Strong", "c": inlines}]
         result.append(
@@ -219,10 +225,41 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
                 {"t": "AlignDefault"},
                 cell.rowspan if cell else 1,
                 cell.colspan if cell else 1,
-                [{"t": "Plain", "c": inlines}] if cell else [],
+                _cell_blocks(cell, inlines) if cell else [],
             ]
         )
     return [["", [], []], result]
+
+
+def _cell_blocks(
+    cell: TableCell, inlines: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """既存Pandoc Cell内に本文・画像・採用Captionを置き、画像をFigureへ昇格させない。"""
+
+    blocks = [{"t": "Plain", "c": inlines}] if inlines else []
+    for image in cell.images:
+        attributes = [
+            ["width", f"{image.width_pt}pt"],
+            ["height", f"{image.height_pt}pt"],
+            ["fig-alt", image.alt_text],
+        ]
+        # Empty image caption avoids Pandoc's implicit Figure/list numbering.
+        # The actual translated caption is a separate paragraph in this cell.
+        blocks.append(
+            {
+                "t": "Plain",
+                "c": [
+                    {
+                        "t": "Image",
+                        "c": [["", [], attributes], [], [image.asset_path, ""]],
+                    }
+                ],
+            }
+        )
+        caption = _caption_current(image)
+        if caption:
+            blocks.append({"t": "Plain", "c": _table_inlines(caption)})
+    return blocks
 
 
 def _table_inlines(values: list[Inline]) -> list[dict[str, object]]:
@@ -420,6 +457,9 @@ def _validate_links(block: Block, anchors: set[str]) -> None:
     inline_groups = [_current(block), _caption_current(block)]
     if block.kind == "table":
         inline_groups.extend(_cell_current(cell) for cell in block.cells)
+        inline_groups.extend(
+            _caption_current(image) for cell in block.cells for image in cell.images
+        )
     for item in (item for group in inline_groups for item in group):
         is_unresolved = (
             item.kind == "link"
@@ -444,6 +484,8 @@ def _validate_block(block: Block, asset_root: Path, anchors: set[str]) -> None:
         なし。
     """
 
+    if block.cells and block.kind != "table":
+        raise ValueError("non-table block contains cells")
     if CONTROL_RE.search(inline_text(_current(block))):
         msg = f"unsupported control character: {block.id}"
         raise ValueError(msg)
@@ -455,6 +497,36 @@ def _validate_block(block: Block, asset_root: Path, anchors: set[str]) -> None:
     if block.kind == "table":
         _validate_table(block)
     _validate_links(block, anchors)
+
+
+def _validate_cell_images(document: Document, asset_root: Path) -> None:
+    """セル画像の一意所有、有限pt寸法と領域内assetを公開直前にも確認する。"""
+
+    owned = {
+        block.id
+        for page in document.pages
+        for block in page.blocks
+        if block.kind == "figure"
+    }
+    root = asset_root.resolve()
+    for page in document.pages:
+        for block in page.blocks:
+            for cell in block.cells:
+                for image in cell.images:
+                    path = (root / image.asset_path).resolve()
+                    if (
+                        image.id in owned
+                        or not image.asset_path.startswith("assets/")
+                        or not path.is_relative_to(root)
+                        or not path.is_relative_to(root / "assets")
+                        or not path.is_file()
+                        or not all(
+                            math.isfinite(value) and value > 0
+                            for value in (image.width_pt, image.height_pt)
+                        )
+                    ):
+                        raise ValueError("invalid cell image ownership or asset")
+                    owned.add(image.id)
 
 
 def validate_document(document: Document, asset_root: Path) -> None:
@@ -471,6 +543,7 @@ def validate_document(document: Document, asset_root: Path) -> None:
         ValueError: 本文の制御文字、欠損asset、表shapeまたは内部linkが不正な場合。
     """
 
+    _validate_cell_images(document, asset_root)
     # link検証より先に全ページの見出しを集め、後方参照も正しく解決する。
     anchors = {
         _anchor(block.id)
@@ -565,6 +638,7 @@ class MarkdownTask(BaseTask):
         """Markdownとresource directoryをまとめてatomic公開する。"""
 
         with self.measure():
+            validate_document(document, asset_root or output.parent)
             with atomic_directory(output.parent) as temporary:
                 _run_into(document, temporary / output.name, cover_path, asset_root)
             return output

@@ -61,6 +61,8 @@ def _apply(page: Page, mapping: dict[str, str], status: str, error: str | None) 
         block.final_caption = fixed(block.translated_caption)
         for cell in block.cells:
             cell.final = fixed(cell.translated)
+            for image in cell.images:
+                image.final_caption = fixed(image.translated_caption)
 
 
 def _translations(page: Page) -> list[tuple[str, str]]:
@@ -82,6 +84,12 @@ def _translations(page: Page) -> list[tuple[str, str]]:
             values.extend(
                 (item.id, item.text)
                 for item in cell.translated or []
+                if item.kind != "code"
+            )
+            values.extend(
+                (item.id, item.text)
+                for image in cell.images
+                for item in image.translated_caption or []
                 if item.kind != "code"
             )
     return values

@@ -23,9 +23,11 @@ from translate.common.workspace import (
     atomic_write_json,
     sha256_file,
 )
-from translate.document import Block, Document, Inline, Page, TableCell
+from translate.document import Block, CellImage, Document, Inline, Page, TableCell
 from translate.tasks import load, validate
 from translate.workflows import translation
+
+TEXT_TARGETS = ["body", "figure-caption", "table-caption", "cell", "cell-image-caption"]
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,10 +53,30 @@ def _document_with_unit(
     elif target in {"figure-caption", "table-caption"}:
         block.kind = "figure" if target == "figure-caption" else "table"
         block.asset_path = "figure.png"
-        block.cells = [TableCell(row=0, column=0)]
+        block.cells = [TableCell(row=0, column=0)] if target == "table-caption" else []
         block.caption = source
         block.translated_caption, block.final_caption = translated, final
         target_id += "/caption"
+    elif target in {"cell-image-caption", "cell-image-asset"}:
+        block.kind = "table"
+        block.cells = [
+            TableCell(
+                row=0,
+                column=0,
+                images=[
+                    CellImage(
+                        id="cell-image",
+                        asset_path="assets/figure.png",
+                        width_pt=20,
+                        height_pt=20,
+                        caption=source,
+                        translated_caption=translated,
+                        final_caption=final,
+                    )
+                ],
+            )
+        ]
+        target_id = "cell-image/caption"
     else:
         assert target == "cell"
         block.kind = "table"
@@ -73,7 +95,7 @@ def _document_with_unit(
     return Document(pages=[Page(number=2, blocks=[block])]), target_id
 
 
-@pytest.mark.parametrize("target", ["body", "figure-caption", "table-caption", "cell"])
+@pytest.mark.parametrize("target", TEXT_TARGETS)
 @pytest.mark.parametrize(
     "layers",
     [
@@ -105,6 +127,7 @@ def test_output_translation_is_required_for_every_text_unit(
         target, [Inline(id="source", text="PRIVATE-SOURCE")], layers
     )
     (tmp_path / "figure.png").write_bytes(b"asset fixture")
+    atomic_write_bytes(tmp_path / "assets/figure.png", b"asset fixture")
     report = tmp_path / "report.json"
     with pytest.raises(ValueError, match="missing translation") as caught:
         validate.run(document, tmp_path, report)
@@ -113,7 +136,7 @@ def test_output_translation_is_required_for_every_text_unit(
     assert not report.exists()
 
 
-@pytest.mark.parametrize("target", ["body", "figure-caption", "table-caption", "cell"])
+@pytest.mark.parametrize("target", TEXT_TARGETS)
 @pytest.mark.parametrize(
     "source",
     [
@@ -130,12 +153,13 @@ def test_empty_source_does_not_require_translation(
 
     document, _target_id = _document_with_unit(target, source, (None, None))
     (tmp_path / "figure.png").write_bytes(b"asset fixture")
+    atomic_write_bytes(tmp_path / "assets/figure.png", b"asset fixture")
     report = tmp_path / "report.json"
     validate.run(document, tmp_path, report)
     assert json.loads(report.read_text(encoding="utf-8"))["valid"] is True
 
 
-@pytest.mark.parametrize("target", ["body", "figure-caption", "table-caption", "cell"])
+@pytest.mark.parametrize("target", TEXT_TARGETS)
 @pytest.mark.parametrize(
     "layers",
     [
@@ -155,10 +179,11 @@ def test_nonempty_selected_translation_is_accepted(
         target, [Inline(id="source", text="42")], layers
     )
     (tmp_path / "figure.png").write_bytes(b"asset fixture")
+    atomic_write_bytes(tmp_path / "assets/figure.png", b"asset fixture")
     validate.run(document, tmp_path, tmp_path / "report.json")
 
 
-@pytest.mark.parametrize("target", ["body", "figure-caption", "table-caption", "cell"])
+@pytest.mark.parametrize("target", TEXT_TARGETS)
 def test_cover_text_units_are_excluded_from_translation_requirement(
     tmp_path: Path, target: str
 ) -> None:
@@ -169,10 +194,11 @@ def test_cover_text_units_are_excluded_from_translation_requirement(
     )
     document.pages[0].number = 1
     (tmp_path / "figure.png").write_bytes(b"asset fixture")
+    atomic_write_bytes(tmp_path / "assets/figure.png", b"asset fixture")
     validate.run(document, tmp_path, tmp_path / "report.json")
 
 
-@pytest.mark.parametrize("target", ["body", "figure-caption", "table-caption", "cell"])
+@pytest.mark.parametrize("target", [*TEXT_TARGETS, "cell-image-asset"])
 @pytest.mark.parametrize("existing_report", [False, True])
 def test_validate_public_failure_preserves_outputs_and_resumes(  # noqa: C901, PLR0915
     tmp_path: Path,
@@ -290,11 +316,16 @@ def test_validate_public_failure_preserves_outputs_and_resumes(  # noqa: C901, P
             translated=[Inline(id="neighbor/translated", text=markers[1])],
         )
     )
+    if target == "cell-image-asset":
+        image = document.pages[0].blocks[0].cells[0].images[0]
+        image.translated_caption = [Inline(id="translated", text="valid translation")]
+        image.asset_path = "assets/missing.png"
     artifact = paths.workspace / "verify" / "document.json"
     atomic_write_json(artifact, document.model_dump(mode="json"))
     reviews = paths.workspace / "review" / "findings.json"
     atomic_write_json(reviews, {})
     atomic_write_bytes(paths.workspace / "merge" / "figure.png", b"figure fixture")
+    atomic_write_bytes(paths.workspace / "merge/assets/figure.png", b"figure fixture")
     database = paths.workspace / "checkpoints.sqlite"
     # 前段全体の成功を偽装せず、このTestの開始位置だけを公式APIで合成する。
     with open_checkpoint(database) as saver:

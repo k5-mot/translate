@@ -95,6 +95,12 @@ def units(page: Page) -> list[tuple[str, str]]:
                 for item in cell.source
                 if item.text and item.kind != "code"
             )
+            values.extend(
+                (item.id, item.text)
+                for image in cell.images
+                for item in image.caption
+                if item.text and item.kind != "code"
+            )
     return values
 
 
@@ -120,6 +126,10 @@ def apply_translations(page: Page, mapping: dict[str, str]) -> None:
         block.translated_caption = translated(block.caption) if block.caption else None
         for cell in block.cells:
             cell.translated = translated(cell.source) if cell.source else None
+            for image in cell.images:
+                image.translated_caption = (
+                    translated(image.caption) if image.caption else None
+                )
 
 
 def _chunks(

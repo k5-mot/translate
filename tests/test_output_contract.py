@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING
 
 import pytest
 from PIL import Image
+from pydantic import ValidationError
 
 from translate.adapters import pandoc
 from translate.document import Block, Document, Inline, Page, TableCell
+from translate.tasks import markdown
 from translate.tasks.markdown import render_block, render_document
 
 if TYPE_CHECKING:
@@ -84,6 +86,219 @@ def test_markdown_preserves_heading_code_table_and_figure_structure() -> None:
     assert "+=" in rendered
     assert "assets/figure\\.png" in rendered
     assert 'fig-alt="図"' in rendered
+
+
+def _image_cell() -> TableCell:
+    """画像のID・寸法と三つのCaption層を持つセルの保存契約を作る。"""
+
+    return TableCell.model_validate(
+        {
+            "row": 1,
+            "column": 2,
+            "rowspan": 2,
+            "images": [
+                {
+                    "id": "picture/0",
+                    "asset_path": "assets/status.png",
+                    "width_pt": 19.25,
+                    "height_pt": 20.5,
+                    "alt_text": "status",
+                    "caption": [{"id": "cap", "text": "source"}],
+                    "translated_caption": [{"id": "cap", "text": "translation"}],
+                    "final_caption": [{"id": "cap", "text": "final"}],
+                }
+            ],
+        }
+    )
+
+
+def test_cell_image_survives_document_copy_and_json() -> None:
+    """セル画像を未知fieldとして捨てず、寸法・Caption各層・所属を往復保存する。"""
+
+    cell = _image_cell()
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[Block(id="table", order=0, kind="table", cells=[cell])],
+            )
+        ]
+    )
+    copied = document.model_copy(deep=True)
+    restored = Document.model_validate_json(copied.model_dump_json())
+    stored = restored.pages[0].blocks[0].cells[0].model_dump()
+    assert len(stored["images"]) == 1
+    assert stored["images"][0]["width_pt"] == 19.25
+    assert stored["images"][0]["height_pt"] == 20.5
+    assert stored["images"][0]["final_caption"][0]["text"] == "final"
+    assert stored["rowspan"] == 2
+    assert restored == document
+
+
+@pytest.mark.parametrize("dimension", ["width_pt", "height_pt"])
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_cell_image_rejects_invalid_dimensions(dimension: str, value: float) -> None:
+    """原本寸法にない零・負数・非有限値をPydantic保存境界で拒否する。"""
+
+    raw = {
+        "row": 0,
+        "column": 0,
+        "images": [
+            {
+                "id": "image",
+                "asset_path": "assets/status.png",
+                "width_pt": 20,
+                "height_pt": 20,
+                dimension: value,
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        TableCell.model_validate(raw)
+
+
+def test_cell_images_remain_inside_real_docx_table(tmp_path: Path) -> None:
+    """セル内画像を実Pandocへ渡し、位置・pt寸法・Captionと表外重複なしを検査する。"""
+
+    cell = _image_cell()
+    cell.row = 0
+    cell.column = 0
+    cell.rowspan = 1
+    cell.source = [Inline(id="cell-text", text="CELL TEXT")]
+    cell.images.append(cell.images[0].model_copy(update={"id": "picture/1"}))
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    Image.new("RGB", (40, 40), "green").save(assets / "status.png")
+    table = Block(id="table", kind="table", order=0, cells=[cell])
+    root, _ = _convert_table_fixture(table, tmp_path)
+    ns = {"w": pandoc.W_NS, "wp": pandoc.WP_NS}
+    rendered = root.find(".//w:tbl", ns)
+    assert rendered is not None
+    assert len(rendered.findall(".//w:drawing", ns)) == 2
+    assert len(root.findall(".//w:drawing", ns)) == 2
+    assert "CELL TEXT" in "".join(rendered.itertext())
+    assert "".join(rendered.itertext()).count("final") == 2
+    assert "source" not in "".join(rendered.itertext())
+    assert not rendered.findall(".//w:pStyle[@w:val='ImageCaption']", ns)
+    for extent in rendered.findall(".//wp:extent", ns):
+        assert abs(int(extent.attrib["cx"]) - 19.25 * 12700) <= 1
+        assert abs(int(extent.attrib["cy"]) - 20.5 * 12700) <= 1
+    markdown = (tmp_path / "table.md").read_text(encoding="utf-8")
+    assert "<img" not in markdown
+    assert "<table" not in markdown
+
+
+@pytest.mark.parametrize("merged_header", [False, True])
+def test_real_docx_image_only_row_and_merged_header_are_preserved(
+    tmp_path: Path, *, merged_header: bool
+) -> None:
+    """画像のみ本文を見出しへ吸収せず、見出し縦結合でもセル位置と画像を維持する。"""
+
+    image_cell = _image_cell()
+    image_cell.row, image_cell.column = (0 if merged_header else 1), 0
+    image_cell.rowspan, image_cell.header = (2 if merged_header else 1), merged_header
+    image_cell.images[0].caption = []
+    image_cell.images[0].translated_caption = None
+    image_cell.images[0].final_caption = None
+    cells = [
+        image_cell,
+        TableCell(
+            row=0, column=1, header=True, source=[Inline(id="header", text="HEADER")]
+        ),
+        TableCell(
+            row=1,
+            column=1,
+            source=[Inline(id="body", text="BODY")] if merged_header else [],
+        ),
+    ]
+    if not merged_header:
+        cells.append(
+            TableCell(
+                row=0,
+                column=0,
+                header=True,
+                source=[Inline(id="header2", text="HEADER2")],
+            )
+        )
+    (tmp_path / "assets").mkdir()
+    Image.new("RGB", (40, 40), "green").save(tmp_path / "assets/status.png")
+    table = Block(id="table", order=0, kind="table", cells=cells)
+    root, _ = _convert_table_fixture(table, tmp_path)
+    ns = {"w": pandoc.W_NS}
+    rows = root.findall(".//w:tbl/w:tr", ns)
+    assert len(rows) == 2
+    assert len(root.findall(".//w:drawing", ns)) == 1
+    assert rows[image_cell.row].find("w:tc/w:p/w:r/w:drawing", ns) is not None
+    assert rows[1].find("w:trPr/w:tblHeader", ns) is None
+    if merged_header:
+        assert rows[0].find("w:trPr/w:tblHeader", ns) is None
+        assert rows[0].find("w:tc/w:tcPr/w:vMerge[@w:val='restart']", ns) is not None
+        assert rows[0].find(".//w:rPr/w:b", ns) is not None
+    else:
+        assert rows[0].find("w:trPr/w:tblHeader", ns) is not None
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "missing",
+        "outside-assets",
+        "outside-root",
+        "absolute",
+        "dimension",
+        "duplicate-cell",
+        "duplicate-figure",
+        "non-table",
+        "broken-link",
+    ],
+)
+def test_cell_image_validation_preserves_previous_markdown(
+    tmp_path: Path, failure: str
+) -> None:
+    """保存後の破損をMarkdown公開境界でも拒否し、既存成果物を更新しない。"""
+
+    cell = _image_cell()
+    cell.row, cell.column, cell.rowspan = 0, 0, 1
+    block = Block(id="table", order=0, kind="table", cells=[cell])
+    document = Document(pages=[Page(number=2, blocks=[block])])
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "status.png").write_bytes(b"fixture")
+    (tmp_path / "private.png").write_bytes(b"private")
+    image = cell.images[0]
+    paths = {
+        "missing": "assets/missing.png",
+        "outside-assets": "assets/../private.png",
+        "outside-root": "assets/../../private.png",
+        "absolute": str(tmp_path / "private.png"),
+    }
+    if failure in paths:
+        image.asset_path = paths[failure]
+    elif failure == "dimension":
+        image.width_pt = float("nan")
+    elif failure == "duplicate-cell":
+        cell.images.append(image.model_copy(deep=True))
+    elif failure == "duplicate-figure":
+        document.pages[0].blocks.append(
+            Block(id=image.id, order=1, kind="figure", asset_path=image.asset_path)
+        )
+    elif failure == "non-table":
+        block.kind = "paragraph"
+    else:
+        image.final_caption = [
+            Inline(id="cap", kind="link", text="caption", href="#absent")
+        ]
+    output = tmp_path / "markdown/document.md"
+    output.parent.mkdir()
+    output.write_text("previous", encoding="utf-8")
+    before = document.model_dump_json()
+    with pytest.raises(
+        ValueError, match=r"invalid cell image|non-table|unresolved internal"
+    ):
+        markdown.run(document, output, asset_root=tmp_path)
+    assert output.read_text(encoding="utf-8") == "previous"
+    assert list(output.parent.iterdir()) == [output]
+    assert document.model_dump_json() == before
 
 
 def _fake_pandoc_run(*, valid: bool) -> Callable[..., subprocess.CompletedProcess[str]]:

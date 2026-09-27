@@ -31,6 +31,11 @@ def _translation_warnings(document: Document) -> list[dict[str, str]]:
                 block.translated_caption,
             ]
             groups.extend(cell.final or cell.translated for cell in block.cells)
+            groups.extend(
+                image.final_caption or image.translated_caption
+                for cell in block.cells
+                for image in cell.images
+            )
             for item in (item for group in groups for item in group or []):
                 if item.fix_status == "skipped" and item.id not in seen:
                     warnings.append(

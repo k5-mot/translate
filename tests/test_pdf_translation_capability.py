@@ -13,6 +13,7 @@ from translate.adapters import pandoc
 from translate.common.settings import load_settings
 from translate.document import (
     Block,
+    CellImage,
     Document,
     Finding,
     Inline,
@@ -42,8 +43,8 @@ if TYPE_CHECKING:
 
 
 @pytest.mark.parametrize("backend", ["llm", "libretranslate"])
-@pytest.mark.parametrize("location", ["body", "caption", "cell"])
-def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: PLR0915
+@pytest.mark.parametrize("location", ["body", "caption", "cell", "cell-image-caption"])
+def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: C901, PLR0915
     backend: Backend,
     location: str,
     tmp_path: Path,
@@ -66,6 +67,24 @@ def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: PLR
     elif location == "caption":
         block.caption = values
         block.cells = [TableCell(row=0, column=0)]
+    elif location == "cell-image-caption":
+        block.cells = [
+            TableCell(
+                row=0,
+                column=0,
+                images=[
+                    CellImage(
+                        id="image",
+                        asset_path="assets/image.png",
+                        width_pt=19,
+                        height_pt=21,
+                        caption=values,
+                    )
+                ],
+            )
+        ]
+        (tmp_path / "assets").mkdir()
+        Image.new("RGB", (40, 40), "green").save(tmp_path / "assets/image.png")
     else:
         block.cells = [TableCell(row=0, column=0, source=values)]
     document = Document(pages=[Page(number=2, blocks=[block])])
@@ -150,6 +169,17 @@ def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: PLR
     assert findings == checks
     fixed = fix.run(translated, findings, "rules", settings, tmp_path / "fix")
     verified = verify.run(fixed, findings, settings, tmp_path / "verify")
+    if location == "cell-image-caption":
+        image = verified.pages[0].blocks[0].cells[0].images[0]
+        assert (image.id, image.asset_path, image.width_pt, image.height_pt) == (
+            "image",
+            "assets/image.png",
+            19,
+            21,
+        )
+        assert image.caption == values
+        assert document.pages[0].blocks[0].cells[0].images[0].final_caption is None
+        validate.run(verified, tmp_path, tmp_path / "validate.json")
     assert calls == ["translate", "review", "fix", "verify"]
     rendered = markdown.render_document(verified)
     assert "print('U.S.')" in rendered
@@ -176,6 +206,120 @@ def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: PLR
     )
     assert stored_report["counts"] == {"warning/literal-reference": 1}
     assert stored_report["findings"] == [item.model_dump() for item in checks[2]]
+
+
+@pytest.mark.parametrize("failure", ["fix", "verify", "rejected"])
+def test_cell_image_caption_restores_initial_translation_on_failure(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """修正/検証失敗でセル画像Captionを初回訳へ戻し、警告と原本画像を保つ。"""
+
+    image = CellImage(
+        id="image",
+        asset_path="assets/image.png",
+        width_pt=19,
+        height_pt=21,
+        caption=[Inline(id="cap", text="source")],
+        translated_caption=[Inline(id="cap", text="initial")],
+    )
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="table",
+                        order=0,
+                        kind="table",
+                        cells=[TableCell(row=0, column=0, images=[image])],
+                    )
+                ],
+            )
+        ]
+    )
+    before = document.model_dump_json()
+    findings = {2: [Finding(kind="test", target_ids=["image/caption"], message="test")]}
+
+    def fix_response(*_args: object, **_kwargs: object) -> fix.FixResponse:
+        """FIX障害または有効な修正文を注入する。"""
+
+        if failure == "fix":
+            message = "private fix marker"
+            raise OSError(message)
+        return fix.FixResponse(revisions=[fix.Revision(id="cap", text="candidate")])
+
+    def verify_response(*_args: object, **_kwargs: object) -> verify.VerifyResponse:
+        """VERIFY障害または修正候補の不承認を注入する。"""
+
+        if failure == "verify":
+            message = "private verify marker"
+            raise OSError(message)
+        return verify.VerifyResponse(approved=failure != "rejected")
+
+    monkeypatch.setattr(fix, "structured", fix_response)
+    monkeypatch.setattr(verify, "structured", verify_response)
+    settings = settings_factory()
+    fixed = fix.run(document, findings, "rules", settings, tmp_path / "fix")
+    result = verify.run(fixed, findings, settings, tmp_path / "verify")
+    restored = result.pages[0].blocks[0].cells[0].images[0]
+    assert restored.final_caption is not None
+    assert restored.final_caption[0].text == "initial"
+    assert restored.final_caption[0].fix_status == "skipped"
+    assert "private" not in (restored.final_caption[0].fix_error or "")
+    assert (
+        restored.id,
+        restored.asset_path,
+        restored.width_pt,
+        restored.height_pt,
+    ) == ("image", "assets/image.png", 19, 21)
+    assert document.model_dump_json() == before
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/image.png").write_bytes(b"asset fixture")
+    report_path = tmp_path / "validate.json"
+    validate.run(result, tmp_path, report_path)
+    assert (
+        json.loads(report_path.read_text(encoding="utf-8"))["warnings"][0]["kind"]
+        == "fix-skipped"
+    )
+
+
+def test_structure_rejects_kind_change_hiding_cell_images() -> None:
+    """画像付き表のparagraph化を適用前に拒否して元の構造を保持する。"""
+
+    page = Page(
+        number=2,
+        blocks=[
+            Block(
+                id="table",
+                order=0,
+                kind="table",
+                cells=[
+                    TableCell(
+                        row=0,
+                        column=0,
+                        images=[
+                            CellImage(
+                                id="image",
+                                asset_path="assets/image.png",
+                                width_pt=19,
+                                height_pt=21,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    before = page.model_dump_json()
+    response = structure.StructureResponse(
+        patches=[structure.StructurePatch(block_id="table", kind="paragraph")]
+    )
+    with pytest.raises(ValueError, match="hide cell images"):
+        structure._apply(page, response)  # noqa: SLF001
+    assert page.model_dump_json() == before
 
 
 @pytest.mark.parametrize("failure", ["short", "long", "service"])

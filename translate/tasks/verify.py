@@ -42,6 +42,11 @@ def _revert(page: Page, error: str) -> None:
             for item in cell.final or []:
                 item.fix_status = "skipped"
                 item.fix_error = error
+            for image in cell.images:
+                image.final_caption = image.translated_caption
+                for item in image.final_caption or []:
+                    item.fix_status = "skipped"
+                    item.fix_error = error
 
 
 class VerifyTask(BaseTask):

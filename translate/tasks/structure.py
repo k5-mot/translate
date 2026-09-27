@@ -292,6 +292,8 @@ def _apply(page: Page, response: StructureResponse) -> list[dict[str, object]]:
             "alert_kind": block.alert_kind,
         }
         if patch.kind is not None:
+            if patch.kind != "table" and any(cell.images for cell in block.cells):
+                raise ValueError("structure change would hide cell images")
             block.kind = patch.kind
         block.level = patch.level if block.kind == "heading" else None
         block.alert_kind = patch.alert_kind if block.kind == "alert" else None

@@ -462,3 +462,5 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 利用者へ、所属セルを一意に特定できない場合に「Workflow停止・状態保持」（推奨）か「警告・表外保持で続行」かを再確認した。回答前に停止仕様／警告仕様のどちらも採用しない。新たな用語合意や採用判断はなく、Glossary／ADRも追加していない。表内画像の指摘と14/16 Taskの未完了判定を維持する。
 
 2026-09-27追記: 利用者は所属不明時の停止・再開状態保持を承認した。[preserve-table-cell-images](../preserve-table-cell-images/proposal.md)に、セル所属の確定、内部画像表現、既存Pandoc描画、所有不整合の停止、実受入の計画を作成した。今回は計画のみで製品Code未変更。表内画像の解決や14/16 Taskの受入完了とは扱わない。旧形式の移行や並存は追加しない。
+
+2026-09-27実装追記: [表内画像の実装・verify記録](../preserve-table-cell-images/verification.md)で、LOADによる自動所属、Captionの両Backend処理、既存Pandoc出力と失敗時Resumeを検証した。保存済みsample3から製品DOCXを一時生成し、10画像の正しい行列・画像hash一致・寸法差1 EMU以内・表外重複0を確認。全Testは1020 passed / 1 skipped。ただし新規Translation→Word PDF→Reviewと目視は未完了であり、本Changeの14/16判定を維持する。登録が共通LOADを使用するという別Changeの前提誤りも見つかり、経路変更/別Change化の判断待ちとしている。旧形式移行や互換実装を追加していない。
