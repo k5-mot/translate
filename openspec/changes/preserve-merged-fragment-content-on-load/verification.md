@@ -77,3 +77,7 @@
 同じ補助検証で2回目のPOSITIONの`body.children`順が変化し、reordered reportは1件だった。その他の上記collectionsは不変、追加結合は0件。現時点で原因を段組許容幅や特定の位置判定と断定しない。読み順アルゴリズム全体の変更は本ChangeのNon-Goalであり、検査を緩めて全体を合格とはしない。別の調査・是正計画で扱い、実受入前の残件として維持する。
 
 タスク3.1/3.2は未完了。LLMの直近確認は過去のHTTP 500で、その後の回復はこのターンでは未確認。現在も障害中と新たに測定した訳ではない。外部接続回復確認・新規実E2E・利用者目視が必要である。
+
+### POSITION-ORDER-001の後続計画（2026-09-27）
+
+原因は結合元の幅・左端の座標が次の段組推定から落ちることである。幅中央値変化と左端消失を別々の3要素fixtureで再現し、実sample3の座標統計とも照合した。[stabilize-reading-order-after-fragment-merge](../stabilize-reading-order-after-fragment-merge/proposal.md)に既存provを利用する是正仕様・設計・Taskを記録した。計画のみであり、本指摘も実受入も未完了に維持する。
