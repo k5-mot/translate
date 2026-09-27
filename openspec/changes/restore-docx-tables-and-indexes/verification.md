@@ -464,3 +464,26 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 2026-09-27追記: 利用者は所属不明時の停止・再開状態保持を承認した。[preserve-table-cell-images](../preserve-table-cell-images/proposal.md)に、セル所属の確定、内部画像表現、既存Pandoc描画、所有不整合の停止、実受入の計画を作成した。今回は計画のみで製品Code未変更。表内画像の解決や14/16 Taskの受入完了とは扱わない。旧形式の移行や並存は追加しない。
 
 2026-09-27実装追記: [表内画像の実装・verify記録](../preserve-table-cell-images/verification.md)で、LOADによる自動所属、Captionの両Backend処理、既存Pandoc出力と失敗時Resumeを検証した。保存済みsample3から製品DOCXを一時生成し、10画像の正しい行列・画像hash一致・寸法差1 EMU以内・表外重複0を確認。全Testは1020 passed / 1 skipped。ただし新規Translation→Word PDF→Reviewと目視は未完了であり、本Changeの14/16判定を維持する。登録が共通LOADを使用するという別Changeの前提誤りも見つかり、経路変更/別Change化の判断待ちとしている。旧形式移行や互換実装を追加していない。
+
+## 仮ヘッダー・フッターの出所と有効な参照を診断（2026-09-27）
+
+基点`53a8336`。登録経路の範囲確認とは独立した残件として、`openspec-propose`の事前調査を実施した。製品Code・同梱Template・既存成果物の変更や新しいChangeの作成は行っていない。
+
+### 読取り結果
+
+| 対象 | SHA-256 |
+| --- | --- |
+| `translate/templates/template.docx`（Git追跡済み製品Template） | `b093da1464a715da8bf76563cde0921c553bbdf5e9f18cceab04796653095cec` |
+| `outputs/sample3-acceptance-off-literals/document.ja.docx`（既存検証出力） | `78aeb3c5e50f8785e4a9b5dca1f64776355f9a96470ed090b357263764ca4d7d` |
+
+- 同梱Templateの`word/header1.xml`には「○○システム 基本設計書」「SYS-DS-001」が存在する。`header2.xml`は空である。
+- `footer1.xml`、`footer3.xml`、`footer4.xml`には「社外秘 / ○○株式会社」「2026/08/21」「最終更新」が存在する。`footer1.xml`には`STYLEREF 1 \\n`と`PAGE`、`footer3.xml`には`A-`と`PAGE`、`footer4.xml`には`SAVEDATE`のみがある。これらのheader/footerが既存生成DOCXにもコピーされている。
+- Templateの`sectPr`は12個、生成DOCXは1個。生成DOCXの有効な参照は、先頭header=`header2.xml`、既定header=`header1.xml`、先頭footer=`footer2.xml`、既定footer=`footer4.xml`。`titlePg`あり、`evenAndOddHeaders`なし。
+- したがって、単に「PAGE fieldを保持すればよい」とは言えない。現在の生成DOCXで本文ページが参照する`footer4.xml`にはPAGE field自体がない。ZIP内の未参照`footer1.xml`等にPAGEがあることと、表示されるページ番号を混同しない。
+- `translate/adapters/pandoc.py:create_docx`は渡されたTemplateをそのまま`--reference-doc`へ指定する。`_normalize_docx`の対象はdocument/settings/stylesと外部参照検査で、header/footerの仮文言除去ではない。翻訳Modelが仮文言を生成した根拠はなく、同梱Templateの継承で説明できる。
+
+### 設計前に確認する表示契約
+
+利用者へ、既定を「ヘッダーなし・フッターはページ番号のみ」（推奨）にするか、「ヘッダー・フッターともになし」にするかを確認した。利用者指定の独自Templateは変更しない案を併記した。これは外観だけでなくPAGE/STYLEREF/SAVEDATEの採否を変えるため、回答前に決め打ちしたTemplate置換や汎用的な文言削除処理を追加しない。
+
+本調査はZIP/XMLの読取りに限定し、Word操作・PDF生成・LLM/Embedding/Docling呼出しは0件。既存の未追跡`stabilize-word-pdf-export-layout`は表紙順・一覧・Field安全性のChangeであり、ヘッダー等の新しい採用契約を無断で追加しない。回答後に修正範囲を具体化し、実PandocとWord PDFの検査を含む別Changeを提案する。
