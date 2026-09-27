@@ -318,3 +318,5 @@ grillingの限定した読取りsub-agentが`position._rewrite_ref`と実`_merge
 同ChangeでPOSITIONの消費元整理・構造参照更新・曖昧な候補の保持を実装し、Taskは6/8完了。対象35 Test、全体924 passed, 1 skipped。保存済みsample3のMERGE Artifactを一時領域で再処理し、消費元23件、原文配列との本文payload不一致0件、POSITION再適用の追加結合0件を確認した。詳細・版hash・制限は[実装検証記録](../preserve-merged-fragment-content-on-load/verification.md)を参照する。元Runは変更せず、新規実Translation→Word PDF→Reviewと利用者目視は未完了である。
 
 補助検証では別のPOSITION-ORDER-001（再適用でbody.childrenの読み順が変化）も確認した。内容配列は不変だが、全指摘解消/全体受入の合格とはしない。読み順の原因調査と是正計画を次の作業に残す。
+
+2026-09-27追記: 後続Commit `65ef610`で同一ページの出典標本を保全する修正を実装した。全体935 passed / 1 skipped、保存済みsample3のPOSITION→NORMALIZE→LOADを3回適用して全JSON/Document一致を確認した。[後続verify](../stabilize-reading-order-after-fragment-merge/verification.md)ではTask 5/7、実E2Eと利用者目視が未完了のためarchive不可とした。読み順の局所再現は解消したが、本Change全体の実受入を完了させる証拠ではない。

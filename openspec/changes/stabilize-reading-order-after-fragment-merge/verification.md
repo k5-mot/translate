@@ -73,3 +73,38 @@ Run `01a0d8b6-c2ab-7c92-bed9-58403a8410b3` のMERGE JSONを読取り、所有す
 - 初回LOAD保存SHA-256: `f8394246ed3869c9540fced14e1d588448d5f47d7b109f7cdb1c89812269a57d`。
 
 POSITION-ORDER-001の再現ケースと保存済み実データで順序反転は解消した。ただし中間Artifactの補助検証であり、新規Translation→Word PDF→Reviewの成功や原本に対する読み順の正しさを意味しない。Taskは**5/7**、実E2Eと利用者目視・正式verify/archive/供給は未完了に維持する。
+
+## 2026-09-27 verify: 実装と仕様の照合
+
+実装Commit `65ef610`、schema `mysdd`。全4 Artifactを読取り、OpenSpec status/apply instructionsとCode/Testを照合した。statusの`isComplete`は計画Artifactの完備を示すだけで、実装Taskの完了数は5/7である。
+
+| 観点 | 結果 |
+| --- | --- |
+| Completeness | 5/7 Task。1 Requirementの実装あり。実受入・供給の2 Task未完了 |
+| Correctness | 4/4 Scenarioに自動Testあり。保存済み実データの補助検証あり。新規実成果物での受入は未実施 |
+| Coherence | 既存Module内の変更、同一ページprovの多重集合、代表位置の維持、既存sort/中央値の再利用を確認。新しい状態台帳や依存なし |
+
+### RequirementとScenarioの対応
+
+要求「断片結合後も読取り順を安定して保持する」は`translate/tasks/position.py:439`の`_reading_order`と同File`:168`の`_merge_metadata_safe`に対応する。
+
+| Scenario | 検査対象 |
+| --- | --- |
+| 結合により要素幅の分布が変わる | `tests/test_position_layout.py:352` のwidth条件、両座標原点、実LOADと3回一致 |
+| 結合元が段の左端位置を持つ | 同Testのleft条件。幅だけの対処では防げないケースを区別 |
+| 複数ページの出典を持つ候補 | `tests/test_position_layout.py:394`/`:460`、`tests/test_position_tables.py:327`。別ページ標本の除外、本文/表の未結合と警告 |
+| 欄外や同位置・欠損座標を含む文書を再処理する | `tests/test_position_layout.py:426`。Header/Footnote/Footer、同位置と欠損座標の安定順 |
+
+### 未完了指摘と判定
+
+- **CRITICAL V-1**: Task 3.1未完了。LLM接続を確認した後、新規推論OFF・逐次Translation→Word PDF→原本とのReviewを実行し、原本に対する内容と読み順を確認すること。保存済みArtifactの一致で代替しない。
+- **CRITICAL V-2**: Task 3.2未完了。最新Word/PDFを利用者へ提示し目視確認を得た後、残件と全証拠を確認して同期/archive・PR/CI・main merge/pushを行うこと。
+- 本変更のCode/設計照合で追加のWARNING/SUGGESTIONは検出していない。他ChangeのALIGN、表内画像、保存構成等の指摘を解決済みとする判定ではない。
+
+**判定: CRITICAL 2件、archive不可。** `openspec-verify-change`の完備性基準に従い、未実施の実受入を完了扱いにせずarchive手順を停止する。verify節更新後の`tests/test_documentation.py`は21 passed（0.30秒）、OpenSpec strictとgit diff --checkは成功した。
+
+### LLM接続の再確認（進行中）
+
+2026-09-27 02:51:49.929696 UTC（11:51:49 JST）、既存`_model`経由で短い合成要求を1件だけ開始した。reasoning=none、thinking=disabled、output_tokens=32、設定timeout=1800秒、SDK/外側retry=0。Settingsの接続を使用し、原文・画像・Embedding要求は送っていない。並行するPython/uv processがないことを開始直前に確認した。
+
+exec session **36205** は02:54:39 UTC時点で進行中、終了出力なし。失敗/成功はまだ判定できない。次回はこの同じsessionの終了を回収し、同じ要求を新規に重ねない。前日のHTTP 500を今回の結果とは扱わない。本文やCredentialを診断へ表示していない。
