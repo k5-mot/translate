@@ -308,3 +308,7 @@ grillingの限定した読取りsub-agentが`position._rewrite_ref`と実`_merge
 #### 未回答の判断と計画境界
 
 実データへの影響が確認できたため優先度は維持する。ただし「複数親・Caption/子要素の帰属が曖昧なとき、結合せず保持＋警告で続行するか、Workflowを停止するか」は未回答のまま。grill-with-docsの判断待ちとして、製品変更・方針を確定した新Change作成は行わない。推奨は前節と同じく前者で、これは曖昧な結合の回避であって、17件の再出現を許容する意味ではない。確定した結合元は一度だけ扱い、正当な未参照内容は保持するという修正目的を変えない。
+
+### CONTENT-MERGE-001の判断確定と是正計画（2026-09-27）
+
+前節の未回答状態は解消した。利用者は曖昧な結合について「結合せず内容保持＋警告で続行」を承認した。別Change [preserve-merged-fragment-content-on-load](../preserve-merged-fragment-content-on-load/proposal.md)に仕様・設計・実装Taskを作成した。結合元の再出現、共有参照、Caption/children、grid/cells、cell IDと一般文字列の保全を対象とする。今回は計画のみであり、CONTENT-MERGE-001と本Changeの実受入Taskはまだ完了にしない。
