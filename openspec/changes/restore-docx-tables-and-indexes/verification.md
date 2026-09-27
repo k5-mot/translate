@@ -460,3 +460,5 @@ Translationは先行Run `01a0d44f-1efa-7597-9d1b-0be4c5748b85`、Reviewは本節
 `TableCell`には画像を保持するfieldがないため、LOADで関連付けるだけでなく、Internal Documentの保存・再読込みでも保持できる契約が必要。既存`markdown._table_row()`は文字Inlineだけを描画し、`markdown._validate_block()`のasset存在検査と`validate._canonicalize_assets()`も独立Blockの`asset_path`だけを扱う。変更時はセル内画像も既存の検査・描画境界へ含め、割当済み画像を表外へ重複出力しないことを確認する必要がある。別保存Layerやcommon Module新設を必要とする根拠はない。
 
 利用者へ、所属セルを一意に特定できない場合に「Workflow停止・状態保持」（推奨）か「警告・表外保持で続行」かを再確認した。回答前に停止仕様／警告仕様のどちらも採用しない。新たな用語合意や採用判断はなく、Glossary／ADRも追加していない。表内画像の指摘と14/16 Taskの未完了判定を維持する。
+
+2026-09-27追記: 利用者は所属不明時の停止・再開状態保持を承認した。[preserve-table-cell-images](../preserve-table-cell-images/proposal.md)に、セル所属の確定、内部画像表現、既存Pandoc描画、所有不整合の停止、実受入の計画を作成した。今回は計画のみで製品Code未変更。表内画像の解決や14/16 Taskの受入完了とは扱わない。旧形式の移行や並存は追加しない。
