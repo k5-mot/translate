@@ -322,3 +322,23 @@ def test_table_children_keep_their_parent_and_content(tmp_path: Path) -> None:
     )
     assert len(loaded.pages[0].blocks) == 3
     assert inline_text(loaded.pages[0].blocks[-1].source) == "table child"
+
+
+def test_tail_page_match_does_not_move_table_to_another_page(tmp_path: Path) -> None:
+    """表の末尾出典が後続表と同じページでも代表ページが異なれば結合しない。"""
+
+    first, second = _table("#/tables/0", 0, 2), _table("#/tables/1", 52, 2)
+    first["prov"].append(copy.deepcopy(first["prov"][0]))
+    first["prov"][-1]["page_no"] = 2
+    second["prov"][0]["page_no"] = 2
+    document, report = _run(
+        tmp_path, first, second, {"pages": {"1": {"page_no": 1}, "2": {"page_no": 2}}}
+    )
+    assert document["tables"] == [first, second]
+    assert report["warnings"]
+    assert not report["merged"]
+    loaded = load.run(
+        normalize.run(tmp_path / "position/document.json", tmp_path / "normalize"),
+        tmp_path / "load",
+    )
+    assert [len(page.blocks) for page in loaded.pages] == [1, 1]

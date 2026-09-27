@@ -168,8 +168,15 @@ def _unsafe_merge_refs(document: dict[str, Any]) -> set[str]:
 def _merge_metadata_safe(first: dict[str, Any], second: dict[str, Any]) -> bool:
     """所有内容や異なる表示属性を黙って捨てる結合を拒否する。"""
 
+    first_geometry, second_geometry = _geometry(first), _geometry(second)
     owned = ("children", "captions", "caption", "title", "image")
-    if any(item.get(key) for item in (first, second) for key in owned):
+    # Matching tail coordinates alone must not move a fragment to another page.
+    if (
+        first_geometry is None
+        or second_geometry is None
+        or first_geometry[0] != second_geometry[0]
+        or any(item.get(key) for item in (first, second) for key in owned)
+    ):
         return False
     ignored = {"self_ref", "prov", "text", "orig"}
     if first.get("label") == "table":
@@ -452,10 +459,19 @@ def _reading_order(
     ordered: list[dict[str, Any]] = []
     for page in sorted(positioned):
         entries = positioned[page]
-        widths = [max(1.0, entry[3][2] - entry[3][1]) for entry in entries]
+        # Merges preserve provenance: count every same-page box, including equal boxes,
+        # so neither the median width nor the left-edge candidates lose samples.
+        samples = [
+            geometry
+            for _index, _child, item, _representative in entries
+            for provenance in item["prov"]
+            if (geometry := _geometry({"prov": [provenance]})) is not None
+            and geometry[0] == page
+        ]
+        widths = [max(1.0, geometry[2] - geometry[1]) for geometry in samples]
         tolerance = statistics.median(widths) * 0.6
         columns: list[float] = []
-        for left in sorted(entry[3][1] for entry in entries):
+        for left in sorted(geometry[1] for geometry in samples):
             if not columns or abs(left - columns[-1]) > tolerance:
                 columns.append(left)
 

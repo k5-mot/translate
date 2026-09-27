@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,8 @@ from translate.tasks import load, markdown, normalize, position
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from translate.document import Document
 
 
 def _item(
@@ -323,3 +326,156 @@ def test_duplicate_child_reference_does_not_merge_with_itself(tmp_path: Path) ->
     report = json.loads((result.parent / "report.json").read_text(encoding="utf-8"))
     assert report["warnings"]
     assert not report["merged"]
+
+
+def _repeat_position(
+    tmp_path: Path,
+    document: dict[str, object],
+) -> list[tuple[dict[str, object], Document, dict[str, object]]]:
+    """同じ文書へ実POSITIONを三回適用し、各回の文書・LOAD結果・reportを返す。"""
+
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    results = []
+    for index in range(3):
+        source = position.run(source, tmp_path / f"position-{index}")
+        positioned = json.loads(source.read_text(encoding="utf-8"))
+        normalized = normalize.run(source, tmp_path / f"normalize-{index}")
+        loaded = load.run(normalized, tmp_path / f"load-{index}")
+        report = json.loads((source.parent / "report.json").read_text(encoding="utf-8"))
+        results.append((positioned, loaded, report))
+    return results
+
+
+@pytest.mark.parametrize("case", ["width", "left"])
+@pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
+def test_fragment_geometry_keeps_reading_order_on_repeated_position(
+    tmp_path: Path,
+    case: str,
+    origin: str,
+) -> None:
+    """結合で幅分布や左端が変わっても元の出典を使い、再適用で段を反転させない。"""
+
+    boxes = (
+        [(0, 0, 100), (0, 12, 100), (80, -40, 300)]
+        if case == "width"
+        else [(20, 0, 100), (0, 12, 100), (70, -40, 100)]
+    )
+    items = []
+    for index, (left, top, width) in enumerate(boxes):
+        item = _item(f"#/texts/{index}", chr(65 + index), left, top)
+        box = item["prov"][0]["bbox"]
+        box["r"] = left + width
+        if origin == "BOTTOMLEFT":
+            box.update({"t": -top, "b": -top - 10, "coord_origin": origin})
+        items.append(item)
+    document = {
+        "schema_name": "DoclingDocument",
+        "pages": {"1": {"page_no": 1}},
+        "texts": items,
+        "body": {"children": [{"$ref": item["self_ref"]} for item in items]},
+    }
+    first, second, third = _repeat_position(tmp_path, document)
+    assert len(first[2]["merged"]) == 1
+    assert not second[2]["merged"]
+    assert first[0]["texts"] == second[0]["texts"]
+    assert [inline_text(block.source) for block in first[1].pages[0].blocks] == [
+        "A B",
+        "C",
+    ]
+    assert first[:2] == second[:2] == third[:2]
+    assert not second[2]["reordered"]
+    assert not third[2]["reordered"]
+
+
+@pytest.mark.parametrize(
+    "provenance", ["duplicate", "other_page", "invalid_extra", "invalid_first"]
+)
+def test_existing_provenance_uses_only_valid_representative_page_samples(
+    tmp_path: Path,
+    provenance: str,
+) -> None:
+    """既存の複数provは重複も数え、別ページ・不正座標を混入せず代表座標も昇格させない。"""
+
+    first = _item("#/texts/0", "A", 0, 0, "section_header")
+    second = _item("#/texts/1", "C", 80, -40)
+    second["prov"][0]["bbox"]["r"] = 380
+    extra = copy.deepcopy(first["prov"][0])
+    if provenance == "other_page":
+        extra["page_no"] = 2
+    if provenance == "invalid_extra":
+        extra = {"page_no": 1}
+    first["prov"].append(extra)
+    if provenance == "invalid_first":
+        first["prov"][0] = {"page_no": 1}
+    document = {
+        "schema_name": "DoclingDocument",
+        "pages": {"1": {"page_no": 1}, "2": {"page_no": 2}},
+        "texts": [first, second],
+        "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}]},
+    }
+    runs = _repeat_position(tmp_path, document)
+    assert runs[0][:2] == runs[1][:2] == runs[2][:2]
+    expected = ["A", "C"] if provenance == "duplicate" else ["C", "A"]
+    assert [
+        inline_text(block.source) for block in runs[0][1].pages[0].blocks
+    ] == expected
+    assert not runs[0][2]["merged"]
+
+
+def test_repeated_position_preserves_regions_ties_and_missing_boxes(
+    tmp_path: Path,
+) -> None:
+    """欄外優先・同位置と欠損座標の安定順を実LOADまで確認し、秘密markerを診断へ出さない。"""
+
+    items = [
+        _item("#/texts/0", "footer", 0, 200, "page_footer"),
+        _item("#/texts/1", "first tie", 0, 0),
+        _item("#/texts/2", "second tie", 0, 0),
+        _item("#/texts/3", "header", 0, -100, "page_header"),
+        _item("#/texts/4", "footnote", 0, 190, "footnote"),
+        {"self_ref": "#/texts/5", "label": "text", "text": "PRIVATE-MARKER-URL"},
+        {"self_ref": "#/texts/6", "label": "text", "text": "no box"},
+    ]
+    document = {
+        "schema_name": "DoclingDocument",
+        "pages": {"1": {"page_no": 1}},
+        "texts": items,
+        "body": {"children": [{"$ref": item["self_ref"]} for item in items]},
+    }
+    runs = _repeat_position(tmp_path, document)
+    assert runs[0][:2] == runs[1][:2] == runs[2][:2]
+    assert [item["$ref"] for item in runs[0][0]["body"]["children"]] == [
+        "#/texts/3",
+        "#/texts/1",
+        "#/texts/2",
+        "#/texts/4",
+        "#/texts/0",
+        "#/texts/5",
+        "#/texts/6",
+    ]
+    assert "PRIVATE-MARKER-URL" not in json.dumps([run[2] for run in runs])
+
+
+def test_tail_page_match_does_not_move_text_to_another_page(tmp_path: Path) -> None:
+    """末尾座標だけ一致する跨ページ候補は未結合で残し、ページ別本文を保持する。"""
+
+    first, second = _item("#/texts/0", "A", 0, 0), _item("#/texts/1", "B", 0, 12)
+    first["prov"].append(copy.deepcopy(first["prov"][0]))
+    first["prov"][-1]["page_no"] = 2
+    second["prov"][0]["page_no"] = 2
+    document = {
+        "schema_name": "DoclingDocument",
+        "pages": {"1": {"page_no": 1}, "2": {"page_no": 2}},
+        "texts": [first, second],
+        "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}]},
+    }
+    runs = _repeat_position(tmp_path, document)
+    assert runs[0][0] == document
+    assert runs[0][:2] == runs[1][:2] == runs[2][:2]
+    assert runs[0][2]["warnings"]
+    assert not runs[0][2]["merged"]
+    assert [
+        [inline_text(block.source) for block in page.blocks]
+        for page in runs[0][1].pages
+    ] == [["A"], ["B"]]

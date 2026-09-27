@@ -81,3 +81,7 @@
 ### POSITION-ORDER-001の後続計画（2026-09-27）
 
 原因は結合元の幅・左端の座標が次の段組推定から落ちることである。幅中央値変化と左端消失を別々の3要素fixtureで再現し、実sample3の座標統計とも照合した。[stabilize-reading-order-after-fragment-merge](../stabilize-reading-order-after-fragment-merge/proposal.md)に既存provを利用する是正仕様・設計・Taskを記録した。計画のみであり、本指摘も実受入も未完了に維持する。
+
+### POSITION-ORDER-001の実装修正（2026-09-27）
+
+後続Changeで段組の幅・左端標本を同じ代表ページの全有効provから得る修正を実装した。修正前に失敗した4ケースを含む対象46件と全体935件が成功し、同じ保存済みsample3の実POSITION→NORMALIZE→LOADを3回実行して全JSON/Document一致、二回目以降の並べ替え0件を確認した。[後続の検証記録](../stabilize-reading-order-after-fragment-merge/verification.md)にCode hashと結果を記載した。局所的な再現は解消したが、新規実E2Eと利用者目視は未完了であり、実受入まで解決済みとは扱わない。

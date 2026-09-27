@@ -4,7 +4,7 @@
 
 ## 2026-09-27 原因調査と計画
 
-状態: 計画のみ、実装Task 0/7。POSITION-ORDER-001は未解決。Code起点は`61868de`で、今回製品Code/Testは変更していない。既存の無関係な作業差分は保持した。
+計画時点の状態: 実装Task 0/7。POSITION-ORDER-001は未解決。Code起点は`61868de`で、この時点では製品Code/Testを変更していない。実装後の結果は後節に記載する。既存の無関係な作業差分は保持した。
 
 grill-with-docsによる調査として、main agentは現在の実装・Testと保存済みsample3の座標統計を確認し、限定したsub-agentは最小合成fixtureと成立条件を読取り/メモリ実行で独立に確認した。main agentも両最小fixtureを再現した。外部モデル/Docling/Wordは呼び出していない。
 
@@ -43,3 +43,33 @@ grill-with-docsによる調査として、main agentは現在の実装・Testと
 - OpenSpec strict validation: valid。
 - `uv run pytest tests/test_documentation.py -q`: 21 passed、0.32秒。
 - `git diff --check`: 指摘なし。新たな製品Code/Test差分なし。既存の無関係な差分、`.agents`、入力・成果物をコミット対象から除外する。
+
+## 2026-09-27 実装と回帰検証
+
+起点Commit `5717405`。POSITIONと既存の二つのPOSITION Testを変更した。段組推定は代表ページの全有効provから幅と左端の両方を集計し、同一座標も別標本として保持する。要素の代表位置は先頭provのままとし、別ページのprovを統計へ混ぜない。本文・表の結合前に代表ページ一致も検査する。
+
+### 自動Testと規約確認
+
+- 修正前: 幅中央値/左端消失 × TOPLEFT/BOTTOMLEFTの4ケースが失敗、18 deselected、1.40秒。結合件数1→0かつtexts不変でも再適用時の順序が反転した。
+- 修正後: 対象46 passed、2.34秒。実POSITION→NORMALIZE→LOADを3回繰り返し、文書・読み順の一致を検査した。同一prov重複、別ページprov、不正な追加/先頭prov、欄外、同位置、座標欠損、本文/表の代表ページ不一致を含む。
+- 全体: **935 passed, 1 skipped、54.48秒**（session 43254、exit 0）。Review/登録を含む既存回帰も成功した。
+- Ruff check、Ruff format（386 files）、ty、OpenSpec strict、git diff --check: 成功。
+- 変更関数とTest helperに目的説明あり。既存座標変換、`statistics.median`、安定sort、BaseTaskと保存処理を再利用した。新しいDependency/Module/永続制御状態/公開設定/互換分岐は0件。reportへ本文・秘密を新たに転記せず、合成marker検査も成功した。
+- この回帰検証ではLLM/Embedding/Docling/Wordへの外部要求を行っていない。
+
+検査対象SHA-256:
+
+- `translate/tasks/position.py`: `ced37c7eae1674a549ad9c051596443e15fffedd91aaa1fa2b2a82e3c26cb91b`
+- `tests/test_position_layout.py`: `db1137cabac84499a5e01de8e3b1224c18b3b9a4953ef5b4bdda261aa6de7802`
+- `tests/test_position_tables.py`: `f77bf245f6abce0d65f005af3aa66ab341ee772ffef0b7bbf7a4f34466e367ea`
+
+### 保存済みsample3の補助検証
+
+Run `01a0d8b6-c2ab-7c92-bed9-58403a8410b3` のMERGE JSONを読取り、所有する一時領域で実POSITION→NORMALIZE→LOADを3回実行した。元SHA-256は前後とも`989b39b390a42e5a99a94c349ab02cf18fa6f12fa7817d284b44090b4d5c70d6`。元Runを変更せず、一時領域は終了後に解放した。
+
+- POSITIONの全JSONとLOADのDocumentは3回とも完全一致。
+- 結合件数 `[23, 0, 0]`、並べ替え件数 `[3, 0, 0]`、警告件数 `[0, 0, 0]`、Block件数 `[135, 135, 135]`。
+- 3回共通POSITION SHA-256: `8079f7cf1d2228f9e23846e9c1ebbb98dbd7fdbfaabf57cf06325cfa2b0312be`。
+- 初回LOAD保存SHA-256: `f8394246ed3869c9540fced14e1d588448d5f47d7b109f7cdb1c89812269a57d`。
+
+POSITION-ORDER-001の再現ケースと保存済み実データで順序反転は解消した。ただし中間Artifactの補助検証であり、新規Translation→Word PDF→Reviewの成功や原本に対する読み順の正しさを意味しない。Taskは**5/7**、実E2Eと利用者目視・正式verify/archive/供給は未完了に維持する。
