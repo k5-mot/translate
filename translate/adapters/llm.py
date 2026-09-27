@@ -106,7 +106,7 @@ class LLMClient:
                 )
             except LLMOutputExceededError:
                 raise
-            except (json.JSONDecodeError, UnicodeError, ValidationError) as error:
+            except (ValueError, UnicodeError, ValidationError) as error:
                 last_error = error
                 if validation_retried or attempt >= self.config.llm_retry_attempts:
                     break
@@ -164,6 +164,9 @@ class LLMClient:
             "temperature": 0,
             "stream": False,
             "max_tokens": output_tokens,
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "thinking_budget_tokens": 0,
             "messages": [
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},
@@ -231,7 +234,7 @@ def _parse_content(content: str, mode: str, maximum_bytes: int) -> object:
     """応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。"""
 
     if len(content.encode("utf-8")) > maximum_bytes:
-        raise ValueError("LLM response exceeds byte limit")
+        raise LLMOutputExceededError("LLM response exceeds byte limit")
     value = content.strip()
     if mode == "prompt" and value.startswith("```json") and value.endswith("```"):
         value = value[7:-3].strip()

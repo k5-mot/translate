@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_args
 
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
@@ -22,8 +24,8 @@ from translate.artifact_store import (
     sha256_file,
     write_model,
 )
-from translate.models.artifacts import LLMCallArtifact, LLMTaskDiagnostics
-from translate.models.document import (  # noqa: TC001 - Pydantic runtime aliases.
+from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
+from translate.models.document import (
     AlertKind,
     Block,
     BlockKind,
@@ -35,6 +37,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from translate.common.config import Config
+
+
+# ローカルGemma VLMで安定して処理できる実測上限にpage画像を収める。
+MAX_VISION_PIXELS = 1_000_000
 
 
 class StructureModel(BaseModel):
@@ -77,13 +83,18 @@ def structure(
     _write_diagnostics(diagnostics_path, diagnostics)
     updated = document.model_copy(deep=True)
     client = LLMClient(config)
+    used_call_ids: list[str] = []
     for page in updated.pages:
         page_responses: list[tuple[str, StructureResponse]] = []
         image = task_directory / "pages" / f"page-{page.number:04d}.png"
         if not image.is_file():
             render_page(source_pdf, page.number, image, 144)
+        _bound_image(image)
+        overhead = len(rules.encode("utf-8")) + 2048
         chunks = _chunks(
-            page.blocks, config.structure_max_blocks, config.structure_input_tokens
+            page.blocks,
+            config.structure_max_blocks,
+            config.structure_input_tokens - overhead,
         )
         for index, blocks in enumerate(chunks):
             page_responses.extend(
@@ -98,9 +109,14 @@ def structure(
                     depth=0,
                 )
             )
+        used_call_ids.extend(call_id for call_id, _ in page_responses)
         _apply_page(page, page_responses, diagnostics)
         write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
     _write_diagnostics(diagnostics_path, diagnostics)
+    write_model(
+        task_directory / "call-index.json",
+        LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
+    )
     write_model(task_directory / "document.json", updated)
     return updated
 
@@ -142,6 +158,24 @@ def _block_bytes(blocks: list[Block]) -> int:
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) + 1024
 
 
+def _bound_image(path: Path) -> None:
+    """縦横比を保ったままSTRUCTURE画像を画素数上限内へ縮小する。"""
+
+    with Image.open(path) as source:
+        width, height = source.size
+        if width * height <= MAX_VISION_PIXELS:
+            return
+        scale = math.sqrt(MAX_VISION_PIXELS / (width * height))
+        resized = source.resize(
+            (max(1, math.floor(width * scale)), max(1, math.floor(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    try:
+        resized.save(path, format="PNG")
+    finally:
+        resized.close()
+
+
 def _execute(
     *,
     client: LLMClient,
@@ -167,6 +201,7 @@ def _execute(
             "rules": canonical_hash(rules),
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
+            "thinking": "disabled",
             "input_tokens": config.structure_input_tokens,
             "output_tokens": config.structure_output_tokens,
         }
@@ -321,9 +356,15 @@ def _schema(maximum_items: int) -> dict[str, object]:
                     "type": "object",
                     "properties": {
                         "block_id": {"type": "string"},
-                        "kind": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "enum": list(get_args(BlockKind)),
+                        },
                         "level": {"type": "integer"},
-                        "alert_kind": {"type": "string"},
+                        "alert_kind": {
+                            "type": "string",
+                            "enum": list(get_args(AlertKind)),
+                        },
                         "caption_source_id": {"type": "string"},
                     },
                     "required": ["block_id"],

@@ -47,6 +47,8 @@ def convert_document(
         if not source.is_file():
             continue
         relative = source.relative_to(asset_root)
+        if not relative.parts or relative.parts[0] != "assets":
+            continue
         target = output.parent / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)

@@ -6,16 +6,23 @@ import zipfile
 from typing import TYPE_CHECKING
 
 import pytest
+from PIL import Image as PILImage
 
 from translate.models.artifacts import ReviewResult
 from translate.models.document import Block, Document, Image, Page, TextSpan, TextUnit
-from translate.models.review import Revision, TextEdit
+from translate.models.review import ReviewTarget, Revision, TextEdit
 from translate.tasks.converter.unpack import _validate_entries
 from translate.tasks.preprocess.load import load_document
+from translate.tasks.preprocess.structure import (
+    MAX_VISION_PIXELS,
+    _bound_image,
+    _schema,
+)
 from translate.tasks.publisher.lint import lint
 from translate.tasks.review.align import align
 from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
+from translate.tasks.review.review import _chunks as review_chunks
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -222,3 +229,47 @@ def test_unpack_rejects_parent_path_before_extracting(tmp_path: Path) -> None:
         pytest.raises(ValueError, match="unsafe ZIP entry"),
     ):
         _validate_entries(archive.infolist(), tmp_path / "output")
+
+
+def test_structure_bounds_page_image_for_local_vlm(tmp_path: Path) -> None:
+    """STRUCTURE画像が縦横比を保ち、実測画素上限内へ縮小される。"""
+
+    path = tmp_path / "page.png"
+    PILImage.new("RGB", (2000, 1000), "white").save(path)
+
+    _bound_image(path)
+
+    with PILImage.open(path) as image:
+        assert image.width * image.height <= MAX_VISION_PIXELS
+        assert image.width / image.height == pytest.approx(2.0, rel=0.01)
+
+
+def test_structure_native_schema_constrains_enum_values() -> None:
+    """native structured outputがPydanticと同じBlock列挙値だけを許可する。"""
+
+    schema = _schema(1)
+    patches = schema["properties"]["patches"]  # type: ignore[index]
+    properties = patches["items"]["properties"]  # type: ignore[index]
+
+    assert "quote" not in properties["kind"]["enum"]
+    assert "blockquote" in properties["kind"]["enum"]
+
+
+def test_review_chunks_measure_compact_payload_without_duplicate_text() -> None:
+    """REVIEWの上限計算が同じ原文と訳文を重複して数えないことを確認する。"""
+
+    target = ReviewTarget(
+        id="target",
+        source="a" * 1500,
+        translation="訳" * 500,
+        target_ids=["unit"],
+        spans=[
+            TextSpan(
+                id="span",
+                source="a" * 1500,
+                translated="訳" * 500,
+            )
+        ],
+    )
+
+    assert review_chunks([target], 32, 5000) == [[target]]

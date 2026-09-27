@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 import pytest
 from pydantic import ValidationError
 
+from translate.adapters.llm import LLMClient
 from translate.artifact_store import canonical_hash, load_model, write_model
 from translate.common.config import Config, ConfigError, load_config
-from translate.models.artifacts import ArtifactFile, LLMTaskDiagnostics
+from translate.models.artifacts import ArtifactFile, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, Page, TextSpan, TextUnit
 
 if TYPE_CHECKING:
@@ -102,3 +103,30 @@ def test_document_json_uses_schema_version_one() -> None:
 
     assert document.schema_version == 1
     assert TextUnit(id="unit", spans=[]).text() == ""
+
+
+def test_llm_payload_disables_hidden_reasoning() -> None:
+    """ローカルLLMのhidden reasoningを全structured要求で無効化する。"""
+
+    client = LLMClient(Config(openai_base_url="http://llm"))
+
+    payload = client._payload(  # noqa: SLF001
+        model="model",
+        system="system",
+        user="user",
+        contract="contract",
+        native_schema={"type": "object"},
+        output_tokens=128,
+        image=None,
+    )
+
+    assert payload["reasoning_effort"] == "none"
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["thinking_budget_tokens"] == 0
+
+
+def test_llm_call_index_rejects_duplicate_ids() -> None:
+    """集約進捗の正本となる採用Call一覧に重複を許可しない。"""
+
+    with pytest.raises(ValidationError):
+        LLMCallIndex(task="REVIEW", call_ids=["call-1", "call-1"])

@@ -21,6 +21,10 @@ from translate.models.artifacts import (
     LLMCallArtifact,
     LLMTaskName,
     ProcessingError,
+    ReviewRecord,
+    TaskName,
+    TaskState,
+    TranslationRecord,
 )
 
 if TYPE_CHECKING:
@@ -34,6 +38,9 @@ class ArtifactError(RuntimeError):
 
 class ProcessingInUseError(RuntimeError):
     """同じ処理IDを別processが操作中であることを表す。"""
+
+
+ProcessingRecord = TranslationRecord | ReviewRecord
 
 
 def sha256_file(path: Path) -> str:
@@ -277,6 +284,139 @@ def describe_staged_artifact(
         sha256=sha256_file(staged_path),
         size_bytes=staged_path.stat().st_size,
     )
+
+
+def task_artifacts(
+    processing_directory: Path, task_directory: Path
+) -> list[ArtifactFile]:
+    """Task directory内の公開fileをpath順のArtifact一覧へ変換する。"""
+
+    return [
+        describe_artifact(processing_directory, path)
+        for path in sorted(task_directory.rglob("*"))
+        if path.is_file()
+    ]
+
+
+def reusable_task(
+    record: ProcessingRecord,
+    task: TaskName,
+    fingerprint: str,
+    processing_directory: Path,
+) -> bool:
+    """成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。"""
+
+    state = next((item for item in record.tasks if item.task == task), None)
+    if state is None or state.status != "succeeded" or state.fingerprint != fingerprint:
+        return False
+    return all(
+        (path := processing_directory / Path(artifact.relative_path)).is_file()
+        and sha256_file(path) == artifact.sha256
+        for artifact in state.artifacts
+    )
+
+
+def start_task(
+    record: ProcessingRecord,
+    record_path: Path,
+    task: TaskName,
+    fingerprint: str,
+) -> None:
+    """Taskをprocessingとして最上位記録へ追加または置換する。"""
+
+    state = TaskState(
+        task=task,
+        status="processing",
+        fingerprint=fingerprint,
+        started_at=datetime.now(UTC),
+    )
+    _replace_task(record, state)
+    record.status = "processing"
+    record.updated_at = datetime.now(UTC)
+    record.error = None
+    write_model(record_path, record)
+
+
+def finish_task(
+    record: ProcessingRecord,
+    record_path: Path,
+    task: TaskName,
+    fingerprint: str,
+    artifacts: list[ArtifactFile],
+    *,
+    skipped: bool = False,
+) -> None:
+    """Taskの成功または省略を成果物一覧とともに保存する。"""
+
+    existing = next((item for item in record.tasks if item.task == task), None)
+    state = TaskState(
+        task=task,
+        status="skipped" if skipped else "succeeded",
+        fingerprint=fingerprint,
+        started_at=existing.started_at if existing is not None else datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        artifacts=artifacts,
+    )
+    _replace_task(record, state)
+    record.updated_at = datetime.now(UTC)
+    write_model(record_path, record)
+
+
+def fail_task(
+    record: ProcessingRecord,
+    record_path: Path,
+    task: TaskName,
+    fingerprint: str,
+    error: BaseException,
+    *,
+    code: str = "task_failed",
+) -> None:
+    """実行中Taskと処理全体を本文なしの失敗情報で終了する。"""
+
+    existing = next((item for item in record.tasks if item.task == task), None)
+    processing_error = ProcessingError(
+        code=code,
+        message=f"{task.value} did not complete.",
+        cause_type=type(error).__name__,
+        retryable=True,
+    )
+    state = TaskState(
+        task=task,
+        status="failed",
+        fingerprint=fingerprint,
+        started_at=existing.started_at if existing is not None else datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+        error=processing_error,
+    )
+    _replace_task(record, state)
+    record.status = "failed"
+    record.updated_at = datetime.now(UTC)
+    record.error = processing_error
+    write_model(record_path, record)
+
+
+def cancel_processing(record: ProcessingRecord, record_path: Path) -> None:
+    """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。"""
+
+    now = datetime.now(UTC)
+    for index, state in enumerate(record.tasks):
+        if state.status == "processing":
+            record.tasks[index] = state.model_copy(
+                update={"status": "cancelled", "completed_at": now}
+            )
+    record.status = "cancelled"
+    record.updated_at = now
+    write_model(record_path, record)
+
+
+def _replace_task(record: ProcessingRecord, state: TaskState) -> None:
+    """同名Task状態を一つだけ維持し、未登録なら末尾へ追加する。"""
+
+    for index, current in enumerate(record.tasks):
+        if current.task == state.task:
+            record.tasks[index] = state
+            return
+    record.tasks.append(state)
 
 
 def processing_directory(outputs: Path, source: Path, processing_id: str) -> Path:

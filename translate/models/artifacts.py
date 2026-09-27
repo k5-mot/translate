@@ -141,6 +141,23 @@ class LLMTaskDiagnostics(ArtifactModel):
     _updated_aware = field_validator("updated_at")(_validate_aware)
 
 
+class LLMCallIndex(ArtifactModel):
+    """LLM Taskの最終結果へ実際に採用したCall ID一覧。"""
+
+    schema_version: Literal[1] = 1
+    task: LLMTaskName
+    call_ids: list[str]
+
+    @field_validator("call_ids")
+    @classmethod
+    def validate_unique_calls(cls, value: list[str]) -> list[str]:
+        """Call IDを出現順を保った重複なしの一覧へ限定する。"""
+
+        if len(value) != len(set(value)):
+            raise ValueError("call IDs must be unique")
+        return value
+
+
 class LLMCallArtifact(ArtifactModel):
     """一つの論理的なLLM要求の再開情報。"""
 

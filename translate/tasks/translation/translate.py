@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from translate.adapters.embedding import embed
 from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
+from translate.adapters.qdrant import search as search_qdrant
 from translate.artifact_store import (
     begin_llm_call,
     canonical_hash,
@@ -20,7 +22,7 @@ from translate.artifact_store import (
     mark_split_llm_call,
     write_model,
 )
-from translate.models.artifacts import LLMCallArtifact, LLMTaskDiagnostics
+from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, TextSpan, iter_text_units
 
 if TYPE_CHECKING:
@@ -66,7 +68,12 @@ def translate(
     _write_diagnostics(diagnostics_path, diagnostics)
     updated = document.model_copy(deep=True)
     client = LLMClient(config)
-    chunks = _chunks(updated, config.translate_max_units, config.translate_input_tokens)
+    overhead = len((rules + glossary).encode("utf-8")) + 2048
+    chunks = _chunks(
+        updated,
+        config.translate_max_units,
+        config.translate_input_tokens - overhead,
+    )
     responses: list[tuple[str, TranslationResponse]] = []
     for index, spans in enumerate(chunks):
         responses.extend(
@@ -102,6 +109,13 @@ def translate(
                 continue
             span.translated = item.text
     _write_diagnostics(diagnostics_path, diagnostics)
+    write_model(
+        task_directory / "call-index.json",
+        LLMCallIndex(
+            task="TRANSLATE",
+            call_ids=list(dict.fromkeys(call_id for call_id, _ in responses)),
+        ),
+    )
     write_model(task_directory / "document.json", updated)
     chunks_directory = task_directory / "chunks"
     for call_id, response in responses:
@@ -187,6 +201,7 @@ def _execute(
     target_ids = [span.id for span in spans]
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
+    rag = _rag_context(config, "\n".join(span.source for span in spans))
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
@@ -194,8 +209,10 @@ def _execute(
             "targets": [(span.id, span.source) for span in spans],
             "rules": canonical_hash(rules),
             "glossary": canonical_hash(glossary),
+            "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_translation_model,
             "mode": config.llm_structured_output_mode,
+            "thinking": "disabled",
             "input_tokens": config.translate_input_tokens,
             "output_tokens": config.translate_output_tokens,
         }
@@ -226,15 +243,7 @@ def _execute(
                 "Translate each English source into natural Japanese. Preserve IDs and "
                 "return JSON only.\n\n" + rules
             ),
-            user=json.dumps(
-                {
-                    "glossary": glossary,
-                    "items": [
-                        {"span_id": span.id, "source": span.source} for span in spans
-                    ],
-                },
-                ensure_ascii=False,
-            ),
+            user=_user_payload(spans, glossary, rag, config.translate_input_tokens),
             contract=(
                 'Return {"translations":[{"span_id":string,"text":string}]}. '
                 f"At most {len(spans)} items."
@@ -374,6 +383,42 @@ def _schema(maximum_items: int) -> dict[str, object]:
         "required": ["translations"],
         "additionalProperties": False,
     }
+
+
+def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
+    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。"""
+
+    if not query.strip() or not config.qdrant_enabled():
+        return []
+    vector = embed([query], config)[0]
+    return search_qdrant(config, vector, limit=5)
+
+
+def _user_payload(
+    spans: list[TextSpan],
+    glossary: str,
+    rag: list[dict[str, object]],
+    maximum_bytes: int,
+) -> str:
+    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。"""
+
+    selected = list(rag)
+    while True:
+        value = json.dumps(
+            {
+                "glossary": glossary,
+                "references": selected,
+                "items": [
+                    {"span_id": span.id, "source": span.source} for span in spans
+                ],
+            },
+            ensure_ascii=False,
+        )
+        if len(value.encode("utf-8")) <= maximum_bytes:
+            return value
+        if not selected:
+            raise ValueError("translation prompt exceeds input limit")
+        selected.pop()
 
 
 def _previous_attempts(directory: Path) -> int:

@@ -6,7 +6,9 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from translate.adapters.embedding import embed
 from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
+from translate.adapters.qdrant import search as search_qdrant
 from translate.artifact_store import (
     begin_llm_call,
     canonical_hash,
@@ -21,6 +23,7 @@ from translate.artifact_store import (
 from translate.models.artifacts import (
     CheckResult,
     LLMCallArtifact,
+    LLMCallIndex,
     LLMTaskDiagnostics,
     ReviewResult,
 )
@@ -57,8 +60,12 @@ def review(
     _write_diagnostics(diagnostics_path, diagnostics)
     client = LLMClient(config)
     responses: list[tuple[str, ReviewResponse, list[ReviewTarget]]] = []
+    # Schema・message形式へ1024 bytes、JSON wrapperへ256 bytesを予約する。
+    overhead = len((rules + glossary).encode("utf-8")) + 1280
     for index, chunk in enumerate(
-        _chunks(targets, config.review_max_targets, config.review_input_tokens)
+        _chunks(
+            targets, config.review_max_targets, config.review_input_tokens - overhead
+        )
     ):
         responses.extend(
             _execute(
@@ -129,6 +136,13 @@ def review(
             diagnostics.append(f"{call_id} revisions_limit")
     result = ReviewResult(findings=findings, revisions=revisions)
     _write_diagnostics(diagnostics_path, diagnostics)
+    write_model(
+        task_directory / "call-index.json",
+        LLMCallIndex(
+            task="REVIEW",
+            call_ids=list(dict.fromkeys(call_id for call_id, _, _ in responses)),
+        ),
+    )
     write_model(task_directory / "review.json", result)
     return result
 
@@ -162,8 +176,19 @@ def _chunks(
 def _target_bytes(targets: list[ReviewTarget]) -> int:
     """REVIEW promptへ渡す対象の保守的byte数を返す。"""
 
-    value = [target.model_dump(mode="json") for target in targets]
-    return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) + 1024
+    value = [_target_payload(target) for target in targets]
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+def _target_payload(target: ReviewTarget) -> dict[str, object]:
+    """重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。"""
+
+    return {
+        "id": target.id,
+        "source": target.source,
+        "target_ids": target.target_ids,
+        "spans": [{"span_id": span.id, "text": span.text()} for span in target.spans],
+    }
 
 
 def _execute(
@@ -183,6 +208,7 @@ def _execute(
     target_ids = [target.id for target in targets]
     call_id = llm_call_id("REVIEW", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
+    rag = _rag_context(config, "\n".join(target.source for target in targets))
     relevant_findings = [
         finding.model_dump(mode="json")
         for finding in checked.findings
@@ -199,8 +225,10 @@ def _execute(
             "check": relevant_findings,
             "rules": canonical_hash(rules),
             "glossary": canonical_hash(glossary),
+            "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_review_model,
             "mode": config.llm_structured_output_mode,
+            "thinking": "disabled",
             "input_tokens": config.review_input_tokens,
             "output_tokens": config.review_output_tokens,
         }
@@ -229,13 +257,12 @@ def _execute(
                 "Review English-to-Japanese translations. Return findings and optional "
                 "span-level revision suggestions as JSON only.\n\n" + rules
             ),
-            user=json.dumps(
-                {
-                    "glossary": glossary,
-                    "check_findings": relevant_findings,
-                    "targets": [target.model_dump(mode="json") for target in targets],
-                },
-                ensure_ascii=False,
+            user=_user_payload(
+                targets,
+                relevant_findings,
+                glossary,
+                rag,
+                config.review_input_tokens - len(rules.encode("utf-8")) - 1024,
             ),
             contract=(
                 '{"findings":[{"category":string,"severity":"info|warning|error",'
@@ -301,7 +328,10 @@ def _schema(config: Config) -> dict[str, object]:
                     "type": "object",
                     "properties": {
                         "category": {"type": "string"},
-                        "severity": {"type": "string"},
+                        "severity": {
+                            "type": "string",
+                            "enum": ["info", "warning", "error"],
+                        },
                         "target_ids": {
                             "type": "array",
                             "maxItems": config.review_max_targets,
@@ -342,6 +372,42 @@ def _schema(config: Config) -> dict[str, object]:
         "required": ["findings", "revisions"],
         "additionalProperties": False,
     }
+
+
+def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
+    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。"""
+
+    if not query.strip() or not config.qdrant_enabled():
+        return []
+    vector = embed([query], config)[0]
+    return search_qdrant(config, vector, limit=5)
+
+
+def _user_payload(
+    targets: list[ReviewTarget],
+    findings: list[dict[str, object]],
+    glossary: str,
+    rag: list[dict[str, object]],
+    maximum_bytes: int,
+) -> str:
+    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。"""
+
+    selected = list(rag)
+    while True:
+        value = json.dumps(
+            {
+                "glossary": glossary,
+                "references": selected,
+                "check_findings": findings,
+                "targets": [_target_payload(target) for target in targets],
+            },
+            ensure_ascii=False,
+        )
+        if len(value.encode("utf-8")) <= maximum_bytes:
+            return value
+        if not selected:
+            raise ValueError("review prompt exceeds input limit")
+        selected.pop()
 
 
 def _previous_attempts(directory: Path) -> int:
