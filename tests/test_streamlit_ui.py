@@ -136,7 +136,9 @@ def test_streamlit_registration_requires_confirmed_source_id(
             return b"guide"
 
     captured: dict[str, object] = {}
-    monkeypatch.setattr(main_v1.st, "file_uploader", lambda *_args, **_kwargs: [Upload()])
+    monkeypatch.setattr(
+        main_v1.st, "file_uploader", lambda *_args, **_kwargs: [Upload()]
+    )
     monkeypatch.setattr(main_v1.st, "text_input", lambda *_args, **_kwargs: "library")
     monkeypatch.setattr(main_v1.st, "checkbox", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(

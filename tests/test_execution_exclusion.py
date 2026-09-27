@@ -10,9 +10,17 @@ import pytest
 
 from translate_v1.common import lifecycle
 from translate_v1.common.lifecycle import FailureRecord, PreparedRun, PublicRunError
-from translate_v1.common.progress import ProgressEvent, TaskStatusEvent, report_task_status
+from translate_v1.common.progress import (
+    ProgressEvent,
+    TaskStatusEvent,
+    report_task_status,
+)
 from translate_v1.common.runs import RunRepository
-from translate_v1.common.workspace import OutputInUseError, OutputLock, atomic_write_json
+from translate_v1.common.workspace import (
+    OutputInUseError,
+    OutputLock,
+    atomic_write_json,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -1,7 +1,7 @@
 [project]
 name = "translate"
 version = "0.1.0"
-description = "Add your description here"
+description = "英語PDFを日本語MarkdownとDOCXへ変換するローカルLLM向けツール"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,6 +11,24 @@ dependencies = [
     "pypdfium2>=5.13.0,<6",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
+    "typer>=0.20.0",
+    "uuid-utils>=0.17.1,<1",
+]
+
+[project.optional-dependencies]
+qdrant = ["qdrant-client>=1.16.0,<2"]
+ui = ["streamlit>=1.64.0"]
+all = ["qdrant-client>=1.16.0,<2", "streamlit>=1.64.0"]
+
+[project.scripts]
+translate-ja = "translate.cli:app"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[dependency-groups]
+dev = [
     "langchain>=1.4.0,<2",
     "langchain-core>=1.4.0,<2",
     "langchain-openai>=1.6.0",
@@ -20,26 +38,26 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1",
     "langsmith>=0.3,<1",
     "langfuse>=3,<5",
-    "qdrant-client>=1.16.0,<2",
-    "streamlit>=1.64.0",
-    "typer>=0.20.0",
-    "typing-extensions>=4.16.0",
-    "uuid-utils>=0.17.1,<1",
-]
-
-[dependency-groups]
-dev = [
     "playwright>=1.63.0",
     "pytest>=9.1.1",
     "pytest-playwright",
     "ruff>=0.15.22",
     "ty>=0.0.61",
+    "qdrant-client>=1.16.0,<2",
+    "streamlit>=1.64.0",
 ]
+
+[tool.setuptools.package-data]
+translate = ["templates/*"]
+
+[tool.setuptools.packages.find]
+include = ["translate", "translate.*"]
 
 [tool.ruff]
 line-length = 88
 indent-width = 4
-extend-exclude = [".agents"]
+# translate_v1は移行対象外の参照実装として保持し、新実装の品質Gateから除外する。
+extend-exclude = [".agents", "translate_v1", "cli_v1.py"]
 
 [tool.ruff.lint]
 preview = true

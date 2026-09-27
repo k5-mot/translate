@@ -74,7 +74,9 @@ def test_cli_and_streamlit_resume_each_others_runs(
         atomic_write_bytes(result, artifact.read_bytes() + f":{backend}".encode())
         return result
 
-    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", fake_translation)
+    monkeypatch.setattr(
+        "translate_v1.common.lifecycle.run_translation", fake_translation
+    )
     monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
     monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
@@ -161,7 +163,9 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
         workspaces.append(_workspace)
         return len(sources)
 
-    monkeypatch.setattr("translate_v1.common.lifecycle.register_documents", fake_register)
+    monkeypatch.setattr(
+        "translate_v1.common.lifecycle.register_documents", fake_register
+    )
     monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
     monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     ui_source = tmp_path / "ui" / "guide.md"

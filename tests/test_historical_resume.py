@@ -19,7 +19,11 @@ from PIL import Image
 from translate_v1.adapters import llm
 from translate_v1.adapters.langfuse import bind_observation_context
 from translate_v1.common import lifecycle
-from translate_v1.common.lifecycle import PreparedRun, PublicRunError, execute_public_run
+from translate_v1.common.lifecycle import (
+    PreparedRun,
+    PublicRunError,
+    execute_public_run,
+)
 from translate_v1.common.logger import configure_logging
 from translate_v1.common.progress import TaskStatusEvent, bind_task_status
 from translate_v1.common.runs import RunRepository
