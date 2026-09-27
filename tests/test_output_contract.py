@@ -4,10 +4,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import xml.etree.ElementTree as ET
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 import pytest
@@ -21,6 +22,117 @@ from translate.tasks.markdown import render_block, render_document
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def _docx_entries(path: Path) -> dict[str, bytes]:
+    """OOXML部品を読み、参照先と未使用部品の双方を検査可能にする。"""
+    with zipfile.ZipFile(path) as archive:
+        return {name: archive.read(name) for name in archive.namelist()}
+
+
+def _assert_neutral_part(data: bytes, *, page_number: bool) -> None:
+    """仮文字列や自動更新を許さず、空部品または単一PAGEだけを認める。"""
+    root = ET.fromstring(data)  # noqa: S314
+    fields = [
+        node.text.strip() for node in root.iter(f"{pandoc.W}instrText") if node.text
+    ]
+    fields += [
+        node.get(f"{pandoc.W}instr", "").strip()
+        for node in root.iter(f"{pandoc.W}fldSimple")
+    ]
+    texts = [node.text for node in root.iter(f"{pandoc.W}t") if node.text]
+    assert fields == (["PAGE"] if page_number else [])
+    assert texts == (["1"] if page_number else [])
+    assert not list(root.iter(f"{pandoc.W}drawing"))
+    assert not list(root.iter(f"{pandoc.W}pict"))
+    assert all(f"{pandoc.W}dirty" not in node.attrib for node in root.iter())
+
+
+def _assert_active_neutral_parts(entries: dict[str, bytes]) -> None:
+    """有効なsection参照を解決し、未使用PAGEだけによる誤合格を防ぐ。"""
+    relation_id = (
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    )
+    relations = ET.fromstring(entries["word/_rels/document.xml.rels"])  # noqa: S314
+    targets = {
+        node.get("Id"): str(PurePosixPath("word") / node.attrib["Target"])
+        for node in relations
+    }
+    document = ET.fromstring(entries["word/document.xml"])  # noqa: S314
+    sections = list(document.iter(f"{pandoc.W}sectPr"))
+    assert sections
+    for section in sections:
+        references = {
+            (kind, node.attrib[f"{pandoc.W}type"]): targets[node.attrib[relation_id]]
+            for kind in ("header", "footer")
+            for node in section.findall(f"{pandoc.W}{kind}Reference")
+        }
+        assert ("header", "default") in references
+        assert ("footer", "default") in references
+        if section.find(f"{pandoc.W}titlePg") is not None:
+            assert ("header", "first") in references
+            assert ("footer", "first") in references
+        for (kind, role), name in references.items():
+            _assert_neutral_part(
+                entries[name], page_number=kind == "footer" and role != "first"
+            )
+
+
+def test_bundled_template_has_neutral_header_footer_parts() -> None:
+    """同梱資産の全部品と有効な参照先を検証する。"""
+    template = Path(__file__).parents[1] / "translate/templates/template.docx"
+    entries = _docx_entries(template)
+    _assert_active_neutral_parts(entries)
+    for name, data in entries.items():
+        if name.startswith(("word/header", "word/footer")) and name.endswith(".xml"):
+            _assert_neutral_part(
+                data,
+                page_number=name.startswith("word/footer")
+                and name != "word/footer2.xml",
+            )
+
+
+def test_real_docx_uses_neutral_active_footer(tmp_path: Path) -> None:
+    """実Pandoc出力でPAGEの有効参照と本文の類似文字列保持を確認する。"""
+    source = tmp_path / "source.md"
+    text = "○○システム 基本設計書 SYS-DS-001 社外秘 / ○○株式会社 2026/08/21 最終更新"
+    source.write_text(
+        f"# First\n\n{text}\n\n" + "Paragraph text.\n\n" * 150, encoding="utf-8"
+    )
+    output = tmp_path / "result.docx"
+    template = Path(__file__).parents[1] / "translate/templates/template.docx"
+    pandoc.create_docx(source, output, template)
+    entries = _docx_entries(output)
+    _assert_active_neutral_parts(entries)
+    root = ET.fromstring(entries["word/document.xml"])  # noqa: S314
+    assert text in "".join(root.itertext())
+    # 未参照部品にはPAGEが残るが、有効なfooter4だけ空にした負例。
+    entries["word/footer4.xml"] = entries["word/footer2.xml"]
+    with pytest.raises(AssertionError):
+        _assert_active_neutral_parts(entries)
+
+
+def test_real_docx_preserves_custom_header_footer(tmp_path: Path) -> None:
+    """独自テンプレートの正当な表示と入力Fileを変更しない。"""
+    bundled = Path(__file__).parents[1] / "translate/templates/template.docx"
+    entries = _docx_entries(bundled)
+    header = f'<w:hdr xmlns:w="{pandoc.W_NS}"><w:p><w:r><w:t>Custom Company</w:t></w:r></w:p></w:hdr>'
+    footer = f'<w:ftr xmlns:w="{pandoc.W_NS}"><w:p><w:r><w:t>Private footer</w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:ftr>'
+    entries["word/header1.xml"] = header.encode()
+    entries["word/footer4.xml"] = footer.encode()
+    template = tmp_path / "custom.docx"
+    with zipfile.ZipFile(template, "w") as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    before = hashlib.sha256(template.read_bytes()).hexdigest()
+    source = tmp_path / "source.md"
+    source.write_text("# Body\n\nContent.", encoding="utf-8")
+    output = tmp_path / "result.docx"
+    pandoc.create_docx(source, output, template)
+    actual = _docx_entries(output)
+    assert actual["word/header1.xml"] == entries["word/header1.xml"]
+    assert actual["word/footer4.xml"] == entries["word/footer4.xml"]
+    assert hashlib.sha256(template.read_bytes()).hexdigest() == before
 
 
 def test_markdown_preserves_heading_code_table_and_figure_structure() -> None:
