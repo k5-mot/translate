@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from translate.common.workspace import atomic_write_json
+from translate.document import block_text_units, inline_text
 from translate.tasks.base import BaseTask
 from translate.tasks.markdown import validate_document
 
@@ -44,18 +45,19 @@ def _translation_warnings(document: Document) -> list[dict[str, str]]:
 
 
 def _require_translations(document: Document) -> None:
-    """表紙以外の本文と表セルに訳文層があるか確認し、原文のある未翻訳要素では出力を止める。"""
+    """本文・Caption・セルの採用訳を検査し、非空白原文に対する空訳の公開を止める。"""
 
     for page in document.pages:
         if page.number == 1:
             continue
         for block in page.blocks:
-            if block.source and not (block.final or block.translated):
-                msg = f"missing translation: {block.id}"
-                raise ValueError(msg)
-            for index, cell in enumerate(block.cells):
-                if cell.source and not (cell.final or cell.translated):
-                    msg = f"missing table cell translation: {block.id}/cell/{index}"
+            for unit in block_text_units(block):
+                if not inline_text(unit.source).strip():
+                    continue
+                # 描画と同じくNoneだけを未作成とし、空の最終訳を初回訳で隠さない。
+                selected = unit.final if unit.final is not None else unit.translated
+                if selected is None or not inline_text(selected).strip():
+                    msg = f"missing translation: {unit.id}"
                     raise ValueError(msg)
 
 

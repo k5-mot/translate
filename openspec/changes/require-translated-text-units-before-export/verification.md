@@ -1,5 +1,39 @@
 <!-- markdownlint-disable MD013 MD041 -->
 
+## Apply検証（2026-09-27、基点e027e18）
+
+製品修正は`translate/tasks/validate.py`の訳文存在検査のみ。既存`block_text_units`と`inline_text`を使い、非空白原文に対する出力訳を`final is not None`の優先順位で検査する。Captionも対象とし、未作成・空配列・空文字・空白のみを拒否する。Page 1と空原文は除外する。新Module・Dependency・Schema・再開台帳は追加しない。セルIDは既存TextUnitの行列形式を使う。
+
+### 失敗先行と単体回帰
+
+- 修正前に既存4件と追加68ケースを実行し、**40 failed / 32 passed（0.43秒）**。Caption未検査、空の最終訳の見逃し、空文字/空白訳の通過、空原文の誤拒否を確認した。セル2ケースは旧Error文言/配列indexと、新しい共通文言/行列IDの差も失敗理由に含む。全40件を欠落見逃しとして数えない。
+- 修正後は同じTestが **72 passed（0.35秒）**。表紙・空原文・原文同一の数値訳、最終訳優先、line_breakのtext属性が描画されないことも確認する。
+
+### 公開失敗と別接続Resumeの合成試験
+
+本文・図Caption・表Caption・結合セルの4対象と、既存成功report有無の2条件を組み合わせた8ケースを追加した。実`prepare_run`/`execute_public_run`、実Translation Graph、実VALIDATE、実Markdown、永続SQLiteと既存checkpoint adapterを使う。SPLITで一度fixture初期化を停止し、公式`update_state(..., as_node="verify")`で合成の前段Artifact参照を与える。これは前段SPLIT〜VERIFYの正常実行を証明するTestではない。
+
+外部socket.connect/connect_exを禁止し、観測送信を無効化。表紙生成とDOCX変換だけは合成出力へ置換する。初回Testは合成COVERのmanifest不足で、正常訳に直した後のMARKDOWNが失敗した。fixtureへ製品COVER契約のmanifestを補い、製品Markdownの処理は変更していない。
+
+最終結果は **80 passed（5.17秒）**（単体72＋統合8）。全8ケースで次を確認した。
+
+- 初回の公開失敗TaskはVALIDATE。後続MARKDOWN/DOCX呼出0回、既存DOCX hash不変、新しい成功reportなし、既存report byte列不変、検証済みdocument/Markdown directoryの新規生成なし。
+- 失敗後のSQLite接続を閉じ、別接続で復元してnext=validate、pending writesのerrorあり、固定TaskErrorを確認した。
+- 本文・周辺訳文・認証の合成markerが公開Error/Failure、Run metadata、log、復元Checkpoint/pending writes、SQLite関連Fileへ追加保存されていない。文書Artifactは本文保存が責務のため漏えい走査から除外した。
+- Test所有の合成Artifactに正常訳を与えて公開Resumeし、VALIDATEは計2回、先行COVERは計1回、MARKDOWN/DOCXは各1回。nextは空、Run completed、Failure削除を確認した。これは製品の自動再翻訳や利用者Artifact書換え機能を追加するものではない。
+
+`langgraph-persistence`のthread/checkpointerと再開の手順に従った。新しいStoreや状態台帳は使わず、既存のローカルSQLiteを使用する。本ChangeにPostgreSQL導入は不要であり行わない。
+
+### 品質Gate
+
+6/8 tasks完了。全pytestはsession 58302で **893 passed / 1 skipped（56.01秒）、exit 0**。Ruff check成功、formatは376 files already formatted、ty成功、OpenSpec strict valid、git diff --check成功。既存のFIX skip/asset/TextUnit/Markdown/独立convert回帰を含む。実行時の既存未commit差分は保持したままであり、本Changeの差分としてcommitしない。
+
+検査対象SHA-256: `translate/tasks/validate.py`は`9f09726e72848bdd415e8e6b934ec1bb5eb62a6daa88befae1a5c1574d7ad85c`、`tests/test_validate_contract.py`は`976c07f83899b3f7c01eca348ea8aafec6e4fd94b0ef64bdb50e9d8bf18b4d0c`。目的説明を各追加関数に付け、製品は既存関数1件の変更とimportだけである。成果物・サンプル・.agents・他Changeの製品差分は本commitに含めない。
+
+### 実E2Eと残る条件
+
+Task 3.1/3.2は未完了。LLMの直近の単発確認はHTTP 500で失敗しており、復旧の連絡はまだない。今回の合成Testを実Translation→Word PDF→Comparison Reviewまたは利用者目視の代替としない。表内画像・ALIGN・POSITION・新保存構成・common整理も別途未完了。同期/archive・PR/CI・main merge/pushの条件は満たしていない。
+
 ## 方針承認と計画確定（2026-09-27）
 
 利用者が空訳停止を承認したため、proposalを更新し、pdf-translation delta、design、tasksを作成した。本文・Caption・表セルの非空白原文に対する出力訳の未作成/空配列/空文字/空白のみを拒否し、表紙と空原文を除外する。過去の「回答待ち」「Artifact未作成」は当時の記録であり、現在の計画状態ではない。
