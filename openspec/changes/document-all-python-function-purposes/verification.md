@@ -312,3 +312,9 @@ grillingの限定した読取りsub-agentが`position._rewrite_ref`と実`_merge
 ### CONTENT-MERGE-001の判断確定と是正計画（2026-09-27）
 
 前節の未回答状態は解消した。利用者は曖昧な結合について「結合せず内容保持＋警告で続行」を承認した。別Change [preserve-merged-fragment-content-on-load](../preserve-merged-fragment-content-on-load/proposal.md)に仕様・設計・実装Taskを作成した。結合元の再出現、共有参照、Caption/children、grid/cells、cell IDと一般文字列の保全を対象とする。今回は計画のみであり、CONTENT-MERGE-001と本Changeの実受入Taskはまだ完了にしない。
+
+### CONTENT-MERGE-001の実装結果（2026-09-27、実受入待ち）
+
+同ChangeでPOSITIONの消費元整理・構造参照更新・曖昧な候補の保持を実装し、Taskは6/8完了。対象35 Test、全体924 passed, 1 skipped。保存済みsample3のMERGE Artifactを一時領域で再処理し、消費元23件、原文配列との本文payload不一致0件、POSITION再適用の追加結合0件を確認した。詳細・版hash・制限は[実装検証記録](../preserve-merged-fragment-content-on-load/verification.md)を参照する。元Runは変更せず、新規実Translation→Word PDF→Reviewと利用者目視は未完了である。
+
+補助検証では別のPOSITION-ORDER-001（再適用でbody.childrenの読み順が変化）も確認した。内容配列は不変だが、全指摘解消/全体受入の合格とはしない。読み順の原因調査と是正計画を次の作業に残す。
