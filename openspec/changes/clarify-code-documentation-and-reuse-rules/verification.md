@@ -124,3 +124,36 @@ task 3.1の実現手段を確認するため、既存のLangGraph 1.2.11 / check
 - 製品の独自状態を廃止する実装は未着手。旧UUIDv7移行・全操作の保存形式・責務配置の判断も未確定であり、tasks 3.1〜3.4は未完了に維持する。これを実translation→Word PDF→reviewの代替証拠にはしない。
 
 追記後の既存文書/Workflow state Testは28 passed（2.22秒）、本ChangeのOpenSpec strict検査はvalid、git diff --checkは指摘なし。試験用TemporaryDirectoryの残存0件を確認した。製品コード未変更のため全製品suiteは再実行していない。
+
+## 成功済みArtifactの欠損・改変と再検証位置（2026-09-27）
+
+基点`4915bc6`。直前Goal Turnは仮ヘッダーの出所と有効参照を確定したため進捗ありと分類した。表示契約・登録経路・具体的なModule配置の回答を推測せず、未確認だったArtifact整合性の境界を合成実行で確認した。
+
+`langgraph-persistence`を全文参照し、thread内Checkpointと外部Fileの責務を区別した。既存のLangGraph 1.2.11 / checkpoint 4.2.0 / sqlite 3.1.1を使用し、新しいStore、Service、依存、製品Code、Test Fileは追加していない。
+
+### 未完了GraphのResume
+
+START→pages→ENDのStateGraphで、Page 1/2/3の`@task`を逐次`.result()`で待つ。Taskは既存`atomic_write_text`で専用TemporaryDirectoryへ合成Fileを保存し、pathと`sha256_file`のhashだけを返す。初回はPage 3で安全な固定例外を発生させ、呼出列`[1,2,3]`、next=`pages`を確認した。その後、**試験が作ったPage 1だけ**を欠損/改変させ、SQLite接続を閉じて開き直し、同じthreadをResumeした。
+
+| 検査位置 | Page 1欠損時 | Page 1改変時 | Resume中のTask呼出 |
+| --- | --- | --- | --- |
+| 検査なし | 不正Artifact参照を含んだままGraph終了 | 同左 | `[3]` |
+| 成功したdurable Taskの内部のみ | Task自体が再実行されず見逃す | 同左 | `[3]` |
+| `.result()`でCheckpoint由来の参照を受け取った直後 | `ArtifactIntegrityError`で停止、next=`pages` | 同左 | `[]` |
+
+受領直後に検査する2ケースでは、試験所有Fileを元の内容に戻すと`[3]`だけを実行して正常終了した。Page 1/2の再実行、独立した完成一覧、hash一致による独自skipは不要だった。hashはFile整合性の検査にだけ使い、再開位置はLangGraphに任せた。
+
+6ケースすべてで外部socket接続を禁止し、`max_concurrency=1`、`durability="sync"`を使用した。専用TemporaryDirectory内の対象を解決・検査してから欠損/改変させ、利用者Artifactや旧Runは変更していない。SQLite関連Fileに合成本文markerがないことを確認した。これは同一process内の別SQLite接続による検査であり、先行の別process/強制終了試験とは区別する。
+
+### 完了済みGraphからの結果取得
+
+別の合成Graphで、durable Taskの結果受領後にhash検査して正常完了させた。出力を改変してから別SQLite接続の`invoke(None)`を呼ぶと、node/Taskが0回のまま保存済み参照が返り、nextは空のままだった。Graphから返った参照を公開境界で検査すると、改変を拒否できた。
+
+したがって、再開node内の検査だけでは完了済みGraphの再取得を保護できない。これはLangGraphが外部Fileを管理するという契約ではなく、Fileを受け渡す製品境界が検証すべき問題である。再開状態をFile存在や別の完了一覧から作り直す理由にはならない。
+
+### 現行Codeとの照合と引継ぎ
+
+- `translation.py:519`はnextなし・保存path存在でDOCXを返し、内容hashを照合していない。`comparison_review.py:457`もnextなし・出力存在で戻る。欠損時にはinitialを再投入する分岐であり、新構成のArtifact整合性Error方針と合わせて整理が必要である。これは当該Codeの読取り結果であり、現行公開CLIで欠損/改変の実再現を完了したという主張ではない。
+- `common/lifecycle.py:395`のexportは独立Run statusとFile列挙に依存し、Graph由来の成果物参照との整合性を検証していない。outputsへの単なる改名移動では、この重複状態を解消できない。
+- 新構成の計画では、Checkpointに保存した参照の受領直後と、完了結果の取得/export境界で同じArtifact読取り契約を使う必要がある。Task内部の独自Page/Chunk Cacheへ検査を押し込んで残さない。既存loader/saver/hashの責務へ寄せ、別の完了一覧や再開Cacheを作らない。
+- 試験終了後の一時Fileはcleanup済み。製品Code/保存rootの変更、旧形式移行、実Translation/Word PDF/Reviewは行っていない。Task 3.1〜3.4は未完了。具体的な配置と公開境界の設計を承認済みへ昇格させず、正式是正Changeへ引き継ぐ。
