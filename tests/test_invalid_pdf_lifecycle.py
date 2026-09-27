@@ -7,23 +7,25 @@ from typing import TYPE_CHECKING
 import pypdfium2 as pdfium
 import pytest
 
-from translate.adapters import pdf
-from translate.common.lifecycle import (
+from translate_v1.adapters import pdf
+from translate_v1.common.lifecycle import (
     PublicRunError,
     execute_public_run,
     load_failure,
     prepare_run,
 )
-from translate.common.runs import Operation, RunRepository
+from translate_v1.common.runs import Operation, RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _templates(root: Path) -> Path:
+    """公開操作の準備に必要なTemplate群を用意し、PDF不正の検証と設定不足を切り離す。"""
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -33,6 +35,8 @@ def _templates(root: Path) -> Path:
 
 
 def _valid_pdf(path: Path) -> Path:
+    """PDFiumで一ページの有効なPDFを作り、不正入力と比較する正常側のfixtureに使う。"""
+
     with pdfium.PdfDocument.new() as document:
         document.new_page(100, 100)
         document.save(path)
@@ -58,7 +62,7 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """空・暗号化・破損・読取り不能PDFはrole付きで停止する。"""
+    """空・破損PDFと注入した暗号化/読取り障害をrole付きで保存し、再開準備を確認する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
@@ -92,6 +96,10 @@ def test_invalid_pdf_creates_resumable_failed_run_without_output(  # noqa: PLR09
         original_validate = pdf.validate
 
         def injected_validate(path: Path) -> None:
+            """
+            指定入力だけ暗号化相当または読取り不能の例外を返し、他のPDFは通常検証する。
+            """
+
             if path.name == invalid.name:
                 error_type = (
                     PermissionError if invalid_kind == "unreadable" else OSError

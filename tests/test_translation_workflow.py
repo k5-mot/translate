@@ -2,27 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import pytest
+from langgraph.checkpoint.sqlite import SqliteSaver
 
-from translate.common.progress import bind_task_status
-from translate.common.workspace import (
+from translate_v1.common.progress import bind_task_status
+from translate_v1.common.workspace import (
     atomic_write_bytes,
     atomic_write_json,
     atomic_write_text,
 )
-from translate.document import Document, Finding, Page
-from translate.workflows import translation
+from translate_v1.document import Document, Finding, Page
+from translate_v1.workflows import translation
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
     from pathlib import Path
 
-    from translate.common.progress import ProgressEvent, TaskStatusEvent
-    from translate.common.settings import Settings
+    from translate_v1.common.progress import ProgressEvent, TaskStatusEvent
+    from translate_v1.common.settings import Settings
 
 
 EXPECTED_NODES = {
@@ -56,7 +59,7 @@ def test_translation_graph_exposes_each_task_node(
 
 
 def test_failed_status_copies_safe_structure_diagnostics() -> None:
-    """Workflow wrapperはpage、target、stageおよびcause typeをEventへ移す。"""
+    """例外に付けた位置・stage・cause・出力切断理由・usageが失敗Eventへ移る。"""
 
     error = RuntimeError("raw response")
     error.page = 7  # type: ignore[attr-defined]
@@ -82,10 +85,15 @@ def test_failed_status_copies_safe_structure_diagnostics() -> None:
     assert status.total_tokens == 30
 
 
+@pytest.mark.parametrize("legacy_checkpoint", [False, True])
+@pytest.mark.parametrize("reasoning_mode", ["task-default", "off"])
 def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    reasoning_mode: str,
+    *,
+    legacy_checkpoint: bool,
 ) -> None:
     """両Backend、Finding分岐、COVER失敗からのResumeを一貫して処理する。"""
 
@@ -105,12 +113,19 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         detached: bool = False,
         **_kwargs: object,
     ) -> Iterator[None]:
+        """
+        実SDKの代わりに観測名とdetached指定を記録し、WorkflowとTaskの観測境界を検証する
+        。
+        """
+
         observations.append((name, detached))
         yield
 
     def fake_split(
         _source: Path, output_dir: Path, _pages: int, *, role: str
     ) -> dict[str, list[dict[str, str]]]:
+        """入力roleとbackend別の分割回数を記録し、後続nodeへダミーpartを渡す。"""
+
         assert role == "source"
         counts[f"{output_dir.parents[1].name}_split"] += 1
         part = output_dir / "part.pdf"
@@ -120,26 +135,39 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     def fake_docling(
         _parts: list[Path], output_dir: Path, _settings: object
     ) -> list[Path]:
+        """外部送信をせず応答ZIPの代替Fileを作り、翻訳Graphの接続を検証可能にする。"""
+
         archive = output_dir / "result.zip"
         atomic_write_bytes(archive, b"archive")
         return [archive]
 
     def fake_unpack(archives: list[Path]) -> list[Path]:
+        """ZIP解析なしで文書JSONを用意し、Taskの実行順の検証に必要なpathを返す。"""
+
         path = archives[0].parent / "document.json"
         atomic_write_json(path, {})
         return [path]
 
     def fake_merge(_documents: list[Path], _source: Path, output_dir: Path) -> Path:
+        """統合結果の代替JSONを保存し、下流のnodeが参照できるpathを返す。"""
+
         path = output_dir / "document.json"
         atomic_write_json(path, {})
         return path
 
     def passthrough(_source: Path, output_dir: Path) -> Path:
+        """
+        POSITIONとNORMALIZEの代わりにJSONを保存し、分岐・再開Testを文書内容から独立させ
+        る。
+        """
+
         path = output_dir / "document.json"
         atomic_write_json(path, {})
         return path
 
     def fake_load(_source: Path, output_dir: Path) -> Document:
+        """後続nodeが読める共通文書Artifactを作り、同じ文書Modelを返す。"""
+
         atomic_write_json(
             output_dir / "document.json", document.model_dump(mode="json")
         )
@@ -152,19 +180,31 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         _settings: Settings,
         output_dir: Path,
     ) -> Document:
+        """構造推定の呼出数を数え、入力文書を保存して再開後の重複実行を検出する。"""
+
         counts["structure"] += 1
         atomic_write_json(output_dir / "document.json", value.model_dump(mode="json"))
         return value
 
     def fake_translate(value: Document, *_args: object) -> Document:
+        """
+        文書を変更せずLLM翻訳の呼出数だけ数え、backend選択と再開による再実行を検証する。
+        """
+
         counts["llm"] += 1
         return value
 
     def fake_translate_lite(value: Document, *_args: object) -> Document:
+        """
+        文書を変更せずLibreTranslateの呼出数だけ数え、排他的なbackend選択を検証する。
+        """
+
         counts["libretranslate"] += 1
         return value
 
     def fake_check(*_args: object) -> dict[int, list[Finding]]:
+        """決定的検査の指摘を0件に固定し、Review結果による分岐だけを試験対象とする。"""
+
         return {}
 
     def fake_review(
@@ -175,19 +215,29 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         _settings: object,
         output_dir: Path,
     ) -> dict[int, list[Finding]]:
+        """LLM側だけ指摘を返し、FIX・VERIFY実行と指摘なしskipの両方を検証する。"""
+
         if output_dir.parents[1].name == "llm":
             return {2: [Finding(kind="test", message="finding")]}
         return {}
 
     def fake_fix(value: Document, *_args: object) -> Document:
+        """
+        文書を変更せず修正Taskの呼出数を数え、指摘がある場合だけ実行されるか調べる。
+        """
+
         counts["fix"] += 1
         return value
 
     def fake_verify(value: Document, *_args: object) -> Document:
+        """文書を変更せず修正検証の呼出数を数え、分岐とResumeによる重複実行を調べる。"""
+
         counts["verify"] += 1
         return value
 
     def fake_cover(_source: Path, output: Path) -> Path:
+        """LLM側の初回COVERだけ失敗させ、再開時とLibre側では代替画像を保存する。"""
+
         nonlocal cover_failed
         mode = output.parents[2].name
         counts[f"{mode}_cover"] += 1
@@ -199,14 +249,22 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
         return output
 
     def fake_validate(value: Document, _assets: Path, output: Path) -> Document:
+        """検証成功のreportを保存して文書を返し、Graph終端まで進める。"""
+
         atomic_write_json(output, {"valid": True})
         return value
 
     def fake_markdown(_document: Document, output: Path, *_args: object) -> Path:
+        """公開直前のMarkdownの代替Fileを保存し、後続DOCX nodeへpathを返す。"""
+
         atomic_write_text(output, "markdown")
         return output
 
     def fake_docx(_markdown: Path, output: Path, _template: Path) -> Path:
+        """
+        固定byte列のDOCX代替成果物を保存し、Workflow完了とResume結果を確認可能にする。
+        """
+
         atomic_write_bytes(output, b"docx")
         return output
 
@@ -235,18 +293,37 @@ def test_translation_branches_skip_and_resume_from_cover(  # noqa: C901, PLR0915
     templates.mkdir()
     for name in ("structure", "translation", "review"):
         (templates / f"{name}-rules.md").write_text("rules", encoding="utf-8")
-    settings: Settings = settings_factory(templates_dir=templates)
+    settings: Settings = settings_factory(
+        templates_dir=templates, reasoning_mode=reasoning_mode
+    )
     source = tmp_path / "source.pdf"
     source.write_bytes(b"source")
 
     with bind_task_status(statuses.append):
-        with pytest.raises(RuntimeError, match="COVER"):
-            translation.run(
-                source, tmp_path / "llm", "llm", settings, llm_events.append
-            )
+        # 初回だけ標準serializerを選び、修正前DBも新しい保存境界から再開できるか調べる。
+        with monkeypatch.context() as initial_patch:
+            if legacy_checkpoint:
+                initial_patch.setattr(
+                    translation, "open_checkpoint", SqliteSaver.from_conn_string
+                )
+            with pytest.raises(RuntimeError, match="COVER"):
+                translation.run(
+                    source, tmp_path / "llm", "llm", settings, llm_events.append
+                )
         llm_result = translation.run(
             source, tmp_path / "llm", "llm", settings, llm_events.append
         )
+    metadata = json.loads((tmp_path / "llm/.workspace/workflow.json").read_text())
+    thread_id = metadata.pop("thread_id")
+    assert (
+        thread_id
+        == hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()
+    )
+    assert metadata.pop("llm_reasoning_mode", "task-default") == reasoning_mode
+    legacy_id = hashlib.sha256(
+        json.dumps(metadata, sort_keys=True).encode()
+    ).hexdigest()
+    assert (thread_id == legacy_id) == (reasoning_mode == "task-default")
     libre_result = translation.run(
         source,
         tmp_path / "libre",

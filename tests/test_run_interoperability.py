@@ -8,21 +8,25 @@ from typing import TYPE_CHECKING
 import pytest
 from typer.testing import CliRunner
 
-import cli
-import main
-from translate.common.runs import InvalidRunIdError, RunRepository
-from translate.common.workspace import atomic_write_bytes
+import cli_v1
+import main_v1
+from translate_v1.common.runs import InvalidRunIdError, RunRepository
+from translate_v1.common.workspace import atomic_write_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.adapters import qdrant
-    from translate.common.progress import ProgressCallback
-    from translate.common.settings import Backend, Settings
+    from translate_v1.adapters import qdrant
+    from translate_v1.common.progress import ProgressCallback
+    from translate_v1.common.settings import Backend, Settings
 
 
 def _templates(root: Path) -> Path:
+    """
+    CLI/UIが同じfingerprintを作るための規則・用語集・Templateを隔離領域へ用意する。
+    """
+
     root.mkdir()
     for name in ("structure", "translation", "review"):
         (root / f"{name}-rules.md").write_text(name, encoding="utf-8")
@@ -33,17 +37,20 @@ def _templates(root: Path) -> Path:
     return root
 
 
+@pytest.mark.parametrize("reasoning_mode", ["task-default", "off"])
 def test_cli_and_streamlit_resume_each_others_runs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
+    reasoning_mode: str,
 ) -> None:
-    """双方の作成Runが同じworkspace Artifactと最終成果物へ到達する。"""
+    """翻訳を代替し、CLIとUIの共有入口が同じRunのArtifactと成果物を使うか確認する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
         templates_dir=_templates(tmp_path / "templates"),
         translation_model="model",
+        reasoning_mode=reasoning_mode,
     )
 
     def fake_translation(
@@ -54,6 +61,11 @@ def test_cli_and_streamlit_resume_each_others_runs(
         _callback: ProgressCallback | None = None,
         workspace_dir: Path | None = None,
     ) -> Path:
+        """
+        共有workspaceの入力Artifactから成果物を作り、入口変更後も同じ保存先を使うか調べ
+        る。
+        """
+
         assert workspace_dir is not None
         artifact = workspace_dir / "translate" / "artifact.bin"
         if not artifact.exists():
@@ -62,16 +74,16 @@ def test_cli_and_streamlit_resume_each_others_runs(
         atomic_write_bytes(result, artifact.read_bytes() + f":{backend}".encode())
         return result
 
-    monkeypatch.setattr("translate.common.lifecycle.run_translation", fake_translation)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr("translate_v1.common.lifecycle.run_translation", fake_translation)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     repository = RunRepository(settings.runs_dir)
 
     cli_source = tmp_path / "cli-source.pdf"
     cli_source.write_bytes(b"created-by-cli")
     created_by_cli = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "translate",
             str(cli_source),
@@ -82,7 +94,7 @@ def test_cli_and_streamlit_resume_each_others_runs(
     assert created_by_cli.exit_code == 0, created_by_cli.output
     cli_record = repository.list_runs().records[0]
 
-    ui_record, ui_outputs = main._run_selected(  # noqa: SLF001
+    ui_record, ui_outputs = main_v1._run_selected(  # noqa: SLF001
         "translate",
         {"source": cli_source},
         settings,
@@ -97,7 +109,7 @@ def test_cli_and_streamlit_resume_each_others_runs(
 
     ui_source = tmp_path / "ui-source.pdf"
     ui_source.write_bytes(b"created-by-ui")
-    created_ui_record, created_ui_outputs = main._run_selected(  # noqa: SLF001
+    created_ui_record, created_ui_outputs = main_v1._run_selected(  # noqa: SLF001
         "translate",
         {"source": ui_source},
         settings,
@@ -107,7 +119,7 @@ def test_cli_and_streamlit_resume_each_others_runs(
     assert created_ui_outputs[0].read_bytes() == b"created-by-ui:llm"
 
     resumed_by_cli = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "translate",
             str(ui_source),
@@ -140,13 +152,18 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
         sources: list[qdrant.RegistrationSource],
         _workspace: Path | None = None,
     ) -> int:
+        """
+        登録対象のsource keyとworkspaceを記録し、CLI/UIの一時入力pathへの非依存性を調べ
+        る。
+        """
+
         captured.extend(item.source_key for item in sources)
         workspaces.append(_workspace)
         return len(sources)
 
-    monkeypatch.setattr("translate.common.lifecycle.register_documents", fake_register)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr("translate_v1.common.lifecycle.register_documents", fake_register)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     ui_source = tmp_path / "ui" / "guide.md"
     cli_source = tmp_path / "cli" / "guide.md"
     ui_source.parent.mkdir()
@@ -154,7 +171,7 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
     ui_source.write_text("same", encoding="utf-8")
     cli_source.write_text("same", encoding="utf-8")
 
-    main._run_selected(  # noqa: SLF001
+    main_v1._run_selected(  # noqa: SLF001
         "register",
         {"reference": ui_source},
         settings,
@@ -163,7 +180,7 @@ def test_cli_and_streamlit_build_the_same_registration_source_key(
         source_id="shared-library",
     )
     result = CliRunner().invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(cli_source), "--source-id", "shared-library"],
     )
 
@@ -182,7 +199,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """利用者指定templateをfingerprint付きで相互Resumeする。"""
+    """変換を代替し、CLIとUIの共有入口で同じIDと指定Templateを相互利用する。"""
 
     settings = settings_factory(
         runs_dir=tmp_path / "runs",
@@ -190,12 +207,16 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     )
 
     def fake_docx(markdown: Path, output: Path, template: Path) -> Path:
+        """
+        MarkdownとTemplateのbyte列を結合し、再開時も利用者指定Templateが渡るか検証する。
+        """
+
         atomic_write_bytes(output, markdown.read_bytes() + b":" + template.read_bytes())
         return output
 
-    monkeypatch.setattr("translate.common.lifecycle.create_docx", fake_docx)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr("translate_v1.common.lifecycle.create_docx", fake_docx)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     repository = RunRepository(settings.runs_dir)
     source = tmp_path / "source.md"
@@ -204,7 +225,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     template.write_bytes(b"custom-template")
 
     created = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "convert",
             str(source),
@@ -216,7 +237,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
     )
     assert created.exit_code == 0, created.output
     record = repository.list_runs().records[0]
-    resumed, outputs = main._run_selected(  # noqa: SLF001
+    resumed, outputs = main_v1._run_selected(  # noqa: SLF001
         "convert",
         {"source": source, "reference_doc": template},
         settings,
@@ -228,7 +249,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
 
     source_two = tmp_path / "second.md"
     source_two.write_bytes(b"second")
-    created_ui, _ = main._run_selected(  # noqa: SLF001
+    created_ui, _ = main_v1._run_selected(  # noqa: SLF001
         "convert",
         {"source": source_two, "reference_doc": template},
         settings,
@@ -236,7 +257,7 @@ def test_custom_reference_docx_is_shared_between_cli_and_streamlit_runs(
         None,
     )
     resumed_cli = runner.invoke(
-        cli.app,
+        cli_v1.app,
         [
             "convert",
             str(source_two),
@@ -257,7 +278,7 @@ def test_uuid4_run_is_excluded_and_all_public_operations_reject_it(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """旧UUIDv4 Runは一覧外となりCLI/UIの各操作で同じ理由を返す。"""
+    """UUIDv4をCLIの一覧・登録再開・export・削除と、UIの登録実行入口で拒否する。"""
 
     settings = settings_factory(runs_dir=tmp_path / "runs")
     source = tmp_path / "reference.md"
@@ -270,21 +291,21 @@ def test_uuid4_run_is_excluded_and_all_public_operations_reject_it(
     metadata = json.loads(repository.paths(current.run_id).metadata.read_text())
     metadata["run_id"] = legacy_id
     (legacy_root / "run.json").write_text(json.dumps(metadata), encoding="utf-8")
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
     expected = "run_id must be a canonical UUIDv7"
 
-    listed = runner.invoke(cli.app, ["runs"])
+    listed = runner.invoke(cli_v1.app, ["runs"])
     resumed = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source), "--resume", legacy_id],
     )
     exported = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["export", legacy_id, "--output-dir", str(tmp_path / "export")],
     )
-    deleted = runner.invoke(cli.app, ["delete-run", legacy_id, "--confirm"])
+    deleted = runner.invoke(cli_v1.app, ["delete-run", legacy_id, "--confirm"])
 
     assert listed.exit_code == 0
     assert f"{legacy_id}\t" not in listed.output
@@ -295,7 +316,7 @@ def test_uuid4_run_is_excluded_and_all_public_operations_reject_it(
         assert "Traceback" not in result.output
 
     with pytest.raises(InvalidRunIdError, match="canonical UUIDv7"):
-        main._run_selected(  # noqa: SLF001
+        main_v1._run_selected(  # noqa: SLF001
             "register",
             {"reference": source},
             settings,

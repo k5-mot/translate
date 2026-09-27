@@ -6,17 +6,19 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.document import AlignmentGroup, Block, Document, Inline, Page
-from translate.tasks import align
+from translate_v1.document import AlignmentGroup, Block, Document, Inline, Page
+from translate_v1.tasks import align
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document(prefix: str, texts: list[str]) -> Document:
+    """原文・訳文のIDをprefixで区別した一ページ文書を作り、対応付け対象を固定する。"""
+
     return Document(
         pages=[
             Page(
@@ -38,6 +40,11 @@ def _document(prefix: str, texts: list[str]) -> Document:
 def _assert_partition(
     groups: list[AlignmentGroup], source: Document, target: Document
 ) -> None:
+    """
+    対応Groupが両文書の全Blockを過不足なく含み、同じ側のIDを重複使用しないことを確認する
+    。
+    """
+
     source_ids = [item for group in groups for item in group.source_ids]
     target_ids = [item for group in groups for item in group.target_ids]
     expected_source = [block.id for page in source.pages for block in page.blocks]
@@ -51,7 +58,7 @@ def _assert_partition(
 def test_one_to_one_and_unmatched_blocks_are_partitioned(
     tmp_path: Path,
 ) -> None:
-    """決定的対応で1対1、source_only、target_onlyを分類する。"""
+    """全IDのpartitionと先頭の1対1対応、余った訳文のtarget_only分類を検査する。"""
 
     source = _document("source", ["Section 1", "source only"])
     target = _document("target", ["節 1", "target extra", "target only"])

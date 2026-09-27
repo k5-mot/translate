@@ -12,15 +12,15 @@ import pytest
 from langchain_core.documents import Document
 from typer.testing import CliRunner
 
-import cli
-from translate.adapters import qdrant
-from translate.common.runs import RunRepository
+import cli_v1
+from translate_v1.adapters import qdrant
+from translate_v1.common.runs import RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 @dataclass
@@ -43,12 +43,19 @@ class _FakeClient:
     client_timeouts: ClassVar[list[float]] = []
 
     def __init__(self, **kwargs: object) -> None:
+        """構築時のtimeoutを記録し、登録の残期限がQdrant Clientへ渡るか確認する。"""
+
         timeout = kwargs.get("timeout")
         if isinstance(timeout, int | float):
             type(self).client_timeouts.append(float(timeout))
 
     @classmethod
     def reset(cls) -> None:
+        """
+        Point集合・障害回数・呼出履歴を初期化し、登録Test間で状態を共有しないようにする
+        。
+        """
+
         cls.points = {}
         cls.delete_calls = 0
         cls.retrieve_failures = 0
@@ -61,9 +68,16 @@ class _FakeClient:
         cls.client_timeouts = []
 
     def collection_exists(self, _collection: str) -> bool:
+        """
+        保存済みPointがある場合だけcollectionありとし、初回作成と追加入力の経路を切り替
+        える。
+        """
+
         return bool(self.points)
 
     def retrieve(self, **kwargs: object) -> list[_Record]:
+        """要求ID数を記録し、指定回数だけ未確認を返した後に保存済みPointを照合する。"""
+
         type(self).retrieve_batch_sizes.append(len(kwargs["ids"]))  # type: ignore[arg-type]
         if self.retrieve_failures:
             type(self).retrieve_failures -= 1
@@ -75,6 +89,11 @@ class _FakeClient:
         ]
 
     def delete(self, **kwargs: object) -> None:
+        """
+        選択した削除障害を発生させ、成功時は同じsource keyの旧revisionだけをPoint集合か
+        ら除く。
+        """
+
         type(self).delete_calls += 1
         if self.delete_failures:
             type(self).delete_failures -= 1
@@ -95,9 +114,12 @@ class _FakeClient:
 
 class _FakeStore:
     def __init__(self, **_kwargs: object) -> None:
+        # VectorStoreの構築引数を受けるだけのdoubleとし、通信やClient生成を行わない。
         pass
 
     def add_documents(self, documents: list[Document], *, ids: list[str]) -> list[str]:
+        """batch寸法と呼出数を記録し、指定回の障害またはID対応のPoint保存を行う。"""
+
         _FakeClient.write_calls += 1
         _FakeClient.write_batch_sizes.append(len(documents))
         should_fail = _FakeClient.fail_write_call == _FakeClient.write_calls
@@ -114,6 +136,8 @@ class _FakeStore:
     def from_documents(
         cls, documents: list[Document], _embedding: object, **kwargs: object
     ) -> _FakeStore:
+        """collection初回作成の書込みを模擬し、batch障害注入と決定的IDの保存を行う。"""
+
         _FakeClient.write_calls += 1
         _FakeClient.write_batch_sizes.append(len(documents))
         should_fail = _FakeClient.fail_write_call == _FakeClient.write_calls
@@ -130,6 +154,10 @@ class _FakeStore:
 
 @pytest.fixture(autouse=True)
 def _qdrant_double(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Qdrant・Embedding・sleepを隔離したdoubleへ置き換え、登録を実サービスなしで検査する。
+    """
+
     _FakeClient.reset()
     monkeypatch.setattr(qdrant, "QdrantClient", _FakeClient)
     monkeypatch.setattr(qdrant, "QdrantVectorStore", _FakeStore)
@@ -258,17 +286,17 @@ def test_public_cli_directory_reregistration_replaces_across_runs(
         embedding_model="embedding",
         retry_base_seconds=0,
     )
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     runner = CliRunner()
 
     first = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source_dir), "--source-id", "product-guides"],
     )
     source.write_text("second revision", encoding="utf-8")
     second = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source_dir), "--source-id", "product-guides"],
     )
 
@@ -318,7 +346,7 @@ def test_registration_removes_legacy_and_changed_setting_revisions(
 def test_registration_revision_covers_schema_extraction_and_chunk_settings(
     tmp_path: Path, settings_factory: Callable[..., Settings]
 ) -> None:
-    """revisionはsource hash、schema、分割・OCR・Chunk設定を正規化する。"""
+    """source hash・分割数・OCR変更によるrevision差と固定schema名を確認する。"""
 
     source = tmp_path / "reference.pdf"
     source.write_bytes(b"pdf")
@@ -360,13 +388,16 @@ def test_registration_batches_are_bounded_and_point_ids_are_deterministic(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Embedding、upsertおよびretrieveは16件以下で決定的IDを使う。"""
+    """VectorStore書込みとretrieveのdoubleで16件以下のbatchとID再現性を確認する。"""
 
     class ManyChunks:
         def __init__(self, **_kwargs: object) -> None:
+            # 分割設定を受けるだけのdoubleとし、実splitterの生成を避ける。
             pass
 
         def split_text(self, _text: str) -> list[str]:
+            """130個の固定Chunkを返し、登録batchの上限とIDの決定性を検査可能にする。"""
+
             return [f"chunk-{index:03d}" for index in range(130)]
 
     monkeypatch.setattr(qdrant, "RecursiveCharacterTextSplitter", ManyChunks)
@@ -396,7 +427,7 @@ def test_pdf_is_stream_hashed_split_once_and_reused_within_page_limit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """原PDFを全量readせず10page以下へ分割し、complete artifactを再利用する。"""
+    """原PDFのread_bytesを禁止し、23頁を10/10/3頁へ一回だけ分割して再利用する。"""
 
     source = tmp_path / "large.pdf"
     with pdfium.PdfDocument.new() as document:
@@ -418,16 +449,24 @@ def test_pdf_is_stream_hashed_split_once_and_reused_within_page_limit(
     original_read_bytes = type(source).read_bytes
 
     def split_spy(*args: object, **kwargs: object) -> object:
+        """実PDF分割に委譲して回数を数え、同じ入力で分割が再利用されるか確認する。"""
+
         nonlocal split_calls
         split_calls += 1
         return original_split(*args, **kwargs)
 
     def reject_original_read_bytes(path: Path) -> bytes:
+        """原本PDFに対するPath.read_bytesだけを拒否し、他のFileは元の処理へ渡す。"""
+
         if path == source:
             pytest.fail("original PDF must not be loaded by Path.read_bytes")
         return original_read_bytes(path)
 
     def extract_spy(path: Path, _settings: Settings, _deadline: float) -> str:
+        """
+        Doclingへ渡るPDF partのページ数を数え、実抽出の代わりにpart固有textを返す。
+        """
+
         with pdfium.PdfDocument(path) as part:
             part_page_counts.append(len(part))
         return f"part-{path.stem}"
@@ -455,9 +494,14 @@ def test_failed_middle_batch_preserves_old_revision_and_resume_converges(
 
     class ManyChunks:
         def __init__(self, **_kwargs: object) -> None:
+            # 分割設定を受けるだけに留め、中間batch障害試験を実splitterから独立させる。
             pass
 
         def split_text(self, _text: str) -> list[str]:
+            """
+            固定130Chunkを返し、中間batchの失敗後も同じIDで登録を収束できるか検査する。
+            """
+
             return [f"chunk-{index:03d}" for index in range(130)]
 
     source = tmp_path / "reference.md"
@@ -513,9 +557,15 @@ def test_registration_deadline_is_shared_by_extraction_and_qdrant_attempts(
 
     class ExpiringSplitter:
         def __init__(self, **_kwargs: object) -> None:
+            # 分割設定を無処理で受け、分割中に期限が尽きる条件だけを注入する。
             pass
 
         def split_text(self, _text: str) -> list[str]:
+            """
+            模擬時計を期限後へ進めてChunkを返し、後続の登録が残期限を再確認するか調べる
+            。
+            """
+
             now[0] = 2.0
             return ["too late"]
 
@@ -553,10 +603,18 @@ def test_docling_and_qdrant_clients_receive_only_remaining_deadline(
 
     class FakeDocling:
         def __init__(self, *_args: object, **kwargs: object) -> None:
+            """
+            Docling構築時のtimeoutと期限を捕捉し、処理全体の残時間だけが渡るか検証する。
+            """
+
             captured["timeout"] = float(kwargs["timeout_seconds"])
             captured["deadline"] = float(kwargs["deadline_seconds"])
 
         def convert(self, _path: Path) -> tuple[bytes, str]:
+            """
+            用意済みZIPを返し、抽出を実サービスなしで成功させて残期限の検査を続ける。
+            """
+
             return archive.getvalue(), "ignored"
 
     settings = settings_factory(
@@ -584,12 +642,14 @@ def test_docling_and_qdrant_clients_receive_only_remaining_deadline(
 def test_only_registration_write_boundary_retries_transient_type_error(
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """local Embedding応答の一時TypeErrorだけを明示指定時に有限retryする。"""
+    """retry helperの明示flagでTypeErrorの再試行を許可し、既定では即時伝播する。"""
 
     settings = settings_factory(retry_attempts=2, retry_base_seconds=0)
     attempts = 0
 
     def flaky() -> str:
+        """初回だけTypeErrorを投げ、helperのflagによる再試行を検証する。"""
+
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -598,6 +658,11 @@ def test_only_registration_write_boundary_retries_transient_type_error(
         return "ok"
 
     def programming_error() -> None:
+        """
+        プログラム不具合相当のTypeErrorを投げ、書込み以外へ再試行許可が広がらないか調べ
+        る。
+        """
+
         message = "programming error"
         raise TypeError(message)
 
@@ -624,9 +689,14 @@ def test_public_cli_resumes_failed_middle_batch_with_same_run_id(
 
     class ManyChunks:
         def __init__(self, **_kwargs: object) -> None:
+            # 公開CLI試験用の分割設定を受理し、実splitterは使用しない。
             pass
 
         def split_text(self, _text: str) -> list[str]:
+            """
+            公開CLIへ固定130Chunkを供給し、中間batch失敗後の同じRunでの再開を検証する。
+            """
+
             return [f"chunk-{index:03d}" for index in range(130)]
 
     source = tmp_path / "reference.md"
@@ -640,12 +710,12 @@ def test_public_cli_resumes_failed_middle_batch_with_same_run_id(
         retry_base_seconds=0,
     )
     monkeypatch.setattr(qdrant, "RecursiveCharacterTextSplitter", ManyChunks)
-    monkeypatch.setattr(cli, "load_settings", lambda *_args, **_kwargs: settings)
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(cli_v1, "load_settings", lambda *_args, **_kwargs: settings)
+    monkeypatch.setattr(cli_v1, "_is_interactive", lambda: False)
     _FakeClient.fail_write_call = 2
     runner = CliRunner()
 
-    failed = runner.invoke(cli.app, ["register", str(source)])
+    failed = runner.invoke(cli_v1.app, ["register", str(source)])
     record = RunRepository(settings.runs_dir).list_runs().records[0]
     partial_ids = set(_FakeClient.points)
 
@@ -658,7 +728,7 @@ def test_public_cli_resumes_failed_middle_batch_with_same_run_id(
     _FakeClient.fail_write_call = None
     _FakeClient.write_calls = 0
     resumed = runner.invoke(
-        cli.app,
+        cli_v1.app,
         ["register", str(source), "--resume", record.run_id],
     )
     completed = RunRepository(settings.runs_dir).load(record.run_id)

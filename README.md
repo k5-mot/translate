@@ -50,6 +50,28 @@ Runは`<run-id>/inputs/`、`<run-id>/outputs/`、`<run-id>/.workspace/`および
 
 ## 🧪 品質確認
 
+検証時に全LLM要求の推論を無効化するには、`LLM_REASONING_MODE=off`を指定します。
+未指定または`task-default`では従来のTask別指定を維持します。CLIとStreamlit共通の
+設定で、変更は起動時に反映されます。Embeddingとtimeoutは変更しません。
+
+```powershell
+# この検証プロセスだけOFFにし、終了時は元の環境値へ戻す。
+$previousReasoningMode = $env:LLM_REASONING_MODE
+try {
+    $env:LLM_REASONING_MODE = "off"
+    uv run python cli.py translate input.pdf --output-dir exported-off
+} finally {
+    $env:LLM_REASONING_MODE = $previousReasoningMode
+}
+```
+
+新規検証では`--resume`を付けず、未使用のexport先を指定してください。対話端末で
+既存Runを提示された場合は`n`を選びます。非対話環境では新規Runになります。
+通常設定とOFFの間のResumeは拒否します。設定追加前のRunは通常設定として扱います。
+通常へ戻す場合は`task-default`または未指定にしてください。OFF Runをこの設定に
+未対応の旧Codeで再開しないでください。Providerが無効化指定を受け付けたことと、
+実際の推論tokenが0であること、成果物品質が合格であることは別々に確認します。
+
 ```powershell
 # Lint、format、型およびtestを順に検証する。
 uv run ruff check .

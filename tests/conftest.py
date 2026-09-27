@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.settings import Settings
+from translate_v1.common.settings import Settings
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -23,6 +23,8 @@ class FakeHttpResponse:
         payload: object | None = None,
         content: bytes = b"",
     ) -> None:
+        """通信を行わないHTTP応答doubleへstatus・JSON値・binary本文を設定する。"""
+
         self.status_code = status_code
         self._payload = payload
         self.content = content
@@ -33,7 +35,7 @@ class FakeHttpResponse:
         return self._payload
 
     def raise_for_status(self) -> None:
-        """4xx/5xxをhttpx互換の例外として通知する。"""
+        """400以上ならstatusを含むRuntimeErrorを投げる。httpxの例外型は再現しない。"""
 
         if self.status_code >= 400:
             msg = f"HTTP {self.status_code}"
@@ -42,9 +44,13 @@ class FakeHttpResponse:
 
 @pytest.fixture
 def settings_factory(tmp_path: Path) -> Callable[..., Settings]:
-    """Testごとに隔離したSettingsを生成する。"""
+    """Templateの保存先をTestごとに分け、任意の設定を上書きできるfactoryを返す。"""
 
     def create(**updates: object) -> Settings:
+        """
+        Test専用Template保存先を既定値に、ケース固有の設定を上書きしたSettingsを作る。
+        """
+
         values: dict[str, object] = {"templates_dir": tmp_path / "templates"}
         values.update(updates)
         return Settings(**values)

@@ -1,4 +1,4 @@
-"""STRUCTUREの非公開page checkpointとTask全体の公開境界を検証する。"""
+"""STRUCTUREの既存Page Cacheと公開境界を検査する。LangGraph統合の証拠ではない。"""
 
 from __future__ import annotations
 
@@ -7,18 +7,22 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image
 
-from translate.adapters.llm import LLMError
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import structure
+from translate_v1.adapters.llm import LLMError
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import structure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document() -> Document:
+    """
+    ページ2・3を本文markerで区別できる文書を作り、再推論したページを追跡可能にする。
+    """
+
     return Document(
         pages=[
             Page(
@@ -38,11 +42,17 @@ def _document() -> Document:
 
 
 def _render(_source: Path, _page: int, output: Path) -> Path:
+    """実PDFを描画せず小さなPNGを用意し、構造推定の再開試験を入力画像から独立させる。"""
+
     Image.new("RGB", (8, 8), "white").save(output)
     return output
 
 
 def _page_from_user(args: tuple[object, ...]) -> int:
+    """
+    構造推定prompt内のfixture markerから対象ページを読み取り、モデル呼出履歴に使う。
+    """
+
     user = args[4]
     assert isinstance(user, str)
     return 2 if "PAGE-2" in user else 3
@@ -52,7 +62,7 @@ def test_structure_page_key_tracks_generation_policy_and_schema(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """生成policyまたはResponse schemaが違う旧pageを再利用しない。"""
+    """生成policyとResponse schemaの変更が既存Page Cacheのkeyを変えるか検査する。"""
 
     page = _document().pages[0]
     settings = settings_factory(structure_model="model-a")
@@ -108,7 +118,7 @@ def test_structure_resume_reuses_only_completed_page_checkpoints(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """page 3失敗後のResumeではpage 2を再推論しない。"""
+    """Task直接再呼出時に、失敗したpage 3だけを推論し成功済みpage 2を再利用する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"PDF-INPUT-A")
@@ -117,6 +127,11 @@ def test_structure_resume_reuses_only_completed_page_checkpoints(
     failing = True
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページ3だけを停止条件付きで失敗させ、既存Page Cacheの再利用範囲を呼出履歴で調べ
+        る。
+        """
+
         page = _page_from_user(args)
         calls.append(page)
         if page == 3 and failing:
@@ -165,6 +180,10 @@ def test_structure_reprocesses_incompatible_or_corrupt_page_checkpoint(
     failing = True
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページ2成功後にページ3を失敗させ、条件変更後の再推論を記録できる中断状態を作る。
+        """
+
         page = _page_from_user(args)
         calls.append(page)
         if page == 3 and failing:
@@ -200,13 +219,17 @@ def test_structure_old_run_without_page_progress_starts_normally(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """旧Runにpage progressがなくても全pageを一度ずつ処理する。"""
+    """既存Page Cacheのない新規保存先では、両pageを一度ずつ順番に処理する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"PDF-INPUT-A")
     calls: list[int] = []
 
     def respond(*args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        ページごとに正常な空patchを返し、既存Page記録なしでの初回処理順を記録する。
+        """
+
         calls.append(_page_from_user(args))
         return structure.StructureResponse()
 

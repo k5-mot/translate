@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cli import app
-from main import main
+from cli_v1 import app
+from main_v1 import main
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def test_public_entry_points_import() -> None:
@@ -21,7 +21,7 @@ def test_public_entry_points_import() -> None:
 
 
 def test_settings_factory(settings_factory: Callable[..., Settings]) -> None:
-    """外部service設定を隔離して生成できる。"""
+    """settings factoryでDoclingの接続先をTest用URLへ上書きできる。"""
 
     settings = settings_factory(docling_url="https://docling.invalid")
 

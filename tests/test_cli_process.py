@@ -11,13 +11,15 @@ from pathlib import Path
 
 import pytest
 
-import cli
+import cli_v1
 
 
 def _command(source: Path, output: Path) -> list[str]:
+    """Test中のPythonから公開CLIのconvertを起動する引数列を作る。"""
+
     return [
         sys.executable,
-        str(cli.__file__),
+        str(cli_v1.__file__),
         "convert",
         str(source),
         "--output",
@@ -26,6 +28,8 @@ def _command(source: Path, output: Path) -> list[str]:
 
 
 def _environment(runs: Path) -> dict[str, str]:
+    """親環境を保持しつつRun保存先だけをTestの隔離領域へ変更する。"""
+
     environment = os.environ.copy()
     environment["TRANSLATE_RUNS_DIR"] = str(runs)
     return environment
@@ -34,9 +38,11 @@ def _environment(runs: Path) -> dict[str, str]:
 def _run_noninteractive(
     source: Path, output: Path, runs: Path
 ) -> subprocess.CompletedProcess[str]:
+    """標準入出力をcaptureした実CLIを有限時間で実行し、非対話時の選択規則を調べる。"""
+
     return subprocess.run(
         _command(source, output),
-        cwd=Path(cli.__file__).parent,
+        cwd=Path(cli_v1.__file__).parent,
         env=_environment(runs),
         capture_output=True,
         text=True,
@@ -46,6 +52,8 @@ def _run_noninteractive(
 
 
 def _run_ids(output: str) -> list[str]:
+    """CLI出力に表示されたRun IDを、最初の出現順を保って重複なく取り出す。"""
+
     return list(dict.fromkeys(re.findall(r"run_id=([0-9a-f-]{36})", output)))
 
 
@@ -70,6 +78,63 @@ def test_noninteractive_cli_always_creates_new_run_for_same_input(
     assert "同じ入力の既存Run" not in combined
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "TRANSLATE_RETRY_BASE_SECONDS",
+        "TRANSLATE_RETRY_MAX_SECONDS",
+        "TRANSLATE_REQUEST_TIMEOUT_SECONDS",
+        "TRANSLATE_TASK_DEADLINE_SECONDS",
+    ],
+)
+def test_real_cli_rejects_invalid_seconds_without_echoing_input(
+    tmp_path: Path, name: str
+) -> None:
+    """実CLIを秘密とdotenvから隔離し、不正秒数の安全な拒否とRun未作成を確認する。"""
+
+    source = tmp_path / "source.md"
+    source.write_text("# Synthetic document\n", encoding="utf-8")
+    output = tmp_path / "result.docx"
+    runs = tmp_path / "runs"
+    # Pass only OS startup essentials, never the developer's service credentials.
+    environment = {
+        key: os.environ[key]
+        for key in ("SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "COMSPEC", "PATHEXT")
+        if key in os.environ
+    }
+    marker = "SYNTHETIC_INVALID_DURATION"
+    environment.update(
+        {
+            "PYTHON_DOTENV_DISABLED": "1",
+            "LANGSMITH_TRACING": "false",
+            "LANGCHAIN_TRACING_V2": "false",
+            "TRANSLATE_RUNS_DIR": str(runs),
+            "OPENAI_API_KEY": "SYNTHETIC_UNUSED_CREDENTIAL",
+            "COLUMNS": "240",
+            "NO_COLOR": "1",
+            name: marker,
+        }
+    )
+    result = subprocess.run(
+        _command(source, output),
+        cwd=Path(cli_v1.__file__).parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    rendered = result.stdout + result.stderr
+
+    assert result.returncode == 1
+    assert name in rendered
+    assert "must be a finite positive number" in rendered
+    assert marker not in rendered
+    assert "SYNTHETIC_UNUSED_CREDENTIAL" not in rendered
+    assert not runs.exists()
+    assert not output.exists()
+
+
 @pytest.mark.skipif(
     os.name == "nt",
     reason="POSIX PTY contract; Windows is covered by the non-interactive process test",
@@ -91,10 +156,14 @@ def test_posix_pty_selects_candidate_then_answers_yes_or_no(  # noqa: PLR0915
     existing_ids = _run_ids(first.stdout) + _run_ids(second.stdout)
 
     def interact(answer: bytes, output: Path) -> str:
+        """
+        PTYで候補選択とy/n回答を送り、CLI終了と残存childの後片付けまで行って出力を返す。
+        """
+
         master, slave = pty.openpty()
         process = subprocess.Popen(
             _command(source, output),
-            cwd=Path(cli.__file__).parent,
+            cwd=Path(cli_v1.__file__).parent,
             env=_environment(runs),
             stdin=slave,
             stdout=slave,

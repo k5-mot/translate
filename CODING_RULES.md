@@ -1,7 +1,8 @@
 # 📜 コーディング規約
 
 本書は、このRepositoryで実装する際の共通規則と、Python、TypeScript、
-Java固有の規則を定める。
+Java固有の規則を定める。製品の振る舞い、対応環境、採用構成および
+配置制約はOpenSpecで管理し、本書へ重複記載しない。
 
 ## 🧭 共通規則
 
@@ -24,8 +25,22 @@ Java固有の規則を定める。
 既存Code、標準Library、Platform機能、導入済みDependencyの順に再利用を検討する。
 依存Packageが解決する処理を、正当な理由なくScratch実装してはならない。
 
+- MUST; 再実装の前に導入済みVersionのAPIと、入出力、例外、Retry単位、
+  永続化および副作用を比較し、同等の機能は既存APIへ委譲すること
+- MUST; 既存APIでは満たせない契約がある場合は、その具体的な差と検証根拠を
+  OpenSpecの設計に記録し、独自実装を必要な差分に限定すること
+- MUST; Module新設や共通化では、実際の利用元、責務、既存Codeまたは依存APIで
+  不足する理由を説明すること。配置変更だけを重複機能の解消とみなさないこと
+
 ### 💬 コメント
 
+- MUST; すべての関数とMethodに目的を説明するCommentを付けること。
+  非公開、特殊Method、入れ子およびTest関数も対象とする
+- SHOULD; PythonではDocstringを基本とし、定義に明確に対応する説明Commentも
+  認める。自明でない入力制約、副作用および失敗条件も説明すること
+- MUST; Lambdaは周囲の説明と合わせて意図を読み取れるようにし、実行する
+  Python文字列内の関数も同じ基準で確認すること。説明のためだけのWrapperは
+  追加しないこと
 - MUST; 設定値、定数および閾値には、目的、単位、有効範囲または採用理由が
   自明でない場合、保守者が判断根拠を理解できる説明Commentを付けること
 - MUST; 複雑なAlgorithm、分岐、状態遷移または制約には、処理の意図、理由および
@@ -47,17 +62,14 @@ Java固有の規則を定める。
 
 ### 🧰 実装と実行
 
-- MUST; Python 3.12以上を使用すること
-- MUST; 製品として直接実行を保証するEntry Pointを`cli.py`と`main.py`に限定すること
-- MUST; 製品Entry Pointは`main()`またはCLI Applicationと
+- MUST; 製品仕様で定めたPython対応Versionの範囲で実装すること
+- MUST; 実行用Entry Pointは`main()`またはCLI Applicationと
   `if __name__ == "__main__":`で実行境界を明示すること
 - MAY; 内部Moduleには、開発時のDebugに有用な場合に限り、簡易な`main()`と
   `if __name__ == "__main__":`を設けてもよい
-- MUST NOT; 内部ModuleのDebug Entry Pointを公開Interfaceとして扱わないこと
 - MUST; 内部ModuleのDebug Entry Pointは既存Functionへ委譲し、製品処理を
   再実装しないこと
 - MUST NOT; 直接実行する用途がないPython Fileへ形式的なEntry Pointを追加しないこと
-- MUST; `time.perf_counter()`で各Taskの経過時間を計測可能にすること
 - SHOULD; Path操作には`pathlib`、Process実行には`subprocess.run()`を使用すること
 - MUST; RuffのLintとFormat検査を通すこと
 - MUST; 型検査が構成されているProjectでは`ty check`を通すこと
@@ -90,41 +102,13 @@ uv run pytest
 | CLI | `typer` |
 | Data検証・設定Model | `pydantic` |
 
-### ⚙️ `pyproject.toml`参考設定
+### ⚙️ 品質検査の参考設定
 
-次はAgent／RAG用途を含むProject向けの参考例である。新規Projectへ一括適用せず、
-実際に使用するDependencyとPathだけを残すこと。
+次はLintとFormatの参考例である。Projectの実際の設定を置き換えるものではない。
+製品のDependency、Version制約および検査対象Pathは例へ複製せず、
+その採用方針はOpenSpec、実際の値はProjectの設定Fileで管理する。
 
 ```toml
-[project]
-name = "agent-skills"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-  "httpx>=0.28.1",
-  "openai>=2.8.1",
-  "pillow>=12.0.0",
-  "portalocker>=3.2.0,<4",
-  "pypdfium2>=5.13.0,<6",
-  "pydantic>=2.12.5",
-  "python-dotenv>=1.2.1",
-  "typer>=0.20.0",
-  "langchain>=1.4.0",
-  "langchain-openai>=1.6.0",
-  "langchain-qdrant>=1.1.0",
-  "langgraph>=1.2.11",
-  "langgraph-checkpoint-sqlite>=3.1.1",
-  "langfuse>=3,<5",
-  "qdrant-client>=1.16.0,<2",
-  "typing-extensions>=4.16.0",
-  "streamlit>=1.64.0",
-]
-
-[dependency-groups]
-dev = ["pytest>=9.1.1", "ruff>=0.15.22", "ty>=0.0.61"]
-
 [tool.ruff]
 line-length = 88
 indent-width = 4
@@ -179,8 +163,6 @@ line-ending = "lf"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
 
-[tool.ty.src]
-exclude = [".agents", "tests"]
 ```
 
 ## 🟦 TypeScript

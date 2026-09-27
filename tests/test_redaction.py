@@ -6,10 +6,10 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from translate.adapters import langfuse
-from translate.common.logger import configure_logging
-from translate.common.redaction import OMITTED, REDACTED, safe_error
-from translate.common.runs import RunRepository
+from translate_v1.adapters import langfuse
+from translate_v1.common.logger import configure_logging
+from translate_v1.common.redaction import OMITTED, REDACTED, safe_error
+from translate_v1.common.runs import RunRepository
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -17,26 +17,30 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 class _Observation:
     def update(self, **_kwargs: object) -> None:
+        # 観測更新を無処理で受け、秘匿検査をSDKへ渡すmetadataの内容に限定する。
         pass
 
 
 class _Manager:
     def __enter__(self) -> _Observation:
+        """更新を受理する観測doubleを返し、実SDKなしで観測contextを開始する。"""
+
         return _Observation()
 
     def __exit__(self, *_args: object) -> None:
+        # 外部終了処理を行わず観測contextを閉じ、発生した例外も抑止しない。
         pass
 
 
 def test_log_and_error_redact_credentials_bodies_and_binary(
     tmp_path: Path,
 ) -> None:
-    """既知Credential、base64画像、binaryおよび例外messageを公開しない。"""
+    """既知秘密値・画像Data URI・binary引数とexc_info本文の除去を検査する。"""
 
     credential_value = "credential-value-123"
     log_file = tmp_path / "run.log"
@@ -75,7 +79,7 @@ def test_log_and_error_redact_credentials_bodies_and_binary(
 
 
 def test_run_metadata_redacts_sensitive_and_body_fields(tmp_path: Path) -> None:
-    """run.jsonへCredential、本文全文または画像binaryを保存しない。"""
+    """既知のapi_key・prompt fieldとbinary値がrun.jsonで置換されることを検査する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"safe input copy")
@@ -106,13 +110,17 @@ def test_trace_metadata_is_redacted_before_sdk_call(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Trace属性にもCredential、本文およびbinaryを渡さない。"""
+    """Trace開始時の既知token・prompt fieldと画像Data URIの置換を検査する。"""
 
     captured: dict[str, Any] = {}
     credential_value = "trace-credential-value"
 
     class Client:
         def start_as_current_observation(self, **kwargs: object) -> _Manager:
+            """
+            SDKへ渡る引数を捕捉し、観測開始前に秘密値・本文・画像が除去されたか調べる。
+            """
+
             captured.update(kwargs)
             return _Manager()
 

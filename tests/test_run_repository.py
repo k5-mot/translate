@@ -3,53 +3,42 @@
 from __future__ import annotations
 
 import json
-import secrets
 import time
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 import pytest
+from uuid_utils.compat import uuid7
 
-from translate.common.identifiers import uuid7
-from translate.common.runs import RunRepository
-from translate.common.workspace import OutputLock
+from translate_v1.common import runs
+from translate_v1.common.runs import RunRepository
+from translate_v1.common.workspace import OutputLock
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_uuid7_has_rfc_layout_and_injected_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """固定時刻と乱数からUUIDv7のfield配置を検証する。"""
+def test_uuid7_reuses_installed_generator_and_preserves_public_type() -> None:
+    """導入済み生成器を直接使い、標準UUID型と公開ID形式を維持する。"""
 
-    timestamp_ms = 0x0123456789AB
-    random_bits = (0xABC << 62) | 0x0123456789ABCDEF
-    monkeypatch.setattr(time, "time_ns", lambda: timestamp_ms * 1_000_000)
-    monkeypatch.setattr(
-        secrets,
-        "randbits",
-        lambda bits: random_bits if bits == 74 else 0,
-    )
-
+    assert runs.uuid7 is uuid7
     value = uuid7()
 
+    assert isinstance(value, UUID)
     assert value.version == 7
-    assert value.variant == "specified in RFC 4122"
-    assert value.int >> 80 == timestamp_ms
-    assert (value.int >> 64) & 0xFFF == 0xABC
-    assert value.int & ((1 << 62) - 1) == 0x0123456789ABCDEF
+    assert value.variant == RFC_4122
+    assert str(UUID(str(value))) == str(value)
 
 
-def test_uuid7_time_range_and_uniqueness() -> None:
-    """生成時刻をmillisecond精度で保持し、多数生成で衝突しない。"""
+def test_uuid7_sampled_time_and_uniqueness() -> None:
+    """呼出元が渡した時刻をmillisecond精度で保持し、多数生成で衝突しない。"""
 
-    before = time.time_ns() // 1_000_000
-    values = [uuid7() for _ in range(2_000)]
-    after = time.time_ns() // 1_000_000
+    sampled_ns = time.time_ns()
+    seconds, nanoseconds = divmod(sampled_ns, 1_000_000_000)
+    values = [uuid7(timestamp=seconds, nanos=nanoseconds) for _ in range(2_000)]
 
     assert len(set(values)) == len(values)
-    assert all(before <= value.int >> 80 <= after for value in values)
+    assert all(value.int >> 80 == sampled_ns // 1_000_000 for value in values)
 
 
 def test_create_and_load_run(tmp_path: Path) -> None:
@@ -59,16 +48,19 @@ def test_create_and_load_run(tmp_path: Path) -> None:
     source.write_bytes(b"example-pdf")
     repository = RunRepository(tmp_path / "runs")
 
+    before = time.time_ns() // 1_000_000
     created = repository.create(
         "translate",
         {"source": source},
         {"backend": "llm", "model": "example"},
         "fingerprint-value",
     )
+    after = time.time_ns() // 1_000_000
     paths = repository.paths(created.run_id)
     loaded = repository.load(created.run_id)
 
     assert UUID(created.run_id).version == 7
+    assert before <= UUID(created.run_id).int >> 80 <= after
     assert paths.inputs.is_dir()
     assert paths.outputs.is_dir()
     assert paths.workspace.is_dir()
@@ -77,7 +69,7 @@ def test_create_and_load_run(tmp_path: Path) -> None:
 
 
 def test_run_json_contains_only_lifecycle_metadata(tmp_path: Path) -> None:
-    """run.jsonへ本文やbinaryを保存せず、必要なLifecycle項目だけを持つ。"""
+    """作成時metadataの主要fieldを確認し、入力の本文markerが含まれないか検査する。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"secret-document-body")
@@ -98,7 +90,7 @@ def test_run_json_contains_only_lifecycle_metadata(tmp_path: Path) -> None:
 
 
 def test_list_and_find_runs_exclude_corrupt_metadata(tmp_path: Path) -> None:
-    """破損Runを警告付きで隔離し、同一入力候補を新しい順で返す。"""
+    """非UUID名のdirectoryを警告付きで一覧から除外し、有効候補を更新日時順に返す。"""
 
     source = tmp_path / "source.pdf"
     source.write_bytes(b"same-input")
@@ -198,7 +190,7 @@ def test_delete_rejects_running_locked_missing_and_outside_runs(tmp_path: Path) 
 def test_delete_rejects_linked_run_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """symlinkまたはjunctionをRun directoryとして辿らない。"""
+    """symlinkをRun削除で拒否する。作成権限がない環境ではlink判定を模擬する。"""
 
     repository = RunRepository(tmp_path / "runs")
     repository.root.mkdir()

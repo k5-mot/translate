@@ -12,10 +12,12 @@ from pathlib import Path
 
 import pytest
 
-import main
+import main_v1
 
 
 def _free_port() -> int:
+    """loopbackで一時bindして空きport候補を得る。返却後のport予約は保持しない。"""
+
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
@@ -34,13 +36,13 @@ def test_streamlit_headless_process_health_and_safe_shutdown(tmp_path: Path) -> 
             "-m",
             "streamlit",
             "run",
-            str(main.__file__),
+            str(main_v1.__file__),
             "--server.headless=true",
             f"--server.port={port}",
             "--server.address=127.0.0.1",
             "--browser.gatherUsageStats=false",
         ],
-        cwd=Path(main.__file__).parent,
+        cwd=Path(main_v1.__file__).parent,
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

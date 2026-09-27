@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from translate.common.workspace import (
+from translate_v1.common.workspace import (
     atomic_publish_directory,
     atomic_write_bytes,
     atomic_write_json,
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 
 def _publish_file(kind: str, target: Path) -> None:
+    """同じ公開障害Testをtext・JSON・binaryの三つの保存入口へ適用する。"""
+
     if kind == "text":
         atomic_write_text(target, "new-complete")
     elif kind == "json":
@@ -35,17 +37,19 @@ def test_file_publish_preserves_old_complete_artifact_on_failure(
     phase: str,
     kind: str,
 ) -> None:
-    """各phaseの失敗で旧完全版だけを観測できる。"""
+    """各公開phaseに例外を注入し、復帰後の旧完全版と一時Fileの除去を確認する。"""
 
     target = tmp_path / "artifact"
     target.write_bytes(b"old-complete")
 
     def fail(current: str, _path: Path) -> None:
+        """指定したFile公開段階だけで失敗させ、旧成果物が残るか検証できるようにする。"""
+
         if current == phase:
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)
 
-    monkeypatch.setattr("translate.common.workspace._phase", fail)
+    monkeypatch.setattr("translate_v1.common.workspace._phase", fail)
 
     with pytest.raises(RuntimeError, match="injected"):
         _publish_file(kind, target)
@@ -67,17 +71,25 @@ def test_directory_publish_preserves_old_complete_artifact_on_failure(
     (target / "page.txt").write_text("old-complete", encoding="utf-8")
 
     def build(directory: Path) -> None:
+        """公開待ちの一時directoryに新しい完全版を作り、旧版との区別を可能にする。"""
+
         (directory / "page.txt").write_text("new-complete", encoding="utf-8")
 
     def validate(directory: Path) -> None:
+        """検証callbackが新しい完全版を受け取ったことを確認する。"""
+
         assert (directory / "page.txt").read_text(encoding="utf-8") == "new-complete"
 
     def fail(current: str, _path: Path) -> None:
+        """
+        指定したdirectory公開段階だけで失敗させ、rollbackと一時領域の除去を検証する。
+        """
+
         if current == phase:
             msg = f"injected {phase} failure"
             raise RuntimeError(msg)
 
-    monkeypatch.setattr("translate.common.workspace._phase", fail)
+    monkeypatch.setattr("translate_v1.common.workspace._phase", fail)
 
     with pytest.raises(RuntimeError, match="injected"):
         atomic_publish_directory(target, build, validate)
@@ -87,7 +99,7 @@ def test_directory_publish_preserves_old_complete_artifact_on_failure(
 
 
 def test_artifacts_publish_only_after_validation(tmp_path: Path) -> None:
-    """成功時は各形式を検証済みの完全版へ置換する。"""
+    """新規公開後のtext・binary・JSONの値と、directoryの完了markerを確認する。"""
 
     text = tmp_path / "value.txt"
     binary = tmp_path / "value.bin"

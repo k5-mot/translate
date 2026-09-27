@@ -10,3 +10,5 @@ runs/
 playwright-report/
 test-results/
 inputs/
+outputs/
+tests/manual_detached_historical_gate.py

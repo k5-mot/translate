@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import ast
+import io
 import re
+import tokenize
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
+CONTROL_COMMENTS = ("noqa", "type: ignore", "ty: ignore", "pragma:", "ruff:")
 ENV_NAMES = {
     "TRANSLATE_RUNS_DIR",
     "TRANSLATE_RETRY_ATTEMPTS",
@@ -23,6 +30,7 @@ ENV_NAMES = {
     "LLM_CONTEXT_TOKENS",
     "LLM_OUTPUT_TOKENS",
     "LLM_IMAGE_TOKENS",
+    "LLM_REASONING_MODE",
     "DOCLING_SERVER_URL",
     "DOCLING_API_KEY",
     "DOCLING_OCR_PRESET",
@@ -73,3 +81,100 @@ def test_run_layout_names_are_consistent() -> None:
     assert "`.workspace/workflow.json`" in operations
     assert ".workspace/run.json" not in readme + operations
     assert "旧`.work/`" in operations
+
+
+def _missing_function_explanations(source: str) -> list[str]:
+    """可視性を問わず関数の説明欠落を検出する。説明内容の正しさは別途確認する。"""
+
+    lines = source.splitlines()
+    comments = {
+        token.start
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.COMMENT
+        and not lines[token.start[0] - 1][: token.start[1]].strip()
+        and (text := token.string.lstrip("# ").strip())
+        and any(character.isalnum() for character in text)
+        and not text.casefold().startswith(CONTROL_COMMENTS)
+    }
+    missing: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        docstring = ast.get_docstring(node)
+        if docstring is not None:
+            explained = bool(docstring.strip())
+        else:
+            start = min([node.lineno, *(item.lineno for item in node.decorator_list)])
+            adjacent = {
+                (start - 1, node.col_offset),
+                (node.body[0].lineno - 1, node.body[0].col_offset),
+            }
+            explained = bool(comments & adjacent)
+        if not explained:
+            missing.append(f"{node.lineno}:{node.name}")
+    return missing
+
+
+@pytest.mark.parametrize(
+    ("source", "missing_names"),
+    [
+        ("def public():\n    pass\n", ["public"]),
+        ("def _private():\n    pass\n", ["_private"]),
+        ("async def fetch():\n    pass\n", ["fetch"]),
+        ("class Hidden:\n    def __init__(self):\n        pass\n", ["__init__"]),
+        (
+            (
+                'def outer():\n    """Prepare the nested fixture."""\n'
+                "    def inner():\n        pass\n"
+            ),
+            ["inner"],
+        ),
+        ('def described():\n    """Provide a fixed fixture."""\n    pass\n', []),
+        ("# Provide a fixed fixture.\ndef described():\n    pass\n", []),
+        (
+            "# Provide a fixed fixture.\n@fixture()\ndef described():\n    pass\n",
+            [],
+        ),
+        ("def described():\n    # Provide a fixed fixture.\n    pass\n", []),
+        ('def empty():\n    """   """\n    pass\n', ["empty"]),
+        (
+            '# Keep the empty docstring invalid.\ndef empty():\n    """ """\n',
+            ["empty"],
+        ),
+        ("# noqa: D103\ndef missing():\n    pass\n", ["missing"]),
+        ("def missing():\n    # type: ignore\n    pass\n", ["missing"]),
+        ("def missing():\n    # ty: ignore[rule]\n    pass\n", ["missing"]),
+        ("def missing():\n    # ---\n    pass\n", ["missing"]),
+        (
+            "def missing():\n    value = 1  # inline only\n    return value\n",
+            ["missing"],
+        ),
+        (
+            "# Module comment.\nvalue = 1\ndef missing():\n    return value\n",
+            ["missing"],
+        ),
+    ],
+)
+def test_function_explanations_cover_private_nested_and_comment_forms(
+    source: str, missing_names: list[str]
+) -> None:
+    """非公開・入れ子・特殊methodを含め、説明と制御Commentを区別できるか検証する。"""
+
+    missing = _missing_function_explanations(source)
+
+    assert [item.partition(":")[2] for item in missing] == missing_names
+
+
+def test_all_python_functions_have_explanations() -> None:
+    """公開入口・製品・Testの全関数で説明の存在を検査し、欠落位置を一覧にする。"""
+
+    paths = [PROJECT_ROOT / "cli_v1.py", PROJECT_ROOT / "main_v1.py"]
+    for directory in ("translate_v1", "tests"):
+        paths.extend(sorted((PROJECT_ROOT / directory).rglob("*.py")))
+    missing = [
+        f"{path.relative_to(PROJECT_ROOT).as_posix()}:{location}"
+        for path in paths
+        for location in _missing_function_explanations(path.read_text(encoding="utf-8"))
+    ]
+
+    assert not missing, "\n".join(missing)

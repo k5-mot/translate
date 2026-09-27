@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from typing import TYPE_CHECKING
 
 import pytest
 from PIL import Image
 
-from translate.document import Block, Document, Finding, Inline, Page, page_text
-from translate.tasks import (
+from translate_v1.adapters import pandoc
+from translate_v1.common.settings import load_settings
+from translate_v1.document import (
+    Block,
+    CellImage,
+    Document,
+    Finding,
+    Inline,
+    Page,
+    TableCell,
+    page_text,
+)
+from translate_v1.tasks import (
     check,
     cover,
     fix,
     markdown,
+    report,
+    review,
     structure,
     translate,
     translate_lite,
@@ -25,7 +39,333 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Backend, Settings
+    from translate_v1.common.settings import Backend, Settings
+
+
+@pytest.mark.parametrize("backend", ["llm", "libretranslate"])
+@pytest.mark.parametrize("location", ["body", "caption", "cell", "cell-image-caption"])
+def test_translation_fix_export_preserve_structured_code_and_links(  # noqa: C901, PLR0915
+    backend: Backend,
+    location: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """両BackendとFIXを経てもCodeとhrefを保ち、ラベルは翻訳して実DOCXへ出す。"""
+
+    values = [
+        Inline(id="code", kind="code", text="print('U.S.')"),
+        Inline(
+            id="label", kind="link", text="U.S. manual.pdf", href="https://example.com"
+        ),
+    ]
+    block = Block(
+        id="unit", order=0, kind="paragraph" if location == "body" else "table"
+    )
+    if location == "body":
+        block.source = values
+    elif location == "caption":
+        block.caption = values
+        block.cells = [TableCell(row=0, column=0)]
+    elif location == "cell-image-caption":
+        block.cells = [
+            TableCell(
+                row=0,
+                column=0,
+                images=[
+                    CellImage(
+                        id="image",
+                        asset_path="assets/image.png",
+                        width_pt=19,
+                        height_pt=21,
+                        caption=values,
+                    )
+                ],
+            )
+        ]
+        (tmp_path / "assets").mkdir()
+        Image.new("RGB", (40, 40), "green").save(tmp_path / "assets/image.png")
+    else:
+        block.cells = [TableCell(row=0, column=0, source=values)]
+    document = Document(pages=[Page(number=2, blocks=[block])])
+    settings = settings_factory(libretranslate_url="https://libre.invalid")
+    calls: list[str] = []
+
+    def translate_response(
+        *args: object, **_kwargs: object
+    ) -> translate.TranslationResponse:
+        """Codeが送信されず、通常の原文が直接送られることを検査する。"""
+
+        calls.append("translate")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["target"] == [
+            {"id": "label", "text": "U.S. manual.pdf"}
+        ]
+        return translate.TranslationResponse(
+            translations=[translate.TranslationItem(id="label", text="米国の手引書")]
+        )
+
+    def lite_response(
+        _url: str, _key: str | None, texts: list[str], **_kwargs: object
+    ) -> list[str]:
+        """LibreTranslateにも保護記号やCodeを送らない。"""
+
+        calls.append("translate")
+        assert texts == ["U.S. manual.pdf"]
+        return ["米国の手引書"]
+
+    def review_response(*args: object, **_kwargs: object) -> review.ReviewResponse:
+        """CHECKの根拠付きwarningを受け取り、モデルは追加指摘なしとする。"""
+
+        calls.append("review")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["automatic_findings"] == [
+            item.model_dump() for item in checks[2]
+        ]
+        return review.ReviewResponse()
+
+    def fix_response(*args: object, **_kwargs: object) -> fix.FixResponse:
+        """ラベルだけを修正し、Codeが修正対象へ混入しないことを検査する。"""
+
+        calls.append("fix")
+        assert isinstance(args[4], str)
+        payload = json.loads(args[4])
+        assert payload["translations"] == [{"id": "label", "text": "米国の手引書"}]
+        assert payload["findings"] == [item.model_dump() for item in checks[2]]
+        return fix.FixResponse(revisions=[fix.Revision(id="label", text="米国の資料")])
+
+    def verify_response(*args: object, **_kwargs: object) -> verify.VerifyResponse:
+        """既存VERIFY一回だけで警告付き候補を採用する。"""
+
+        calls.append("verify")
+        assert isinstance(args[4], str)
+        assert json.loads(args[4])["findings"] == [
+            item.model_dump() for item in checks[2]
+        ]
+        return verify.VerifyResponse(approved=True)
+
+    monkeypatch.setattr(translate, "structured", translate_response)
+    monkeypatch.setattr(translate_lite, "translate_texts", lite_response)
+    monkeypatch.setattr(translate, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(review, "search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(review, "structured", review_response)
+    monkeypatch.setattr(fix, "structured", fix_response)
+    monkeypatch.setattr(verify, "structured", verify_response)
+    translated = (
+        translate.run(document, "rules", [], settings, tmp_path / "translate")
+        if backend == "llm"
+        else translate_lite.run(document, settings, tmp_path / "translate")
+    )
+    checks = check.run(translated, None, tmp_path / "check")
+    assert len(checks[2]) == 1
+    assert checks[2][0].severity == "warning"
+    assert checks[2][0].evidence == "manual.pdf"
+    assert checks[2][0].target_ids
+    stored = json.loads((tmp_path / "check/page-0002.json").read_text(encoding="utf-8"))
+    assert stored == [item.model_dump() for item in checks[2]]
+    findings = review.run(
+        translated, checks, "rules", [], settings, tmp_path / "review"
+    )
+    assert findings == checks
+    fixed = fix.run(translated, findings, "rules", settings, tmp_path / "fix")
+    verified = verify.run(fixed, findings, settings, tmp_path / "verify")
+    if location == "cell-image-caption":
+        image = verified.pages[0].blocks[0].cells[0].images[0]
+        assert (image.id, image.asset_path, image.width_pt, image.height_pt) == (
+            "image",
+            "assets/image.png",
+            19,
+            21,
+        )
+        assert image.caption == values
+        assert document.pages[0].blocks[0].cells[0].images[0].final_caption is None
+        validate.run(verified, tmp_path, tmp_path / "validate.json")
+    assert calls == ["translate", "review", "fix", "verify"]
+    rendered = markdown.render_document(verified)
+    assert "print('U.S.')" in rendered
+    assert "米国の資料" in rendered
+    source = tmp_path / "document.md"
+    source.write_text(rendered, encoding="utf-8")
+    output = tmp_path / "document.docx"
+    template = load_settings("convert", env={}).templates_dir / "template.docx"
+    pandoc.create_docx(source, output, template)
+    assert "print('U.S.')" in pandoc.docx_to_text(output)
+    assert "米国の資料" in pandoc.docx_to_text(output)
+    with zipfile.ZipFile(output) as archive:
+        assert (
+            "https://example.com"
+            in archive.read("word/_rels/document.xml.rels").decode()
+        )
+    report_path = report.run(
+        [], checks[2], findings[2], tmp_path / "report.md", tmp_path / "report"
+    )
+    assert "warning / literal-reference" in report_path.read_text(encoding="utf-8")
+    assert "manual.pdf" in report_path.read_text(encoding="utf-8")
+    stored_report = json.loads(
+        (tmp_path / "report/review.json").read_text(encoding="utf-8")
+    )
+    assert stored_report["counts"] == {"warning/literal-reference": 1}
+    assert stored_report["findings"] == [item.model_dump() for item in checks[2]]
+
+
+@pytest.mark.parametrize("failure", ["fix", "verify", "rejected"])
+def test_cell_image_caption_restores_initial_translation_on_failure(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """修正/検証失敗でセル画像Captionを初回訳へ戻し、警告と原本画像を保つ。"""
+
+    image = CellImage(
+        id="image",
+        asset_path="assets/image.png",
+        width_pt=19,
+        height_pt=21,
+        caption=[Inline(id="cap", text="source")],
+        translated_caption=[Inline(id="cap", text="initial")],
+    )
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="table",
+                        order=0,
+                        kind="table",
+                        cells=[TableCell(row=0, column=0, images=[image])],
+                    )
+                ],
+            )
+        ]
+    )
+    before = document.model_dump_json()
+    findings = {2: [Finding(kind="test", target_ids=["image/caption"], message="test")]}
+
+    def fix_response(*_args: object, **_kwargs: object) -> fix.FixResponse:
+        """FIX障害または有効な修正文を注入する。"""
+
+        if failure == "fix":
+            message = "private fix marker"
+            raise OSError(message)
+        return fix.FixResponse(revisions=[fix.Revision(id="cap", text="candidate")])
+
+    def verify_response(*_args: object, **_kwargs: object) -> verify.VerifyResponse:
+        """VERIFY障害または修正候補の不承認を注入する。"""
+
+        if failure == "verify":
+            message = "private verify marker"
+            raise OSError(message)
+        return verify.VerifyResponse(approved=failure != "rejected")
+
+    monkeypatch.setattr(fix, "structured", fix_response)
+    monkeypatch.setattr(verify, "structured", verify_response)
+    settings = settings_factory()
+    fixed = fix.run(document, findings, "rules", settings, tmp_path / "fix")
+    result = verify.run(fixed, findings, settings, tmp_path / "verify")
+    restored = result.pages[0].blocks[0].cells[0].images[0]
+    assert restored.final_caption is not None
+    assert restored.final_caption[0].text == "initial"
+    assert restored.final_caption[0].fix_status == "skipped"
+    assert "private" not in (restored.final_caption[0].fix_error or "")
+    assert (
+        restored.id,
+        restored.asset_path,
+        restored.width_pt,
+        restored.height_pt,
+    ) == ("image", "assets/image.png", 19, 21)
+    assert document.model_dump_json() == before
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets/image.png").write_bytes(b"asset fixture")
+    report_path = tmp_path / "validate.json"
+    validate.run(result, tmp_path, report_path)
+    assert (
+        json.loads(report_path.read_text(encoding="utf-8"))["warnings"][0]["kind"]
+        == "fix-skipped"
+    )
+
+
+def test_structure_rejects_kind_change_hiding_cell_images() -> None:
+    """画像付き表のparagraph化を適用前に拒否して元の構造を保持する。"""
+
+    page = Page(
+        number=2,
+        blocks=[
+            Block(
+                id="table",
+                order=0,
+                kind="table",
+                cells=[
+                    TableCell(
+                        row=0,
+                        column=0,
+                        images=[
+                            CellImage(
+                                id="image",
+                                asset_path="assets/image.png",
+                                width_pt=19,
+                                height_pt=21,
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    )
+    before = page.model_dump_json()
+    response = structure.StructureResponse(
+        patches=[structure.StructurePatch(block_id="table", kind="paragraph")]
+    )
+    with pytest.raises(ValueError, match="hide cell images"):
+        structure._apply(page, response)  # noqa: SLF001
+    assert page.model_dump_json() == before
+
+
+@pytest.mark.parametrize("failure", ["short", "long", "service"])
+def test_libre_failure_keeps_input_and_existing_artifacts(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """件数不一致とサービス障害でも入力や既存成果物を部分更新しない。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="body",
+                        order=0,
+                        kind="paragraph",
+                        source=[Inline(id="text", text="U.S.")],
+                    )
+                ],
+            )
+        ]
+    )
+    original = document.model_dump_json()
+    output = tmp_path / "translate"
+    output.mkdir()
+    previous = output / "previous.json"
+    previous.write_text("previous", encoding="utf-8")
+
+    def respond(*_args: object, **_kwargs: object) -> list[str]:
+        """一回のサービス障害または不正件数を返す。"""
+
+        if failure == "service":
+            message = "service unavailable"
+            raise OSError(message)
+        return [] if failure == "short" else ["米国", "余分"]
+
+    monkeypatch.setattr(translate_lite, "translate_texts", respond)
+    with pytest.raises(OSError if failure == "service" else ValueError):
+        translate_lite.run(document, settings_factory(), output)
+    assert document.model_dump_json() == original
+    assert previous.read_text(encoding="utf-8") == "previous"
+    assert list(output.iterdir()) == [previous]
 
 
 def test_fix_and_verify_adopt_valid_candidate(
@@ -33,7 +373,7 @@ def test_fix_and_verify_adopt_valid_candidate(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """指摘を解消して検証に合格した修正候補を最終訳として採用する。"""
+    """固定の修正応答と承認応答を与え、候補が最終訳へ採用されるか確認する。"""
 
     document = Document(
         pages=[
@@ -138,6 +478,8 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
     source_pdf.write_bytes(b"readable fixture")
 
     def render_page(_source: Path, _page: int, output: Path, **_kwargs: object) -> Path:
+        """構造推定と表紙Taskに検証可能なPNGを供給し、実PDF描画への依存を除く。"""
+
         output.parent.mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (8, 8), "white").save(output)
         return output
@@ -165,6 +507,10 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
         def translate_response(
             *_args: object, **_kwargs: object
         ) -> translate.TranslationResponse:
+            """
+            URL・数量・codeを保持した固定訳を返し、後続検査とfallbackの基準にする。
+            """
+
             return translate.TranslationResponse(
                 translations=[
                     translate.TranslationItem(id="heading-text", text="インストール"),
@@ -209,6 +555,8 @@ def test_translation_capability_preserves_contract_with_fix_fallback(  # noqa: P
     sensitive = "SECRET-BODY-SENTINEL"
 
     def service_failure(*_args: object, **_kwargs: object) -> object:
+        """秘密値を含むFIX/VERIFY障害を発生させ、初回訳の保持と安全な診断を検証する。"""
+
         message = f"token=credential {sensitive}"
         raise OSError(message)
 

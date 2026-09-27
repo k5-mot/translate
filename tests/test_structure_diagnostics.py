@@ -7,18 +7,20 @@ from typing import TYPE_CHECKING
 import pytest
 from PIL import Image, ImageDraw
 
-from translate.adapters.llm import LLMError
-from translate.document import Block, Document, Inline, Page
-from translate.tasks import cover, structure
+from translate_v1.adapters.llm import LLMError
+from translate_v1.document import Block, Document, Inline, Page
+from translate_v1.tasks import cover, structure
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _document() -> Document:
+    """ページ2に識別用本文を持つ文書を作り、構造障害の位置と秘匿性を検査する。"""
+
     return Document(
         pages=[
             Page(
@@ -37,15 +39,69 @@ def _document() -> Document:
 
 
 def _render(_source: Path, page: int, output: Path) -> Path:
+    """対象がページ2であることを確認してPNGを作り、構造推定の画像入力を固定する。"""
+
     assert page == 2
     Image.new("RGB", (8, 8), "white").save(output)
     return output
 
 
 def _source(tmp_path: Path) -> Path:
+    """原本hashを計算できるダミーFileを用意し、構造診断Testの入力にする。"""
+
     source = tmp_path / "source.pdf"
     source.write_bytes(b"PDF-FIXTURE")
     return source
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (0, ConnectionError, 1, True),
+        (1, ConnectionError, 2, True),
+        (2, ConnectionError, 2, False),
+        (1, TimeoutError, 1, False),
+    ],
+)
+def test_structure_request_preserves_typed_arguments_and_retry_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    case: tuple[int, type[Exception], int, bool],
+) -> None:
+    """型付き転送でも同じ引数で最大一回だけ接続断を再送する。"""
+
+    failures, cause, expected_calls, succeeds = case
+    settings = settings_factory()
+    expected = structure.StructureResponse()
+    args = (settings, "model", structure.StructureResponse, "rules", "body")
+    kwargs = {
+        "reasoning": "none",
+        "schema_mode": "json-schema",
+        "thinking": "disabled",
+        "image": tmp_path / "page.png",
+    }
+    calls = []
+    failure = LLMError("vision-invoke", cause("private body"))
+
+    def invoke(*actual: object, **options: object) -> structure.StructureResponse:
+        """
+        実引数を記録して指定回数だけ失敗し、型付き引数の維持と再試行境界を検証する。
+        """
+
+        calls.append((actual, options))
+        if len(calls) <= failures:
+            raise failure
+        return expected
+
+    monkeypatch.setattr(structure, "structured", invoke)
+    if succeeds:
+        assert structure._structure_request(*args, **kwargs) is expected  # noqa: SLF001
+    else:
+        with pytest.raises(LLMError) as raised:
+            structure._structure_request(*args, **kwargs)  # noqa: SLF001
+        assert raised.value is failure
+    assert calls == [(args, kwargs)] * expected_calls
 
 
 def test_structure_bounds_vision_image_without_cropping(tmp_path: Path) -> None:
@@ -94,6 +150,8 @@ def test_structure_leaves_small_image_and_cover_unchanged(
     seen_dpi: list[int] = []
 
     def render_cover(_source: Path, _page: int, output: Path, *, dpi: int) -> Path:
+        """表紙描画に渡るDPIを記録して小さなPNGを返し、構造画像の縮小方針と区別する。"""
+
         seen_dpi.append(dpi)
         Image.new("RGB", (8, 8), "white").save(output)
         return output
@@ -113,11 +171,19 @@ def test_structure_uses_text_when_image_cannot_be_prepared(
     calls: list[bool] = []
 
     def fail_render(_source: Path, _page: int, output: Path) -> Path:
+        """
+        不完全な画像を書いてから失敗させ、残骸を画像入力へ使わずtextへ移るか確認する。
+        """
+
         output.write_bytes(b"partial")
         message = "image unavailable"
         raise OSError(message)
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        画像引数の有無を記録して成功し、描画障害後にtext-only要求が送られるか調べる。
+        """
+
         calls.append(kwargs.get("image") is not None)
         return structure.StructureResponse()
 
@@ -142,6 +208,11 @@ def test_structure_falls_back_to_text_after_finite_vision_failure(
     calls: list[tuple[bool, object, object, object]] = []
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        vision呼出だけを失敗させ、有限試行後のtext切替と推論・schema・thinking指定を記録
+        する。
+        """
+
         calls.append(
             (
                 kwargs.get("image") is not None,
@@ -187,6 +258,11 @@ def test_structure_final_llm_failure_has_safe_page_context_and_no_artifact(
     calls: list[bool] = []
 
     def fail(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        visionとtextの両方を失敗させ、最終診断に位置を残し不完全成果物を公開しないか検証
+        する。
+        """
+
         vision = kwargs.get("image") is not None
         calls.append(vision)
         stage = "vision-invoke" if vision else "text-parse"
@@ -226,6 +302,11 @@ def test_structure_does_not_hide_task_programming_type_error_with_fallback(
     calls = 0
 
     def fail(*_args: object, **_kwargs: object) -> structure.StructureResponse:
+        """
+        adapter外のTypeErrorを投げ、構造Taskのプログラム不具合をfallbackで隠さないか確認
+        する。
+        """
+
         nonlocal calls
         calls += 1
         message = "application programming error"
@@ -257,6 +338,10 @@ def test_structure_uses_text_only_after_vision_output_truncation(
     calls: list[bool] = []
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        visionの出力切断だけを発生させ、text-onlyの構造推定へ切り替わるか検証する。
+        """
+
         vision = kwargs.get("image") is not None
         calls.append(vision)
         if vision:
@@ -296,6 +381,11 @@ def test_structure_stops_when_vision_and_text_both_truncate(
     calls: list[tuple[bool, object]] = []
 
     def fail(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        visionとtextで切断診断を返し続け、回復上限でusage付きの安全な失敗になるか調べる
+        。
+        """
+
         vision = kwargs.get("image") is not None
         calls.append((vision, kwargs.get("schema_mode")))
         raise LLMError(
@@ -342,6 +432,11 @@ def test_structure_recovers_text_truncation_with_prompt_mode(
     calls: list[tuple[bool, object]] = []
 
     def respond(*_args: object, **kwargs: object) -> structure.StructureResponse:
+        """
+        visionとJSON schema方式を切断させ、textのprompt方式へ切り替えて回復するか調べる
+        。
+        """
+
         vision = kwargs.get("image") is not None
         schema_mode = kwargs.get("schema_mode")
         calls.append((vision, schema_mode))

@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain_core.documents import Document
 
-from translate.adapters import qdrant
+from translate_v1.adapters import qdrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def test_search_retries_and_records_reproducible_artifact(
@@ -30,6 +30,11 @@ def test_search_retries_and_records_reproducible_artifact(
         def similarity_search_with_score(
             self, query: str, *, k: int
         ) -> list[tuple[Document, float]]:
+            """
+            queryと取得件数を検査し、二回の障害後に引用元付き検索結果を返して再試行と保
+            存を検証する。
+            """
+
             nonlocal calls
             calls += 1
             assert query == "needle"
@@ -90,6 +95,11 @@ def test_search_exhaustion_propagates_and_does_not_publish_artifact(
         def similarity_search_with_score(
             self, *_args: object, **_kwargs: object
         ) -> object:
+            """
+            毎回検索障害を返して回数を数え、上限停止時に空結果やArtifactを公開しないか調
+            べる。
+            """
+
             nonlocal calls
             calls += 1
             message = "persistent Qdrant failure"

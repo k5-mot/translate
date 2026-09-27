@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import product
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -10,18 +11,20 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel
 
-from translate.adapters import docling, libretranslate, llm
+from translate_v1.adapters import docling, libretranslate, llm, qdrant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from translate.common.settings import Settings
+    from translate_v1.common.settings import Settings
 
 
 def _response(
     status: int, payload: object = None, content: bytes = b""
 ) -> httpx.Response:
+    """再試行Test用に、requestを持つHTTP応答をJSONまたはbinary本文で組み立てる。"""
+
     request = httpx.Request("GET", "https://service.invalid")
     if payload is None:
         return httpx.Response(status, request=request, content=content)
@@ -31,12 +34,14 @@ def _response(
 def test_libretranslate_retries_5xx_and_stops_on_permanent_4xx(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """5xxだけを有限retryし、400は一回で失敗する。"""
+    """503後の再送で成功し、400では一回で失敗することを確認する。"""
 
     responses = iter([_response(503), _response(200, {"translatedText": ["訳"]})])
     calls = 0
 
     def post(*_args: object, **_kwargs: object) -> httpx.Response:
+        """503後の成功応答を順に返し、LibreTranslateへの再送回数を記録する。"""
+
         nonlocal calls
         calls += 1
         return next(responses)
@@ -52,6 +57,8 @@ def test_libretranslate_retries_5xx_and_stops_on_permanent_4xx(
     calls = 0
 
     def permanent(*_args: object, **_kwargs: object) -> httpx.Response:
+        """毎回400を返して呼出数を記録し、恒久障害で再送しないことを検証する。"""
+
         nonlocal calls
         calls += 1
         return _response(400)
@@ -70,12 +77,16 @@ def test_docling_retries_submit_and_uses_configured_timeout(
     submit_calls: list[float] = []
 
     def post(*_args: object, **kwargs: object) -> httpx.Response:
+        """初回submitだけ503にし、各送信に渡されたtimeoutと再送回数を記録する。"""
+
         submit_calls.append(float(kwargs["timeout"]))
         if len(submit_calls) == 1:
             return _response(503)
         return _response(200, {"task_id": "task-1"})
 
     def get(url: str, **kwargs: object) -> httpx.Response:
+        """status照会と結果取得を模擬し、両方に設定済みtimeoutが渡ることを確認する。"""
+
         assert kwargs["timeout"] == 12.5
         if "/status/" in url:
             return _response(200, {"status": "completed"})
@@ -115,6 +126,8 @@ def test_llm_model_applies_zero_budget_only_when_thinking_is_disabled(
     calls: list[dict[str, object]] = []
 
     def client(**kwargs: object) -> SimpleNamespace:
+        """通信せずClient構築引数を記録し、thinking抑制条件による設定差を検証する。"""
+
         calls.append(kwargs)
         return SimpleNamespace()
 
@@ -135,6 +148,100 @@ def test_llm_model_applies_zero_budget_only_when_thinking_is_disabled(
     assert calls[1]["timeout"] == settings.request_timeout_seconds
 
 
+def test_reasoning_off_does_not_modify_embedding_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """LLM検証設定はEmbeddingの送信設定へ流入しない。"""
+
+    calls: list[dict[str, object]] = []
+
+    def client(**kwargs: object) -> SimpleNamespace:
+        """通信せずEmbedding Clientの構築引数だけを捕捉する。"""
+
+        calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(qdrant, "OpenAIEmbeddings", client)
+    settings = settings_factory(embedding_model="embedding-model")
+    qdrant._embeddings(settings)  # noqa: SLF001
+    qdrant._embeddings(settings.model_copy(update={"reasoning_mode": "off"}))  # noqa: SLF001
+    assert calls[0] == calls[1]
+    assert set(calls[0]) == {"model", "base_url", "api_key"}
+
+
+@pytest.mark.parametrize(
+    "case",
+    list(
+        product(
+            ["task-default", "off"],
+            ["high", "low", "none"],
+            ["prompt", "json-schema"],
+            [False, True],
+        )
+    ),
+)
+def test_reasoning_policy_reaches_client_on_initial_call_and_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+    tmp_path: Path,
+    case: tuple[str, llm.ReasoningEffort, llm.StructuredOutputMode, bool],
+) -> None:
+    """全Taskの指定と画像/schema経路を実効設定で送信し、再試行でも変更しない。"""
+
+    mode, reasoning, schema_mode, with_image = case
+    constructions: list[dict[str, object]] = []
+    sent: list[dict[str, object]] = []
+
+    class Client:
+        def __init__(self, **kwargs: object) -> None:
+            """実Provider通信を避け、既存_modelから渡される設定を捕捉する。"""
+
+            constructions.append(kwargs)
+
+        def bind(self, **_kwargs: object) -> Client:
+            """Schema bindingを受け取り、同じ送信doubleを使用する。"""
+
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            """最初だけ通信Errorにして、再試行の実効Provider設定を記録する。"""
+
+            sent.append(constructions[-1])
+            if len(sent) == 1:
+                message = "offline retry"
+                raise httpx.ConnectError(message)
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "ChatOpenAI", Client)
+    settings = settings_factory(reasoning_mode=mode, retry_base_seconds=0)
+    image_path = tmp_path / "image.png"
+    image_path.write_bytes(b"offline image")
+    result = llm.structured(
+        settings,
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning=reasoning,
+        schema_mode=schema_mode,
+        image=image_path if with_image else None,
+    )
+    expected: dict[str, object] = {"reasoning_effort": reasoning}
+    if mode == "off":
+        expected = {
+            "reasoning_effort": "none",
+            "chat_template_kwargs": {"enable_thinking": False},
+            "thinking_budget_tokens": 0,
+        }
+    assert result.value == "ok"
+    assert len(constructions) == 1
+    assert len(sent) == 2
+    assert all(call["extra_body"] == expected for call in sent)
+    assert constructions[0]["timeout"] == settings.request_timeout_seconds
+    assert constructions[0]["max_tokens"] == settings.output_tokens
+
+
 def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
@@ -145,14 +252,25 @@ def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication
 
     class Client:
         def bind(self, **kwargs: object) -> Client:
+            """Providerへ渡すschema制約を記録し、同じ応答doubleへ送信を接続する。"""
+
             seen["bind"] = kwargs
             return self
 
         def invoke(self, messages: object) -> AIMessage:
+            """
+            送信messageを保存して正常JSONを返し、schema指示がpromptへ重複しないか確認す
+            る。
+            """
+
             seen["messages"] = messages
             return AIMessage(content='{"value":"ok"}')
 
     def model(_settings: Settings, name: str, reasoning: str, thinking: str) -> Client:
+        """
+        model名・推論・thinking指定を記録し、schema設定と送信を観測できるdoubleを返す。
+        """
+
         seen["model"] = name
         seen["reasoning"] = reasoning
         seen["thinking"] = thinking
@@ -161,6 +279,10 @@ def test_llm_schema_mode_binds_strict_response_format_without_prompt_duplication
     format_calls = 0
 
     def format_instructions(_parser: object) -> str:
+        """
+        prompt用schema指示の呼出回数を数え、Provider制約使用時の重複追加を検出する。
+        """
+
         nonlocal format_calls
         format_calls += 1
         return "FORMAT-INSTRUCTION-SENTINEL"
@@ -206,18 +328,25 @@ def test_llm_schema_mode_preserves_retry_and_parse_contracts(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """Schema modeでもtransportとparseだけを有限retryする。"""
+    """Schemaを一回bindし、接続失敗・解析失敗の後の三回目で成功する。"""
 
     calls = 0
     bind_calls = 0
 
     class Client:
         def bind(self, **_kwargs: object) -> Client:
+            """schemaのbind回数を記録し、再試行ごとに再構築されないことを検証する。"""
+
             nonlocal bind_calls
             bind_calls += 1
             return self
 
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            通信障害・不正JSON・正常JSONを順に返し、schema modeでも再試行契約が保たれる
+            か調べる。
+            """
+
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -255,9 +384,18 @@ def test_llm_schema_mode_classifies_length_before_parse(
 
     class Client:
         def bind(self, **_kwargs: object) -> Client:
+            """
+            schema指定を受理して同じdoubleを返し、途中応答の分類だけを検証対象にする。
+            """
+
             return self
 
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            切断理由とusageを伴う部分応答を返し、解析や再送より先に安全に分類されるか調
+            べる。
+            """
+
             nonlocal calls
             calls += 1
             return AIMessage(
@@ -315,9 +453,16 @@ def test_llm_schema_mode_normalizes_sdk_length_error_without_raw_completion(
 
     class Client:
         def bind(self, **_kwargs: object) -> Client:
+            """schema指定を受理し、SDK由来のlength例外を発生させるdoubleへ接続する。"""
+
             return self
 
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            生のcompletionを持つSDK相当例外を投げ、呼出回数と公開診断の秘匿性を検証する
+            。
+            """
+
             nonlocal calls
             calls += 1
             raise error
@@ -358,9 +503,16 @@ def test_llm_schema_mode_does_not_retry_permanent_400(
 
     class Client:
         def bind(self, **_kwargs: object) -> Client:
+            """schema指定を受理し、恒久400を返す送信doubleへ接続する。"""
+
             return self
 
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            Provider拒否相当のHTTP 400を投げ、機密messageを公開せず一回で停止するか検証
+            する。
+            """
+
             nonlocal calls
             calls += 1
             message = "SECRET-PROVIDER-REJECTION"
@@ -386,6 +538,56 @@ def test_llm_schema_mode_does_not_retry_permanent_400(
     assert "SECRET-PROVIDER-REJECTION" not in str(captured.value)
 
 
+def test_llm_context_exceeded_is_safe_non_retryable_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """Providerのcontext超過はretryせず、安全な分類だけを返す。"""
+
+    calls = 0
+    error_type = type("OpenAIInvalidRequestError", (Exception,), {})
+
+    class Client:
+        def bind(self, **_kwargs: object) -> Client:
+            """schema指定を受理し、context超過例外の分類を調べるdoubleへ接続する。"""
+
+            return self
+
+        def invoke(self, _messages: object) -> AIMessage:
+            """
+            秘密値を含むProvider context超過を発生させ、再送抑止と安全な原因分類を検証す
+            る。
+            """
+
+            nonlocal calls
+            calls += 1
+            message = (
+                "Engine protocol predict stream returned an error: "
+                "Context size has been exceeded; SECRET-PROMPT"
+            )
+            raise error_type(message)
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+
+    with pytest.raises(llm.LLMError) as captured:
+        llm.structured(
+            settings_factory(retry_attempts=3),
+            "model",
+            RetryResponse,
+            "system",
+            "user",
+            reasoning="none",
+            schema_mode="json-schema",
+            thinking="disabled",
+        )
+
+    assert calls == 1
+    assert captured.value.stage == "text-invoke"
+    assert captured.value.cause_type == "LLMContextExceededError"
+    assert captured.value.failure_kind == "context-exceeded"
+    assert "SECRET-PROMPT" not in str(captured.value)
+
+
 @pytest.mark.parametrize(
     ("module", "expected"),
     [
@@ -404,7 +606,12 @@ def test_llm_origin_diagnostic_reduces_traceback_without_raw_values(
 
     sentinel = "SECRET-PATH-PROMPT-RESPONSE"
     namespace: dict[str, object] = {"__name__": module, "sentinel": sentinel}
-    exec("def fail():\n    raise TypeError(sentinel)", namespace)  # noqa: S102
+    exec(  # noqa: S102
+        "def fail():\n"
+        "    # Raise in the chosen module to test traceback origin redaction.\n"
+        "    raise TypeError(sentinel)",
+        namespace,
+    )
     fail = namespace["fail"]
 
     try:
@@ -422,11 +629,12 @@ def test_llm_origin_diagnostic_reduces_traceback_without_raw_values(
 
 
 def test_llm_origin_diagnostic_follows_exception_chain_once() -> None:
-    """cause chainを循環せず調べ、安全な型名だけを返す。"""
+    """二段の非循環cause chainからSDK境界と型名を取得し、例外本文を除く。"""
 
     namespace: dict[str, object] = {"__name__": "openai._base_client"}
     exec(  # noqa: S102
         "def fail():\n"
+        "    # Build a cause chain in the SDK namespace without a real request.\n"
         "    try:\n"
         "        raise TypeError('SECRET-INNER')\n"
         "    except TypeError as error:\n"
@@ -448,12 +656,14 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """LLM Network Errorを既定回数内でretryし、上限後は伝播する。"""
+    """LLM接続失敗を指定した三回までretryし、回復と上限後の伝播を確認する。"""
 
     calls = 0
 
     class Client:
         def invoke(self, _messages: object) -> AIMessage:
+            """二回の接続障害の後に成功し、指定回数内で回復する通信再試行を模擬する。"""
+
             nonlocal calls
             calls += 1
             if calls < 3:
@@ -481,6 +691,10 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
 
     class FailingClient:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            毎回接続障害を投げて呼出数を数え、再試行上限と公開例外の秘匿性を検証する。
+            """
+
             nonlocal calls
             calls += 1
             message = "persistent"
@@ -502,6 +716,44 @@ def test_llm_retries_network_errors_and_exhausts_at_configured_limit(
     assert "persistent" not in str(captured.value)
 
 
+def test_llm_retries_provider_timeout_by_type_name(
+    monkeypatch: pytest.MonkeyPatch,
+    settings_factory: Callable[..., Settings],
+) -> None:
+    """LM Studio/OpenAI互換のtimeout型も有限retryする。"""
+
+    calls = 0
+
+    class OpenAITimeoutError(RuntimeError):
+        pass
+
+    class Client:
+        def invoke(self, _messages: object) -> AIMessage:
+            """
+            Provider固有名のtimeout例外を二回投げ、型名による再試行分類を検証する。
+            """
+
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise OpenAITimeoutError
+            return AIMessage(content='{"value":"ok"}')
+
+    monkeypatch.setattr(llm, "_model", lambda *_args: Client())
+    monkeypatch.setattr(llm.time, "sleep", lambda _value: None)
+    result = llm.structured(
+        settings_factory(retry_attempts=3, retry_base_seconds=0),
+        "model",
+        RetryResponse,
+        "system",
+        "user",
+        reasoning="low",
+    )
+
+    assert result.value == "ok"
+    assert calls == 3
+
+
 def test_llm_retries_boundary_type_and_parse_errors_without_leaking_content(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
@@ -515,10 +767,20 @@ def test_llm_retries_boundary_type_and_parse_errors_without_leaking_content(
     class BrokenResponse:
         @property
         def content(self) -> str:
+            """
+            応答本文へのアクセス自体を失敗させ、受信後の型不整合が安全に扱われるか調べる
+            。
+            """
+
             raise TypeError(sentinel)
 
     class Client:
         def invoke(self, _messages: object) -> object:
+            """
+            送信型エラー・本文取得エラー・不正JSONを順に発生させ、再試行後に正常応答を返
+            す。
+            """
+
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -551,6 +813,10 @@ def test_llm_retries_boundary_type_and_parse_errors_without_leaking_content(
 
     class MalformedClient:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            毎回不正JSONを返し、解析再試行の上限と生の応答が漏れないことを検証する。
+            """
+
             nonlocal calls
             calls += 1
             return AIMessage(content=sentinel)
@@ -576,7 +842,7 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
     monkeypatch: pytest.MonkeyPatch,
     settings_factory: Callable[..., Settings],
 ) -> None:
-    """恒久4xxとClient構築TypeErrorは一度で停止する。"""
+    """HTTP 400、Model構築とprompt構築のTypeErrorではretryしない。"""
 
     calls = 0
     request = httpx.Request("POST", "https://service.invalid")
@@ -584,6 +850,10 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
 
     class Client:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            恒久HTTP 400の送信例外を投げ、再試行しないことと応答本文の秘匿性を調べる。
+            """
+
             nonlocal calls
             calls += 1
             message = "permanent raw response"
@@ -611,6 +881,8 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
     model_calls = 0
 
     def invalid_model(*_args: object) -> object:
+        """Client構築をTypeErrorで失敗させ、送信再試行の対象外であることを確認する。"""
+
         nonlocal model_calls
         model_calls += 1
         message = "invalid client configuration"
@@ -631,6 +903,10 @@ def test_llm_does_not_retry_permanent_or_outside_boundary_errors(
     prompt_calls = 0
 
     def invalid_prompt(_parser: object) -> str:
+        """
+        prompt構築をTypeErrorで失敗させ、Client構築や送信に進まないことを確認する。
+        """
+
         nonlocal prompt_calls
         prompt_calls += 1
         message = "invalid prompt construction"
@@ -694,6 +970,11 @@ def test_llm_classifies_length_before_parse_without_retry_or_leak(
 
     class Client:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            指定された切断応答とusageを返し、本文の有無にかかわらず一回で分類されるか調
+            べる。
+            """
+
             nonlocal calls
             calls += 1
             return AIMessage(
@@ -737,6 +1018,11 @@ def test_llm_token_usage_rejects_non_integer_or_negative_values(
 
     class Client:
         def invoke(self, _messages: object) -> AIMessage:
+            """
+            負数・bool・文字列のusageを返し、不正なtoken数を公開診断が受理しないか調べる
+            。
+            """
+
             return AIMessage(
                 content="",
                 response_metadata={
