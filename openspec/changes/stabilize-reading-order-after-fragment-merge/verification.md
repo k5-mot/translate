@@ -103,8 +103,12 @@ POSITION-ORDER-001の再現ケースと保存済み実データで順序反転�
 
 **判定: CRITICAL 2件、archive不可。** `openspec-verify-change`の完備性基準に従い、未実施の実受入を完了扱いにせずarchive手順を停止する。verify節更新後の`tests/test_documentation.py`は21 passed（0.30秒）、OpenSpec strictとgit diff --checkは成功した。
 
-### LLM接続の再確認（進行中）
+### LLM接続の再確認（HTTP 500で終了）
 
 2026-09-27 02:51:49.929696 UTC（11:51:49 JST）、既存`_model`経由で短い合成要求を1件だけ開始した。reasoning=none、thinking=disabled、output_tokens=32、設定timeout=1800秒、SDK/外側retry=0。Settingsの接続を使用し、原文・画像・Embedding要求は送っていない。並行するPython/uv processがないことを開始直前に確認した。
 
 exec session **36205** は02:54:39 UTC時点で進行中、終了出力なし。失敗/成功はまだ判定できない。次回はこの同じsessionの終了を回収し、同じ要求を新規に重ねない。前日のHTTP 500を今回の結果とは扱わない。本文やCredentialを診断へ表示していない。
+
+後続の同一handle待機で、**03:00:55.852590 UTC（12:00:55 JST）にexit 1**を確認した。経過545.922秒、`OpenAIAPIError`、HTTP 500、cause型`InternalServerError`。設定1800秒のtimeout到達ではない。上段の進行中記録はこの終端結果で更新された。再試行/別要求を開始しておらず、今回の接続回復は確認できなかった。サービス内部の原因や前日と同一原因であることは、この公開例外情報だけでは断定できない。
+
+Task 3.1/3.2は未完了のまま。新規Translation/Word PDF/Reviewは開始していない。サービス側調査の対応時間は2026-09-27 **11:51〜12:01 JST**。本確認は32出力tokensの合成要求であり、文書量やPOSITION処理による遅延ではない。

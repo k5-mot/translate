@@ -273,6 +273,8 @@ openspec-verify-changeで本Changeのproposal/specs/design/tasksを読み直し�
 
 ### COMPARE-ALIGN-001: 対応の意味が不正でも後続Reviewへ進む（CRITICAL・未解決）
 
+最新状態（2026-09-27）: 意味的対応が確定しなければ停止する方針は利用者承認済み。後述の旧「回答待ち」は当時の記録である。全範囲の逐次照合とEmbeddingによる候補探索の設計選択については、下記追加調査を提示して確認中。まだ製品修正・是正Change作成は行っていない。
+
 - `comparison-review`の「文書要素を多対多で対応付ける」は順序だけでなく見出し・番号・URL・固有名詞・前後関係に基づく対応を要求する。IDの網羅性だけでは正しい対応の証拠にならない。
 - 実Artifactは原文264単位、訳文289単位、291 Group。matched 262、source_only 2、target_only 27。confidence 0.95が96組、0.6が166組、1.0が29組。1対多・多対1は0組。全IDの一意・完全包含は`align._valid`でTrueだったが、次の内容照合では不一致を検出した。
 - 先行translationの`verify/document.json`に保存された原文と最終採用訳を基準に、比較側sourceと原文が一致し、比較側targetに最終採用訳が一意に存在する組だけを抽出した。照合は空白文字だけを除去した完全一致で、双方40文字以上、先行原文・比較原文・比較訳文の三者で候補が一意という条件を使った。類似度推測やモデル要求は使用していない。
@@ -340,6 +342,35 @@ LLM通信が回復しない場合に停止する方針は既承認であり、�
 grill-with-docsの判断として利用者へ確認中。無回答を採用承認としない。新しい是正Changeはまだ作成せず、Code/Testも変更していない。どちらの案でも、適切に分割して既知の実対応を得ることが是正目標であり、巨大入力を停止させるだけでCOMPARE-ALIGN-001を解決済みにしない。改ページ差・多対多・順序が入れ替わる対応を、単純な同じ位置の窓に限定して切り捨てない。
 
 実Review session 12758は同一handleのpollでliveを確認しており、追加のLLM/Embedding要求・停止・再起動は行っていない。前提が変わらない既存Artifactは読取りだけで保持する。
+
+#### 2026-09-27: 探索方式の負荷と再利用境界
+
+Code起点 `764a176`。`openspec-propose`と`grill-with-docs`による計画前の読取り調査を実施した。mainはALIGN、文書Model、比較Workflow、既存Test、設定/adapterを確認し、限定sub-agentは導入済みAPIと境界を独立確認した。製品Code/Test、既存Run/成果物は変更していない。
+
+保存済み比較Run `01a0d8e0-73da-73e0-97b9-e1d0bcf442f2` のLOAD Artifactを読取り、現行`align._items`を適用した。本文は表示せず、元Fileの読取前後bytes一致を確認した。
+
+| 側 | Page / TextUnit | JSON文字数 / UTF-8 bytes | 2 chars/token指定の既存API概算 | SHA-256 |
+| --- | --- | --- | --- | --- |
+| source | 16 / 264 | 59,947 / 59,947 | 29,979 | `b477679632211a310e8d6708cfb07136bc0bd52c16e6cf6abfb6dd268bd52722` |
+| target | 28 / 289 | 39,830 / 89,994 | 19,920 | `6cd576e6b917ad5d9a5b72060c0c91649faaebc4fd096a213b2a705a526dec3f` |
+
+概算には導入済み`langchain_core.messages.utils.count_tokens_approximately`とHumanMessageを使った。Gemmaの正確なtoken数の測定ではない。設定上の入力枠10,752から仮に2,048を指示/schema用に予約し、両側へ4,352ずつ割り当てて、ID/textを貪欲に分割するとsource 8窓、target 5窓で**40組**となった。これは構造文脈・重複・候補調停・再分割なしの試算であり、実送信数や実所要時間ではない。実装前に固定値として採用した訳でもない。
+
+既存APIと不足する契約:
+
+- `structured`のschema解析、有限retry、推論OFF強制、context超過/出力切断分類は再利用する。数値概算を新たに自作せず既存LangChain APIを検討する。ただしschemaを含む実system/userを数え、概算誤差とprovider拒否を区別する。
+- 既存の分割器は文字列分割を行うが、両文書のID、表セル/Caption、窓境界を跨ぐ多対多、全対象の一意分類までは担わない。候補調停は製品固有の不足契約である。
+- `qdrant._embeddings`のClientは再利用可能だが、`search`は参考資料collection用。比較先文書の埋込み・ランキングは新しい処理になる。設定に日英能力の証明はなく、reviewでEmbedding設定は必須ではない。top-k候補外をsource_only/target_onlyと断定してはならない。
+- 全窓案でも、両側の境界を跨ぐ候補を扱い、IDの側を区別して競合を調停する必要がある。局所的な一致なしを最終未対応へ昇格させず、単純union/最高confidence/同じ位置だけで確定しない。予算内に収まらない競合や意味的不確定は、有限な処理後に承認済み停止方針へ従う。
+- 独自の候補完了Cacheや再開台帳は追加しない。既存GraphのTask再開を使う。導入済みREVIEWの独自chunk CacheをALIGNへ複製しない。
+
+mainの追加合成再現では、sourceに「Program 1 funds energy research.」、target先頭に別内容の「Program 1 funds education.」、後方にsourceと同一文を置いた。外部モデル呼出を失敗させるdoubleを設定して実AlignTaskを一時領域へ実行したところ、先頭をconfidence 0.95で採用し、後方をtarget_onlyとしてalignment.jsonを公開した。モデル呼出0回、Task成功。この試験は同言語でアンカー優先の制御を分離するもので、実日英モデルの正確さの測定ではない。初回試験はSettings必須引数不足でTask前に失敗し、templates_dirを与えた再試験が上記結果である。一時領域は終了後解放した。
+
+**確認中の設計選択**: 追加Dependency/検索機構を増やさず全範囲を小窓で逐次照合する案を推奨する。ただし呼出数が増える。別案はEmbedding候補検索を設計することで、日英能力検証と候補外の扱いが追加になる。利用者へこの選択を提示した。回答前に新規Changeの方式を確定・製品実装しない。意味的不確定時の停止方針は再質問しない。新しいDomain用語や独立Architectureを確定していないため、この段階でglossary/ADRは作成しない。
+
+必要な回帰は、同番号の別内容、遠隔/逆順、両側の窓境界を跨ぐ1対多/多対1/多対多、重複候補競合、遅い窓での一致、真の未対応と不確定の区別、過大単位/競合、Caption/表セル/両側同名ID、常時逐次/OFF、失敗時公開なしとGraph再開である。停止だけやID partitionだけをCOMPARE-ALIGN-001の解決証拠にしない。
+
+追記後の文書Testは21 passed（0.33秒）、本ChangeのOpenSpec strictはvalid、git diff --checkは指摘なし。製品Code未変更につき全製品Testは再実行していない。並行していた前ターンからの単一接続確認は[終端記録](../stabilize-reading-order-after-fragment-merge/verification.md)のとおり545.922秒後にHTTP 500で終了した。ALIGNの探索試験による外部要求は0件であり、この接続障害と候補探索の設計を混同しない。
 
 追記後の文書・ALIGN・比較Capabilityの既存Testは41 passed（2.33秒）、本Changeのstrict validationはvalid、git diff --checkは指摘なし。今回の構造不正を検出する製品Testはまだ追加しておらず、これらの既存Test成功を指摘の解消とは扱わない。
 
