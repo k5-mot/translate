@@ -849,6 +849,9 @@ CHECK、FIXおよびpublisherの各TaskはLLMを使用してはならない。
 - 重複IDは該当項目だけを不正とする。
 - LLMへ文書全体の再出力を要求せず、変更または翻訳結果だけを返させる。
 - すべてのPydanticモデルは未知fieldを無視するが、定義済みfieldとTask固有の整合条件は検査する。
+- 3つのLLM Taskはhidden reasoningを使用せず、各要求で
+  `reasoning_effort="none"`、`chat_template_kwargs.enable_thinking=false`、
+  `thinking_budget_tokens=0`を指定する。
 
 ### 📚 用語集
 
@@ -968,6 +971,11 @@ LLM Call Artifactは各Taskの次の場所へ保存する。
 ├── call.json
 └── response.json
 ```
+
+Taskの最終結果には、実際に採用したCall IDを出現順で保持する
+`<task-directory>/call-index.json`を保存する。Taskの集約進捗と再利用数はこの一覧に
+含まれるCall Artifactだけから計算し、以前のfingerprintやchunk境界で作成された
+未採用Callを含めない。
 
 `response.json` はPydantic検証に成功した応答だけを保存する。raw応答、prompt、API keyおよび認証headerは保存しない。
 

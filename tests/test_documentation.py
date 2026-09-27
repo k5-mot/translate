@@ -14,32 +14,44 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 # Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
 CONTROL_COMMENTS = ("noqa", "type: ignore", "ty: ignore", "pragma:", "ruff:")
 ENV_NAMES = {
-    "TRANSLATE_RUNS_DIR",
-    "TRANSLATE_RETRY_ATTEMPTS",
-    "TRANSLATE_RETRY_BASE_SECONDS",
-    "TRANSLATE_RETRY_MAX_SECONDS",
-    "TRANSLATE_REQUEST_TIMEOUT_SECONDS",
-    "TRANSLATE_TASK_DEADLINE_SECONDS",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_STRUCTURE_MODEL",
     "OPENAI_REVIEW_MODEL",
     "OPENAI_TRANSLATION_MODEL",
     "OPENAI_EMBEDDING_MODEL",
-    "OPENAI_FIX_MODEL",
     "LLM_CONTEXT_TOKENS",
-    "LLM_OUTPUT_TOKENS",
     "LLM_IMAGE_TOKENS",
-    "LLM_REASONING_MODE",
+    "LLM_SAFETY_TOKENS",
+    "STRUCTURE_INPUT_TOKENS",
+    "STRUCTURE_OUTPUT_TOKENS",
+    "STRUCTURE_MAX_BLOCKS",
+    "TRANSLATE_INPUT_TOKENS",
+    "TRANSLATE_OUTPUT_TOKENS",
+    "TRANSLATE_MAX_UNITS",
+    "REVIEW_INPUT_TOKENS",
+    "REVIEW_OUTPUT_TOKENS",
+    "REVIEW_MAX_TARGETS",
+    "LLM_RETRY_ATTEMPTS",
+    "LLM_SPLIT_MAX_DEPTH",
+    "LLM_REQUEST_TIMEOUT_SECONDS",
+    "LLM_TASK_DEADLINE_SECONDS",
+    "LLM_STRUCTURED_OUTPUT_MODE",
+    "LLM_SCHEMA_MAX_BYTES",
+    "LLM_SCHEMA_MAX_DEPTH",
+    "LLM_RESPONSE_MAX_BYTES",
+    "REVIEW_MAX_FINDINGS",
+    "REVIEW_MAX_REVISIONS",
+    "REVIEW_MAX_EDITS_PER_REVISION",
     "DOCLING_SERVER_URL",
     "DOCLING_API_KEY",
     "DOCLING_OCR_PRESET",
     "DOCLING_OCR_LANG",
     "DOCLING_FORCE_OCR",
     "PDF_SPLIT_PAGES",
-    "LANGFUSE_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY",
-    "LANGFUSE_OTEL_HOST",
+    "HTTP_RETRY_ATTEMPTS",
+    "HTTP_REQUEST_TIMEOUT_SECONDS",
+    "EXTERNAL_TASK_DEADLINE_SECONDS",
     "LIBRETRANSLATE_URL",
     "LIBRETRANSLATE_API_KEY",
     "QDRANT_API_KEY",
@@ -70,17 +82,15 @@ def test_env_sample_uses_supported_setting_names() -> None:
 
 
 def test_run_layout_names_are_consistent() -> None:
-    """Lifecycle metadataとWorkflow metadataの同名衝突を文書化しない。"""
+    """新しい成果物rootと処理IDの配置を一貫して文書化する。"""
 
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (PROJECT_ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
 
-    assert "root直下の`<run-id>/run.json`" in readme
-    assert "`.workspace/workflow.json`" in readme
-    assert "root直下の`run.json`" in operations
-    assert "`.workspace/workflow.json`" in operations
-    assert ".workspace/run.json" not in readme + operations
-    assert "旧`.work/`" in operations
+    assert "`outputs/<file-basename>/<uuidv7>/`" in readme
+    assert "`translation.json`" in readme
+    assert "`review.json`" in readme
+    assert "`registration.json`" in readme
+    assert "runs/" not in readme
 
 
 def _missing_function_explanations(source: str) -> list[str]:
@@ -168,8 +178,12 @@ def test_function_explanations_cover_private_nested_and_comment_forms(
 def test_all_python_functions_have_explanations() -> None:
     """公開入口・製品・Testの全関数で説明の存在を検査し、欠落位置を一覧にする。"""
 
-    paths = [PROJECT_ROOT / "cli_v1.py", PROJECT_ROOT / "main_v1.py"]
-    for directory in ("translate_v1", "tests"):
+    paths = [
+        PROJECT_ROOT / "main.py",
+        PROJECT_ROOT / "cli_v1.py",
+        PROJECT_ROOT / "main_v1.py",
+    ]
+    for directory in ("translate", "translate_v1", "tests"):
         paths.extend(sorted((PROJECT_ROOT / directory).rglob("*.py")))
     missing = [
         f"{path.relative_to(PROJECT_ROOT).as_posix()}:{location}"
