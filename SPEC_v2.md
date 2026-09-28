@@ -1,9 +1,14 @@
-# 🖥️ Streamlit UI・Upgrade仕様 v2
+# 🖥️ Streamlit UI・Upgrade現行実装仕様 v2
 
-本書は、[`SPEC.md`](SPEC.md)で将来対応としたStreamlit UIと実Pipelineの接続、および
-英文v1、英文v2、日本語v1から日本語v2を生成するUpgradeを定める。既存の文書変換、翻訳、
-Review、Register、成果物、Resumeおよび外部接続の契約は[`SPEC.md`](SPEC.md)を正本とし、
-本書はUI境界とUpgradeに必要な拡張だけを定義する。
+本書は、現行Sourceを基準に、[`SPEC.md`](SPEC.md)で将来対応としたStreamlit UIと実Pipelineの
+接続、および英文v1、英文v2、日本語v1から日本語v2を生成するUpgradeの実装済み動作を定める。
+既存の文書変換、翻訳、Review、Register、成果物、Resumeおよび外部接続の契約は
+[`SPEC.md`](SPEC.md)を正本とし、本書はUI境界とUpgradeに必要な拡張だけを記録する。
+
+- 本書の本文は、未実装の構想ではなく `main.py`、`translate/ui.py`、`translate/pipeline/upgrade.py`
+  および関連Model・Taskの現行動作を表す。
+- 現行実装に存在しない候補は「将来候補」だけに記載し、完了条件へ含めない。
+- 以後の変更で実装と本書の動作が変わる場合は、同じ変更で本書も更新する。
 
 ## 🎯 目的
 
@@ -101,6 +106,8 @@ tests/
 ### 📦 依存関係
 
 - UI用optional dependencyは既存の `streamlit>=1.64.0` だけとする。
+- Register用optional dependencyは `qdrant-client>=1.16.0,<2` とし、`all` extraはUI用と
+  Register用の両方を導入する。
 - background workerは標準Libraryの `concurrent.futures.ThreadPoolExecutor` を使用する。
 - UI実装のためにprocess manager、queue、databaseまたはfilesystem watcherを追加しない。
 - 新しい永続化データモデルが必要になった場合はPydanticの `BaseModel` を使用する。
@@ -122,12 +129,22 @@ uv run streamlit run main.py --server.address localhost
 - localhost以外へbindする場合のTLS、認証、reverse proxyおよびaccess制御は運用側の責務とする。
 - 設定値とsecretはUIへ表示しない。UIは `.env` を書き換えない。
 
+CLIの現行終了契約は次のとおりとする。
+
+| 終了code | 条件 |
+|---|---|
+| `0` | Pipeline成功。処理IDと成果物pathを標準出力へ表示する |
+| `1` | 予期しない例外。処理種類と例外型を標準errorへ表示する |
+| `2` | `ConfigError` または `InputError`。検証messageを標準errorへ表示する |
+| `130` | `KeyboardInterrupt` |
+
 ### 🐳 Docker起動
 
 - `Dockerfile` の基盤imageは `ghcr.io/astral-sh/uv:python3.12-trixie` とする。
 - imageは `uv sync --frozen --all-extras --no-dev` でUIとRegisterを含む実行依存を固定する。
 - DOCX公開に必要なPandocをDebian packageから導入する。
 - containerはStreamlitを `0.0.0.0:8501` で起動する。
+- container起動時はheadless modeを有効にし、Streamlitの利用統計送信を無効にする。
 - `docker-compose.yml` は `.env` を環境変数として渡す。imageへ `.env` を複製しない。
 - `outputs` と `.translate-ui` はホストdirectoryをbind mountし、container再作成後も保持する。
 - ホスト上の外部serviceへは `host.docker.internal` で接続できる構成とする。
@@ -147,11 +164,12 @@ uv run streamlit run main.py --server.address localhost
 
 Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に表示する。処理履歴は各tabから共通で
 参照できる領域とし、処理IDをURL query parameterに保持する。browserを更新しても、
-同じ処理IDの表示を復元する。
+同じ処理IDの表示を復元する。query parameter名は `processing` とする。
 
 - application名 `Translate` は `st.logo` でAppBar左側へ表示し、本文の独立した大見出しにはしない。
 - Session IDは入力領域のCollapse labelへ含めず、`Translate` とDeploy buttonと同じAppBarの
-  縦位置へ独立して表示する。新規処理では `新規セッション` と表示する。
+  縦位置へ独立して表示する。新規処理では `新規セッション` と表示する。現行実装では
+  `st.html` の固定配置要素をこの表示だけに使用し、document由来の値はHTML escapeする。
 - 処理履歴は左sidebarへ折り畳まず、新しい順のbuttonとして縦に並べる。選択中の処理は
   buttonの状態でも識別できるようにする。
 - 本文の入力領域は上からPipeline tab、file upload、各種option、開始buttonの順とする。
@@ -273,7 +291,9 @@ Review画面はFIXを実行せず、REPORTに含まれる指摘と修正候補�
 - upload元のbasenameは成果物最上位directory名と `logical_path` のために保持する。
 - basenameが空、`.`、`..`、path separatorまたは制御文字を含む場合は拒否する。
 - fileの拡張子は大文字と小文字を区別せず検査する。MIME typeだけを信頼しない。
-- 保存は一時fileへ書き込んだ後、同一filesystem内で原子的に確定する。
+- 保存は一時fileへ書き込んだ後、同一filesystem内で原子的に確定する。Windowsの
+  `WinError 5` による一時的なpath置換失敗は、50 msから始まる指数backoffで再試行し、
+  初回を含む5回で確定できなければ失敗とする。
 - Streamlitの `server.maxUploadSize` を1file当たりの上限とし、application独自の別のsize設定を追加しない。
 - 保存した入力はResumeのために自動削除しない。初期UIは削除画面を提供しない。
 
@@ -495,17 +515,19 @@ CLIと外部serviceの同時実行能力まで制限するものではない。
 | 処理状態 | 最上位JSONの `status` |
 | 現在のTask | `status="processing"` の `TaskState` |
 | 完了Task | `succeeded` または `skipped` のTask数 |
-| LLM進捗 | 実行中はCall Artifactの観測数、Task完了後は `LLMProgress` の `completed_calls / planned_calls` |
-| LLM再利用 | `LLMProgress.reused_calls` |
-| LLM失敗 | `LLMProgress.failed_calls` |
+| LLM進捗 | 実行中はCall Artifactの完了数と観測数、Task完了後は `LLMProgress` の `completed_calls / planned_calls` |
+| LLM再利用 | Task完了後の `LLMProgress.reused_calls` |
+| LLM失敗 | 実行中はCall Artifact、Task完了後は `LLMProgress.failed_calls` |
 | Register進捗 | 最上位JSONの `status` を使用した0または1の固定Task表示 |
 | 更新時刻 | 最上位JSONの `updated_at` |
 
-- `planned_calls` はLLMによる分割で増えるため、進捗率が一時的に下がることを許容する。
-- LLM Task実行中は該当Taskの `calls/*/call.json` を直接集計し、完了、実行中および失敗Call数を表示する。
+- LLM Task実行中は該当Taskの `calls/*/call.json` を直接集計し、完了、観測済みおよび失敗Call数を表示する。
+  Call分割によって観測数が増える場合があるが、実行中の予定総数は推測しない。
+- `succeeded`、`partial` および子Callへ分割済みの `split` を、実行中表示の完了Callとして数える。
+- Task完了後は最上位記録の `LLMProgress` を表示し、この時点で予定Call数と再利用Call数を表示する。
 - 予定Call数が0またはまだ確定していない間は、虚偽の百分率を表示せず、件数と状態だけを表示する。
-- JSONが原子的に置換される瞬間の読込み失敗は、前回の有効な表示を維持して次回pollで再読込みする。
-- 検証できないJSONを正常状態として表示してはならない。連続して検証に失敗する場合は「処理記録を読み込めない」と表示する。
+- 読み込めない個別Call Artifactはそのpollの集計から除外する。検証できない最上位JSONは
+  正常状態として表示せず、sidebarに「処理記録を読み込めません」とpathを表示する。
 - 自動更新は `succeeded`、`failed` または `cancelled` の終端状態で停止する。
 
 ### 📈 Task ProgressBar
@@ -558,7 +580,8 @@ backendに対応する一方だけを表示する。
 
 - 最上位JSONの `updated_at` を使用した更新時刻
 - STRUCTURE、TRANSLATEおよびREVIEWのTask別LLM Call進捗内訳
-- 各内訳の完了Call数、予定または観測済みCall数、再利用Call数および失敗Call数
+- Task完了後の内訳では完了・予定・再利用・失敗Call数
+- 実行中の内訳では完了・観測済み・失敗Call数
 
 Task名とTask状態はProgressBarへ表示する。固定action、現在対象の本文、Upgrade差分集計、
 成果物、エラーおよびResume操作は進捗詳細へ表示しない。LLMのsystem prompt、生のrequest
@@ -620,7 +643,8 @@ Reviewは `st.columns(2)` 内へ二つの読取専用 `st.text_area`を配置す
 - 正本は `review/align/alignment.json` の検証済み `AlignmentResult.targets` とする。
 - 左右は必ず同じ `ReviewTarget.id` の `source` と `translation`を表示する。
 - REVIEW Call実行中は、Call Artifactの `target_ids` に対応するReviewTargetを表示する。
-  Callがまだない場合または処理完了後は、直近の成功Callが対象としたReviewTargetを表示する。
+  実行中Callがなく成功Callがある場合は直近の成功Call、Callがまだ一件もない場合は
+  `AlignmentResult.targets` の先頭3件をpreviewとして表示する。
 - ALIGN完了前は対応関係を推測せず、「ALIGN完了後に表示」とする。UIからALIGNを再実行しない。
 - LLMが生成したFindingとRevisionはこの二列へ混ぜず、既存の直近結果および
   「修正前 / 修正候補」の比較領域へ表示する。
@@ -644,7 +668,7 @@ Upgradeは `st.columns(3)` 内へ三つの読取専用 `st.text_area`を次の�
 - TRANSLATEまたはREVIEW Call実行中は、CallのSpan IDまたはTextUnit IDを英語v2の
   TextUnitへ解決し、対応するVersionChangeを表示する。
 - DIFF完了前は三列の対応を推測せず、「DIFF完了後に表示」とする。REUSEの実行中など
-  item単位の現在位置をArtifactから判定できない場合は、先頭3件を「計画preview」として
+  item単位の現在位置をArtifactから判定できない場合は、計画の先頭3件をpreviewとして
   表示し、現在処理中であるとは表記しない。
 - 生成された日本語v2はこの三列へ混ぜず、TRANSLATEまたはFIXの検証済み結果として、
   既存の処理前・処理後比較領域へ表示する。
@@ -693,6 +717,8 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 
 - UIから開始した処理は `.translate-ui/<processing-id>/` の保存済み入力を再使用する。
 - CLIから開始した処理など、対応する保存済み入力がない場合は同じ入力fileの再uploadを要求する。
+- CLIでdirectoryを指定したRegisterは、論理pathをbrowser uploadで再現できないためUIから
+  Resumeせず、CLIからResumeするよう案内する。
 - Resume開始前にfile件数、roleおよびSHA-256を比較し、不一致ならPipelineを呼び出さず拒否する。
 - TranslateおよびUpgradeのbackend、Registerの `source_id`、入力roleとlogical pathの順序は
   保存済み記録に合わせる。
@@ -702,14 +728,19 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 
 ## 📤 成果物表示とdownload
 
-- `succeeded` の最上位JSONに記録されたArtifactだけを公開する。
+- Translate、ReviewおよびUpgradeは、`succeeded` の最上位JSONの `outputs` に記録された
+  Artifactだけを公開する。
 - Artifactの `relative_path`は処理directoryを基準に解決し、directory外を参照するpathを拒否する。
 - download前にfileの存在、sizeとSHA-256を `ArtifactFile` と比較する。
 - 検証に失敗したArtifactはdownload buttonを表示せず、「成果物が欠落または変更されている」と表示する。
 - TranslateはMarkdownとDOCX、Reviewは `review.md`、Registerは `registration.json`、
   Upgradeは日本語v2 DOCXをdownload対象とする。
+- Registerの `registration.json` は成果物を指すroot recordそのものであり、自己参照する
+  `ArtifactFile` を持たない。`RegistrationRecord` としてSchema検証でき、かつ状態が
+  `succeeded` の場合に、読み込んだ同じbyte列をdownload対象とする。
 - previewおよびdownload buttonは `進捗と処理内容` Collapseの外側へ表示する。
 - TranslateのMarkdownとDOCXのdownload buttonは横並びにする。
+- 現行実装はMarkdownとDOCXの各buttonを `st.columns(2)` の固定二列へ配置する。
 - browser上のpreviewは利便性のための表示であり、downloadされるbyte列を変換しない。
 - UIから成果物、処理directoryまたは入力fileを削除しない。
 
@@ -745,6 +776,23 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 
 実装時は次を自動testで検証する。外部LLM、Docling、LibreTranslateおよびQdrantへの実通信を
 UI testの必須条件としない。
+
+現行の品質Gateは次のcommandで実行する。
+
+```powershell
+# 静的検査、format検査、型検査、全自動testを順に実行する。
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check
+uv run pytest
+```
+
+Playwrightを初めて実行する環境では、E2E testの前にChromiumを導入する。
+
+```powershell
+# Playwright E2E testが使用するChromium binaryを導入する。
+uv run playwright install chromium
+```
 
 ### 🧩 Unit test
 
@@ -844,7 +892,8 @@ UI testの必須条件としない。
 7. 同じ処理IDの同時操作と、新規IDによる既存処理の上書きを防止できる。
 8. Upgradeが英文v2を構造の正本とし、再利用可能な日本語v1を保持しながら日本語v2 DOCXを生成できる。
 9. Upgradeが追加、変更および再利用不能なtextだけを翻訳し、削除済みtextを出力しない。
-10. 成功し、hash検証に通過したMarkdown、DOCX、Review reportまたはRegister記録をdownloadできる。
+10. 成功し、hash検証に通過したMarkdown、DOCXおよびReview reportをdownloadできる。また、
+    Schema検証済みの成功したRegister記録をdownloadできる。
 11. 基本DependencyだけのCLI利用にStreamlitのimportを必要としない。
 12. 既存test、Ruff、formatterおよびtyの品質確認に通過する。
 13. TRANSLATE、REVIEWおよびFIXの処理前・処理後を、同一対象の検証済みArtifactから二つの読取専用TextAreaへ表示できる。
