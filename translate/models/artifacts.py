@@ -37,6 +37,8 @@ class TaskName(StrEnum):
     TRANSLATE = "TRANSLATE"
     TRANSLATE_LITE = "TRANSLATE_LITE"
     ALIGN = "ALIGN"
+    DIFF = "DIFF"
+    REUSE = "REUSE"
     CHECK = "CHECK"
     REVIEW = "REVIEW"
     FIX = "FIX"

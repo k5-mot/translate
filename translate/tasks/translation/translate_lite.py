@@ -27,6 +27,8 @@ def translate_lite(
         for _, unit in iter_text_units(updated)
         for span in unit.spans
         if span.kind not in {"code", "line_break"}
+        and span.translated is None
+        and span.revised is None
     ]
     for first in range(0, len(spans), 64):
         batch = spans[first : first + 64]

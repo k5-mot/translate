@@ -1,4 +1,4 @@
-"""Translate、Review、Registerを公開するTyper CLI。"""
+"""Translate、Review、Register、Upgradeを公開するTyper CLI。"""
 
 from __future__ import annotations
 
@@ -12,12 +12,44 @@ from translate.pipeline import InputError
 from translate.pipeline.register import register_paths
 from translate.pipeline.review import review_pdfs
 from translate.pipeline.translate import translate_pdf
+from translate.pipeline.upgrade import upgrade_pdfs
 
 app = typer.Typer(
     name="translate-ja",
-    help="英語文書の日本語翻訳、比較レビュー、参考資料登録を行います。",
+    help="英語文書の日本語翻訳、比較レビュー、参考資料登録、版更新を行います。",
     no_args_is_help=True,
 )
+
+
+@app.command("upgrade")
+def upgrade_command(
+    source_v1: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    source_v2: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    translation_v1: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    backend: Annotated[str, typer.Option("--backend")] = "llm",
+    resume: Annotated[str | None, typer.Option("--resume")] = None,
+) -> None:
+    """英文二版と日本語旧版から日本語新版DOCXを生成する。"""
+
+    try:
+        outcome = upgrade_pdfs(
+            source_v1,
+            source_v2,
+            translation_v1,
+            load_config(),
+            backend=backend,
+            resume_id=resume,
+        )
+    except KeyboardInterrupt:
+        raise typer.Exit(130) from None
+    except (ConfigError, InputError) as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(2) from error
+    except Exception as error:
+        typer.echo(f"Upgrade処理に失敗しました: {type(error).__name__}", err=True)
+        raise typer.Exit(1) from error
+    typer.echo(f"upgrade_id: {outcome.upgrade_id}")
+    typer.echo(f"docx: {outcome.docx}")
 
 
 @app.command("translate")

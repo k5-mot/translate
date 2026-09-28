@@ -26,6 +26,7 @@ from translate.models.artifacts import (
     TaskState,
     TranslationRecord,
 )
+from translate.models.upgrade import UpgradeRecord
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,7 +41,7 @@ class ProcessingInUseError(RuntimeError):
     """同じ処理IDを別processが操作中であることを表す。"""
 
 
-ProcessingRecord = TranslationRecord | ReviewRecord
+ProcessingRecord = TranslationRecord | ReviewRecord | UpgradeRecord
 
 
 def sha256_file(path: Path) -> str:

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 def test_cli_help_lists_only_public_commands() -> None:
-    """CLIがTranslate、Review、Registerだけを公開することを確認する。"""
+    """CLIがTranslate、Review、Register、Upgradeを公開することを確認する。"""
 
     result = CliRunner().invoke(app, ["--help"])
 
@@ -31,6 +31,7 @@ def test_cli_help_lists_only_public_commands() -> None:
     assert "translate" in result.stdout
     assert "review" in result.stdout
     assert "register" in result.stdout
+    assert "upgrade" in result.stdout
     assert "publish" not in result.stdout
 
 
