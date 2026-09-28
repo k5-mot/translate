@@ -8,6 +8,7 @@
 __pycache__/
 inputs/
 outputs/
+runs/
 playwright-report/
 test-results/
 tests/
