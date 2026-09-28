@@ -1,8 +1,9 @@
 # 📘 Translate JA
 
 Translate JAは、英語PDFを日本語のPandoc MarkdownとDOCXへ変換するPython
-applicationです。独立した英日PDFの比較Reviewと、参照資料のQdrant登録も
-提供します。生成LLMを使うTaskはSTRUCTURE、TRANSLATE、REVIEWだけです。
+applicationです。独立した英日PDFの比較Review、参照資料のQdrant登録、英文二版と
+日本語旧版から日本語新版を作るUpgradeも提供します。生成LLMを使うTaskは
+STRUCTURE、TRANSLATE、REVIEWだけです。
 
 ## 🚀 セットアップ
 
@@ -30,7 +31,7 @@ Copy-Item .env.sample .env
 
 ## ⌨️ CLI
 
-公開commandはTranslate、Review、Registerの3つです。
+公開commandはTranslate、Review、Register、Upgradeの4つです。
 
 ```powershell
 # 英語PDFを日本語MarkdownとDOCXへ変換する。
@@ -45,6 +46,9 @@ uv run translate-ja review inputs/source.pdf inputs/translation.pdf
 # 参照資料をQdrantへ登録する。
 uv run translate-ja register references --source-id product-manuals
 
+# 英文v1、英文v2、日本語v1から日本語v2 DOCXを生成する。
+uv run translate-ja upgrade inputs/source-v1.pdf inputs/source-v2.pdf inputs/translation-v1.pdf
+
 # 同じ入力と設定で中断済み処理を再開する。
 uv run translate-ja translate inputs/sample.pdf --resume <uuidv7>
 ```
@@ -54,14 +58,16 @@ uv run translate-ja translate inputs/sample.pdf --resume <uuidv7>
 複数processから同時操作することもできません。
 
 成果物は`outputs/<file-basename>/<uuidv7>/`へ保存します。Translateは
-`translation.json`、Reviewは`review.json`、Registerは`registration.json`を
+`translation.json`、Reviewは`review.json`、Registerは`registration.json`、Upgradeは
+`upgrade.json`を
 最上位の処理記録として持ちます。LLM Taskの診断は同じ階層の
 `task-structure.json`、`task-translate.json`、`task-review.json`へ保存します。
 
 ## 🖥️ Streamlit UI
 
-Streamlit UIからTranslate、Review、RegisterのPipelineを実行し、
-処理履歴、TaskとLLM Callの進捗、Resumeおよび成果物を確認できます。
+Streamlit UIからTranslate、Review、Register、UpgradeのPipelineを実行し、
+処理履歴、TaskとLLM Callの進捗、現在処理中の対象text、Resumeおよび成果物を
+確認できます。初回表示はライトテーマです。
 
 ```powershell
 # UI用Dependencyを追加してlocalhostで起動する。
