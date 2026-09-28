@@ -70,6 +70,25 @@ def verify(url: str, source: Path, timeout_seconds: float) -> None:
         browser.close()
 
 
+def verify_existing(url: str, processing_id: str) -> None:
+    """完了済み実成果物をUIで再表示し、downloadを再検証する。"""
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(accept_downloads=True)
+        page.goto(
+            f"{url}?processing={processing_id}",
+            wait_until="networkidle",
+            timeout=60_000,
+        )
+        expect(page.get_by_text("状態: succeeded", exact=True)).to_be_visible(
+            timeout=60_000
+        )
+        _download(page, "Markdownをdownload", ".md")
+        _download(page, "DOCXをdownload", ".docx")
+        browser.close()
+
+
 def main() -> None:
     """CLI引数を読みPlaywright受入検証を開始する。"""
 
@@ -77,9 +96,13 @@ def main() -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8501")
     parser.add_argument("--source", type=Path, default=Path("inputs/sample3.pdf"))
     parser.add_argument("--timeout", type=float, default=21_600)
+    parser.add_argument("--processing-id")
     arguments = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    verify(arguments.url, arguments.source.resolve(), arguments.timeout)
+    if arguments.processing_id:
+        verify_existing(arguments.url, arguments.processing_id)
+    else:
+        verify(arguments.url, arguments.source.resolve(), arguments.timeout)
 
 
 if __name__ == "__main__":

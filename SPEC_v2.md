@@ -245,13 +245,14 @@ CLIと外部serviceの同時実行能力まで制限するものではない。
 | 処理状態 | 最上位JSONの `status` |
 | 現在のTask | `status="processing"` の `TaskState` |
 | 完了Task | `succeeded` または `skipped` のTask数 |
-| LLM進捗 | `LLMProgress` の `completed_calls / planned_calls` |
+| LLM進捗 | 実行中はCall Artifactの観港数、Task完了後は `LLMProgress` の `completed_calls / planned_calls` |
 | LLM再利用 | `LLMProgress.reused_calls` |
 | LLM失敗 | `LLMProgress.failed_calls` |
 | Register進捗 | `RegistrationResult.sources` の件数と入力件数 |
 | 更新時刻 | 最上位JSONの `updated_at` |
 
 - `planned_calls` はLLMによる分割で増えるため、進捗率が一時的に下がることを許容する。
+- LLM Task実行中は該当Taskの `calls/*/call.json` を直接集計し、完了、実行中および失敗Call数を表示する。
 - 予定Call数が0またはまだ確定していない間は、虚偽の百分率を表示せず、件数と状態だけを表示する。
 - JSONが原子的に置換される瞬間の読込み失敗は、前回の有効な表示を維持して次回pollで再読込みする。
 - 検証できないJSONを正常状態として表示してはならない。連続して検証に失敗する場合は「処理記録を読み込めない」と表示する。

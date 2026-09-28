@@ -26,8 +26,10 @@ from translate.artifact_store import (
 from translate.common.config import ConfigError, load_config
 from translate.models.artifacts import (
     ArtifactFile,
+    LLMCallArtifact,
     RegistrationRecord,
     ReviewRecord,
+    TaskName,
     TranslationRecord,
 )
 from translate.pipeline import InputError
@@ -514,7 +516,31 @@ def _render_future_error(future: Future[object]) -> None:
         st.error(f"処理に失敗しました: {type(error).__name__}")
 
 
-def _render_task_progress(record: TranslationRecord | ReviewRecord) -> None:
+def _live_call_counts(root: Path, task: TaskName) -> tuple[int, int, int]:
+    """実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。"""
+
+    directories = {
+        TaskName.STRUCTURE: root / "preprocess/structure/calls",
+        TaskName.TRANSLATE: root / "translation/translate/calls",
+        TaskName.REVIEW: root / "review/review/calls",
+    }
+    directory = directories.get(task)
+    if directory is None:
+        return 0, 0, 0
+    calls: list[LLMCallArtifact] = []
+    for path in directory.glob("*/call.json"):
+        try:
+            calls.append(load_model(path, LLMCallArtifact))
+        except ArtifactError:
+            continue
+    completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
+    failed = sum(call.status == "failed" for call in calls)
+    return len(calls), completed, failed
+
+
+def _render_task_progress(
+    entry: HistoryEntry, record: TranslationRecord | ReviewRecord
+) -> None:
     """Task状態とLLM Call数を虚偽の百分率なしで表示する。"""
 
     completed = sum(task.status in {"succeeded", "skipped"} for task in record.tasks)
@@ -529,6 +555,18 @@ def _render_task_progress(record: TranslationRecord | ReviewRecord) -> None:
             f"{progress.task}: {progress.completed_calls} / "
             f"{progress.planned_calls} calls "
             f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
+        )
+    active_task = next(
+        (task.task for task in record.tasks if task.status == "processing"), None
+    )
+    if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
+        observed, live_completed, failed = _live_call_counts(
+            entry.record_path.parent,
+            active_task,
+        )
+        st.write(
+            f"{active_task.value} 実行中: {live_completed} / "
+            f"観測済み {observed} calls (失敗 {failed})"
         )
 
 
@@ -816,7 +854,7 @@ def _render_record(entry: HistoryEntry, registry: WorkerRegistry) -> None:
     st.write(f"状態: {record.status}")
     st.write(f"更新時刻: {record.updated_at.isoformat()}")
     if isinstance(record, (TranslationRecord, ReviewRecord)):
-        _render_task_progress(record)
+        _render_task_progress(entry, record)
     elif record.result is not None:
         st.write(f"Register進捗: {len(record.result.sources)} / {len(record.inputs)}")
     if record.error is not None:

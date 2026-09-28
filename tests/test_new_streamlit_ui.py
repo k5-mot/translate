@@ -14,13 +14,19 @@ from uuid_utils import uuid7
 
 from translate.artifact_store import describe_artifact, sha256_file, write_model
 from translate.common.config import Config
-from translate.models.artifacts import InputFile, TranslationRecord
+from translate.models.artifacts import (
+    InputFile,
+    LLMCallArtifact,
+    TaskName,
+    TranslationRecord,
+)
 from translate.pipeline import InputError
 from translate.pipeline.translate import translate_pdf
 from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
     _history_entries,
+    _live_call_counts,
     _safe_upload_name,
     _stage_register,
     _stage_resume_uploads,
@@ -158,6 +164,29 @@ def test_worker_registry_rejects_duplicate_active_id() -> None:
         assert not registry.submit("processing-id", wait_for_gate)
     finally:
         gate.set()
+
+
+def test_live_call_counts_reads_in_progress_artifacts(tmp_path: Path) -> None:
+    """Task完了前もCall Artifactから観測数と状態を表示できる。"""
+
+    calls = tmp_path / "translation/translate/calls"
+    now = datetime.now(UTC)
+    for index, status in enumerate(("succeeded", "processing", "failed"), 1):
+        write_model(
+            calls / f"call-{index}" / "call.json",
+            LLMCallArtifact(
+                call_id=f"call-{index}",
+                task="TRANSLATE",
+                status=status,
+                fingerprint="fingerprint",
+                target_ids=[f"span-{index}"],
+                attempts=1,
+                started_at=now,
+                updated_at=now,
+            ),
+        )
+
+    assert _live_call_counts(tmp_path, TaskName.TRANSLATE) == (3, 1, 1)
 
 
 def test_history_is_sorted_limited_and_keeps_invalid_records(tmp_path: Path) -> None:
