@@ -1,6 +1,6 @@
 """Streamlit widgetへ進捗と比較値が描画されることを検証する。"""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -48,23 +48,16 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
     )
     write_model(root / "preprocess/structure/document.json", document)
     call_dir = root / "translation/translate/calls/call-1"
-    write_model(
-        call_dir / "response.json",
-        TranslationResponse(
-            translations=[TranslationItem(span_id="span-1", text="日本語")]
-        ),
-    )
     now = datetime.now(UTC)
     write_model(
         call_dir / "call.json",
         LLMCallArtifact(
             call_id="call-1",
             task="TRANSLATE",
-            status="succeeded",
+            status="processing",
             fingerprint="translate",
             target_ids=["span-1"],
             attempts=1,
-            response_sha256=sha256_file(call_dir / "response.json"),
             started_at=now,
             updated_at=now,
         ),
@@ -104,6 +97,56 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
     app.run(timeout=10)
 
     assert not app.exception
+    text_areas = {area.label: area for area in app.text_area}
+    assert text_areas["翻訳後 (日本語)"].value == "処理中 (確定結果なし)"
+
+    write_model(
+        call_dir / "response.json",
+        TranslationResponse(
+            translations=[TranslationItem(span_id="span-1", text="日本語")]
+        ),
+    )
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="TRANSLATE",
+            status="succeeded",
+            fingerprint="translate",
+            target_ids=["span-1"],
+            attempts=1,
+            response_sha256=sha256_file(call_dir / "response.json"),
+            started_at=now,
+            updated_at=now + timedelta(seconds=1),
+        ),
+    )
+    write_model(
+        root / "translation/translate/calls/call-2/call.json",
+        LLMCallArtifact(
+            call_id="call-2",
+            task="TRANSLATE",
+            status="processing",
+            fingerprint="translate-next",
+            target_ids=["span-1"],
+            attempts=1,
+            started_at=now + timedelta(seconds=2),
+            updated_at=now + timedelta(seconds=2),
+        ),
+    )
+    app.run(timeout=10)
+
+    assert not app.exception
+    settings = next(
+        expander
+        for expander in app.get("status")
+        if expander.label.endswith("入力と設定")
+    )
+    assert settings.label == f"{processing_id} - TRANSLATE - 入力と設定"
+    assert not settings.proto.expanded
+    progress = next(
+        status for status in app.get("status") if status.label == "進捗と処理内容"
+    )
+    assert progress.proto.expanded
     assert app.get("progress")
     text_areas = {area.label: area for area in app.text_area}
     assert text_areas["翻訳前 (英語)"].value == "[span-1]\nEnglish"

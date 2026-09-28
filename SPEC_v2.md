@@ -138,6 +138,17 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 参照できる領域とし、処理IDをURL query parameterに保持する。browserを更新しても、
 同じ処理IDの表示を復元する。
 
+- application名 `Translate` は `st.logo` でAppBar左側へ表示し、本文の独立した大見出しにはしない。
+- 処理履歴は左sidebarの折り畳み領域へ新しい順に並べ、既定では閉じる。選択中の処理は
+  buttonの状態でも識別できるようにする。
+- 本文の入力領域は上から `処理ID - Pipeline種類`、Pipeline tab、file upload、各種option、
+  開始buttonの順とする。新規処理では処理IDとPipeline種類の代わりに
+  `新規セッション - パイプライン選択` を表示する。
+- 入力領域全体は折り畳み可能とし、新規処理では展開、処理開始後または履歴選択後は
+  既定で閉じる。
+- 処理開始後は、ProgressBar、現在のTaskと処理内容、LLM Call進捗および二列・三列の
+  読取専用TextAreaを、折り畳み可能な進捗領域へ表示する。進捗領域は既定で展開する。
+
 全操作で次を必須とする。
 
 - 入力widgetの変更だけで処理を開始せず、明示的な開始buttonで確定する。
@@ -596,8 +607,8 @@ TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(
 ### 📑 Review・Upgradeの原文比較表示
 
 処理前・処理後の比較とは別に、ReviewとUpgradeでは翻訳の根拠となる文書を同じ対応単位で
-横並び表示する。この領域は共通の処理履歴で選択した処理が同じ種類の場合だけ、Reviewまたは
-Upgrade tabの入力欄の下に配置する。処理履歴と処理IDの選択状態は既存どおり共通とする。
+横並び表示する。この領域は共通の処理履歴で選択した処理が同じ種類の場合だけ、共通の
+進捗領域へ配置する。処理履歴と処理IDの選択状態は既存どおり共通とする。
 
 #### 🔎 Reviewの二列表示
 
@@ -665,6 +676,7 @@ outputs/*/*/upgrade.json
 ```
 
 - 履歴は `updated_at` の新しい順に最大100件まで表示する。
+- 履歴は左sidebarの `処理履歴` 折り畳み領域へ並べ、既定では閉じる。
 - 履歴の列挙は一度のStreamlit評価につき一回とし、Task directory全体を再帰的に読み込まない。
 - 表示項目は種類、入力logical path、処理ID、状態、作成時刻、更新時刻とする。Upgradeは
   3入力のroleとlogical pathを区別して表示する。
@@ -762,6 +774,9 @@ UI testの必須条件としない。
 `streamlit.testing.v1.AppTest` を使用し、少なくとも次を検証する。
 
 - Translate、Review、Upgrade、Registerの順にtabと処理履歴が表示される。
+- `Translate` がAppBar左側へ表示され、処理履歴が左sidebarで既定では閉じている。
+- 新規処理では入力領域が展開され、処理開始後または履歴選択後は入力領域が閉じ、
+  進捗領域が展開される。
 - Upgradeは英文v1、英文v2および日本語v1の3fileが揃うまで開始できない。
 - 必須入力がない状態で処理を開始できない。
 - 有効な入力を確定すると対応Pipelineが1回だけworkerへ登録される。

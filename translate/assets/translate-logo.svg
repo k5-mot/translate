@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 150 32" role="img" aria-labelledby="title">
+  <title id="title">Translate</title>
+  <g fill="none" stroke="#0068C9" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+    <path d="M5 7h18M14 4v3M9 12c2 4 5 7 10 9M20 12c-2 4-5 7-10 9"/>
+    <path d="M27 25l5-13 5 13M29 21h6"/>
+  </g>
+  <text x="44" y="23" fill="#262730" font-family="Arial, sans-serif" font-size="20" font-weight="600">Translate</text>
+</svg>

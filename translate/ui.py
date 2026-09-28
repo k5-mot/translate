@@ -66,6 +66,7 @@ TaskStage = tuple[str, TaskName, str | None]
 
 _REGISTER_SUFFIXES = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+_LOGO_PATH = Path(__file__).with_name("assets") / "translate-logo.svg"
 
 
 def _task_stages(
@@ -575,9 +576,7 @@ def _render_translate_form(registry: WorkerRegistry) -> None:
             st.error(str(error))
 
 
-def _render_review_form(
-    registry: WorkerRegistry, selected: HistoryEntry | None = None
-) -> None:
+def _render_review_form(registry: WorkerRegistry) -> None:
     """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。"""
 
     source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
@@ -595,17 +594,6 @@ def _render_review_form(
             _select_processing(_start_review(source, translation, registry))
         except (InputError, OSError) as error:
             st.error(str(error))
-    if selected is not None and isinstance(selected.record, ReviewRecord):
-        processing_id = selected.processing_id or "review"
-        active = selected.record.status == "processing"
-
-        @st.fragment(run_every="1s" if active else None)
-        def render_context() -> None:
-            """選択ReviewのALIGN Artifactを実行中だけ再読込みする。"""
-
-            _render_review_context(selected.record_path.parent, processing_id)
-
-        render_context()
 
 
 def _render_register_form(registry: WorkerRegistry) -> None:
@@ -638,9 +626,7 @@ def _render_register_form(registry: WorkerRegistry) -> None:
             st.error(str(error))
 
 
-def _render_upgrade_form(
-    registry: WorkerRegistry, selected: HistoryEntry | None = None
-) -> None:
+def _render_upgrade_form(registry: WorkerRegistry) -> None:
     """Upgradeの英文二版、日本語旧版およびbackend選択を表示する。"""
 
     source_v1 = st.file_uploader("英文v1 PDF", type=["pdf"], key="upgrade-source-v1")
@@ -678,41 +664,32 @@ def _render_upgrade_form(
             )
         except (InputError, OSError) as error:
             st.error(str(error))
-    if selected is not None and isinstance(selected.record, UpgradeRecord):
-        processing_id = selected.processing_id or "upgrade"
-        active = selected.record.status == "processing"
-
-        @st.fragment(run_every="1s" if active else None)
-        def render_context() -> None:
-            """選択UpgradeのDIFF Artifactを実行中だけ再読込みする。"""
-
-            _render_upgrade_context(selected.record_path.parent, processing_id)
-
-        render_context()
 
 
-def _render_history_selector(entries: list[HistoryEntry]) -> str | None:
-    """履歴選択と読込不可記録を表示し、選択IDを返す。"""
+def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
+    """左sidebarの折り畳み一覧から処理を選択し、選択IDを返す。"""
 
     valid_entries = [entry for entry in entries if entry.processing_id is not None]
     invalid_entries = [entry for entry in entries if entry.error is not None]
     selected_id = _selected_processing_id()
-    ids = [entry.processing_id for entry in valid_entries]
-    current_index = ids.index(selected_id) if selected_id in ids else None
-    selected = st.selectbox(
+    with st.sidebar.expander(
         "処理履歴",
-        options=ids,
-        index=current_index,
-        format_func=lambda value: _entry_label(
-            next(entry for entry in valid_entries if entry.processing_id == value)
-        ),
-        placeholder="処理を選択してください",
-    )
-    if selected is not None and selected != selected_id:
-        st.query_params["processing"] = selected
-        st.rerun()
-    for entry in invalid_entries:
-        st.warning(f"{entry.error} {entry.record_path}")
+        expanded=False,
+        icon=":material/history:",
+    ):
+        if not valid_entries and not invalid_entries:
+            st.caption("処理履歴はありません。")
+        for entry in valid_entries:
+            processing_id = entry.processing_id
+            if processing_id is not None and st.button(
+                _entry_label(entry),
+                key=f"history-{processing_id}",
+                type="primary" if processing_id == selected_id else "tertiary",
+                width="stretch",
+            ):
+                _select_processing(processing_id)
+        for entry in invalid_entries:
+            st.warning(f"{entry.error} {entry.record_path}")
     return selected_id
 
 
@@ -972,12 +949,13 @@ def _render_text_areas(
         zip(columns, labels, values, strict=True)
     ):
         with column:
+            widget_key = f"{key}-{index}"
+            st.session_state[widget_key] = value
             st.text_area(
                 label,
-                value=value,
                 height=180,
                 disabled=True,
-                key=f"{key}-{index}",
+                key=widget_key,
             )
 
 
@@ -1466,6 +1444,11 @@ def _render_task_progress(
             f"観測済み {observed} calls (失敗 {failed})"
         )
     _render_latest_comparison(root)
+    processing_id = entry.processing_id or entry.kind
+    if isinstance(record, ReviewRecord):
+        _render_review_context(root, processing_id)
+    elif isinstance(record, UpgradeRecord):
+        _render_upgrade_context(root, processing_id)
 
 
 def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
@@ -1851,15 +1834,13 @@ def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
 
 
 def _render_processing_panel(
-    registry: WorkerRegistry, entries: list[HistoryEntry] | None = None
+    processing_id: str,
+    registry: WorkerRegistry,
+    entries: list[HistoryEntry] | None = None,
 ) -> None:
-    """処理履歴と選択中の進捗・成果物領域を表示する。"""
+    """選択中の進捗・比較・成果物領域を折り畳み可能に表示する。"""
 
-    st.header("🕒 処理履歴")
     entries = entries if entries is not None else _history_entries()
-    processing_id = _render_history_selector(entries)
-    if processing_id is None:
-        return
     current = next(
         (entry for entry in entries if entry.processing_id == processing_id), None
     )
@@ -1869,45 +1850,82 @@ def _render_processing_panel(
         and (current.record.status == "processing")
     )
     active = processing or registry.active(processing_id)
+    status = "running"
+    if current is not None and current.record is not None:
+        if current.record.status == "succeeded":
+            status = "complete"
+        elif current.record.status in {"failed", "cancelled"}:
+            status = "error"
 
-    @st.fragment(run_every="1s" if active else None)
-    def render_progress() -> None:
-        """実行中だけ1秒ごとにArtifactを再読込みする。"""
+    progress_panel = st.status(
+        "進捗と処理内容",
+        expanded=True,
+        state=status,
+    )
+    with progress_panel:
 
-        _render_selected(processing_id, registry)
-        refreshed = _entry_by_id(processing_id)
-        if (
-            active
-            and refreshed is not None
-            and refreshed.record is not None
-            and refreshed.record.status in _TERMINAL_STATUSES
-        ):
-            st.rerun()
+        @st.fragment(run_every="1s" if active else None)
+        def render_progress() -> None:
+            """実行中だけ1秒ごとにArtifactを再読込みする。"""
 
-    render_progress()
+            _render_selected(processing_id, registry)
+            refreshed = _entry_by_id(processing_id)
+            if refreshed is not None and (
+                current is None
+                or (
+                    active
+                    and refreshed.record is not None
+                    and refreshed.record.status in _TERMINAL_STATUSES
+                )
+            ):
+                st.rerun(scope="app")
+
+        render_progress()
+    progress_panel.update(expanded=True, state=status)
+
+
+def _session_title(processing_id: str | None, selected: HistoryEntry | None) -> str:
+    """入力設定領域に表示する処理IDとPipeline種類を返す。"""
+
+    if processing_id is None:
+        return "新規セッション - パイプライン選択"
+    pipeline = selected.kind.upper() if selected is not None else "処理準備中"
+    return f"{processing_id} - {pipeline}"
 
 
 def main() -> None:
-    """Streamlitの4操作と共通処理履歴を表示する。"""
+    """折り畳み可能なStreamlitの4操作と共通処理履歴を表示する。"""
 
-    st.set_page_config(page_title="Translate", page_icon="🌐", layout="wide")
-    st.title("🌐 Translate")
-    st.caption("英語文書の日本語翻訳、比較Review、参照資料登録、版更新")
+    st.set_page_config(
+        page_title="Translate",
+        page_icon=":material/translate:",
+        layout="wide",
+    )
+    st.logo(_LOGO_PATH, size="large")
     registry = worker_registry()
     entries = _history_entries()
-    selected_id = _selected_processing_id()
+    selected_id = _render_history_sidebar(entries)
     selected = next(
         (entry for entry in entries if entry.processing_id == selected_id), None
     )
-    translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
-        ["Translate", "Review", "Upgrade", "Register"]
-    )
-    with translate_tab:
-        _render_translate_form(registry)
-    with review_tab:
-        _render_review_form(registry, selected)
-    with upgrade_tab:
-        _render_upgrade_form(registry, selected)
-    with register_tab:
-        _render_register_form(registry)
-    _render_processing_panel(registry, entries)
+    title = _session_title(selected_id, selected)
+    expander_key = selected_id or "new"
+    with st.expander(
+        f"{title} - 入力と設定",
+        expanded=selected_id is None,
+        key=f"pipeline-setup-{expander_key}",
+        icon=":material/tune:",
+    ):
+        translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
+            ["Translate", "Review", "Upgrade", "Register"]
+        )
+        with translate_tab:
+            _render_translate_form(registry)
+        with review_tab:
+            _render_review_form(registry)
+        with upgrade_tab:
+            _render_upgrade_form(registry)
+        with register_tab:
+            _render_register_form(registry)
+    if selected_id is not None:
+        _render_processing_panel(selected_id, registry, entries)
