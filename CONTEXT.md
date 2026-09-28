@@ -12,6 +12,10 @@ _Avoid_: Stage、phase、processor
 Taskの順序と分岐を調整し、利用者向け成果物を生成する処理。
 _Avoid_: Workflow
 
+**Upgrade**:
+英文v2を構造の正本とし、英文v1と日本語v1から再利用できる訳を移植して、差分だけを翻訳した日本語v2を生成する処理。
+_Avoid_: 差分翻訳、文書更新
+
 **Docling Schema JSON**:
 Docling-serveが生成し、Internal Documentへ変換される前の構造化文書表現。
 _Avoid_: Raw JSON、Bronze JSON
@@ -44,6 +48,10 @@ _Avoid_: Translation IDとの共用
 一回のRegisterの登録対象、設定、進捗および登録結果を関連付けるUUIDv7。
 _Avoid_: Qdrant point ID
 
+**Upgrade ID**:
+一回のUpgradeの3入力、設定、進捗、Artifactおよび日本語v2成果物を関連付けるUUIDv7。
+_Avoid_: Translation IDとの共用
+
 **Resume**:
-入力と設定の互換性を確認し、同じTranslation ID、Review IDまたはRegistration IDに属する完了済み処理を再利用して、未完了または失敗した位置から処理を再開すること。LLM Callの再利用はTranslateとReviewだけで行う。
+入力と設定の互換性を確認し、同じTranslation ID、Review ID、Registration IDまたはUpgrade IDに属する完了済み処理を再利用して、未完了または失敗した位置から処理を再開すること。LLM Callの再利用はTranslate、ReviewおよびUpgradeだけで行う。
 _Avoid_: retry、restart
