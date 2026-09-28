@@ -1,5 +1,6 @@
 """WindowsでのUI upload確定処理を検証する。"""
 
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -10,6 +11,11 @@ from translate.ui import _stage_uploads
 
 if TYPE_CHECKING:
     from streamlit.runtime.uploaded_file_manager import UploadedFile
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="WinError 5の例外属性はWindowsでのみ再現できるため。",
+)
 
 
 class _Upload:
