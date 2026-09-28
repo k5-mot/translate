@@ -2,11 +2,12 @@
 
 本書は、現行Sourceを基準に、[`SPEC.md`](SPEC.md)で将来対応としたStreamlit UIと実Pipelineの
 接続、および英文v1、英文v2、日本語v1から日本語v2を生成するUpgradeの実装済み動作を定める。
-既存の文書変換、翻訳、Review、Register、成果物、Resumeおよび外部接続の契約は
-[`SPEC.md`](SPEC.md)を正本とし、本書はUI境界とUpgradeに必要な拡張だけを記録する。
+既存の文書変換、翻訳、Review、Register、成果物、Resumeおよび外部接続の共通契約は
+[`SPEC.md`](SPEC.md)を参照し、本書はUI境界とUpgradeに必要な拡張だけを記録する。
 
 - 本書の本文は、未実装の構想ではなく `main.py`、`translate/ui.py`、`translate/pipeline/upgrade.py`
   および関連Model・Taskの現行動作を表す。
+- 本書と現行Sourceに差異が見つかった場合は、現行Sourceの動作を優先して本書を同期する。
 - 現行実装に存在しない候補は「将来候補」だけに記載し、完了条件へ含めない。
 - 以後の変更で実装と本書の動作が変わる場合は、同じ変更で本書も更新する。
 
@@ -59,7 +60,7 @@ Streamlit UI
 ```
 
 UIの実行中は、既存の `translation.json`、`review.json`、`registration.json`、
-本書で追加する `upgrade.json`、
+現行実装の `upgrade.json`、
 Task状態およびLLM Call Artifactを進捗の正本とする。Streamlitの `session_state`や
 background workerの `Future`は正本としない。
 
@@ -193,6 +194,8 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 
 - `.streamlit/config.toml` の `[theme]` に `base = "light"` を設定し、初回表示は
   OSおよびbrowserの配色設定に依存せずライトモードとする。
+- 同fileの `[browser]` に `gatherUsageStats = false` を設定し、local起動でも
+  Streamlitの利用統計を送信しない。
 - 利用者がStreamlitのSettingsから選択したテーマは、そのbrowser sessionでは既定値を
   上書きしてよい。
 - application独自のテーマ切替widgetおよび独自CSSによる配色上書きは設けない。
@@ -361,7 +364,7 @@ translate-ja upgrade <source-v1.pdf> <source-v2.pdf> <translation-v1.pdf> [--bac
 - ALIGNは英文v1と日本語v1を既存の決定的規則で対応付ける。
 - DIFFとREUSEはLLMを使用しない。LLMを使用するTaskは既存どおりSTRUCTURE、TRANSLATE、
   REVIEWだけとする。
-- `TaskName` へ `DIFF` と `REUSE` を追加する。`UPGRADE` というTaskは設けず、Upgradeは
+- `TaskName` は `DIFF` と `REUSE` を持つ。`UPGRADE` というTaskは設けず、Upgradeは
   Pipeline名および公開command名として使用する。
 - STRUCTUREは最終成果物の構造となる英文v2だけに実行する。
 - REVIEWはUpgrade中に翻訳または再翻訳した対象だけに実行し、再利用した未変更訳を
@@ -439,6 +442,10 @@ REUSEは `unchanged` または `moved` の英文v2 TextUnitについて、次を
 | `translation_v1_ids` | `list[str]` |
 | `action` | `Literal["reuse", "translate", "delete"]` |
 | `method` | `Literal["unique_text", "unique_anchor", "ordered_role", "unmatched"]` |
+
+`ReuseReport` は `schema_version: Literal[1]`、再利用できたTextUnit IDを保持する
+`reused_unit_ids: list[str]`、翻訳対象として残したTextUnit IDを保持する
+`translation_target_ids: list[str]` を持ち、`upgrade/reuse/report.json` に保存する。
 
 すべてのモデルはPydanticの `BaseModel` を継承し、`ConfigDict(extra="ignore")` を使用する。
 
@@ -532,7 +539,7 @@ CLIと外部serviceの同時実行能力まで制限するものではない。
 
 ### 📈 Task ProgressBar
 
-Task列全体をProgressBarとして表現することは実装可能とする。ただし、表示するのは
+現行UIはTask列全体をProgressBarとして表現する。ただし、表示するのは
 経過時間や処理量の推定値ではなく、既存Artifactから確認できた「完了stage数 / 全stage数」
 とする。Streamlit標準の `st.progress` を使用し、独自CSS、追加Dependencyおよび新しい
 進捗保存Modelは導入しない。
@@ -569,9 +576,9 @@ backendに対応する一方だけを表示する。
   表示用Taskを組み立てる。`succeeded`の場合だけ `1 / 1 Task`、それ以外は `0 / 1 Task` とし、
   Task名と最上位JSONの状態をProgressBarのtextへ表示する。
 
-この方式ならPipelineやArtifact Schemaを変更せず実装できる。一方、Task内の厳密な処理量、
-残り時間およびDOCLINGのpart単位進捗を表示するには、Pipeline側が途中状態を追加保存する
-別仕様が必要になるため、本変更には含めない。
+現行UIはこの方式により、PipelineやArtifact Schemaを変更せず進捗を表示する。Task内の
+厳密な処理量、残り時間およびDOCLINGのpart単位進捗は、Pipeline側に途中状態の追加保存が
+必要になるため表示しない。
 
 ### 🔬 進捗詳細
 
@@ -623,7 +630,7 @@ TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(
 - 対応する入力Document、Call Artifact、response、FIX outcomeまたは出力Documentのいずれかを
   検証できない場合は比較表示だけを省略し、Task状態とProgressBarの表示は継続する。
 
-この比較表示も既存Artifactだけで実装する。ただし、生成中tokenを右側へ逐次表示すること、
+現行UIはこの比較表示も既存Artifactだけから組み立てる。ただし、生成中tokenを右側へ逐次表示すること、
 確定前の予測結果を表示すること、および文字単位diff表示は対象外とする。
 
 ### 📑 Review・Upgradeの原文比較表示
@@ -774,7 +781,7 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 
 ## 🧪 検証契約
 
-実装時は次を自動testで検証する。外部LLM、Docling、LibreTranslateおよびQdrantへの実通信を
+現行実装は次を自動testで検証する。外部LLM、Docling、LibreTranslateおよびQdrantへの実通信を
 UI testの必須条件としない。
 
 現行の品質Gateは次のcommandで実行する。
@@ -881,7 +888,7 @@ uv run playwright install chromium
 
 ## ✅ 完了条件
 
-本書の実装は、次をすべて満たした時点で完了とする。
+現行実装の完了条件は次のとおりとする。
 
 1. 4つの入力画面から対応Pipelineを開始できる。
 2. UI操作中もStreamlit画面が固まらず、処理進捗を更新できる。

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import expect
 
 if TYPE_CHECKING:
@@ -82,13 +83,25 @@ def streamlit_url(tmp_path: Path) -> Iterator[str]:
             process.wait(timeout=10)
 
 
-def _upload(page: Page, labels: list[str], paths: list[Path]) -> None:
+def _upload(page: Page, tab_name: str, labels: list[str], paths: list[Path]) -> None:
     """可視labelで指定したStreamlit uploaderへfileを設定する。"""
 
     for label, path in zip(labels, paths, strict=True):
-        uploader = page.locator('[data-testid="stFileUploader"]').filter(has_text=label)
-        uploader.locator('input[type="file"]').set_input_files(path)
-        uploader.get_by_text(path.name, exact=True).wait_for(timeout=15_000)
+        for attempt in range(3):
+            page.get_by_role("tab", name=tab_name).click()
+            uploader = page.locator('[data-testid="stFileUploader"]').filter(
+                has_text=label
+            )
+            uploader.locator('input[type="file"]').set_input_files(path)
+            try:
+                uploader.get_by_text(path.name, exact=True).wait_for(
+                    state="attached", timeout=10_000
+                )
+                break
+            except PlaywrightTimeoutError:
+                if attempt == 2:
+                    raise
+    page.get_by_role("tab", name=tab_name).click()
 
 
 def _assert_appbar_alignment(page: Page) -> None:
@@ -215,7 +228,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
         "Register",
     ]
 
-    _upload(page, ["英語PDF"], [files["source.pdf"]])
+    _upload(page, "Translate", ["英語PDF"], [files["source.pdf"]])
     previous_url = page.url
     page.get_by_role("button", name="翻訳を開始").click()
     expect(page.get_by_label("翻訳後 (日本語)")).to_have_value(
@@ -229,6 +242,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
     page.get_by_role("tab", name="Review").click()
     _upload(
         page,
+        "Review",
         ["英語原文PDF", "日本語訳文PDF"],
         [files["source.pdf"], files["translation.pdf"]],
     )
@@ -240,6 +254,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
     page.get_by_role("tab", name="Upgrade").click()
     _upload(
         page,
+        "Upgrade",
         ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"],
         [files["source-v1.pdf"], files["source-v2.pdf"], files["translation-v1.pdf"]],
     )
@@ -249,7 +264,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
 
     _open_settings(page)
     page.get_by_role("tab", name="Register").click()
-    _upload(page, ["参照資料"], [files["reference.txt"]])
+    _upload(page, "Register", ["参照資料"], [files["reference.txt"]])
     previous_url = page.url
     page.get_by_role("button", name="登録を開始").click()
     _wait_for_success(page, previous_url)
