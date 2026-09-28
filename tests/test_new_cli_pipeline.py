@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from typer.testing import CliRunner
+from uuid_utils import uuid7
 
 from translate.artifact_store import (
     begin_llm_call,
@@ -13,7 +14,7 @@ from translate.artifact_store import (
     load_reusable_llm_response,
 )
 from translate.cli import app
-from translate.pipeline import InputError
+from translate.pipeline import InputError, resolve_processing_id
 from translate.pipeline.register import _chunks, _validate_source_id
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 
@@ -107,3 +108,27 @@ def test_registration_source_id_rejects_unsafe_components(value: str) -> None:
 
     with pytest.raises(InputError, match="safe single path"):
         _validate_source_id(value)
+
+
+def test_processing_id_accepts_one_uuidv7_source() -> None:
+    """UI新規IDとResume IDのいずれか一方だけを受け付ける。"""
+
+    processing_id = str(uuid7())
+    resume_id = str(uuid7())
+
+    assert resolve_processing_id(processing_id, None) == processing_id
+    assert resolve_processing_id(None, resume_id) == resume_id
+
+    with pytest.raises(InputError, match="cannot be used together"):
+        resolve_processing_id(processing_id, resume_id)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-uuid", "00000000-0000-4000-8000-000000000000"],
+)
+def test_processing_id_rejects_non_uuidv7(value: str) -> None:
+    """UIとResumeの処理IDを正規のUUIDv7に限定する。"""
+
+    with pytest.raises(InputError, match="canonical UUIDv7"):
+        resolve_processing_id(value, None)

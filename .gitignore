@@ -7,6 +7,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .ty_cache/
+.translate-ui/
 runs/
 playwright-report/
 test-results/

@@ -6,10 +6,8 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from uuid_utils import uuid7
 
 from translate.artifact_store import (
     ProcessingLock,
@@ -42,7 +40,7 @@ from translate.models.artifacts import (
     UnpackManifest,
 )
 from translate.models.document import Document
-from translate.pipeline import InputError
+from translate.pipeline import InputError, resolve_processing_id
 from translate.tasks.converter.docling import convert as convert_with_docling
 from translate.tasks.converter.merge import merge
 from translate.tasks.converter.split import split
@@ -89,6 +87,7 @@ def translate_pdf(
     config: Config,
     *,
     backend: str = "llm",
+    processing_id: str | None = None,
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> TranslationOutcome:
@@ -99,7 +98,7 @@ def translate_pdf(
     if backend not in {"llm", "libretranslate"}:
         raise InputError("backend must be llm or libretranslate")
     config.require_translate(backend)
-    translation_id = _processing_id(resume_id)
+    translation_id = resolve_processing_id(processing_id, resume_id)
     outputs_root = (outputs or Path.cwd() / "outputs").resolve()
     processing_directory = outputs_root / source.stem / translation_id
     record_path = processing_directory / "translation.json"
@@ -110,6 +109,8 @@ def translate_pdf(
         size_bytes=source.stat().st_size,
     )
     with ProcessingLock(processing_directory):
+        if processing_id is not None and record_path.is_file():
+            raise InputError("processing ID already exists")
         record = _translation_record(
             record_path,
             translation_id,
@@ -644,20 +645,6 @@ def _translation_record(
     )
     write_model(path, record)
     return record
-
-
-def _processing_id(value: str | None) -> str:
-    """新規UUIDv7を生成するか、Resume IDがUUIDv7であることを検査する。"""
-
-    if value is None:
-        return str(uuid7())
-    try:
-        parsed = UUID(value)
-    except ValueError as error:
-        raise InputError("resume ID must be a canonical UUIDv7") from error
-    if parsed.version != 7 or str(parsed) != value.casefold():
-        raise InputError("resume ID must be a canonical UUIDv7")
-    return value
 
 
 def _validate_source(source: Path) -> None:

@@ -6,10 +6,8 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-from uuid_utils import uuid7
 
 from translate.artifact_store import (
     ProcessingLock,
@@ -40,7 +38,7 @@ from translate.models.artifacts import (
     UnpackManifest,
 )
 from translate.models.document import Document
-from translate.pipeline import InputError
+from translate.pipeline import InputError, resolve_processing_id
 from translate.tasks.converter.docling import convert as convert_with_docling
 from translate.tasks.converter.merge import merge
 from translate.tasks.converter.split import split
@@ -76,6 +74,7 @@ def review_pdfs(
     translation: Path,
     config: Config,
     *,
+    processing_id: str | None = None,
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> ReviewOutcome:
@@ -86,13 +85,15 @@ def review_pdfs(
     _validate_pdf(source, "source")
     _validate_pdf(translation, "translation")
     config.require_review()
-    review_id = _processing_id(resume_id)
+    review_id = resolve_processing_id(processing_id, resume_id)
     outputs_root = (outputs or Path.cwd() / "outputs").resolve()
     root = outputs_root / translation.stem / review_id
     record_path = root / "review.json"
     source_input = _input(source, "source")
     translation_input = _input(translation, "translation")
     with ProcessingLock(root):
+        if processing_id is not None and record_path.is_file():
+            raise InputError("processing ID already exists")
         record = _review_record(
             record_path,
             review_id,
@@ -507,20 +508,6 @@ def _review_record(
     )
     write_model(path, record)
     return record
-
-
-def _processing_id(value: str | None) -> str:
-    """新規UUIDv7を生成するか、Resume IDがUUIDv7であることを検査する。"""
-
-    if value is None:
-        return str(uuid7())
-    try:
-        parsed = UUID(value)
-    except ValueError as error:
-        raise InputError("resume ID must be a canonical UUIDv7") from error
-    if parsed.version != 7 or str(parsed) != value.casefold():
-        raise InputError("resume ID must be a canonical UUIDv7")
-    return value
 
 
 def _validate_pdf(path: Path, role: str) -> None:
