@@ -22,11 +22,14 @@ from translate.models.artifacts import (
 )
 from translate.pipeline import InputError
 from translate.pipeline.translate import translate_pdf
+from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
     _history_entries,
     _live_call_counts,
+    _preview,
+    _response_previews,
     _safe_upload_name,
     _stage_register,
     _stage_resume_uploads,
@@ -189,6 +192,42 @@ def test_live_call_counts_reads_in_progress_artifacts(tmp_path: Path) -> None:
     assert _live_call_counts(tmp_path, TaskName.TRANSLATE) == (3, 1, 1)
 
 
+def test_realtime_preview_is_bounded_and_requires_verified_response(
+    tmp_path: Path,
+) -> None:
+    """現在textを240文字に省略し、hash一致する成功応答だけを表示対象にする。"""
+
+    assert len(_preview("A" * 300)) == 240
+    directory = tmp_path / "translation/translate/calls/call-1"
+    response = TranslationResponse(
+        translations=[TranslationItem(span_id="span-1", text="確定訳")]
+    )
+    write_model(directory / "response.json", response)
+    now = datetime.now(UTC)
+    call = LLMCallArtifact(
+        call_id="call-1",
+        task="TRANSLATE",
+        status="succeeded",
+        fingerprint="fingerprint",
+        target_ids=["span-1"],
+        attempts=1,
+        response_sha256=sha256_file(directory / "response.json"),
+        started_at=now,
+        updated_at=now,
+    )
+
+    assert _response_previews(tmp_path, TaskName.TRANSLATE, call) == ["span-1: 確定訳"]
+    rejected = call.model_copy(update={"response_sha256": "0" * 64})
+    assert _response_previews(tmp_path, TaskName.TRANSLATE, rejected) == []
+
+
+def test_streamlit_default_theme_is_light() -> None:
+    """初回表示の既定テーマをrepository設定でライトに固定する。"""
+
+    config = Path(__file__).parents[1] / ".streamlit/config.toml"
+    assert 'base = "light"' in config.read_text(encoding="utf-8")
+
+
 def test_history_is_sorted_limited_and_keeps_invalid_records(tmp_path: Path) -> None:
     """最新100件と読込不可記録をoutputsから列挙する。"""
 
@@ -250,18 +289,24 @@ def test_processing_id_does_not_overwrite_existing_record(tmp_path: Path) -> Non
 
 
 @pytest.mark.browser
-def test_streamlit_v2_renders_three_operations(
+def test_streamlit_v2_renders_four_operations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Streamlit画面が3操作と必須入力前のdisabled buttonを表示する。"""
+    """Streamlit画面が4操作と必須入力前のdisabled buttonを表示する。"""
 
     monkeypatch.chdir(tmp_path)
     app = AppTest.from_file(str(Path(__file__).parents[1] / "main.py")).run(timeout=10)
 
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == ["Translate", "Review", "Register"]
+    assert [tab.label for tab in app.tabs] == [
+        "Translate",
+        "Review",
+        "Register",
+        "Upgrade",
+    ]
     buttons = {button.label: button for button in app.button}
     assert buttons["翻訳を開始"].disabled
     assert buttons["レビューを開始"].disabled
     assert buttons["登録を開始"].disabled
+    assert buttons["Upgradeを開始"].disabled
     assert any(selectbox.label == "処理履歴" for selectbox in app.selectbox)
