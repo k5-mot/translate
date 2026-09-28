@@ -27,13 +27,22 @@ from translate.common.config import ConfigError, load_config
 from translate.models.artifacts import (
     AlignmentResult,
     ArtifactFile,
+    CheckResult,
+    FixResult,
     LLMCallArtifact,
     RegistrationRecord,
     ReviewRecord,
+    ReviewResult,
     TaskName,
     TranslationRecord,
 )
-from translate.models.document import Document, iter_text_units
+from translate.models.document import (
+    Document,
+    TextLayer,
+    TextUnit,
+    iter_text_units,
+    text_unit_index,
+)
 from translate.models.review import ReviewResponse
 from translate.models.upgrade import ReuseReport, UpgradePlan, UpgradeRecord
 from translate.pipeline import InputError
@@ -52,9 +61,63 @@ if TYPE_CHECKING:
 
 ProcessingKind = Literal["translate", "review", "register", "upgrade"]
 ProcessingRecord = TranslationRecord | ReviewRecord | RegistrationRecord | UpgradeRecord
+TaskStage = tuple[str, TaskName, str | None]
 
 _REGISTER_SUFFIXES = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
+
+
+def _task_stages(
+    record: TranslationRecord | ReviewRecord | UpgradeRecord,
+) -> tuple[TaskStage, ...]:
+    """処理種類とbackendに対応する固定Task列を返す。"""
+
+    common: tuple[TaskStage, ...] = (
+        ("SPLIT", TaskName.SPLIT, None),
+        ("DOCLING", TaskName.DOCLING, None),
+        ("UNPACK", TaskName.UNPACK, None),
+        ("MERGE", TaskName.MERGE, None),
+        ("POSITION", TaskName.POSITION, None),
+        ("NORMALIZE", TaskName.NORMALIZE, None),
+        ("LOAD", TaskName.LOAD, None),
+    )
+    if isinstance(record, ReviewRecord):
+        return (
+            *common,
+            ("ALIGN", TaskName.ALIGN, None),
+            ("CHECK", TaskName.CHECK, "review/check/findings.json"),
+            ("REVIEW", TaskName.REVIEW, None),
+            ("REPORT", TaskName.REPORT, None),
+        )
+    translation_task = (
+        TaskName.TRANSLATE if record.backend == "llm" else TaskName.TRANSLATE_LITE
+    )
+    translation_label = translation_task.value.replace("_", "-")
+    review_and_publish: tuple[TaskStage, ...] = (
+        (translation_label, translation_task, None),
+        ("CHECK (初回)", TaskName.CHECK, "review/check/findings.json"),
+        ("REVIEW", TaskName.REVIEW, None),
+        ("FIX", TaskName.FIX, None),
+        ("CHECK (最終)", TaskName.CHECK, "review/check/final-findings.json"),
+        ("LINT", TaskName.LINT, None),
+        ("COVER", TaskName.COVER, None),
+        ("MARKDOWN", TaskName.MARKDOWN, None),
+        ("DOCX", TaskName.DOCX, None),
+    )
+    if isinstance(record, UpgradeRecord):
+        return (
+            *common,
+            ("STRUCTURE", TaskName.STRUCTURE, None),
+            ("ALIGN", TaskName.ALIGN, None),
+            ("DIFF", TaskName.DIFF, None),
+            ("REUSE", TaskName.REUSE, None),
+            *review_and_publish,
+        )
+    return (
+        *common,
+        ("STRUCTURE", TaskName.STRUCTURE, None),
+        *review_and_publish,
+    )
 
 
 class HistoryEntry(BaseModel):
@@ -511,7 +574,9 @@ def _render_translate_form(registry: WorkerRegistry) -> None:
             st.error(str(error))
 
 
-def _render_review_form(registry: WorkerRegistry) -> None:
+def _render_review_form(
+    registry: WorkerRegistry, selected: HistoryEntry | None = None
+) -> None:
     """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。"""
 
     source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
@@ -529,6 +594,17 @@ def _render_review_form(registry: WorkerRegistry) -> None:
             _select_processing(_start_review(source, translation, registry))
         except (InputError, OSError) as error:
             st.error(str(error))
+    if selected is not None and isinstance(selected.record, ReviewRecord):
+        processing_id = selected.processing_id or "review"
+        active = selected.record.status == "processing"
+
+        @st.fragment(run_every="1s" if active else None)
+        def render_context() -> None:
+            """選択ReviewのALIGN Artifactを実行中だけ再読込みする。"""
+
+            _render_review_context(selected.record_path.parent, processing_id)
+
+        render_context()
 
 
 def _render_register_form(registry: WorkerRegistry) -> None:
@@ -561,7 +637,9 @@ def _render_register_form(registry: WorkerRegistry) -> None:
             st.error(str(error))
 
 
-def _render_upgrade_form(registry: WorkerRegistry) -> None:
+def _render_upgrade_form(
+    registry: WorkerRegistry, selected: HistoryEntry | None = None
+) -> None:
     """Upgradeの英文二版、日本語旧版およびbackend選択を表示する。"""
 
     source_v1 = st.file_uploader("英文v1 PDF", type=["pdf"], key="upgrade-source-v1")
@@ -599,6 +677,17 @@ def _render_upgrade_form(registry: WorkerRegistry) -> None:
             )
         except (InputError, OSError) as error:
             st.error(str(error))
+    if selected is not None and isinstance(selected.record, UpgradeRecord):
+        processing_id = selected.processing_id or "upgrade"
+        active = selected.record.status == "processing"
+
+        @st.fragment(run_every="1s" if active else None)
+        def render_context() -> None:
+            """選択UpgradeのDIFF Artifactを実行中だけ再読込みする。"""
+
+            _render_upgrade_context(selected.record_path.parent, processing_id)
+
+        render_context()
 
 
 def _render_history_selector(entries: list[HistoryEntry]) -> str | None:
@@ -620,7 +709,7 @@ def _render_history_selector(entries: list[HistoryEntry]) -> str | None:
     )
     if selected is not None and selected != selected_id:
         st.query_params["processing"] = selected
-        selected_id = selected
+        st.rerun()
     for entry in invalid_entries:
         st.warning(f"{entry.error} {entry.record_path}")
     return selected_id
@@ -631,6 +720,7 @@ def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
 
     future = registry.future(processing_id)
     st.code(processing_id)
+    st.progress(0.0, text="準備中")
     if future is None:
         st.info("処理記録が見つかりません。")
     elif not future.running() and not future.done():
@@ -804,41 +894,429 @@ def _review_target_previews(root: Path, target_ids: list[str]) -> list[str]:
 def _response_previews(root: Path, task: TaskName, call: LLMCallArtifact) -> list[str]:
     """hash一致する成功responseだけをTask固有の短い結果へ変換する。"""
 
-    if call.status != "succeeded" or call.response_sha256 is None:
-        return []
-    directory = _llm_call_directory(root, task)
-    if directory is None:
-        return []
-    path = directory / call.call_id / "response.json"
-    try:
-        if not path.is_file() or sha256_file(path) != call.response_sha256:
-            return []
-        return _validated_response_previews(path, task)
-    except (ArtifactError, OSError):
-        return []
-
-
-def _validated_response_previews(path: Path, task: TaskName) -> list[str]:
-    """Schema検証済みresponseをTask固有の短い表示へ変換する。"""
-
-    if task == TaskName.STRUCTURE:
-        response = load_model(path, StructureResponse)
+    response = _verified_response(root, task, call)
+    if isinstance(response, StructureResponse):
         return [
             f"{item.block_id}: kind={item.kind or '-'}, level={item.level or '-'}"
             for item in response.patches
         ]
-    if task == TaskName.TRANSLATE:
-        response = load_model(path, TranslationResponse)
+    if isinstance(response, TranslationResponse):
         return [f"{item.span_id}: {item.text}" for item in response.translations]
-    response = load_model(path, ReviewResponse)
-    return [
-        *[f"Finding {item.category}: {item.message}" for item in response.findings],
-        *[
-            f"Revision {item.target_id}: "
-            + " / ".join(edit.text for edit in item.edits)
-            for item in response.revisions
+    if isinstance(response, ReviewResponse):
+        return [
+            *[f"Finding {item.category}: {item.message}" for item in response.findings],
+            *[
+                f"Revision {item.target_id}: "
+                + " / ".join(edit.text for edit in item.edits)
+                for item in response.revisions
+            ],
+        ]
+    return []
+
+
+def _verified_response(
+    root: Path, task: TaskName, call: LLMCallArtifact
+) -> StructureResponse | TranslationResponse | ReviewResponse | None:
+    """成功状態、hashおよびSchemaを検証したLLM応答だけを返す。"""
+
+    if call.status != "succeeded" or call.response_sha256 is None:
+        return None
+    directory = _llm_call_directory(root, task)
+    if directory is None:
+        return None
+    path = directory / call.call_id / "response.json"
+    models = {
+        TaskName.STRUCTURE: StructureResponse,
+        TaskName.TRANSLATE: TranslationResponse,
+        TaskName.REVIEW: ReviewResponse,
+    }
+    model = models.get(task)
+    try:
+        if (
+            model is None
+            or not path.is_file()
+            or sha256_file(path) != call.response_sha256
+        ):
+            return None
+        return load_model(path, model)
+    except (ArtifactError, OSError):
+        return None
+
+
+def _latest_call(root: Path, task: TaskName, status: str) -> LLMCallArtifact | None:
+    """指定状態で更新時刻が最も新しいLLM Callを返す。"""
+
+    calls = [call for call in _llm_calls(root, task) if call.status == status]
+    return max(calls, key=lambda item: item.updated_at) if calls else None
+
+
+def _comparison_text(rows: list[tuple[str, str]], empty: str = "") -> str:
+    """同じ対象順の最大3件をTextArea用plain textへ整形する。"""
+
+    if not rows:
+        return empty
+    return "\n\n".join(
+        f"[{target_id}]\n{_preview(value) if value else '空'}"
+        for target_id, value in rows[:3]
+    )
+
+
+def _render_text_areas(
+    labels: tuple[str, ...], values: tuple[str, ...], key: str
+) -> None:
+    """同じ件数の読取専用TextAreaを横並びで表示する。"""
+
+    columns = st.columns(len(labels))
+    for index, (column, label, value) in enumerate(
+        zip(columns, labels, values, strict=True)
+    ):
+        with column:
+            st.text_area(
+                label,
+                value=value,
+                height=180,
+                disabled=True,
+                key=f"{key}-{index}",
+            )
+
+
+def _translation_comparison(root: Path) -> tuple[str, str] | None:
+    """直近の同一TRANSLATE Callから英語と検証済み日本語を返す。"""
+
+    document = _load_first_document(
+        root,
+        ["upgrade/reuse/document.json", "preprocess/structure/document.json"],
+    )
+    if document is None:
+        return None
+    sources = {
+        span.id: span.source
+        for _, unit in iter_text_units(document)
+        for span in unit.spans
+    }
+    succeeded = _latest_call(root, TaskName.TRANSLATE, "succeeded")
+    if succeeded is not None:
+        response = _verified_response(root, TaskName.TRANSLATE, succeeded)
+        if not isinstance(response, TranslationResponse):
+            return None
+        translated = {item.span_id: item.text for item in response.translations}
+        target_ids = [
+            target_id
+            for target_id in succeeded.target_ids
+            if target_id in sources and target_id in translated
+        ]
+        return (
+            _comparison_text([(item, sources[item]) for item in target_ids]),
+            _comparison_text([(item, translated[item]) for item in target_ids]),
+        )
+    active = _latest_call(root, TaskName.TRANSLATE, "processing")
+    if active is None:
+        return None
+    target_ids = [item for item in active.target_ids if item in sources]
+    return (
+        _comparison_text([(item, sources[item]) for item in target_ids]),
+        "処理中 (確定結果なし)",
+    )
+
+
+def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
+    """検証済みALIGNまたはDocumentからReview対象をIDで返す。"""
+
+    values: dict[str, tuple[str, str]] = {}
+    for relative in ("review/align/alignment.json", "upgrade/align/result.json"):
+        path = root / relative
+        if not path.is_file():
+            continue
+        try:
+            alignment = load_model(path, AlignmentResult)
+        except ArtifactError:
+            continue
+        values.update(
+            {
+                target.id: (target.source, target.translation)
+                for target in alignment.targets
+            }
+        )
+    document = _load_first_document(
+        root,
+        [
+            "review/fix/document.json",
+            "translation/translate/document.json",
+            "translation/translate-lite/document.json",
+            "upgrade/reuse/document.json",
         ],
+    )
+    if document is not None:
+        values.update(
+            {
+                target.id: (target.source, target.translation)
+                for target in targets_from_document(document)
+            }
+        )
+    return values
+
+
+def _review_comparison(root: Path) -> tuple[str, str] | None:
+    """直近の同一REVIEW Callから現在訳と修正候補を返す。"""
+
+    targets = _review_targets(root)
+    succeeded = _latest_call(root, TaskName.REVIEW, "succeeded")
+    if succeeded is not None:
+        response = _verified_response(root, TaskName.REVIEW, succeeded)
+        if not isinstance(response, ReviewResponse):
+            return None
+        revisions = {item.target_id: item for item in response.revisions}
+        target_ids = [item for item in succeeded.target_ids if item in targets]
+        before = [(item, targets[item][1]) for item in target_ids]
+        after = [
+            (
+                item,
+                " / ".join(edit.text for edit in revisions[item].edits)
+                if item in revisions
+                else "修正候補なし",
+            )
+            for item in target_ids
+        ]
+        return _comparison_text(before), _comparison_text(after)
+    active = _latest_call(root, TaskName.REVIEW, "processing")
+    if active is None:
+        return None
+    target_ids = [item for item in active.target_ids if item in targets]
+    return (
+        _comparison_text([(item, targets[item][1]) for item in target_ids]),
+        "処理中 (確定結果なし)",
+    )
+
+
+def _fix_comparison(root: Path) -> tuple[str, str] | None:
+    """適用済みRevision対象のFIX前後を同じTextUnit IDで返す。"""
+
+    outcomes_path = root / "review/fix/outcomes.json"
+    review_path = root / "review/review/review.json"
+    before = _load_first_document(
+        root,
+        [
+            "translation/translate/document.json",
+            "translation/translate-lite/document.json",
+            "upgrade/reuse/document.json",
+        ],
+    )
+    if not outcomes_path.is_file() or not review_path.is_file() or before is None:
+        return None
+    try:
+        fixed = load_model(outcomes_path, FixResult)
+        review = load_model(review_path, ReviewResult)
+    except ArtifactError:
+        return None
+    applied = {
+        outcome.revision_id for outcome in fixed.outcomes if outcome.status == "applied"
+    }
+    target_ids = [item.target_id for item in review.revisions if item.id in applied]
+    before_units = text_unit_index(before)
+    after_units = text_unit_index(fixed.document)
+    target_ids = [
+        item for item in target_ids if item in before_units and item in after_units
     ]
+    if not target_ids:
+        return None
+    return (
+        _comparison_text(
+            [(item, before_units[item].text("revised")) for item in target_ids]
+        ),
+        _comparison_text(
+            [(item, after_units[item].text("revised")) for item in target_ids]
+        ),
+    )
+
+
+def _fix_rejections(root: Path) -> list[str]:
+    """FIXが拒否したRevision IDと理由codeを返す。"""
+
+    path = root / "review/fix/outcomes.json"
+    if not path.is_file():
+        return []
+    try:
+        result = load_model(path, FixResult)
+    except ArtifactError:
+        return []
+    return [
+        f"{item.revision_id}: {item.reason_code}"
+        for item in result.outcomes
+        if item.status == "rejected"
+    ]
+
+
+def _render_latest_comparison(root: Path) -> None:
+    """既存Artifactから最新の処理前後比較を表示する。"""
+
+    fixed = _fix_comparison(root)
+    reviewed = _review_comparison(root)
+    translated = _translation_comparison(root)
+    if fixed is not None:
+        st.subheader("FIXの処理前・処理後")
+        _render_text_areas(("修正前", "修正後"), fixed, "fix-comparison")
+        rejected = _fix_rejections(root)
+        if rejected:
+            st.caption("拒否された修正候補: " + ", ".join(rejected[:3]))
+    elif reviewed is not None:
+        st.subheader("REVIEWの処理前・処理後")
+        _render_text_areas(("修正前", "修正候補"), reviewed, "review-comparison")
+    elif translated is not None:
+        st.subheader("TRANSLATEの処理前・処理後")
+        _render_text_areas(
+            ("翻訳前 (英語)", "翻訳後 (日本語)"),
+            translated,
+            "translate-comparison",
+        )
+
+
+def _review_context(root: Path) -> tuple[str, str] | None:
+    """同一ReviewTargetの英語原文と日本語訳を返す。"""
+
+    path = root / "review/align/alignment.json"
+    if not path.is_file():
+        return None
+    try:
+        alignment = load_model(path, AlignmentResult)
+    except ArtifactError:
+        return None
+    by_id = {target.id: target for target in alignment.targets}
+    call = _latest_call(root, TaskName.REVIEW, "processing") or _latest_call(
+        root, TaskName.REVIEW, "succeeded"
+    )
+    target_ids = call.target_ids if call is not None else list(by_id)[:3]
+    target_ids = [item for item in target_ids if item in by_id]
+    if not target_ids:
+        return None
+    return (
+        _comparison_text([(item, by_id[item].source) for item in target_ids]),
+        _comparison_text([(item, by_id[item].translation) for item in target_ids]),
+    )
+
+
+def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
+    """Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。"""
+
+    calls = [
+        (task, call)
+        for task in (TaskName.TRANSLATE, TaskName.REVIEW)
+        for call in _llm_calls(root, task)
+    ]
+    active = [(task, call) for task, call in calls if call.status == "processing"]
+    succeeded = [(task, call) for task, call in calls if call.status == "succeeded"]
+    selected = max(
+        active or succeeded, key=lambda item: item[1].updated_at, default=None
+    )
+    if selected is None:
+        return []
+    task, call = selected
+    if task == TaskName.REVIEW:
+        return [target_id.removeprefix("translate/") for target_id in call.target_ids]
+    span_to_unit = {
+        span.id: unit.id for _, unit in iter_text_units(document) for span in unit.spans
+    }
+    return [
+        span_to_unit[target_id]
+        for target_id in call.target_ids
+        if target_id in span_to_unit
+    ]
+
+
+def _unit_text(
+    unit_ids: list[str], units: dict[str, TextUnit], layer: TextLayer
+) -> str | None:
+    """複数TextUnit IDを検証済み索引から一つの表示textへ解決する。"""
+
+    if not unit_ids or any(unit_id not in units for unit_id in unit_ids):
+        return None
+    return "\n".join(units[unit_id].text(layer) for unit_id in unit_ids)
+
+
+def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
+    """同一VersionChangeの英文v1、日本語v1、英文v2を返す。"""
+
+    plan_path = root / "upgrade/diff/plan.json"
+    source_v1 = _load_first_document(root, ["preprocess/source-v1/load/document.json"])
+    source_v2 = _load_first_document(root, ["preprocess/source-v2/load/document.json"])
+    translation_v1 = _load_first_document(
+        root, ["preprocess/translation-v1/load/document.json"]
+    )
+    if (
+        not plan_path.is_file()
+        or source_v1 is None
+        or source_v2 is None
+        or translation_v1 is None
+    ):
+        return None
+    try:
+        plan = load_model(plan_path, UpgradePlan)
+    except ArtifactError:
+        return None
+    requested = set(_call_v2_unit_ids(root, source_v2))
+    changes = (
+        [
+            change
+            for change in plan.changes
+            if requested.intersection(change.source_v2_ids)
+        ]
+        if requested
+        else plan.changes[:3]
+    )
+    if not changes:
+        return None
+    source_v1_units = text_unit_index(source_v1)
+    source_v2_units = text_unit_index(source_v2)
+    translation_v1_units = text_unit_index(translation_v1)
+    rows: list[tuple[str, str, str, str]] = []
+    for change in changes[:3]:
+        value_v1 = _unit_text(change.source_v1_ids, source_v1_units, "source")
+        value_v2 = _unit_text(change.source_v2_ids, source_v2_units, "source")
+        value_ja = _unit_text(
+            change.translation_v1_ids, translation_v1_units, "revised"
+        )
+        if change.kind == "added":
+            value_v1 = "該当なし"
+            value_ja = "該当なし"
+        elif value_ja is None:
+            value_ja = "対応訳なし"
+        if change.kind == "deleted":
+            value_v2 = "該当なし"
+        if value_v1 is None or value_v2 is None:
+            return None
+        rows.append((change.id, value_v1, value_ja, value_v2))
+    return (
+        _comparison_text([(item[0], item[1]) for item in rows]),
+        _comparison_text([(item[0], item[2]) for item in rows]),
+        _comparison_text([(item[0], item[3]) for item in rows]),
+    )
+
+
+def _render_review_context(root: Path, processing_id: str) -> None:
+    """Review tabへ英語原文と日本語訳の対応表示を描画する。"""
+
+    values = _review_context(root)
+    if values is None:
+        st.caption("ALIGN完了後に表示")
+        return
+    st.subheader("レビュー対象")
+    _render_text_areas(
+        ("英語原文", "日本語訳"), values, f"review-context-{processing_id}"
+    )
+
+
+def _render_upgrade_context(root: Path, processing_id: str) -> None:
+    """Upgrade tabへ三版の対応表示を描画する。"""
+
+    values = _upgrade_context(root)
+    if values is None:
+        st.caption("DIFF完了後に表示")
+        return
+    st.subheader("版間の対応")
+    _render_text_areas(
+        ("英語v1", "日本語v1", "英語v2"),
+        values,
+        f"upgrade-context-{processing_id}",
+    )
 
 
 def _render_current_activity(root: Path, task: TaskName) -> None:
@@ -886,20 +1364,65 @@ def _render_current_activity(root: Path, task: TaskName) -> None:
         _render_preview_values("直近の確定結果", _response_previews(root, task, latest))
 
 
+def _valid_check_artifact(root: Path, relative_path: str) -> bool:
+    """CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。"""
+
+    path = root / relative_path
+    if not path.is_file():
+        return False
+    try:
+        load_model(path, CheckResult)
+    except ArtifactError:
+        return False
+    return True
+
+
+def _task_progress(
+    root: Path,
+    record: TranslationRecord | ReviewRecord | UpgradeRecord,
+) -> tuple[int, int, str]:
+    """固定Task列の完了数、総数、実行中表示名を返す。"""
+
+    stages = _task_stages(record)
+    states = {state.task: state for state in record.tasks}
+    completed = sum(
+        _valid_check_artifact(root, artifact)
+        if artifact is not None
+        else states.get(task) is not None
+        and states[task].status in {"succeeded", "skipped"}
+        for _, task, artifact in stages
+    )
+    active_state = next(
+        (state for state in record.tasks if state.status == "processing"), None
+    )
+    active = "-"
+    if active_state is not None:
+        active = active_state.task.value.replace("_", "-")
+        if active_state.task == TaskName.CHECK:
+            initial_done = _valid_check_artifact(root, "review/check/findings.json")
+            active = "CHECK (最終)" if initial_done else "CHECK (初回)"
+    return completed, len(stages), active
+
+
 def _render_task_progress(
     entry: HistoryEntry, record: TranslationRecord | ReviewRecord | UpgradeRecord
 ) -> None:
-    """Task状態とLLM Call数を虚偽の百分率なしで表示する。"""
+    """固定Task列のProgressBarとLLM Call数を表示する。"""
 
-    completed = sum(task.status in {"succeeded", "skipped"} for task in record.tasks)
+    root = entry.record_path.parent
+    completed, total, active = _task_progress(root, record)
     active_state = next(
         (task for task in record.tasks if task.status == "processing"), None
     )
-    active = active_state.task.value if active_state is not None else "-"
-    st.write(f"完了Task: {completed} / 開始済み {len(record.tasks)}")
+    detail = f"{completed} / {total} Task"
+    if record.status in {"failed", "cancelled"}:
+        detail = f"{detail} — {record.status}"
+    elif active != "-":
+        detail = f"{detail} — {active}"
+    st.progress(completed / total if total else 0.0, text=detail)
     st.write(f"現在のTask: {active}")
     if active_state is not None:
-        _render_current_activity(entry.record_path.parent, active_state.task)
+        _render_current_activity(root, active_state.task)
     else:
         st.write(f"現在の処理: {record.status}")
     for progress in record.llm_progress:
@@ -934,13 +1457,14 @@ def _render_task_progress(
     active_task = active_state.task if active_state is not None else None
     if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
         observed, live_completed, failed = _live_call_counts(
-            entry.record_path.parent,
+            root,
             active_task,
         )
         st.write(
             f"{active_task.value} 実行中: {live_completed} / "
             f"観測済み {observed} calls (失敗 {failed})"
         )
+    _render_latest_comparison(root)
 
 
 def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
@@ -1325,11 +1849,13 @@ def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
     _render_record(entry, registry)
 
 
-def _render_processing_panel(registry: WorkerRegistry) -> None:
+def _render_processing_panel(
+    registry: WorkerRegistry, entries: list[HistoryEntry] | None = None
+) -> None:
     """処理履歴と選択中の進捗・成果物領域を表示する。"""
 
     st.header("🕒 処理履歴")
-    entries = _history_entries()
+    entries = entries if entries is not None else _history_entries()
     processing_id = _render_history_selector(entries)
     if processing_id is None:
         return
@@ -1367,15 +1893,20 @@ def main() -> None:
     st.title("🌐 Translate")
     st.caption("英語文書の日本語翻訳、比較Review、参照資料登録、版更新")
     registry = worker_registry()
-    translate_tab, review_tab, register_tab, upgrade_tab = st.tabs(
-        ["Translate", "Review", "Register", "Upgrade"]
+    entries = _history_entries()
+    selected_id = _selected_processing_id()
+    selected = next(
+        (entry for entry in entries if entry.processing_id == selected_id), None
+    )
+    translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
+        ["Translate", "Review", "Upgrade", "Register"]
     )
     with translate_tab:
         _render_translate_form(registry)
     with review_tab:
-        _render_review_form(registry)
+        _render_review_form(registry, selected)
+    with upgrade_tab:
+        _render_upgrade_form(registry, selected)
     with register_tab:
         _render_register_form(registry)
-    with upgrade_tab:
-        _render_upgrade_form(registry)
-    _render_processing_panel(registry)
+    _render_processing_panel(registry, entries)
