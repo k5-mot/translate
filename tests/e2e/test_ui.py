@@ -126,6 +126,19 @@ def _assert_translation_downloads_outside_progress(page: Page) -> None:
     ):
         expect(button).to_be_visible()
         assert progress.get_by_role("button", name=label).count() == 0
+    page.wait_for_function(
+        """labels => {
+            const buttons = [...document.querySelectorAll('button')]
+                .filter(button => labels.includes(button.textContent.trim()));
+            if (buttons.length !== labels.length) return false;
+            const centers = buttons.map(button => {
+                const box = button.getBoundingClientRect();
+                return box.y + box.height / 2;
+            });
+            return Math.max(...centers) - Math.min(...centers) <= 2;
+        }""",
+        arg=["Markdownをdownload", "DOCXをdownload"],
+    )
     boxes = [button.bounding_box() for button in buttons]
     assert all(box is not None for box in boxes)
     centers = [box["y"] + box["height"] / 2 for box in boxes if box is not None]
