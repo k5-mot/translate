@@ -60,15 +60,22 @@ background workerの `Future`は正本としない。
 
 ### 🗂️ Source配置
 
-追加・変更するSourceは次の範囲に限定する。
+現行実装の主要な追加・変更Sourceは次のとおりとする。test fixtureや既存Pipelineとの
+接続に伴う小規模な変更は省略する。
 
 ```text
+Dockerfile                      # StreamlitとPandocを含むcontainer image
+docker-compose.yml              # .env、portおよび永続directoryの接続
 main.py                         # Streamlit用entry point
+pyproject.toml                  # UI用optional dependencyと実行設定
 .streamlit/
 └── config.toml                 # ライトテーマの既定値
 translate/
+├── artifact_store.py           # Windowsを含む原子的path置換
 ├── cli.py                      # Upgrade subcommand
 ├── ui.py                       # 画面、入力保存、worker、進捗読込み
+├── assets/
+│   └── translate-logo.svg      # AppBarへ表示するapplication logo
 ├── models/
 │   ├── artifacts.py            # DIFF、REUSEのTaskName
 │   └── upgrade.py              # UpgradeRecord、UpgradePlan
@@ -79,6 +86,10 @@ translate/
     │   └── diff.py             # 英文v1と英文v2の決定的差分
     └── translation/
         └── reuse.py            # 日本語v1の決定的再利用
+tests/
+├── unit/                       # UIの表示値とArtifact解決
+├── e2e/                        # CLI processとPlaywright browser操作
+└── regression/                 # Pipeline、Resumeおよび既存機能との統合契約
 ```
 
 - rootの `main.py` は `translate.ui.main` を呼び出すだけとする。
@@ -139,17 +150,18 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 同じ処理IDの表示を復元する。
 
 - application名 `Translate` は `st.logo` でAppBar左側へ表示し、本文の独立した大見出しにはしない。
+- Session IDは入力領域のCollapse labelへ含めず、`Translate` とDeploy buttonと同じAppBarの
+  縦位置へ独立して表示する。新規処理では `新規セッション` と表示する。
 - 処理履歴は左sidebarへ折り畳まず、新しい順のbuttonとして縦に並べる。選択中の処理は
   buttonの状態でも識別できるようにする。
-- 本文の入力領域は上から `処理ID - Pipeline種類`、Pipeline tab、file upload、各種option、
-  開始buttonの順とする。新規処理では処理IDとPipeline種類の代わりに
-  `新規セッション - パイプライン選択` を表示する。
+- 本文の入力領域は上からPipeline tab、file upload、各種option、開始buttonの順とする。
 - 入力領域全体は折り畳み可能とし、新規処理では展開、処理開始後または履歴選択後は
-  既定で閉じる。
+  既定で閉じる。Collapse labelは `入力と設定` とする。
 - 処理開始後は、折り畳み可能な進捗領域へ、ProgressBar、進捗詳細、二列・三列の
-  読取専用TextAreaの順に表示する。進捗詳細はTask名、現在の処理、状態および更新時刻を
-  この順で必ず表示し、その後にLLM Call進捗などのTask固有情報を表示してよい。
-  進捗領域は既定で展開する。
+  読取専用TextAreaの順に表示する。ProgressBarには完了Task数・総Task数、現在または
+  直近のTask名およびTask状態をtextで併記する。進捗詳細は既定で閉じたCollapseとし、
+  最上位JSONの更新時刻とSTRUCTURE、TRANSLATE、REVIEWのLLM Call進捗内訳だけを表示する。
+  進捗領域全体は既定で展開する。
 
 全操作で次を必須とする。
 
@@ -179,6 +191,13 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 
 - UIはsource languageとtarget languageの選択欄を設けない。
 - Markdown previewを表示する場合は `unsafe_allow_html=False` とする。
+- Markdown previewは、publisherが独立した一行として生成する
+  `![caption](relative-path){Pandoc attributes}` 形式を画像要素として認識する。
+- 相対画像pathはURL decodeした後、Markdown fileのdirectory内に解決できる既存fileだけを
+  `st.image`で表示する。directory外参照または欠落fileは画像を表示せず、警告を表示する。
+- schemeまたはhostを持つ画像URL、および行中に埋め込まれた画像記法は専用のpath解決を行わず、
+  `unsafe_allow_html=False` の `st.markdown`へ渡す。Preview処理はMarkdownのdownload本文を
+  変更しない。
 - Resume時のbackendは `translation.json` に保存された値に固定し、変更を許可しない。
 
 ### 🔎 Review
@@ -479,8 +498,7 @@ CLIと外部serviceの同時実行能力まで制限するものではない。
 | LLM進捗 | 実行中はCall Artifactの観測数、Task完了後は `LLMProgress` の `completed_calls / planned_calls` |
 | LLM再利用 | `LLMProgress.reused_calls` |
 | LLM失敗 | `LLMProgress.failed_calls` |
-| Register進捗 | `RegistrationResult.sources` の件数と入力件数 |
-| Upgrade進捗 | `UpgradePlan.changes` のkind別件数、再利用件数および翻訳対象件数 |
+| Register進捗 | 最上位JSONの `status` を使用した0または1の固定Task表示 |
 | 更新時刻 | 最上位JSONの `updated_at` |
 
 - `planned_calls` はLLMによる分割で増えるため、進捗率が一時的に下がることを許容する。
@@ -505,6 +523,7 @@ backendに対応する一方だけを表示する。
 | Translate | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → STRUCTURE → TRANSLATEまたはTRANSLATE-LITE → CHECK（初回）→ REVIEW → FIX → CHECK（最終）→ LINT → COVER → MARKDOWN → DOCX |
 | Review | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → ALIGN → CHECK → REVIEW → REPORT |
 | Upgrade | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → STRUCTURE → ALIGN → DIFF → REUSE → TRANSLATEまたはTRANSLATE-LITE → CHECK（初回）→ REVIEW → FIX → CHECK（最終）→ LINT → COVER → MARKDOWN → DOCX |
+| Register | REGISTER |
 
 - `succeeded` または `skipped` のstageを完了として数える。現在の `processing` stageは
   ProgressBarのtextへ `現在: DOCLING` のように表示するが、完了数へは含めない。
@@ -524,57 +543,33 @@ backendに対応する一方だけを表示する。
 - TRANSLATEなどのLLM Task内部は、既存のCall件数表示をProgressBarの下へ併記する。
   `planned_calls`は分割によって増えるため、初期実装ではLLM Call比率を別の百分率Barに
   変換しない。
-- Registerは `TaskState`を持たないためTask ProgressBarの対象外とし、既存の
-  `RegistrationResult.sources`による完了件数表示を維持する。
+- Registerは `TaskState`を持たないため、最上位JSONの状態から `REGISTER`という一つの
+  表示用Taskを組み立てる。`succeeded`の場合だけ `1 / 1 Task`、それ以外は `0 / 1 Task` とし、
+  Task名と最上位JSONの状態をProgressBarのtextへ表示する。
 
 この方式ならPipelineやArtifact Schemaを変更せず実装できる。一方、Task内の厳密な処理量、
 残り時間およびDOCLINGのpart単位進捗を表示するには、Pipeline側が途中状態を追加保存する
 別仕様が必要になるため、本変更には含めない。
 
-### 🔬 リアルタイム処理内容
+### 🔬 進捗詳細
 
-進捗領域には集約値に加えて「現在の処理内容」を常時表示する。この表示も既存の
-`st.fragment(run_every="1s")` で更新し、表示専用のworker、外部要求および進捗Artifactを
-追加しない。
+進捗詳細は既定で閉じたCollapseとし、`st.fragment(run_every="1s")` で進捗領域とともに
+更新する。表示項目は次に限定する。
 
-| Task | 現在の処理表示 | 直近結果表示 |
-|---|---|---|
-| SPLIT、DOCLING、UNPACK、MERGE | 分割、変換、展開または結合しているfile、partおよびpage | 確定済みArtifactの件数 |
-| POSITION、NORMALIZE、LOAD | 座標補正、正規化または読込みという固定actionと、判明しているpageおよびBlock件数 | 確定済みreportの要約 |
-| STRUCTURE | 現在のCallが対象とするsource text、page番号および「見出し・caption・Block種別を解析中」 | 直近の成功Callで適用した構造patchの要約 |
-| TRANSLATE | 現在のCallが対象とする英語source textと「日本語へ翻訳中」 | 直近の成功Callで確定した日本語訳 |
-| REVIEW | 現在のCallが対象とする英語原文と日本語訳、および「品質と修正候補を確認中」 | 直近の成功Callで確定したFindingとRevisionの要約 |
-| ALIGN、DIFF、REUSE | 対応付け、版間差分判定または既存訳再利用という固定actionと対象件数 | kind別件数、再利用件数および翻訳対象件数 |
-| CHECK、FIX、COVER、MARKDOWN、DOCX、LINT、REPORT | Task固有の固定actionと対象件数 | 確定済みArtifactの要約 |
-| Register | 現在のsource logical pathと、変換、chunk化、EmbeddingまたはQdrant登録のうちArtifactから確定できるaction | 完了source数、Point数および失敗source |
+- 最上位JSONの `updated_at` を使用した更新時刻
+- STRUCTURE、TRANSLATEおよびREVIEWのTask別LLM Call進捗内訳
+- 各内訳の完了Call数、予定または観測済みCall数、再利用Call数および失敗Call数
 
-STRUCTURE、TRANSLATEおよびREVIEWでは、`status="processing"` の
-`calls/*/call.json` にある `target_ids` をTask入力DocumentまたはReviewTargetへ解決し、
-現在の対象textを表示する。複数の処理中Callが存在する場合は `started_at` が最も新しいCallを
-現在のCallとし、ほかのCallは件数だけを表示する。処理中Callがまだ作成されていない場合は
-Task名と準備中であることだけを表示する。
-
-- 現在の対象textは先頭3件を表示し、1件につき240文字を超える部分を省略する。残件数と
-  省略の有無を明示する。
-- source、translationおよび結果は列または明確なlabelで区別し、文書由来のtextを
-  HTMLまたはMarkdownとして評価しない。
-- 直近結果は `status="succeeded"` のCall Artifactと検証済みresponseだけから表示する。
-  未完了response、推測した結果および検証前の応答は表示しない。
-- LLM要求はstreamingを使用しないため、生成中tokenを逐次表示しない。現在のCallが完了する
-  までは現在の対象textと直前に確定した結果を表示する。
-- system prompt、rules全文、JSON Schema、API key、HTTP header、生のrequest bodyおよび
-  modelの内部推論は表示しない。「どう加工しているか」はTask名、固定action、対象textおよび
-  検証済み結果で説明する。
-- 対象IDを解決できない、または途中Artifactを検証できない場合は該当previewを非表示にし、
-  処理全体を失敗扱いにしない。状態とCall件数の表示は継続する。
-- preview生成のためにTask directory全体を再帰走査しない。現在のCall、直近の成功Callおよび
-  対応するTask入力Artifactだけを読み込む。
+Task名とTask状態はProgressBarへ表示する。固定action、現在対象の本文、Upgrade差分集計、
+成果物、エラーおよびResume操作は進捗詳細へ表示しない。LLMのsystem prompt、生のrequest
+bodyおよび内部推論も表示しない。
 
 ### ↔️ 処理前・処理後の比較表示
 
 TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(2)` と読取専用の
-`st.text_area`を使用し、左右に並べて表示できる。追加の差分Library、HTMLおよび独自Editorは
-導入しない。
+`st.text_area`を使用し、左右に並べて表示する。TextArea内の部分装飾は行わず、その下の
+`差分を表示` Collapseへ標準Library `difflib` のunified diffを `st.code(language="diff")`で
+表示する。追加Dependency、HTMLおよび独自Editorは導入しない。
 
 | Task | 左側 | 右側 |
 |---|---|---|
@@ -584,17 +579,20 @@ TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(
 
 - 二つのTextAreaは必ず同じCallまたは同じFIX対象IDから組み立てる。現在処理中の対象と
   直前Callの結果を左右へ混在させてはならない。
-- LLM応答はstreamingされないため、実行中Callの「処理後」は確定前に表示できない。
-  実行中は現在の対象textと「処理中（確定結果なし）」を表示し、Callが
-  `status="succeeded"`となりresponseのSchemaとSHA-256を検証できた次のpollで左右を更新する。
-- 別のCallが開始した後も、左右のTextAreaは直近に確定した同一Callの処理前・処理後を表示し、
-  現在実行中のCallはその上の固定actionと対象textで区別する。
-- `partial`、`processing`または `failed` のresponse、生のLLM応答および未適用Revisionを
-  「修正後」として表示しない。REVIEWの右側は明示的に「修正候補」と表示する。
-- FIXでは `RevisionOutcome.status="applied"` の対象だけを表示し、`rejected` は理由codeを
-  captionへ表示する。UIでRevisionを再適用または再計算しない。
-- STRUCTUREはtext修正ではないため二つのTextAreaの対象外とし、既存のBlock textと
-  構造patch要約を維持する。決定的Taskにも処理前後textが存在しない場合は表示しない。
+- LLM応答はstreamingされないため、確定済みCallが一件もない状態でCallが実行中の場合だけ、
+  現在の対象textと「処理中（確定結果なし）」を表示する。CallのresponseについてSchemaと
+  SHA-256を検証できた次のpollで左右を更新する。
+- 検証済みCallが一件以上ある場合は、別のCallが開始した後も、左右のTextAreaへ直近に確定した
+  同一Callの処理前・処理後を表示する。実行中Callの未確定responseへ切り替えない。
+- `processing`または `failed` のresponse、生のLLM応答および未適用Revisionを「修正後」として
+  表示しない。SchemaとSHA-256を検証できる `partial` は確定済み項目だけを表示対象とする。
+  REVIEWの右側は明示的に「修正候補」と表示する。
+- FIXでは `RevisionOutcome.status="applied"` の対象が一件以上ある場合だけ処理前・処理後を
+  表示する。同じFIX結果の `rejected` は、件数付きの `拒否された修正候補` Collapseへ、
+  1候補を1つのlist項目として保存順にすべて表示する。各項目はRevision IDと拒否理由を
+  別行のinline codeとして表示する。UIでRevisionを再適用または再計算しない。
+- STRUCTUREはtext修正ではないため二つのTextAreaの対象外とする。決定的Taskにも処理前後textが
+  存在しない場合は表示しない。
 - 左右それぞれ先頭3件、1件240文字までとし、同じ順序、対象IDおよび省略表示を使用する。
   複数件は一つの読取専用TextArea内で対象ID付きの区切りを入れる。
 - TextAreaには可視labelを付け、`disabled=True`として編集可能に見せない。文書由来textは
@@ -602,9 +600,8 @@ TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(
 - 対応する入力Document、Call Artifact、response、FIX outcomeまたは出力Documentのいずれかを
   検証できない場合は比較表示だけを省略し、Task状態とProgressBarの表示は継続する。
 
-この比較表示も既存Artifactだけで実装できる。ただし、生成中tokenを右側へ逐次表示すること、
-確定前の予測結果を表示すること、および全文の文字単位diff表示は正確性と実装負荷のため
-対象外とする。
+この比較表示も既存Artifactだけで実装する。ただし、生成中tokenを右側へ逐次表示すること、
+確定前の予測結果を表示すること、および文字単位diff表示は対象外とする。
 
 ### 📑 Review・Upgradeの原文比較表示
 
@@ -651,6 +648,7 @@ Upgradeは `st.columns(3)` 内へ三つの読取専用 `st.text_area`を次の�
   表示し、現在処理中であるとは表記しない。
 - 生成された日本語v2はこの三列へ混ぜず、TRANSLATEまたはFIXの検証済み結果として、
   既存の処理前・処理後比較領域へ表示する。
+- 三列の下に `差分を表示` Collapseを設け、英語v1と英語v2の行単位unified diffを表示する。
 
 #### 🧭 共通表示規則
 
@@ -680,8 +678,9 @@ outputs/*/*/upgrade.json
 - 履歴は `updated_at` の新しい順に最大100件まで表示する。
 - 履歴は左sidebarへ折り畳まず、選択可能なitemとして縦に並べる。
 - 履歴の列挙は一度のStreamlit評価につき一回とし、Task directory全体を再帰的に読み込まない。
-- 表示項目は種類、入力logical path、処理ID、状態、作成時刻、更新時刻とする。Upgradeは
-  3入力のroleとlogical pathを区別して表示する。
+- 各履歴buttonは種類、代表入力、状態および処理IDを、この順序で `|` 区切りに表示する。
+  Translateは英語PDF、Reviewは日本語訳文PDF、Upgradeは英文v2を代表入力とする。Registerは
+  `source_id`があればその値、なければ先頭入力のlogical pathを使用する。
 - 不正なJSONまたは非対応 `schema_version` は履歴から隠さず、「読込不可」とpathを表示する。
 - CLIから開始した処理も同じArtifact契約であるため、履歴と成果物の表示対象とする。
 - `translate_v1`、`runs`、またはその他の旧directoryは列挙対象としない。
@@ -709,6 +708,8 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 - 検証に失敗したArtifactはdownload buttonを表示せず、「成果物が欠落または変更されている」と表示する。
 - TranslateはMarkdownとDOCX、Reviewは `review.md`、Registerは `registration.json`、
   Upgradeは日本語v2 DOCXをdownload対象とする。
+- previewおよびdownload buttonは `進捗と処理内容` Collapseの外側へ表示する。
+- TranslateのMarkdownとDOCXのdownload buttonは横並びにする。
 - browser上のpreviewは利便性のための表示であり、downloadされるbyte列を変換しない。
 - UIから成果物、処理directoryまたは入力fileを削除しない。
 
@@ -754,13 +755,18 @@ UI testの必須条件としない。
 - 履歴の並び順、100件上限および非対応Schemaの表示
 - Artifactのpath、sizeおよびSHA-256検証
 - 同じ処理IDのworker二重登録防止
-- LLM Callの `target_ids` からTask別previewを解決できること
-- previewが3件および各240文字で省略され、残件数を表示できること
+- LLM Callの `target_ids` から同一Callの処理前・処理後を解決できること
+- TextAreaのpreviewが先頭3件および各240文字で省略されること
 - 処理種類ごとの固定stage列からProgressBarの分母と完了数を決定できること
 - CHECK（初回）とCHECK（最終）を対応する検証済みArtifactから区別できること
 - Task失敗時にProgressBarが100%にならず、失敗状態をtextでも表示できること
 - 左右の処理前・処理後が同じCallまたはFIX対象IDから解決されること
+- unified diffが変更前後のlabel、削除行および追加行を区別すること
+- publisher生成のPandoc画像記法について、URL decodeした相対画像をMarkdown directory内だけから
+  解決し、欠落file、directory外参照および外部URLをローカルfileとして扱わないこと
 - 未完了またはhash不一致のresponseが右側TextAreaへ表示されないこと
+- TRANSLATEの一部応答がSchema・hash検証済みの `partial` 状態であれば、後続Callの
+  実行中も右側TextAreaへ直近の確定結果として表示し続けること
 - Reviewの英語原文と日本語訳が同じ `ReviewTarget.id` から解決されること
 - Upgradeの英語v1、日本語v1および英語v2が同じ `VersionChange.id` から解決されること
 - Upgradeのadded、deletedおよび対応訳なしが規定のplaceholderで同じ列数を維持すること
@@ -776,19 +782,24 @@ UI testの必須条件としない。
 `streamlit.testing.v1.AppTest` を使用し、少なくとも次を検証する。
 
 - Translate、Review、Upgrade、Registerの順にtabと処理履歴が表示される。
-- `Translate` がAppBar左側へ表示され、処理履歴が左sidebarへ折り畳まず縦に並ぶ。
+- `Translate` とSession IDがDeploy buttonと同じAppBarの縦位置へ表示され、処理履歴が
+  左sidebarへ折り畳まず縦に並ぶ。
 - 新規処理では入力領域が展開され、処理開始後または履歴選択後は入力領域が閉じ、
   進捗領域が展開される。
-- 進捗領域がProgressBar、Task名・現在の処理・状態・更新時刻を含む進捗詳細、
-  二列・三列の読取専用TextAreaの順で表示される。
+- 進捗領域がTask数・Task名・Task状態を含むProgressBar、LLM Call進捗内訳と更新時刻だけを
+  含む進捗詳細Collapse、二列・三列の読取専用TextAreaの順で表示される。
 - Upgradeは英文v1、英文v2および日本語v1の3fileが揃うまで開始できない。
 - 必須入力がない状態で処理を開始できない。
 - 有効な入力を確定すると対応Pipelineが1回だけworkerへ登録される。
 - 処理記録の状態とLLM進捗が表示される。
-- 処理中LLM Callの固定actionと対象textが表示され、成功後に直近結果へ切り替わる。
+- LLM CallのTask別内訳が表示され、確定済みCallがある場合は後続Callの処理中も
+  直近の確定結果を表示し続ける。
 - Translate、ReviewおよびUpgradeでTask ProgressBarと現在stageが表示される。
 - TRANSLATE、REVIEWまたはFIXの検証済み処理前・処理後が二つのTextAreaへ横並びで表示される。
-- 実行中Callでは処理後を確定結果として表示せず、「処理中（確定結果なし）」と表示される。
+- 処理前後とUpgradeの英語v1・英語v2に行単位の差分Collapseが表示される。
+- 適用済みRevisionを持つFIX比較では、拒否された候補が件数付きCollapseへ保存順の
+  1候補1list項目で表示され、Revision IDと拒否理由を区別できる。
+- 確定済みCallが一件もない実行中Callに限り、処理後へ「処理中（確定結果なし）」と表示する。
 - Reviewで英語原文と日本語訳の二つのTextAreaが横並びで表示される。
 - Upgradeで英語v1、日本語v1および英語v2の三つのTextAreaが指定順で横並び表示される。
 - ReviewとUpgradeの各列が異なる対応単位のtextを混在させない。
@@ -796,6 +807,8 @@ UI testの必須条件としない。
 - `.streamlit/config.toml` を使用した初回表示の既定テーマがライトである。
 - 失敗・中断済み処理でResume確認が表示される。
 - 検証済み成果物だけにdownload buttonが表示される。
+- 成果物previewとdownload buttonが `進捗と処理内容` Collapseの外側へ表示される。
+- MarkdownとDOCXのdownload buttonが横並びになり、Markdown previewの相対画像が表示される。
 - 設定エラーと予期しない例外で画面全体が崩れない。
 
 ### 🌐 E2E test
@@ -824,7 +837,7 @@ UI testの必須条件としない。
 
 1. 4つの入力画面から対応Pipelineを開始できる。
 2. UI操作中もStreamlit画面が固まらず、処理進捗を更新できる。
-3. Task状態をProgressBarとして表示し、LLM Call進捗、現在の固定action、対象textおよび直近の検証済み結果を既存Artifactから表示できる。
+3. Task状態をProgressBarとして表示し、更新時刻、LLM Call進捗および直近の検証済み結果を既存Artifactから表示できる。
 4. 初回表示の既定テーマがライトである。
 5. 失敗または中断したUI処理を保存済み入力でResumeできる。
 6. CLIで作成した新Schemaの処理を履歴と成果物の表示対象にできる。
@@ -850,3 +863,8 @@ UI testの必須条件としない。
 ## 🔖 参考文献
 
 - [Streamlit `config.toml` API reference](https://docs.streamlit.io/develop/api-reference/configuration/config.toml)
+- [Streamlit `st.fragment` API reference](https://docs.streamlit.io/develop/api-reference/execution-flow/st.fragment)
+- [Streamlit `st.status` API reference](https://docs.streamlit.io/develop/api-reference/status/st.status)
+- [Streamlit `st.progress` API reference](https://docs.streamlit.io/develop/api-reference/status/st.progress)
+- [Streamlit `st.markdown` API reference](https://docs.streamlit.io/develop/api-reference/text/st.markdown)
+- [Streamlit App testing](https://docs.streamlit.io/develop/concepts/app-testing)
