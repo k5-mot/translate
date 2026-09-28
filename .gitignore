@@ -8,7 +8,6 @@ __pycache__/
 .ruff_cache/
 .ty_cache/
 .translate-ui/
-runs/
 playwright-report/
 test-results/
 inputs/

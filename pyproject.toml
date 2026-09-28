@@ -29,15 +29,6 @@ build-backend = "setuptools.build_meta"
 
 [dependency-groups]
 dev = [
-    "langchain>=1.4.0,<2",
-    "langchain-core>=1.4.0,<2",
-    "langchain-openai>=1.6.0",
-    "langchain-qdrant>=1.1.0",
-    "langchain-text-splitters>=1.1.2",
-    "langgraph>=1.2.11,<2",
-    "langgraph-checkpoint-sqlite>=3.1.1",
-    "langsmith>=0.3,<1",
-    "langfuse>=3,<5",
     "playwright>=1.63.0",
     "pytest>=9.1.1",
     "pytest-playwright",
@@ -56,8 +47,7 @@ include = ["translate", "translate.*"]
 [tool.ruff]
 line-length = 88
 indent-width = 4
-# translate_v1は移行対象外の参照実装として保持し、新実装の品質Gateから除外する。
-extend-exclude = [".agents", "translate_v1", "cli_v1.py"]
+extend-exclude = [".agents"]
 
 [tool.ruff.lint]
 preview = true

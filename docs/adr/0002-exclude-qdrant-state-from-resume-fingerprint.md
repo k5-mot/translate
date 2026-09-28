@@ -1,4 +1,0 @@
-# 🧭 Qdrant状態をResume Fingerprintから除外する
-
-Qdrantの内容は運用中に変更される前提とし、Collectionの状態またはrevisionをRunのResume拒否条件に含めない。Snapshot固定は再現性を高める一方で参照文書の通常更新が長時間Runの再開を妨げるため採用しない。完了済みTaskは保存済み検索Artifactを再利用し、未完了Taskは現在のQdrantを検索するため、一つのRunに検索時点が混在し得る。診断可能性を保つため、実際に使用した検索結果、Collection名および検索日時をArtifactへ記録する。
-

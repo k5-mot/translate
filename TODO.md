@@ -1,9 +1,9 @@
-# ✅ TODO
+# 🚧 TODO
 
-OpenSpec変更[`establish-translate-ja-contracts`](openspec/changes/establish-translate-ja-contracts/proposal.md)の実装Taskは完了しました。要求、実装順、検証結果およびISO品質Evidenceは次を正本とします。
+初期実装後の候補は、必要性と測定結果を確認してから個別に仕様化します。
 
-- [実装Task](openspec/changes/establish-translate-ja-contracts/tasks.md)
-- [Q-MAIN Verification Evidence](openspec/changes/establish-translate-ja-contracts/verification.md)
-- [Run移行・運用・廃止手順](docs/operations.md)
-
-未実装の要求が生じた場合は、対象OpenSpec changeの`tasks.md`へ記録します。
+- 実行中の外部要求への協調的な中断通知
+- 保存済みupload fileの一覧、容量表示および明示的な削除
+- ユーザー認証と外部公開向けの運用構成
+- Langfuseによる観測
+- worker数、batch、cacheおよび処理履歴列挙の性能最適化
