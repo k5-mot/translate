@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
     from translate.common.config import Config
 
+TranslationContext = dict[str, tuple[str, str]]
+
 
 class TranslationModel(BaseModel):
     """未知fieldを無視するTRANSLATE応答モデルの設定。"""
@@ -57,6 +59,7 @@ def translate(
     config: Config,
     rules: str,
     glossary: str,
+    previous_context: TranslationContext | None = None,
 ) -> Document:
     """対象Spanをchunk化し、Call成果を再利用しながら日本語訳を設定する。"""
 
@@ -68,11 +71,13 @@ def translate(
     _write_diagnostics(diagnostics_path, diagnostics)
     updated = document.model_copy(deep=True)
     client = LLMClient(config)
+    context = previous_context or {}
     overhead = len((rules + glossary).encode("utf-8")) + 2048
     chunks = _chunks(
         updated,
         config.translate_max_units,
         config.translate_input_tokens - overhead,
+        context,
     )
     responses: list[tuple[str, TranslationResponse]] = []
     for index, spans in enumerate(chunks):
@@ -88,6 +93,7 @@ def translate(
                 depth=0,
                 allow_missing_retry=True,
                 diagnostics=diagnostics,
+                previous_context=context,
             )
         )
     span_index = {
@@ -124,12 +130,22 @@ def translate(
 
 
 def _chunks(
-    document: Document, maximum_units: int, maximum_bytes: int
+    document: Document,
+    maximum_units: int,
+    maximum_bytes: int,
+    previous_context: TranslationContext | None = None,
 ) -> list[list[TextSpan]]:
     """TextUnitを通常は分断せず、件数と保守的byte上限内へchunk化する。"""
 
+    context = previous_context or {}
     groups = [
-        [span for span in unit.spans if span.kind not in {"code", "line_break"}]
+        [
+            span
+            for span in unit.spans
+            if span.kind not in {"code", "line_break"}
+            and span.translated is None
+            and span.revised is None
+        ]
         for _, unit in iter_text_units(document)
     ]
     groups = [group for group in groups if group]
@@ -137,11 +153,12 @@ def _chunks(
     current: list[TextSpan] = []
     current_units = 0
     for group in groups:
-        parts = _split_large_group(group, maximum_bytes)
+        parts = _split_large_group(group, maximum_bytes, context)
         for part in parts:
             projected = [*current, *part]
             if current and (
-                current_units >= maximum_units or _span_bytes(projected) > maximum_bytes
+                current_units >= maximum_units
+                or _span_bytes(projected, context) > maximum_bytes
             ):
                 chunks.append(current)
                 current = []
@@ -154,20 +171,22 @@ def _chunks(
 
 
 def _split_large_group(
-    group: list[TextSpan], maximum_bytes: int
+    group: list[TextSpan],
+    maximum_bytes: int,
+    previous_context: TranslationContext,
 ) -> list[list[TextSpan]]:
     """単一TextUnitだけが上限を超える場合にSpan境界で分割する。"""
 
-    if _span_bytes(group) <= maximum_bytes:
+    if _span_bytes(group, previous_context) <= maximum_bytes:
         return [group]
     parts: list[list[TextSpan]] = []
     current: list[TextSpan] = []
     for span in group:
-        if len(span.source.encode("utf-8")) > maximum_bytes:
+        if _span_bytes([span], previous_context) > maximum_bytes:
             raise ValueError(
                 f"single TextSpan exceeds translation input limit: {span.id}"
             )
-        if current and _span_bytes([*current, span]) > maximum_bytes:
+        if current and _span_bytes([*current, span], previous_context) > maximum_bytes:
             parts.append(current)
             current = []
         current.append(span)
@@ -176,10 +195,10 @@ def _split_large_group(
     return parts
 
 
-def _span_bytes(spans: list[TextSpan]) -> int:
+def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> int:
     """prompt overheadを含む保守的なUTF-8 byte数を計算する。"""
 
-    payload = [{"span_id": span.id, "source": span.source} for span in spans]
+    payload = [_translation_item(span, previous_context) for span in spans]
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 1024
 
 
@@ -195,6 +214,7 @@ def _execute(
     depth: int,
     allow_missing_retry: bool,
     diagnostics: list[str],
+    previous_context: TranslationContext,
 ) -> list[tuple[str, TranslationResponse]]:
     """一つの論理Callを再利用または送信し、必要時だけ子Callへ分割する。"""
 
@@ -207,6 +227,7 @@ def _execute(
             "task": "TRANSLATE",
             "schema": 1,
             "targets": [(span.id, span.source) for span in spans],
+            "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),
             "glossary": canonical_hash(glossary),
             "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
@@ -241,9 +262,17 @@ def _execute(
             response_type=TranslationResponse,
             system=(
                 "Translate each English source into natural Japanese. Preserve IDs and "
-                "return JSON only.\n\n" + rules
+                "return JSON only. When previous_source and previous_translation are "
+                "present, use them only as context for translating the current source."
+                "\n\n" + rules
             ),
-            user=_user_payload(spans, glossary, rag, config.translate_input_tokens),
+            user=_user_payload(
+                spans,
+                glossary,
+                rag,
+                config.translate_input_tokens,
+                previous_context,
+            ),
             contract=(
                 'Return {"translations":[{"span_id":string,"text":string}]}. '
                 f"At most {len(spans)} items."
@@ -264,6 +293,7 @@ def _execute(
             lineage=lineage,
             depth=depth,
             diagnostics=diagnostics,
+            previous_context=previous_context,
         )
     except LLMError as error:
         fail_llm_call(call_directory, artifact, error, attempts=1)
@@ -303,6 +333,7 @@ def _execute(
                 depth=depth,
                 allow_missing_retry=False,
                 diagnostics=diagnostics,
+                previous_context=previous_context,
             )
         )
     elif missing:
@@ -327,6 +358,7 @@ def _split_call(
     lineage: list[str],
     depth: int,
     diagnostics: list[str],
+    previous_context: TranslationContext,
 ) -> list[tuple[str, TranslationResponse]]:
     """出力超過した親Callを半分の子Callへ置換する。"""
 
@@ -355,6 +387,7 @@ def _split_call(
                 depth=depth + 1,
                 allow_missing_retry=True,
                 diagnostics=diagnostics,
+                previous_context=previous_context,
             )
         )
     return results
@@ -399,18 +432,18 @@ def _user_payload(
     glossary: str,
     rag: list[dict[str, object]],
     maximum_bytes: int,
+    previous_context: TranslationContext | None = None,
 ) -> str:
     """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。"""
 
     selected = list(rag)
+    context = previous_context or {}
     while True:
         value = json.dumps(
             {
                 "glossary": glossary,
                 "references": selected,
-                "items": [
-                    {"span_id": span.id, "source": span.source} for span in spans
-                ],
+                "items": [_translation_item(span, context) for span in spans],
             },
             ensure_ascii=False,
         )
@@ -419,6 +452,19 @@ def _user_payload(
         if not selected:
             raise ValueError("translation prompt exceeds input limit")
         selected.pop()
+
+
+def _translation_item(
+    span: TextSpan, previous_context: TranslationContext
+) -> dict[str, str]:
+    """一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。"""
+
+    item = {"span_id": span.id, "source": span.source}
+    previous = previous_context.get(span.id)
+    if previous is not None:
+        item["previous_source"] = previous[0]
+        item["previous_translation"] = previous[1]
+    return item
 
 
 def _previous_attempts(directory: Path) -> int:

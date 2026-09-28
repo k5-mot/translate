@@ -10,10 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict
-from uuid_utils import uuid7
 
 from translate.adapters.docling import DoclingClient
 from translate.adapters.embedding import embed
@@ -33,7 +32,7 @@ from translate.models.artifacts import (
     RegistrationResult,
     RegistrationSourceResult,
 )
-from translate.pipeline import InputError
+from translate.pipeline import InputError, resolve_processing_id
 
 if TYPE_CHECKING:
     from translate.common.config import Config
@@ -78,6 +77,7 @@ def register_paths(
     config: Config,
     *,
     source_id: str | None = None,
+    processing_id: str | None = None,
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> RegistrationOutcome:
@@ -100,12 +100,14 @@ def register_paths(
         and config.docling_server_url is None
     ):
         raise InputError("Docling settings are required for binary references")
-    registration_id = _processing_id(resume_id)
+    registration_id = resolve_processing_id(processing_id, resume_id)
     top_name = source_id or _single_top_name(paths)
     root = outputs_root / top_name / registration_id
     record_path = root / "registration.json"
     fingerprint = _fingerprint(sources, source_id, config)
     with ProcessingLock(root):
+        if processing_id is not None and record_path.is_file():
+            raise InputError("processing ID already exists")
         record = _record(
             record_path,
             registration_id,
@@ -446,17 +448,3 @@ def _single_top_name(paths: list[Path]) -> str:
         raise InputError("source-id is required for multiple paths")
     path = paths[0]
     return path.stem if path.is_file() else path.name
-
-
-def _processing_id(value: str | None) -> str:
-    """新規UUIDv7を生成するか、Resume IDがUUIDv7であることを検査する。"""
-
-    if value is None:
-        return str(uuid7())
-    try:
-        parsed = UUID(value)
-    except ValueError as error:
-        raise InputError("resume ID must be a canonical UUIDv7") from error
-    if parsed.version != 7 or str(parsed) != value.casefold():
-        raise InputError("resume ID must be a canonical UUIDv7")
-    return value

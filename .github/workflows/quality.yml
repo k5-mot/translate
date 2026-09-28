@@ -34,6 +34,9 @@ jobs:
       - name: Sync locked dependencies
         run: uv sync --dev --locked
 
+      - name: Install Playwright Chromium
+        run: uv run playwright install chromium
+
       - name: Ruff lint
         run: uv run ruff check .
 

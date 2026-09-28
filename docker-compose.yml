@@ -1,0 +1,26 @@
+services:
+  translate-ui:
+    build:
+      context: .
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./outputs:/app/outputs
+      - ./.translate-ui:/app/.translate-ui
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        - CMD
+        - uv
+        - run
+        - --no-sync
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=2)"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s

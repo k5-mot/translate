@@ -22,7 +22,7 @@ from translate_v1.tasks.base import BaseTask
 if TYPE_CHECKING:
     from types import ModuleType
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TASK_NAMES = (
     "align",
     "check",

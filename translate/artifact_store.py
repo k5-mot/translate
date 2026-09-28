@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from translate.models.artifacts import (
     TaskState,
     TranslationRecord,
 )
+from translate.models.upgrade import UpgradeRecord
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -40,7 +42,21 @@ class ProcessingInUseError(RuntimeError):
     """同じ処理IDを別processが操作中であることを表す。"""
 
 
-ProcessingRecord = TranslationRecord | ReviewRecord
+ProcessingRecord = TranslationRecord | ReviewRecord | UpgradeRecord
+
+
+def replace_path(source: Path, destination: Path) -> None:
+    """Windowsの一時的なアクセス拒否を再試行してpathを原子的に置換する。"""
+
+    for attempt in range(5):
+        try:
+            source.replace(destination)
+        except PermissionError as error:
+            if getattr(error, "winerror", None) != 5 or attempt == 4:
+                raise
+            time.sleep(0.05 * (2**attempt))
+        else:
+            return
 
 
 def sha256_file(path: Path) -> str:
@@ -80,7 +96,7 @@ def atomic_write_bytes(path: Path, value: bytes) -> None:
             stream.write(value)
             stream.flush()
             os.fsync(stream.fileno())
-        temporary.replace(path)
+        replace_path(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -454,12 +470,12 @@ def _replace_directory(temporary: Path, path: Path) -> Path | None:
         path.with_name(f".{path.name}.{uuid4().hex}.backup") if path.exists() else None
     )
     if backup is not None:
-        path.replace(backup)
+        replace_path(path, backup)
     try:
-        temporary.replace(path)
+        replace_path(temporary, path)
     except BaseException:
         if backup is not None and backup.exists() and not path.exists():
-            backup.replace(path)
+            replace_path(backup, path)
         raise
     return backup
 

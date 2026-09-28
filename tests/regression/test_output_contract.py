@@ -80,7 +80,7 @@ def _assert_active_neutral_parts(entries: dict[str, bytes]) -> None:
 
 def test_bundled_template_has_neutral_header_footer_parts() -> None:
     """同梱資産の全部品と有効な参照先を検証する。"""
-    template = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    template = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     entries = _docx_entries(template)
     _assert_active_neutral_parts(entries)
     for name, data in entries.items():
@@ -100,7 +100,7 @@ def test_real_docx_uses_neutral_active_footer(tmp_path: Path) -> None:
         f"# First\n\n{text}\n\n" + "Paragraph text.\n\n" * 150, encoding="utf-8"
     )
     output = tmp_path / "result.docx"
-    template = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    template = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     pandoc.create_docx(source, output, template)
     entries = _docx_entries(output)
     _assert_active_neutral_parts(entries)
@@ -114,7 +114,7 @@ def test_real_docx_uses_neutral_active_footer(tmp_path: Path) -> None:
 
 def test_real_docx_preserves_custom_header_footer(tmp_path: Path) -> None:
     """独自テンプレートの正当な表示と入力Fileを変更しない。"""
-    bundled = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    bundled = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     entries = _docx_entries(bundled)
     header = f'<w:hdr xmlns:w="{pandoc.W_NS}"><w:p><w:r><w:t>Custom Company</w:t></w:r></w:p></w:hdr>'
     footer = f'<w:ftr xmlns:w="{pandoc.W_NS}"><w:p><w:r><w:t>Private footer</w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>1</w:t></w:r></w:fldSimple></w:p></w:ftr>'
@@ -691,7 +691,7 @@ print(1)
         encoding="utf-8",
     )
     template = (
-        Path(__file__).parents[1] / "translate_v1" / "templates" / "template.docx"
+        Path(__file__).parents[2] / "translate_v1" / "templates" / "template.docx"
     )
     output = tmp_path / "result.docx"
 
@@ -787,7 +787,7 @@ def test_generated_table_and_indexes_survive_real_docx_conversion(
     )
     markdown = tmp_path / "document.md"
     markdown.write_text(render_document(document, picture), encoding="utf-8")
-    template = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    template = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     output = tmp_path / "document.docx"
     pandoc.create_docx(markdown, output, template)
     with zipfile.ZipFile(output) as archive:
@@ -856,7 +856,7 @@ def test_cover_preserves_body_figure_numbers(
             ]
         )
     document = Document(pages=[Page(number=2, blocks=blocks)])
-    template = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    template = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     ns = {
         "w": pandoc.W_NS,
         "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
@@ -926,7 +926,7 @@ def _convert_table_fixture(table: Block, tmp_path: Path) -> tuple[ET.Element, st
     markdown = tmp_path / "table.md"
     markdown.write_text(render_block(table), encoding="utf-8")
     output = tmp_path / "table.docx"
-    template = Path(__file__).parents[1] / "translate_v1/templates/template.docx"
+    template = Path(__file__).parents[2] / "translate_v1/templates/template.docx"
     pandoc.create_docx(markdown, output, template)
     with zipfile.ZipFile(output) as archive:
         return (

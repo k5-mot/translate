@@ -76,8 +76,7 @@ def _elements(document: Document) -> list[_Element]:
     ]
     return [
         _Element(index, role, unit, text)
-        for index, (role, unit, text) in enumerate(values)
-        if text
+        for index, (role, unit, text) in enumerate(item for item in values if item[2])
     ]
 
 

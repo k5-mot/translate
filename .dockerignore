@@ -1,0 +1,16 @@
+.env
+.git/
+.pytest_cache/
+.ruff_cache/
+.translate-ui/
+.ty_cache/
+.venv/
+__pycache__/
+inputs/
+outputs/
+runs/
+playwright-report/
+test-results/
+tests/
+translate_v1/
+*.pyc
