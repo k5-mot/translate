@@ -123,7 +123,7 @@ Translate、ReviewおよびRegisterは `st.tabs`で表示する。処理履歴�
 
 全操作で次を必須とする。
 
-- 入力は `st.form` 内で確定し、widget変更だけで処理を開始しない。
+- 入力widgetの変更だけで処理を開始せず、明示的な開始buttonで確定する。
 - 処理開始buttonは必須入力が揃うまでdisabledとする。
 - 同じbrowser sessionからの連打で同じ処理IDを二重登録しない。
 - 状態は色だけで表さず、必ずtextで併記する。

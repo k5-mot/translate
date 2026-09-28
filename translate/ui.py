@@ -398,12 +398,14 @@ def _select_processing(processing_id: str) -> None:
 def _render_translate_form(registry: WorkerRegistry) -> None:
     """Translateのuploadとbackend選択を表示する。"""
 
-    with st.form("translate-form"):
-        upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
-        backend = st.selectbox("翻訳backend", ["llm", "libretranslate"])
-        submitted = st.form_submit_button(
-            "翻訳を開始", disabled=upload is None, type="primary"
-        )
+    upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
+    backend = st.selectbox("翻訳backend", ["llm", "libretranslate"])
+    submitted = st.button(
+        "翻訳を開始",
+        disabled=upload is None,
+        type="primary",
+        key="start-translate",
+    )
     if submitted and upload is not None:
         try:
             _select_processing(_start_translate(upload, backend, registry))
@@ -414,16 +416,16 @@ def _render_translate_form(registry: WorkerRegistry) -> None:
 def _render_review_form(registry: WorkerRegistry) -> None:
     """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。"""
 
-    with st.form("review-form"):
-        source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
-        translation = st.file_uploader(
-            "日本語訳文PDF", type=["pdf"], key="review-translation"
-        )
-        submitted = st.form_submit_button(
-            "レビューを開始",
-            disabled=source is None or translation is None,
-            type="primary",
-        )
+    source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
+    translation = st.file_uploader(
+        "日本語訳文PDF", type=["pdf"], key="review-translation"
+    )
+    submitted = st.button(
+        "レビューを開始",
+        disabled=source is None or translation is None,
+        type="primary",
+        key="start-review",
+    )
     if submitted and source is not None and translation is not None:
         try:
             _select_processing(_start_review(source, translation, registry))
@@ -434,24 +436,24 @@ def _render_review_form(registry: WorkerRegistry) -> None:
 def _render_register_form(registry: WorkerRegistry) -> None:
     """Registerの複数fileとsource_id入力を表示する。"""
 
-    with st.form("register-form"):
-        uploads = st.file_uploader(
-            "参照資料",
-            type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
-            accept_multiple_files=True,
-            key="register-sources",
-        )
-        source_id = st.text_input("source_id")
-        needs_source_id = len(uploads) > 1 and not source_id.strip()
-        submitted = st.form_submit_button(
-            "登録を開始",
-            disabled=not uploads or needs_source_id or len(uploads) > 100,
-            type="primary",
-        )
-        if needs_source_id:
-            st.caption("複数fileの登録ではsource_idが必要です。")
-        if len(uploads) > 100:
-            st.caption("一度に登録できるfileは100件までです。")
+    uploads = st.file_uploader(
+        "参照資料",
+        type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
+        accept_multiple_files=True,
+        key="register-sources",
+    )
+    source_id = st.text_input("source_id")
+    needs_source_id = len(uploads) > 1 and not source_id.strip()
+    submitted = st.button(
+        "登録を開始",
+        disabled=not uploads or needs_source_id or len(uploads) > 100,
+        type="primary",
+        key="start-register",
+    )
+    if needs_source_id:
+        st.caption("複数fileの登録ではsource_idが必要です。")
+    if len(uploads) > 100:
+        st.caption("一度に登録できるfileは100件までです。")
     if submitted:
         try:
             _select_processing(
@@ -722,45 +724,45 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
     ):
         st.info("directory入力のRegisterはCLIからResumeしてください。")
         return None
-    with st.form(f"resume-upload-{processing_id}"):
-        if isinstance(record, TranslationRecord):
-            upload = st.file_uploader(
-                "Resume用の英語PDF",
-                type=["pdf"],
-                key=f"resume-translate-{processing_id}",
-            )
-            uploads = [upload] if upload is not None else []
-        elif isinstance(record, ReviewRecord):
-            source = st.file_uploader(
-                "Resume用の英語原文PDF",
-                type=["pdf"],
-                key=f"resume-review-source-{processing_id}",
-            )
-            translation = st.file_uploader(
-                "Resume用の日本語訳文PDF",
-                type=["pdf"],
-                key=f"resume-review-translation-{processing_id}",
-            )
-            uploads = (
-                [source, translation]
-                if source is not None and translation is not None
-                else []
-            )
-        else:
-            uploads = st.file_uploader(
-                "Resume用の参照資料",
-                type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
-                accept_multiple_files=True,
-                key=f"resume-register-{processing_id}",
-            )
-        confirmed = st.checkbox(
-            "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-            key=f"resume-upload-confirm-{processing_id}",
+    if isinstance(record, TranslationRecord):
+        upload = st.file_uploader(
+            "Resume用の英語PDF",
+            type=["pdf"],
+            key=f"resume-translate-{processing_id}",
         )
-        submitted = st.form_submit_button(
-            "入力を検証してResume",
-            disabled=not uploads or not confirmed,
+        uploads = [upload] if upload is not None else []
+    elif isinstance(record, ReviewRecord):
+        source = st.file_uploader(
+            "Resume用の英語原文PDF",
+            type=["pdf"],
+            key=f"resume-review-source-{processing_id}",
         )
+        translation = st.file_uploader(
+            "Resume用の日本語訳文PDF",
+            type=["pdf"],
+            key=f"resume-review-translation-{processing_id}",
+        )
+        uploads = (
+            [source, translation]
+            if source is not None and translation is not None
+            else []
+        )
+    else:
+        uploads = st.file_uploader(
+            "Resume用の参照資料",
+            type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
+            accept_multiple_files=True,
+            key=f"resume-register-{processing_id}",
+        )
+    confirmed = st.checkbox(
+        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+        key=f"resume-upload-confirm-{processing_id}",
+    )
+    submitted = st.button(
+        "入力を検証してResume",
+        disabled=not uploads or not confirmed,
+        key=f"resume-upload-submit-{processing_id}",
+    )
     if not submitted:
         return None
     try:
@@ -789,11 +791,15 @@ def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
         if paths is not None and _resume_entry(entry, paths, registry):
             st.rerun()
         return
-    with st.form(f"resume-{processing_id}"):
-        confirmed = st.checkbox(
-            "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する"
-        )
-        submitted = st.form_submit_button("Resume", disabled=not confirmed)
+    confirmed = st.checkbox(
+        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+        key=f"resume-confirm-{processing_id}",
+    )
+    submitted = st.button(
+        "Resume",
+        disabled=not confirmed,
+        key=f"resume-submit-{processing_id}",
+    )
     if submitted and confirmed and _resume_entry(entry, paths, registry):
         st.rerun()
 
