@@ -309,10 +309,8 @@ def test_streamlit_v2_renders_four_operations(
     assert buttons["レビューを開始"].disabled
     assert buttons["登録を開始"].disabled
     assert buttons["Upgradeを開始"].disabled
-    history = app.sidebar.get("status")
-    assert len(history) == 1
-    assert history[0].label == "処理履歴"
-    assert not history[0].proto.expanded
+    assert not app.sidebar.get("status")
+    assert app.sidebar.subheader[0].value == "処理履歴"
     settings = next(
         expander
         for expander in app.get("status")

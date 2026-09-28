@@ -148,6 +148,18 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
     )
     assert progress.proto.expanded
     assert app.get("progress")
+    assert app.sidebar.subheader[0].value == "処理履歴"
+    assert any(
+        button.key == f"history-{processing_id}" for button in app.sidebar.button
+    )
+    assert any(subheader.value == "進捗詳細" for subheader in app.subheader)
+    details = {markdown.value for markdown in app.markdown}
+    assert {
+        "現在のTask: REVIEW",
+        "現在の処理: 翻訳品質と修正候補を確認中",
+        "状態: processing",
+        f"更新時刻: {now.isoformat()}",
+    } <= details
     text_areas = {area.label: area for area in app.text_area}
     assert text_areas["翻訳前 (英語)"].value == "[span-1]\nEnglish"
     assert text_areas["翻訳後 (日本語)"].value == "[span-1]\n日本語"

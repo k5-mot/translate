@@ -667,16 +667,13 @@ def _render_upgrade_form(registry: WorkerRegistry) -> None:
 
 
 def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
-    """左sidebarの折り畳み一覧から処理を選択し、選択IDを返す。"""
+    """左sidebarの縦並び一覧から処理を選択し、選択IDを返す。"""
 
     valid_entries = [entry for entry in entries if entry.processing_id is not None]
     invalid_entries = [entry for entry in entries if entry.error is not None]
     selected_id = _selected_processing_id()
-    with st.sidebar.expander(
-        "処理履歴",
-        expanded=False,
-        icon=":material/history:",
-    ):
+    with st.sidebar:
+        st.subheader("処理履歴", icon=":material/history:")
         if not valid_entries and not invalid_entries:
             st.caption("処理履歴はありません。")
         for entry in valid_entries:
@@ -697,15 +694,24 @@ def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
     """Artifact公開前の待機・準備状態またはworker失敗を表示する。"""
 
     future = registry.future(processing_id)
-    st.code(processing_id)
     st.progress(0.0, text="準備中")
     if future is None:
-        st.info("処理記録が見つかりません。")
+        current = "処理記録の公開待ち"
     elif not future.running() and not future.done():
-        st.info("待機中")
+        current = "workerの開始待ち"
     elif not future.done():
-        st.info("準備中")
+        current = "Pipelineを準備中"
     else:
+        current = "workerの結果を確認中"
+    with st.container(border=True):
+        st.subheader("進捗詳細")
+        st.write("現在のTask: -")
+        st.write(f"現在の処理: {current}")
+        st.write("状態: preparing")
+        st.write("更新時刻: -")
+    if future is None:
+        st.info("処理記録が見つかりません。")
+    elif future.done():
         _render_future_error(future)
 
 
@@ -1298,8 +1304,14 @@ def _render_upgrade_context(root: Path, processing_id: str) -> None:
     )
 
 
-def _render_current_activity(root: Path, task: TaskName) -> None:
-    """現在の固定action、LLM対象textおよび直近の検証済み結果を表示する。"""
+def _render_progress_details(
+    root: Path,
+    task: TaskName | None,
+    task_label: str,
+    status: str,
+    updated_at: datetime,
+) -> None:
+    """Task、現在処理、状態、更新時刻とLLM対象を順に表示する。"""
 
     actions = {
         TaskName.SPLIT: "PDFをpage範囲へ分割中",
@@ -1324,7 +1336,11 @@ def _render_current_activity(root: Path, task: TaskName) -> None:
         TaskName.DOCX: "DOCXを公開中",
         TaskName.REPORT: "Review reportを生成中",
     }
-    st.write(f"現在の処理: {actions.get(task, task.value)}")
+    current = status if task is None else actions.get(task, task.value)
+    st.write(f"現在のTask: {task_label}")
+    st.write(f"現在の処理: {current}")
+    st.write(f"状態: {status}")
+    st.write(f"更新時刻: {updated_at.isoformat()}")
     if task not in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
         return
     calls = _llm_calls(root, task)
@@ -1399,50 +1415,60 @@ def _render_task_progress(
     elif active != "-":
         detail = f"{detail} — {active}"
     st.progress(completed / total if total else 0.0, text=detail)
-    st.write(f"現在のTask: {active}")
-    if active_state is not None:
-        _render_current_activity(root, active_state.task)
-    else:
-        st.write(f"現在の処理: {record.status}")
-    for progress in record.llm_progress:
-        st.write(
-            f"{progress.task}: {progress.completed_calls} / "
-            f"{progress.planned_calls} calls "
-            f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
-        )
-
-    if isinstance(record, UpgradeRecord):
-        plan_path = entry.record_path.parent / "upgrade/diff/plan.json"
-        report_path = entry.record_path.parent / "upgrade/reuse/report.json"
-        try:
-            if plan_path.is_file():
-                plan = load_model(plan_path, UpgradePlan)
-                counts = {
-                    kind: sum(item.kind == kind for item in plan.changes)
-                    for kind in ("unchanged", "moved", "modified", "added", "deleted")
-                }
-                st.write(
-                    "Upgrade差分: "
-                    + ", ".join(f"{kind} {count}" for kind, count in counts.items())
-                )
-            if report_path.is_file():
-                report = load_model(report_path, ReuseReport)
-                st.write(
-                    f"既存訳再利用 {len(report.reused_unit_ids)}, "
-                    f"翻訳対象 {len(report.translation_target_ids)}"
-                )
-        except ArtifactError:
-            st.caption("Upgrade進捗Artifactを更新中です。")
     active_task = active_state.task if active_state is not None else None
-    if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
-        observed, live_completed, failed = _live_call_counts(
+    with st.container(border=True):
+        st.subheader("進捗詳細")
+        _render_progress_details(
             root,
             active_task,
+            active,
+            record.status,
+            record.updated_at,
         )
-        st.write(
-            f"{active_task.value} 実行中: {live_completed} / "
-            f"観測済み {observed} calls (失敗 {failed})"
-        )
+        for progress in record.llm_progress:
+            st.write(
+                f"{progress.task}: {progress.completed_calls} / "
+                f"{progress.planned_calls} calls "
+                f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
+            )
+
+        if isinstance(record, UpgradeRecord):
+            plan_path = entry.record_path.parent / "upgrade/diff/plan.json"
+            report_path = entry.record_path.parent / "upgrade/reuse/report.json"
+            try:
+                if plan_path.is_file():
+                    plan = load_model(plan_path, UpgradePlan)
+                    counts = {
+                        kind: sum(item.kind == kind for item in plan.changes)
+                        for kind in (
+                            "unchanged",
+                            "moved",
+                            "modified",
+                            "added",
+                            "deleted",
+                        )
+                    }
+                    st.write(
+                        "Upgrade差分: "
+                        + ", ".join(f"{kind} {count}" for kind, count in counts.items())
+                    )
+                if report_path.is_file():
+                    report = load_model(report_path, ReuseReport)
+                    st.write(
+                        f"既存訳再利用 {len(report.reused_unit_ids)}, "
+                        f"翻訳対象 {len(report.translation_target_ids)}"
+                    )
+            except ArtifactError:
+                st.caption("Upgrade進捗Artifactを更新中です。")
+        if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
+            observed, live_completed, failed = _live_call_counts(
+                root,
+                active_task,
+            )
+            st.write(
+                f"{active_task.value} 実行中: {live_completed} / "
+                f"観測済み {observed} calls (失敗 {failed})"
+            )
     _render_latest_comparison(root)
     processing_id = entry.processing_id or entry.kind
     if isinstance(record, ReviewRecord):
@@ -1795,14 +1821,25 @@ def _render_record(entry: HistoryEntry, registry: WorkerRegistry) -> None:
     if record is None:
         st.error(entry.error or "処理記録を読み込めません。")
         return
-    processing_id = entry.processing_id or "-"
-    st.code(processing_id)
-    st.write(f"状態: {record.status}")
-    st.write(f"更新時刻: {record.updated_at.isoformat()}")
     if isinstance(record, (TranslationRecord, ReviewRecord, UpgradeRecord)):
         _render_task_progress(entry, record)
-    elif record.result is not None:
-        st.write(f"Register進捗: {len(record.result.sources)} / {len(record.inputs)}")
+    else:
+        completed = len(record.result.sources) if record.result is not None else 0
+        total = len(record.inputs)
+        st.progress(
+            completed / total if total else 0.0,
+            text=f"{completed} / {total} file",
+        )
+        with st.container(border=True):
+            st.subheader("進捗詳細")
+            st.write("現在のTask: REGISTER")
+            current = (
+                "参照資料を登録中" if record.status == "processing" else record.status
+            )
+            st.write(f"現在の処理: {current}")
+            st.write(f"状態: {record.status}")
+            st.write(f"更新時刻: {record.updated_at.isoformat()}")
+    processing_id = entry.processing_id or "-"
     if record.error is not None:
         st.error(
             f"{record.error.message} "
