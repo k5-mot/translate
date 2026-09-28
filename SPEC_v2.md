@@ -179,6 +179,9 @@ Translate、Review、RegisterおよびUpgradeは `st.tabs`で表示する。処�
 
 Review画面はFIXを実行せず、REPORTに含まれる指摘と修正候補を表示する。
 
+- ALIGN完了後は、同じ `ReviewTarget` の英語原文と現在の日本語訳を、二つの読取専用
+  TextAreaへ横並びで表示する。
+
 ### 📚 Register
 
 | 項目 | 仕様 |
@@ -209,6 +212,8 @@ Review画面はFIXを実行せず、REPORTに含まれる指摘と修正候補�
 - 日本語v1は既存訳の再利用と、変更箇所を翻訳する際の文脈にだけ使用する。
 - 日本語v1 PDFの組版をDOCXへ複製せず、既存publisherで新しいDOCXを生成する。
 - Resume時のbackendは `upgrade.json` に保存された値に固定し、変更を許可しない。
+- DIFF完了後は、同じ `VersionChange` に対応する英語v1、日本語v1および英語v2を、
+  三つの読取専用TextAreaへ横並びで表示する。
 
 ## 📥 Upload入力の保存
 
@@ -472,6 +477,47 @@ CLIと外部serviceの同時実行能力まで制限するものではない。
 - 検証できないJSONを正常状態として表示してはならない。連続して検証に失敗する場合は「処理記録を読み込めない」と表示する。
 - 自動更新は `succeeded`、`failed` または `cancelled` の終端状態で停止する。
 
+### 📈 Task ProgressBar
+
+Task列全体をProgressBarとして表現することは実装可能とする。ただし、表示するのは
+経過時間や処理量の推定値ではなく、既存Artifactから確認できた「完了stage数 / 全stage数」
+とする。Streamlit標準の `st.progress` を使用し、独自CSS、追加Dependencyおよび新しい
+進捗保存Modelは導入しない。
+
+処理種類ごとの表示stageは次の固定順とする。`TRANSLATE` と `TRANSLATE-LITE` は保存済み
+backendに対応する一方だけを表示する。
+
+| 処理種類 | ProgressBarのstage |
+|---|---|
+| Translate | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → STRUCTURE → TRANSLATEまたはTRANSLATE-LITE → CHECK（初回）→ REVIEW → FIX → CHECK（最終）→ LINT → COVER → MARKDOWN → DOCX |
+| Review | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → ALIGN → CHECK → REVIEW → REPORT |
+| Upgrade | SPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD → STRUCTURE → ALIGN → DIFF → REUSE → TRANSLATEまたはTRANSLATE-LITE → CHECK（初回）→ REVIEW → FIX → CHECK（最終）→ LINT → COVER → MARKDOWN → DOCX |
+
+- `succeeded` または `skipped` のstageを完了として数える。現在の `processing` stageは
+  ProgressBarのtextへ `現在: DOCLING` のように表示するが、完了数へは含めない。
+- 失敗または中断時は最後に確認できた値を保持し、Barと併せて `failed` または
+  `cancelled` をtext表示する。色だけで状態を表現しない。
+- CHECKの初回と最終は同じ `TaskName.CHECK` を使用するため、`findings.json` と
+  `final-findings.json` の検証済みArtifactをそれぞれのstageの正本とする。
+- 条件分岐で実行不要となったTRANSLATE、REVIEWまたはFIXは、既存どおり `skipped` の
+  `TaskState`を保存して一つの完了stageとして扱う。
+- 処理開始直後で最上位記録がない場合はProgressBarを0として「準備中」を表示する。
+  正常終了時だけ100%とする。
+- 各stageの重みは一律1とする。DOCLINGの通信待ちとFIXのような短い処理で所要時間が
+  異なっても、時間比率らしく見せるための推定weightは導入しない。
+- DOCLINGはTask directoryを完了時に原子的に公開するため、既存Artifactだけでは
+  `3 / 10 parts`のようなTask内部進捗を正確に表示できない。初期実装はDOCLING stageを
+  実行中として表示するだけとし、part単位の追加進捗Artifactは設けない。
+- TRANSLATEなどのLLM Task内部は、既存のCall件数表示をProgressBarの下へ併記する。
+  `planned_calls`は分割によって増えるため、初期実装ではLLM Call比率を別の百分率Barに
+  変換しない。
+- Registerは `TaskState`を持たないためTask ProgressBarの対象外とし、既存の
+  `RegistrationResult.sources`による完了件数表示を維持する。
+
+この方式ならPipelineやArtifact Schemaを変更せず実装できる。一方、Task内の厳密な処理量、
+残り時間およびDOCLINGのpart単位進捗を表示するには、Pipeline側が途中状態を追加保存する
+別仕様が必要になるため、本変更には含めない。
+
 ### 🔬 リアルタイム処理内容
 
 進捗領域には集約値に加えて「現在の処理内容」を常時表示する。この表示も既存の
@@ -510,6 +556,101 @@ Task名と準備中であることだけを表示する。
   処理全体を失敗扱いにしない。状態とCall件数の表示は継続する。
 - preview生成のためにTask directory全体を再帰走査しない。現在のCall、直近の成功Callおよび
   対応するTask入力Artifactだけを読み込む。
+
+### ↔️ 処理前・処理後の比較表示
+
+TRANSLATE、REVIEWおよびFIXのtext変化は、Streamlit標準の `st.columns(2)` と読取専用の
+`st.text_area`を使用し、左右に並べて表示できる。追加の差分Library、HTMLおよび独自Editorは
+導入しない。
+
+| Task | 左側 | 右側 |
+|---|---|---|
+| TRANSLATE | `翻訳前（英語）`: 成功Callの `target_ids` に対応するsource text | `翻訳後（日本語）`: 同じ成功Callの検証済み `TranslationResponse` |
+| REVIEW | `修正前`: 対象の現在の日本語訳 | `修正候補`: 同じ成功Callの検証済みRevision edit。候補がない場合は「修正候補なし」 |
+| FIX | `修正前`: FIX入力Documentの日本語訳 | `修正後`: `outcomes.json`で `applied`となった対象のFIX出力Document |
+
+- 二つのTextAreaは必ず同じCallまたは同じFIX対象IDから組み立てる。現在処理中の対象と
+  直前Callの結果を左右へ混在させてはならない。
+- LLM応答はstreamingされないため、実行中Callの「処理後」は確定前に表示できない。
+  実行中は現在の対象textと「処理中（確定結果なし）」を表示し、Callが
+  `status="succeeded"`となりresponseのSchemaとSHA-256を検証できた次のpollで左右を更新する。
+- 別のCallが開始した後も、左右のTextAreaは直近に確定した同一Callの処理前・処理後を表示し、
+  現在実行中のCallはその上の固定actionと対象textで区別する。
+- `partial`、`processing`または `failed` のresponse、生のLLM応答および未適用Revisionを
+  「修正後」として表示しない。REVIEWの右側は明示的に「修正候補」と表示する。
+- FIXでは `RevisionOutcome.status="applied"` の対象だけを表示し、`rejected` は理由codeを
+  captionへ表示する。UIでRevisionを再適用または再計算しない。
+- STRUCTUREはtext修正ではないため二つのTextAreaの対象外とし、既存のBlock textと
+  構造patch要約を維持する。決定的Taskにも処理前後textが存在しない場合は表示しない。
+- 左右それぞれ先頭3件、1件240文字までとし、同じ順序、対象IDおよび省略表示を使用する。
+  複数件は一つの読取専用TextArea内で対象ID付きの区切りを入れる。
+- TextAreaには可視labelを付け、`disabled=True`として編集可能に見せない。文書由来textは
+  MarkdownまたはHTMLとして評価しない。
+- 対応する入力Document、Call Artifact、response、FIX outcomeまたは出力Documentのいずれかを
+  検証できない場合は比較表示だけを省略し、Task状態とProgressBarの表示は継続する。
+
+この比較表示も既存Artifactだけで実装できる。ただし、生成中tokenを右側へ逐次表示すること、
+確定前の予測結果を表示すること、および全文の文字単位diff表示は正確性と実装負荷のため
+対象外とする。
+
+### 📑 Review・Upgradeの原文比較表示
+
+処理前・処理後の比較とは別に、ReviewとUpgradeでは翻訳の根拠となる文書を同じ対応単位で
+横並び表示する。この領域は共通の処理履歴で選択した処理が同じ種類の場合だけ、Reviewまたは
+Upgrade tabの入力欄の下に配置する。処理履歴と処理IDの選択状態は既存どおり共通とする。
+
+#### 🔎 Reviewの二列表示
+
+Reviewは `st.columns(2)` 内へ二つの読取専用 `st.text_area`を配置する。
+
+| 左側 | 右側 |
+|---|---|
+| `英語原文` | `日本語訳` |
+
+- 正本は `review/align/alignment.json` の検証済み `AlignmentResult.targets` とする。
+- 左右は必ず同じ `ReviewTarget.id` の `source` と `translation`を表示する。
+- REVIEW Call実行中は、Call Artifactの `target_ids` に対応するReviewTargetを表示する。
+  Callがまだない場合または処理完了後は、直近の成功Callが対象としたReviewTargetを表示する。
+- ALIGN完了前は対応関係を推測せず、「ALIGN完了後に表示」とする。UIからALIGNを再実行しない。
+- LLMが生成したFindingとRevisionはこの二列へ混ぜず、既存の直近結果および
+  「修正前 / 修正候補」の比較領域へ表示する。
+
+#### 🆙 Upgradeの三列表示
+
+Upgradeは `st.columns(3)` 内へ三つの読取専用 `st.text_area`を次の順序で配置する。
+
+| 左側 | 中央 | 右側 |
+|---|---|---|
+| `英語v1` | `日本語v1` | `英語v2` |
+
+- 正本は `upgrade/diff/plan.json` の検証済み `UpgradePlan.changes` と、
+  `preprocess/{source-v1,source-v2,translation-v1}/load/document.json` とする。
+- 三列は必ず同じ `VersionChange.id` の `source_v1_ids`、`translation_v1_ids` および
+  `source_v2_ids`から解決する。別のVersionChangeのtextを同じ行へ混在させない。
+- `unchanged`、`moved`および`modified`は対応する三つのtextを表示する。
+- `added` は英語v1と日本語v1を「該当なし」、`deleted` は英語v2を「該当なし」とする。
+- 日本語v1を安全に1対1対応できなかった場合は、中央を「対応訳なし」とする。UIで類似textを
+  探索したり、独自に対応付けたりしない。
+- TRANSLATEまたはREVIEW Call実行中は、CallのSpan IDまたはTextUnit IDを英語v2の
+  TextUnitへ解決し、対応するVersionChangeを表示する。
+- DIFF完了前は三列の対応を推測せず、「DIFF完了後に表示」とする。REUSEの実行中など
+  item単位の現在位置をArtifactから判定できない場合は、先頭3件を「計画preview」として
+  表示し、現在処理中であるとは表記しない。
+- 生成された日本語v2はこの三列へ混ぜず、TRANSLATEまたはFIXの検証済み結果として、
+  既存の処理前・処理後比較領域へ表示する。
+
+#### 🧭 共通表示規則
+
+- Reviewは左右、Upgradeは三列で同じ件数と順序を維持する。各列は先頭3件、1件240文字まで
+  とし、対象ID付きの同じ区切り位置を使用する。
+- TextAreaは可視labelと `disabled=True`を設定し、文書由来textをMarkdownまたはHTMLとして
+  評価しない。
+- 空文字列とArtifact読込失敗を区別する。検証済みの空textは「空」、対象自体が存在しない
+  場合は「該当なし」、Artifactを検証できない場合は比較領域全体を一時的に非表示とする。
+- 比較領域の生成では既存Artifactだけを読み、追加のLLM Call、Embedding、文字列類似度、
+  Pipeline Taskおよび保存用Artifactを追加しない。
+- 三列表示は画面幅を必要とするが、初期実装では別のresponsive layoutや独自CSSを追加しない。
+  Streamlit標準のcolumn表示に従う。
 
 ## 🕒 処理履歴
 
@@ -601,6 +742,14 @@ UI testの必須条件としない。
 - 同じ処理IDのworker二重登録防止
 - LLM Callの `target_ids` からTask別previewを解決できること
 - previewが3件および各240文字で省略され、残件数を表示できること
+- 処理種類ごとの固定stage列からProgressBarの分母と完了数を決定できること
+- CHECK（初回）とCHECK（最終）を対応する検証済みArtifactから区別できること
+- Task失敗時にProgressBarが100%にならず、失敗状態をtextでも表示できること
+- 左右の処理前・処理後が同じCallまたはFIX対象IDから解決されること
+- 未完了またはhash不一致のresponseが右側TextAreaへ表示されないこと
+- Reviewの英語原文と日本語訳が同じ `ReviewTarget.id` から解決されること
+- Upgradeの英語v1、日本語v1および英語v2が同じ `VersionChange.id` から解決されること
+- Upgradeのadded、deletedおよび対応訳なしが規定のplaceholderで同じ列数を維持すること
 - 未知の対象IDまたは不正な途中Artifactで進捗領域全体を失敗させないこと
 - DIFFが一意な同文の移動、1対1の変更、追加および削除を決定的に分類すること
 - 重複textまたは曖昧な対応を推測せず、削除と追加として扱うこと
@@ -618,6 +767,12 @@ UI testの必須条件としない。
 - 有効な入力を確定すると対応Pipelineが1回だけworkerへ登録される。
 - 処理記録の状態とLLM進捗が表示される。
 - 処理中LLM Callの固定actionと対象textが表示され、成功後に直近結果へ切り替わる。
+- Translate、ReviewおよびUpgradeでTask ProgressBarと現在stageが表示される。
+- TRANSLATE、REVIEWまたはFIXの検証済み処理前・処理後が二つのTextAreaへ横並びで表示される。
+- 実行中Callでは処理後を確定結果として表示せず、「処理中（確定結果なし）」と表示される。
+- Reviewで英語原文と日本語訳の二つのTextAreaが横並びで表示される。
+- Upgradeで英語v1、日本語v1および英語v2の三つのTextAreaが指定順で横並び表示される。
+- ReviewとUpgradeの各列が異なる対応単位のtextを混在させない。
 - system prompt、生のrequest bodyおよび内部推論が表示されない。
 - `.streamlit/config.toml` を使用した初回表示の既定テーマがライトである。
 - 失敗・中断済み処理でResume確認が表示される。
@@ -639,7 +794,7 @@ UI testの必須条件としない。
 
 1. 4つの入力画面から対応Pipelineを開始できる。
 2. UI操作中もStreamlit画面が固まらず、処理進捗を更新できる。
-3. Task状態、LLM Call進捗、現在の固定action、対象textおよび直近の検証済み結果を既存Artifactから表示できる。
+3. Task状態をProgressBarとして表示し、LLM Call進捗、現在の固定action、対象textおよび直近の検証済み結果を既存Artifactから表示できる。
 4. 初回表示の既定テーマがライトである。
 5. 失敗または中断したUI処理を保存済み入力でResumeできる。
 6. CLIで作成した新Schemaの処理を履歴と成果物の表示対象にできる。
@@ -649,6 +804,8 @@ UI testの必須条件としない。
 10. 成功し、hash検証に通過したMarkdown、DOCX、Review reportまたはRegister記録をdownloadできる。
 11. 基本DependencyだけのCLI利用にStreamlitのimportを必要としない。
 12. 既存test、Ruff、formatterおよびtyの品質確認に通過する。
+13. TRANSLATE、REVIEWおよびFIXの処理前・処理後を、同一対象の検証済みArtifactから二つの読取専用TextAreaへ表示できる。
+14. Reviewは同じReviewTargetの英語原文と日本語訳を二列で、Upgradeは同じVersionChangeの英語v1、日本語v1および英語v2を三列で表示できる。
 
 ## 🚧 将来候補
 
