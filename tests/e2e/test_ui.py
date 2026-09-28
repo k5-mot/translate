@@ -131,18 +131,20 @@ def _assert_translation_downloads_outside_progress(page: Page) -> None:
             const buttons = [...document.querySelectorAll('button')]
                 .filter(button => labels.includes(button.textContent.trim()));
             if (buttons.length !== labels.length) return false;
-            const centers = buttons.map(button => {
-                const box = button.getBoundingClientRect();
-                return box.y + box.height / 2;
-            });
-            return Math.max(...centers) - Math.min(...centers) <= 2;
+            const [left, right] = buttons.map(button => button.getBoundingClientRect());
+            return left.x < right.x
+                && Math.max(left.top, right.top) < Math.min(left.bottom, right.bottom);
         }""",
         arg=["Markdownをdownload", "DOCXをdownload"],
     )
     boxes = [button.bounding_box() for button in buttons]
     assert all(box is not None for box in boxes)
-    centers = [box["y"] + box["height"] / 2 for box in boxes if box is not None]
-    assert max(centers) - min(centers) <= 2
+    left, right = (box for box in boxes if box is not None)
+    assert left["x"] < right["x"]
+    assert max(left["y"], right["y"]) < min(
+        left["y"] + left["height"],
+        right["y"] + right["height"],
+    )
     preview = page.locator('[data-testid="stExpander"]').filter(
         has_text="Markdown preview"
     )

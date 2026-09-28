@@ -1419,15 +1419,17 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
     if markdown is not None:
         with st.expander("Markdown preview"):
             _render_markdown_preview(markdown[0], markdown[1].decode("utf-8"))
-    with st.container(horizontal=True, wrap=False):
-        if markdown is not None:
+    download_columns = st.columns(2, vertical_alignment="center")
+    if markdown is not None:
+        with download_columns[0]:
             st.download_button(
                 "Markdownをdownload",
                 markdown[1],
                 file_name=markdown[0].name,
                 mime="text/markdown",
             )
-        if docx is not None:
+    if docx is not None:
+        with download_columns[1]:
             st.download_button(
                 "DOCXをdownload",
                 docx[1],
