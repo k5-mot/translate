@@ -134,7 +134,7 @@ uv run streamlit run main.py --server.address localhost
 | Upgrade | 英文v1、英文v2および日本語v1から日本語v2を生成 |
 | 処理履歴 | 状態、進捗、Resumeおよび成果物の表示 |
 
-Translate、Review、RegisterおよびUpgradeは `st.tabs`で表示する。処理履歴は各tabから共通で
+Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に表示する。処理履歴は各tabから共通で
 参照できる領域とし、処理IDをURL query parameterに保持する。browserを更新しても、
 同じ処理IDの表示を復元する。
 
@@ -761,7 +761,7 @@ UI testの必須条件としない。
 
 `streamlit.testing.v1.AppTest` を使用し、少なくとも次を検証する。
 
-- Translate、Review、Register、Upgradeと処理履歴が表示される。
+- Translate、Review、Upgrade、Registerの順にtabと処理履歴が表示される。
 - Upgradeは英文v1、英文v2および日本語v1の3fileが揃うまで開始できない。
 - 必須入力がない状態で処理を開始できない。
 - 有効な入力を確定すると対応Pipelineが1回だけworkerへ登録される。
@@ -778,6 +778,17 @@ UI testの必須条件としない。
 - 失敗・中断済み処理でResume確認が表示される。
 - 検証済み成果物だけにdownload buttonが表示される。
 - 設定エラーと予期しない例外で画面全体が崩れない。
+
+### 🌐 E2E test
+
+- Unit testは `tests/unit/`、公開境界のE2E testは `tests/e2e/`、既存機能と統合契約の
+  Regression testは `tests/regression/` へ配置する。
+- CLIは実processでTyper applicationを起動し、Translate、Review、UpgradeおよびRegisterの
+  subcommandについて、引数解析、終了codeおよび出力を検証する。
+- UIは実Streamlit serverを起動し、PlaywrightのChromiumからTranslate、Review、Upgradeおよび
+  Registerのfile upload、開始buttonおよび成功表示を検証する。
+- 外部LLM、Docling、LibreTranslateおよびQdrantはE2E testの対象境界より外側とし、test driverで
+  置き換える。CLIとUIの公開processおよび操作経路は置き換えない。
 
 ### 🔗 Integration test
 
