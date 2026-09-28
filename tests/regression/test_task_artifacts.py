@@ -9,7 +9,7 @@ import pytest
 
 from translate_v1.tasks import position
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize(

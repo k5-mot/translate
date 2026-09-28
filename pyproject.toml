@@ -236,4 +236,5 @@ markers = [
     "integration: 複数componentを接続する統合test",
     "cli: CLIの公開操作を検証するtest",
     "browser: Streamlitをbrowser経由で検証するtest",
+    "e2e: 公開CLIまたはbrowserから実processを通すE2E test",
 ]

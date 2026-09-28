@@ -224,7 +224,7 @@ def test_realtime_preview_is_bounded_and_requires_verified_response(
 def test_streamlit_default_theme_is_light() -> None:
     """初回表示の既定テーマをrepository設定でライトに固定する。"""
 
-    config = Path(__file__).parents[1] / ".streamlit/config.toml"
+    config = Path(__file__).parents[2] / ".streamlit/config.toml"
     assert 'base = "light"' in config.read_text(encoding="utf-8")
 
 
@@ -295,14 +295,14 @@ def test_streamlit_v2_renders_four_operations(
     """Streamlit画面が4操作と必須入力前のdisabled buttonを表示する。"""
 
     monkeypatch.chdir(tmp_path)
-    app = AppTest.from_file(str(Path(__file__).parents[1] / "main.py")).run(timeout=10)
+    app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py")).run(timeout=10)
 
     assert not app.exception
     assert [tab.label for tab in app.tabs] == [
         "Translate",
         "Review",
-        "Register",
         "Upgrade",
+        "Register",
     ]
     buttons = {button.label: button for button in app.button}
     assert buttons["翻訳を開始"].disabled
