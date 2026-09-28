@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
+from translate.artifact_store import atomic_write_bytes
 from translate.ui import _stage_uploads
 
 if TYPE_CHECKING:
@@ -22,6 +23,10 @@ class _Upload:
         return b"source"
 
 
+def _skip_sleep(_seconds: float) -> None:
+    """再試行の待機だけを省略してtestを高速に保つ。"""
+
+
 def test_stage_uploads_retries_transient_windows_access_denied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -29,9 +34,6 @@ def test_stage_uploads_retries_transient_windows_access_denied(
 
     original = Path.replace
     attempts = 0
-
-    def do_not_sleep(_seconds: float) -> None:
-        """Retry待機を省略してtestを高速に保つ。"""
 
     def replace(path: Path, target: Path) -> Path:
         """最初のdirectory renameだけWindowsのアクセス拒否を再現する。"""
@@ -50,7 +52,7 @@ def test_stage_uploads_retries_transient_windows_access_denied(
         return original(path, target)
 
     monkeypatch.setattr(Path, "replace", replace)
-    monkeypatch.setattr("translate.ui.time.sleep", do_not_sleep)
+    monkeypatch.setattr("translate.artifact_store.time.sleep", _skip_sleep)
     upload = cast("UploadedFile", _Upload())
 
     staged = _stage_uploads(
@@ -61,3 +63,37 @@ def test_stage_uploads_retries_transient_windows_access_denied(
 
     assert attempts == 2
     assert staged[0].read_bytes() == b"source"
+
+
+def test_atomic_write_retries_transient_windows_access_denied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """処理記録のfile確定時にも一時的なWinError 5を再試行する。"""
+
+    target = tmp_path / "translation.json"
+    target.write_bytes(b"old")
+    original = Path.replace
+    attempts = 0
+
+    def replace(path: Path, destination: Path) -> Path:
+        """最初のfile replaceだけWindowsのアクセス拒否を再現する。"""
+
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(
+                13,
+                "Access is denied",
+                str(path),
+                5,
+                str(destination),
+            )
+        return original(path, destination)
+
+    monkeypatch.setattr(Path, "replace", replace)
+    monkeypatch.setattr("translate.artifact_store.time.sleep", _skip_sleep)
+
+    atomic_write_bytes(target, b"new")
+
+    assert attempts == 2
+    assert target.read_bytes() == b"new"

@@ -86,6 +86,9 @@ def _upload(page: Page, indexes: list[int], paths: list[Path]) -> None:
     uploaders = page.locator('[data-testid="stFileUploader"] input[type="file"]')
     for index, path in zip(indexes, paths, strict=True):
         uploaders.nth(index).set_input_files(path)
+        page.locator('[data-testid="stFileUploader"]').nth(index).get_by_text(
+            path.name, exact=True
+        ).wait_for(timeout=15_000)
 
 
 def _wait_for_success(page: Page) -> None:

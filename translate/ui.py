@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import shutil
-import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import partial
@@ -22,6 +21,7 @@ from translate.artifact_store import (
     ProcessingInUseError,
     atomic_write_bytes,
     load_model,
+    replace_path,
     sha256_file,
 )
 from translate.common.config import ConfigError, load_config
@@ -334,18 +334,7 @@ def _stage_uploads(
             target = temporary / relative_path
             atomic_write_bytes(target, uploaded.getvalue())
             staged.append(target)
-        for attempt in range(5):
-            try:
-                temporary.replace(destination)
-                break
-            except PermissionError as error:
-                if (
-                    getattr(error, "winerror", None) != 5
-                    or destination.exists()
-                    or attempt == 4
-                ):
-                    raise
-                time.sleep(0.05 * (2**attempt))
+        replace_path(temporary, destination)
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

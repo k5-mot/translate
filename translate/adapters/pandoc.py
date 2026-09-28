@@ -10,6 +10,8 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from translate.artifact_store import replace_path
+
 
 class PandocError(RuntimeError):
     """Pandocの欠落、機能不足または変換失敗を表す。"""
@@ -92,7 +94,7 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
             timeout=timeout,
         )
         _validate_docx(temporary)
-        temporary.replace(output)
+        replace_path(temporary, output)
     except (OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
         raise PandocError("pandoc DOCX publication failed") from error
     finally:
