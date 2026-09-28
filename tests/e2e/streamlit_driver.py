@@ -2,25 +2,33 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+
+from PIL import Image
 
 from translate import ui
 from translate.artifact_store import describe_artifact, sha256_file, write_model
 from translate.common.config import Config
 from translate.models.artifacts import (
     InputFile,
+    LLMCallArtifact,
     RegistrationRecord,
     RegistrationResult,
     RegistrationSourceResult,
     ReviewRecord,
+    TaskName,
+    TaskState,
     TranslationRecord,
 )
+from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.models.upgrade import UpgradeRecord
 from translate.pipeline.register import RegistrationOutcome
 from translate.pipeline.review import ReviewOutcome
 from translate.pipeline.translate import TranslationOutcome
 from translate.pipeline.upgrade import UpgradeOutcome
+from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 
 
 def _input(path: Path, role: str) -> InputFile:
@@ -34,6 +42,105 @@ def _input(path: Path, role: str) -> InputFile:
     )
 
 
+def _write_translation_progress(
+    root: Path,
+    source: Path,
+    processing_id: str,
+    backend: str,
+) -> None:
+    """処理中Callから確定Callへ変わるUI用Artifactを時間差で公開する。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block-1",
+                        order=0,
+                        kind="paragraph",
+                        content=TextUnit(
+                            id="unit-1",
+                            spans=[TextSpan(id="span-1", source="English")],
+                        ),
+                    )
+                ],
+            )
+        ]
+    )
+    write_model(root / "preprocess/structure/document.json", document)
+    call_dir = root / "translation/translate/calls/call-1"
+    now = datetime.now(UTC)
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="TRANSLATE",
+            status="processing",
+            fingerprint="translate-1",
+            target_ids=["span-1"],
+            attempts=1,
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+    write_model(
+        root / "translation.json",
+        TranslationRecord(
+            translation_id=processing_id,
+            status="processing",
+            source=_input(source, "source"),
+            backend=backend,
+            tasks=[
+                TaskState(
+                    task=TaskName.TRANSLATE,
+                    status="processing",
+                    fingerprint="translate",
+                    started_at=now,
+                )
+            ],
+            created_at=now,
+            updated_at=now,
+        ),
+    )
+    time.sleep(1.2)
+    write_model(
+        call_dir / "response.json",
+        TranslationResponse(
+            translations=[TranslationItem(span_id="span-1", text="日本語")]
+        ),
+    )
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="TRANSLATE",
+            status="partial",
+            fingerprint="translate-1",
+            target_ids=["span-1"],
+            attempts=1,
+            response_sha256=sha256_file(call_dir / "response.json"),
+            started_at=now,
+            updated_at=datetime.now(UTC),
+        ),
+    )
+    next_call = root / "translation/translate/calls/call-2/call.json"
+    write_model(
+        next_call,
+        LLMCallArtifact(
+            call_id="call-2",
+            task="TRANSLATE",
+            status="processing",
+            fingerprint="translate-2",
+            target_ids=["span-1"],
+            attempts=1,
+            started_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        ),
+    )
+    time.sleep(1.2)
+
+
 def _translate(
     source: Path,
     _config: Config,
@@ -45,10 +152,17 @@ def _translate(
     """成功したTranslate記録とdownload成果物を公開する。"""
 
     root = Path.cwd() / "outputs" / source.stem / processing_id
+    _write_translation_progress(root, source, processing_id, backend)
     markdown = root / "document.ja.md"
     docx = root / "document.ja.docx"
-    root.mkdir(parents=True)
-    markdown.write_text("# E2E\n", encoding="utf-8")
+    root.mkdir(parents=True, exist_ok=True)
+    image = root / "assets/preview.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), "red").save(image)
+    markdown.write_text(
+        '# E2E\n\n![preview](assets/preview.png){fig-alt="preview"}\n',
+        encoding="utf-8",
+    )
     docx.write_bytes(b"docx")
     now = datetime.now(UTC)
     write_model(

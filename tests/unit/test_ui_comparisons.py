@@ -2,7 +2,9 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
+from translate import ui
 from translate.artifact_store import sha256_file, write_model
 from translate.models.artifacts import (
     AlignmentResult,
@@ -16,11 +18,69 @@ from translate.models.review import ReviewTarget, Revision, TextEdit
 from translate.models.upgrade import UpgradePlan, VersionChange
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 from translate.ui import (
+    _diff_text,
     _fix_comparison,
+    _preview_image_path,
     _review_context,
     _translation_comparison,
     _upgrade_context,
 )
+
+
+def test_diff_text_marks_removed_and_added_lines() -> None:
+    """差分Collapse用textが変更前後の行を区別する。"""
+
+    value = _diff_text("same\nold", "same\nnew", "before", "after")
+
+    assert "--- before" in value
+    assert "+++ after" in value
+    assert "-old" in value
+    assert "+new" in value
+
+
+def test_preview_image_path_accepts_only_markdown_local_file(tmp_path: Path) -> None:
+    """Preview画像をMarkdown directory内の既存fileへ限定する。"""
+
+    markdown = tmp_path / "publisher/markdown/document.ja.md"
+    image = markdown.parent / "assets/figure one.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"image")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+
+    assert _preview_image_path(markdown, "assets/figure%20one.png") == image.resolve()
+    assert _preview_image_path(markdown, "../../outside.png") is None
+    assert _preview_image_path(markdown, "https://example.com/image.png") is None
+
+
+def test_rejected_revisions_are_rendered_in_collapsed_group() -> None:
+    """拒否された修正候補を件数付きの閉じたCollapseへまとめる。"""
+
+    with (
+        patch.object(ui, "_fix_comparison", return_value=("before", "after")),
+        patch.object(ui, "_review_comparison", return_value=None),
+        patch.object(ui, "_translation_comparison", return_value=None),
+        patch.object(
+            ui,
+            "_fix_rejections",
+            return_value=[
+                ("revision-1", "conflicting_edit"),
+                ("revision-2", "overlapping_edit"),
+            ],
+        ),
+        patch.object(ui, "_render_text_areas"),
+        patch.object(ui, "_render_diff"),
+        patch.object(ui.st, "subheader"),
+        patch.object(ui.st, "expander") as expander,
+        patch.object(ui.st, "markdown") as markdown,
+    ):
+        ui._render_latest_comparison(Path())  # noqa: SLF001 - UI内部配置の回帰検証。
+
+    expander.assert_called_once_with("拒否された修正候補 (2)", expanded=False)
+    assert markdown.call_count == 2
+    assert "Revision ID:** `revision-1`" in markdown.call_args_list[0].args[0]
+    assert "拒否理由:** `conflicting_edit`" in markdown.call_args_list[0].args[0]
+    assert "Revision ID:** `revision-2`" in markdown.call_args_list[1].args[0]
 
 
 def _document(values: list[tuple[str, str]]) -> Document:

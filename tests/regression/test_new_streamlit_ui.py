@@ -29,12 +29,12 @@ from translate.ui import (
     _history_entries,
     _live_call_counts,
     _preview,
-    _response_previews,
     _safe_upload_name,
     _stage_register,
     _stage_resume_uploads,
     _stage_uploads,
     _valid_artifact,
+    _verified_response,
 )
 
 if TYPE_CHECKING:
@@ -192,10 +192,10 @@ def test_live_call_counts_reads_in_progress_artifacts(tmp_path: Path) -> None:
     assert _live_call_counts(tmp_path, TaskName.TRANSLATE) == (3, 1, 1)
 
 
-def test_realtime_preview_is_bounded_and_requires_verified_response(
+def test_comparison_text_is_bounded_and_requires_verified_response(
     tmp_path: Path,
 ) -> None:
-    """現在textを240文字に省略し、hash一致する成功応答だけを表示対象にする。"""
+    """比較textを240文字に省略し、hash一致する確定応答だけを表示対象にする。"""
 
     assert len(_preview("A" * 300)) == 240
     directory = tmp_path / "translation/translate/calls/call-1"
@@ -216,9 +216,9 @@ def test_realtime_preview_is_bounded_and_requires_verified_response(
         updated_at=now,
     )
 
-    assert _response_previews(tmp_path, TaskName.TRANSLATE, call) == ["span-1: 確定訳"]
+    assert _verified_response(tmp_path, TaskName.TRANSLATE, call) == response
     rejected = call.model_copy(update={"response_sha256": "0" * 64})
-    assert _response_previews(tmp_path, TaskName.TRANSLATE, rejected) == []
+    assert _verified_response(tmp_path, TaskName.TRANSLATE, rejected) is None
 
 
 def test_streamlit_default_theme_is_light() -> None:
@@ -312,9 +312,7 @@ def test_streamlit_v2_renders_four_operations(
     assert not app.sidebar.get("status")
     assert app.sidebar.subheader[0].value == "処理履歴"
     settings = next(
-        expander
-        for expander in app.get("status")
-        if expander.label.endswith("入力と設定")
+        expander for expander in app.get("status") if expander.label == "入力と設定"
     )
-    assert settings.label == "新規セッション - パイプライン選択 - 入力と設定"
+    assert settings.label == "入力と設定"
     assert settings.proto.expanded

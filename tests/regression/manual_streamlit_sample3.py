@@ -21,15 +21,14 @@ def _wait_for_translation(page: Page, timeout_seconds: float) -> None:
     while time.monotonic() < deadline:
         body = page.locator("body").inner_text()
         status = next(
-            (line for line in body.splitlines() if line.startswith("状態:")),
-            "準備中",
+            (line for line in body.splitlines() if " Task — " in line), "準備中"
         )
         if status != previous_status:
             _LOGGER.info("UI status: %s", status)
             previous_status = status
-        if "状態: succeeded" in body:
+        if "— succeeded" in body:
             return
-        if "状態: failed" in body or "処理に失敗しました" in body:
+        if "— failed" in body or "処理に失敗しました" in body:
             message = f"Streamlit translation failed:\n{body[-4000:]}"
             raise AssertionError(message)
         page.wait_for_timeout(1000)
@@ -55,7 +54,7 @@ def verify(url: str, source: Path, timeout_seconds: float) -> None:
         browser = playwright.chromium.launch(headless=True)
         page = browser.new_page(accept_downloads=True)
         page.goto(url, wait_until="networkidle", timeout=60_000)
-        expect(page.get_by_role("heading", name="🌐 Translate")).to_be_visible()
+        expect(page.get_by_role("tab", name="Translate")).to_be_visible()
         page.locator('input[type="file"]').first.set_input_files(str(source))
         start = page.get_by_role("button", name="翻訳を開始")
         expect(start).to_be_enabled(timeout=30_000)
@@ -81,7 +80,7 @@ def verify_existing(url: str, processing_id: str) -> None:
             wait_until="networkidle",
             timeout=60_000,
         )
-        expect(page.get_by_text("状態: succeeded", exact=True)).to_be_visible(
+        expect(page.get_by_text(re.compile(r"Task .* succeeded$"))).to_be_visible(
             timeout=60_000
         )
         _download(page, "Markdownをdownload", ".md")

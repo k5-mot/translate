@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
+from playwright.sync_api import expect
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -90,14 +91,73 @@ def _upload(page: Page, labels: list[str], paths: list[Path]) -> None:
         uploader.get_by_text(path.name, exact=True).wait_for(timeout=15_000)
 
 
-def _wait_for_success(page: Page, pipeline: str) -> None:
-    """開始したPipelineの入力領域と成功表示への更新を待つ。"""
+def _assert_appbar_alignment(page: Page) -> None:
+    """Translate、Session IDおよびDeployの縦中央が揃うことを検証する。"""
 
-    page.get_by_text(re.compile(rf"^[0-9a-f-]+ - {pipeline} - 入力と設定$")).wait_for(
+    title = page.locator("#translate-session-title")
+    expect(title).to_have_text("新規セッション")
+    elements = [
+        page.locator('[data-testid="stSidebarLogo"]'),
+        title,
+        page.get_by_text("Deploy", exact=True),
+    ]
+    boxes = [element.bounding_box() for element in elements]
+    assert all(box is not None for box in boxes)
+    centers = [box["y"] + box["height"] / 2 for box in boxes if box is not None]
+    assert max(centers) - min(centers) <= 2
+
+
+def _assert_translation_downloads_outside_progress(page: Page) -> None:
+    """Translate成果物を進捗外へ横並びにし、相対画像を表示する。"""
+
+    progress = page.locator('[data-testid="stExpander"]').filter(
+        has_text="進捗と処理内容"
+    )
+    diff = progress.locator('[data-testid="stExpander"]').filter(has_text="差分を表示")
+    diff.locator("summary").click()
+    expect(diff.locator("code")).to_contain_text("-English")
+    expect(diff.locator("code")).to_contain_text("+日本語")
+    buttons = [
+        page.get_by_role("button", name=label)
+        for label in ("Markdownをdownload", "DOCXをdownload")
+    ]
+    for label, button in zip(
+        ("Markdownをdownload", "DOCXをdownload"), buttons, strict=True
+    ):
+        expect(button).to_be_visible()
+        assert progress.get_by_role("button", name=label).count() == 0
+    boxes = [button.bounding_box() for button in buttons]
+    assert all(box is not None for box in boxes)
+    centers = [box["y"] + box["height"] / 2 for box in boxes if box is not None]
+    assert max(centers) - min(centers) <= 2
+    preview = page.locator('[data-testid="stExpander"]').filter(
+        has_text="Markdown preview"
+    )
+    preview.locator("summary").click()
+    image = preview.locator("img").last
+    expect(image).to_be_visible()
+    assert image.evaluate("element => element.naturalWidth") > 0, (
+        image.get_attribute("src"),
+        preview.inner_text(),
+    )
+
+
+def _wait_for_success(page: Page, previous_url: str) -> None:
+    """開始したPipelineのSession IDと成功ProgressBarへの更新を待つ。"""
+
+    page.wait_for_function(
+        """previous => location.href !== previous
+        && new URL(location.href).searchParams.has('processing')""",
+        arg=previous_url,
+        timeout=15_000,
+    )
+    processing_id = page.evaluate(
+        "new URL(location.href).searchParams.get('processing')"
+    )
+    expect(page.locator("#translate-session-title")).to_have_text(processing_id)
+    page.get_by_text(re.compile(r"\d+ / \d+ Task .* succeeded$")).last.wait_for(
         timeout=15_000
     )
-    page.get_by_text("状態: succeeded", exact=True).last.wait_for(timeout=15_000)
-    assert "processing=" in page.url
 
 
 def _open_settings(page: Page) -> None:
@@ -132,6 +192,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
     page.goto(streamlit_url)
     page.locator('[data-testid="stSidebarLogo"]').wait_for(timeout=15_000)
     page.get_by_role("tab", name="Register").wait_for(timeout=15_000)
+    _assert_appbar_alignment(page)
     assert page.get_by_role("tab").all_inner_texts() == [
         "Translate",
         "Review",
@@ -140,8 +201,14 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
     ]
 
     _upload(page, ["英語PDF"], [files["source.pdf"]])
+    previous_url = page.url
     page.get_by_role("button", name="翻訳を開始").click()
-    _wait_for_success(page, "TRANSLATE")
+    expect(page.get_by_label("翻訳後 (日本語)")).to_have_value(
+        "[span-1]\n日本語",
+        timeout=15_000,
+    )
+    _wait_for_success(page, previous_url)
+    _assert_translation_downloads_outside_progress(page)
 
     _open_settings(page)
     page.get_by_role("tab", name="Review").click()
@@ -150,8 +217,9 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
         ["英語原文PDF", "日本語訳文PDF"],
         [files["source.pdf"], files["translation.pdf"]],
     )
+    previous_url = page.url
     page.get_by_role("button", name="レビューを開始").click()
-    _wait_for_success(page, "REVIEW")
+    _wait_for_success(page, previous_url)
 
     _open_settings(page)
     page.get_by_role("tab", name="Upgrade").click()
@@ -160,11 +228,13 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
         ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"],
         [files["source-v1.pdf"], files["source-v2.pdf"], files["translation-v1.pdf"]],
     )
+    previous_url = page.url
     page.get_by_role("button", name="Upgradeを開始").click()
-    _wait_for_success(page, "UPGRADE")
+    _wait_for_success(page, previous_url)
 
     _open_settings(page)
     page.get_by_role("tab", name="Register").click()
     _upload(page, ["参照資料"], [files["reference.txt"]])
+    previous_url = page.url
     page.get_by_role("button", name="登録を開始").click()
-    _wait_for_success(page, "REGISTER")
+    _wait_for_success(page, previous_url)

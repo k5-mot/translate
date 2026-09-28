@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
+import html
+import re
 import shutil
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -10,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import streamlit as st
@@ -45,7 +49,7 @@ from translate.models.document import (
     text_unit_index,
 )
 from translate.models.review import ReviewResponse
-from translate.models.upgrade import ReuseReport, UpgradePlan, UpgradeRecord
+from translate.models.upgrade import UpgradePlan, UpgradeRecord
 from translate.pipeline import InputError
 from translate.pipeline.register import register_paths
 from translate.pipeline.review import review_pdfs
@@ -67,6 +71,10 @@ TaskStage = tuple[str, TaskName, str | None]
 _REGISTER_SUFFIXES = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 _LOGO_PATH = Path(__file__).with_name("assets") / "translate-logo.svg"
+_MARKDOWN_IMAGE_BLOCK = re.compile(
+    r"(?m)^!\[(?P<caption>(?:\\.|[^\]])*)\]"
+    r"\((?P<target>[^)]+)\)(?:\{[^\n]*\})?[ \t\r]*$"
+)
 
 
 def _task_stages(
@@ -694,7 +702,7 @@ def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
     """Artifact公開前の待機・準備状態またはworker失敗を表示する。"""
 
     future = registry.future(processing_id)
-    st.progress(0.0, text="準備中")
+    st.progress(0.0, text="0 / ? Task — 準備 — preparing")
     if future is None:
         current = "処理記録の公開待ち"
     elif not future.running() and not future.done():
@@ -703,12 +711,10 @@ def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
         current = "Pipelineを準備中"
     else:
         current = "workerの結果を確認中"
-    with st.container(border=True):
-        st.subheader("進捗詳細")
-        st.write("現在のTask: -")
-        st.write(f"現在の処理: {current}")
-        st.write("状態: preparing")
+    with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
         st.write("更新時刻: -")
+        st.caption("LLM進捗はまだありません。")
+    st.caption(current)
     if future is None:
         st.info("処理記録が見つかりません。")
     elif future.done():
@@ -771,20 +777,8 @@ def _preview(value: str) -> str:
     return normalized if len(normalized) <= 240 else f"{normalized[:239]}…"
 
 
-def _render_preview_values(label: str, values: list[str]) -> None:
-    """previewを先頭3件と残件数に限定してplain text表示する。"""
-
-    if not values:
-        return
-    st.write(label)
-    for value in values[:3]:
-        st.text(_preview(value))
-    if len(values) > 3:
-        st.caption(f"ほか {len(values) - 3}件")
-
-
 def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
-    """最初に存在する検証済みDocumentをpreview用に読む。"""
+    """候補から最初に存在する検証済みDocumentを読む。"""
 
     for relative in candidates:
         path = root / relative
@@ -797,113 +791,12 @@ def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
     return None
 
 
-def _target_previews(root: Path, task: TaskName, target_ids: list[str]) -> list[str]:
-    """LLM Callの対象IDをTask入力Artifact内のplain textへ解決する。"""
-
-    if task == TaskName.STRUCTURE:
-        document = _load_first_document(
-            root,
-            [
-                "preprocess/source-v2/load/document.json",
-                "preprocess/load/document.json",
-            ],
-        )
-        if document is None:
-            return []
-        values = {
-            block.id: (
-                f"page {page.number}: "
-                f"{block.content.text('source') if block.content is not None else block.kind}"
-            )
-            for page in document.pages
-            for block in page.blocks
-        }
-        return [values[target_id] for target_id in target_ids if target_id in values]
-    if task == TaskName.TRANSLATE:
-        document = _load_first_document(
-            root,
-            [
-                "upgrade/reuse/document.json",
-                "preprocess/structure/document.json",
-            ],
-        )
-        if document is None:
-            return []
-        values = {
-            span.id: span.source
-            for _, unit in iter_text_units(document)
-            for span in unit.spans
-        }
-        return [values[target_id] for target_id in target_ids if target_id in values]
-    return _review_target_previews(root, target_ids)
-
-
-def _review_target_previews(root: Path, target_ids: list[str]) -> list[str]:
-    """REVIEW対象を翻訳Documentまたは独立ReviewのALIGN結果から解決する。"""
-
-    document = _load_first_document(
-        root,
-        [
-            "review/fix/document.json",
-            "translation/translate/document.json",
-            "translation/translate-lite/document.json",
-            "upgrade/reuse/document.json",
-        ],
-    )
-    values = (
-        {
-            target.id: f"原文: {target.source}\n訳文: {target.translation}"
-            for target in targets_from_document(document)
-        }
-        if document is not None
-        else {}
-    )
-    for relative in ("review/align/alignment.json", "upgrade/align/result.json"):
-        path = root / relative
-        if not path.is_file():
-            continue
-        try:
-            alignment = load_model(path, AlignmentResult)
-        except ArtifactError:
-            continue
-        values.update(
-            {
-                target.id: f"原文: {target.source}\n訳文: {target.translation}"
-                for target in alignment.targets
-            }
-        )
-    return [values[target_id] for target_id in target_ids if target_id in values]
-
-
-def _response_previews(root: Path, task: TaskName, call: LLMCallArtifact) -> list[str]:
-    """hash一致する成功responseだけをTask固有の短い結果へ変換する。"""
-
-    response = _verified_response(root, task, call)
-    if isinstance(response, StructureResponse):
-        return [
-            f"{item.block_id}: kind={item.kind or '-'}, level={item.level or '-'}"
-            for item in response.patches
-        ]
-    if isinstance(response, TranslationResponse):
-        return [f"{item.span_id}: {item.text}" for item in response.translations]
-    if isinstance(response, ReviewResponse):
-        return [
-            *[f"Finding {item.category}: {item.message}" for item in response.findings],
-            *[
-                f"Revision {item.target_id}: "
-                + " / ".join(edit.text for edit in item.edits)
-                for item in response.revisions
-            ],
-        ]
-    return []
-
-
 def _verified_response(
     root: Path, task: TaskName, call: LLMCallArtifact
 ) -> StructureResponse | TranslationResponse | ReviewResponse | None:
-    """成功状態、hashおよびSchemaを検証したLLM応答だけを返す。"""
+    """確定状態、hashおよびSchemaを検証したLLM応答だけを返す。"""
 
-    if call.status != "succeeded" or call.response_sha256 is None:
+    if call.status not in {"succeeded", "partial"} or call.response_sha256 is None:
         return None
     directory = _llm_call_directory(root, task)
     if directory is None:
@@ -932,6 +825,18 @@ def _latest_call(root: Path, task: TaskName, status: str) -> LLMCallArtifact | N
 
     calls = [call for call in _llm_calls(root, task) if call.status == status]
     return max(calls, key=lambda item: item.updated_at) if calls else None
+
+
+def _latest_verified_call(root: Path, task: TaskName) -> LLMCallArtifact | None:
+    """hashとSchemaを検証できる最新の確定済みLLM Callを返す。"""
+
+    calls = sorted(
+        _llm_calls(root, task), key=lambda item: item.updated_at, reverse=True
+    )
+    return next(
+        (call for call in calls if _verified_response(root, task, call) is not None),
+        None,
+    )
 
 
 def _comparison_text(rows: list[tuple[str, str]], empty: str = "") -> str:
@@ -965,6 +870,31 @@ def _render_text_areas(
             )
 
 
+def _diff_text(before: str, after: str, before_label: str, after_label: str) -> str:
+    """二つの表示textから行単位のunified diffを作る。"""
+
+    return "\n".join(
+        difflib.unified_diff(
+            before.splitlines(),
+            after.splitlines(),
+            fromfile=before_label,
+            tofile=after_label,
+            lineterm="",
+        )
+    )
+
+
+def _render_diff(before: str, after: str, before_label: str, after_label: str) -> None:
+    """TextAreaの下へ追加・削除行を強調する差分Collapseを表示する。"""
+
+    with st.expander("差分を表示", expanded=False):
+        diff = _diff_text(before, after, before_label, after_label)
+        if diff:
+            st.code(diff, language="diff")
+        else:
+            st.caption("差分はありません。")
+
+
 def _translation_comparison(root: Path) -> tuple[str, str] | None:
     """直近の同一TRANSLATE Callから英語と検証済み日本語を返す。"""
 
@@ -979,15 +909,15 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
         for _, unit in iter_text_units(document)
         for span in unit.spans
     }
-    succeeded = _latest_call(root, TaskName.TRANSLATE, "succeeded")
-    if succeeded is not None:
-        response = _verified_response(root, TaskName.TRANSLATE, succeeded)
+    confirmed = _latest_verified_call(root, TaskName.TRANSLATE)
+    if confirmed is not None:
+        response = _verified_response(root, TaskName.TRANSLATE, confirmed)
         if not isinstance(response, TranslationResponse):
             return None
         translated = {item.span_id: item.text for item in response.translations}
         target_ids = [
             target_id
-            for target_id in succeeded.target_ids
+            for target_id in confirmed.target_ids
             if target_id in sources and target_id in translated
         ]
         return (
@@ -1045,13 +975,13 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
     """直近の同一REVIEW Callから現在訳と修正候補を返す。"""
 
     targets = _review_targets(root)
-    succeeded = _latest_call(root, TaskName.REVIEW, "succeeded")
-    if succeeded is not None:
-        response = _verified_response(root, TaskName.REVIEW, succeeded)
+    confirmed = _latest_verified_call(root, TaskName.REVIEW)
+    if confirmed is not None:
+        response = _verified_response(root, TaskName.REVIEW, confirmed)
         if not isinstance(response, ReviewResponse):
             return None
         revisions = {item.target_id: item for item in response.revisions}
-        target_ids = [item for item in succeeded.target_ids if item in targets]
+        target_ids = [item for item in confirmed.target_ids if item in targets]
         before = [(item, targets[item][1]) for item in target_ids]
         after = [
             (
@@ -1114,8 +1044,8 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
     )
 
 
-def _fix_rejections(root: Path) -> list[str]:
-    """FIXが拒否したRevision IDと理由codeを返す。"""
+def _fix_rejections(root: Path) -> list[tuple[str, str]]:
+    """FIXが拒否したRevision IDと理由codeの組を返す。"""
 
     path = root / "review/fix/outcomes.json"
     if not path.is_file():
@@ -1125,10 +1055,19 @@ def _fix_rejections(root: Path) -> list[str]:
     except ArtifactError:
         return []
     return [
-        f"{item.revision_id}: {item.reason_code}"
+        (item.revision_id, item.reason_code)
         for item in result.outcomes
         if item.status == "rejected"
     ]
+
+
+def _markdown_code(value: str) -> str:
+    """Artifact由来textを安全な一つのMarkdown inline codeへ変換する。"""
+
+    normalized = " ".join(value.split())
+    longest = max((len(item) for item in re.findall(r"`+", normalized)), default=0)
+    fence = "`" * (longest + 1)
+    return f"{fence}{normalized}{fence}"
 
 
 def _render_latest_comparison(root: Path) -> None:
@@ -1140,12 +1079,19 @@ def _render_latest_comparison(root: Path) -> None:
     if fixed is not None:
         st.subheader("FIXの処理前・処理後")
         _render_text_areas(("修正前", "修正後"), fixed, "fix-comparison")
+        _render_diff(fixed[0], fixed[1], "修正前", "修正後")
         rejected = _fix_rejections(root)
         if rejected:
-            st.caption("拒否された修正候補: " + ", ".join(rejected[:3]))
+            with st.expander(f"拒否された修正候補 ({len(rejected)})", expanded=False):
+                for revision_id, reason_code in rejected:
+                    st.markdown(
+                        f"- **Revision ID:** {_markdown_code(revision_id)}  \n"
+                        f"  **拒否理由:** {_markdown_code(reason_code)}"
+                    )
     elif reviewed is not None:
         st.subheader("REVIEWの処理前・処理後")
         _render_text_areas(("修正前", "修正候補"), reviewed, "review-comparison")
+        _render_diff(reviewed[0], reviewed[1], "修正前", "修正候補")
     elif translated is not None:
         st.subheader("TRANSLATEの処理前・処理後")
         _render_text_areas(
@@ -1153,6 +1099,7 @@ def _render_latest_comparison(root: Path) -> None:
             translated,
             "translate-comparison",
         )
+        _render_diff(translated[0], translated[1], "翻訳前", "翻訳後")
 
 
 def _review_context(root: Path) -> tuple[str, str] | None:
@@ -1302,61 +1249,34 @@ def _render_upgrade_context(root: Path, processing_id: str) -> None:
         values,
         f"upgrade-context-{processing_id}",
     )
+    _render_diff(values[0], values[2], "英語v1", "英語v2")
 
 
-def _render_progress_details(
+def _render_llm_progress(
     root: Path,
-    task: TaskName | None,
-    task_label: str,
-    status: str,
-    updated_at: datetime,
+    record: TranslationRecord | ReviewRecord | UpgradeRecord,
+    active_task: TaskName | None,
 ) -> None:
-    """Task、現在処理、状態、更新時刻とLLM対象を順に表示する。"""
+    """現在時刻とSTRUCTURE・TRANSLATE・REVIEWのCall内訳だけを表示する。"""
 
-    actions = {
-        TaskName.SPLIT: "PDFをpage範囲へ分割中",
-        TaskName.DOCLING: "分割PDFを文書JSONへ変換中",
-        TaskName.UNPACK: "変換結果とassetを展開中",
-        TaskName.MERGE: "partを読み順どおり結合中",
-        TaskName.POSITION: "座標と読み順を補正中",
-        TaskName.NORMALIZE: "文書表現を正規化中",
-        TaskName.LOAD: "内部Documentへ読込み中",
-        TaskName.STRUCTURE: "見出し・caption・Block種別を解析中",
-        TaskName.TRANSLATE: "英語source textを日本語へ翻訳中",
-        TaskName.TRANSLATE_LITE: "英語source textを日本語へ翻訳中",
-        TaskName.ALIGN: "英文と日本語訳を対応付け中",
-        TaskName.DIFF: "英文v1と英文v2の版間差分を判定中",
-        TaskName.REUSE: "互換な日本語v1を英文v2へ再利用中",
-        TaskName.CHECK: "空訳と極端な長さ差を検査中",
-        TaskName.REVIEW: "翻訳品質と修正候補を確認中",
-        TaskName.FIX: "検証済み修正候補を反映中",
-        TaskName.LINT: "公開可能な文書構造か検査中",
-        TaskName.COVER: "表紙画像を生成中",
-        TaskName.MARKDOWN: "Pandoc Markdownへ変換中",
-        TaskName.DOCX: "DOCXを公開中",
-        TaskName.REPORT: "Review reportを生成中",
-    }
-    current = status if task is None else actions.get(task, task.value)
-    st.write(f"現在のTask: {task_label}")
-    st.write(f"現在の処理: {current}")
-    st.write(f"状態: {status}")
-    st.write(f"更新時刻: {updated_at.isoformat()}")
-    if task not in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
-        return
-    calls = _llm_calls(root, task)
-    active = [call for call in calls if call.status == "processing"]
-    if active:
-        current = max(active, key=lambda item: item.started_at)
-        _render_preview_values(
-            "現在の対象text",
-            _target_previews(root, task, current.target_ids),
+    st.write(f"更新時刻: {record.updated_at.isoformat()}")
+    shown = False
+    for progress in record.llm_progress:
+        shown = True
+        st.write(
+            f"{progress.task}: {progress.completed_calls} / "
+            f"{progress.planned_calls} calls "
+            f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
         )
-    else:
-        st.caption("LLM Callを準備中")
-    succeeded = [call for call in calls if call.status == "succeeded"]
-    if succeeded:
-        latest = max(succeeded, key=lambda item: item.updated_at)
-        _render_preview_values("直近の確定結果", _response_previews(root, task, latest))
+    if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
+        shown = True
+        observed, completed, failed = _live_call_counts(root, active_task)
+        st.write(
+            f"{active_task.value}: {completed} / 観測済み {observed} calls "
+            f"(失敗 {failed})"
+        )
+    if not shown:
+        st.caption("LLM進捗はありません。")
 
 
 def _valid_check_artifact(root: Path, relative_path: str) -> bool:
@@ -1409,66 +1329,20 @@ def _render_task_progress(
     active_state = next(
         (task for task in record.tasks if task.status == "processing"), None
     )
-    detail = f"{completed} / {total} Task"
-    if record.status in {"failed", "cancelled"}:
-        detail = f"{detail} — {record.status}"
-    elif active != "-":
-        detail = f"{detail} — {active}"
+    visible_state = active_state
+    if visible_state is None and record.tasks:
+        visible_state = record.tasks[-1]
+    task_label = (
+        visible_state.task.value.replace("_", "-")
+        if visible_state is not None
+        else active
+    )
+    task_status = visible_state.status if visible_state is not None else record.status
+    detail = f"{completed} / {total} Task — {task_label} — {task_status}"
     st.progress(completed / total if total else 0.0, text=detail)
     active_task = active_state.task if active_state is not None else None
-    with st.container(border=True):
-        st.subheader("進捗詳細")
-        _render_progress_details(
-            root,
-            active_task,
-            active,
-            record.status,
-            record.updated_at,
-        )
-        for progress in record.llm_progress:
-            st.write(
-                f"{progress.task}: {progress.completed_calls} / "
-                f"{progress.planned_calls} calls "
-                f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
-            )
-
-        if isinstance(record, UpgradeRecord):
-            plan_path = entry.record_path.parent / "upgrade/diff/plan.json"
-            report_path = entry.record_path.parent / "upgrade/reuse/report.json"
-            try:
-                if plan_path.is_file():
-                    plan = load_model(plan_path, UpgradePlan)
-                    counts = {
-                        kind: sum(item.kind == kind for item in plan.changes)
-                        for kind in (
-                            "unchanged",
-                            "moved",
-                            "modified",
-                            "added",
-                            "deleted",
-                        )
-                    }
-                    st.write(
-                        "Upgrade差分: "
-                        + ", ".join(f"{kind} {count}" for kind, count in counts.items())
-                    )
-                if report_path.is_file():
-                    report = load_model(report_path, ReuseReport)
-                    st.write(
-                        f"既存訳再利用 {len(report.reused_unit_ids)}, "
-                        f"翻訳対象 {len(report.translation_target_ids)}"
-                    )
-            except ArtifactError:
-                st.caption("Upgrade進捗Artifactを更新中です。")
-        if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
-            observed, live_completed, failed = _live_call_counts(
-                root,
-                active_task,
-            )
-            st.write(
-                f"{active_task.value} 実行中: {live_completed} / "
-                f"観測済み {observed} calls (失敗 {failed})"
-            )
+    with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
+        _render_llm_progress(root, record, active_task)
     _render_latest_comparison(root)
     processing_id = entry.processing_id or entry.kind
     if isinstance(record, ReviewRecord):
@@ -1492,9 +1366,46 @@ def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
     return path
 
 
+def _preview_image_path(markdown: Path, target: str) -> Path | None:
+    """Markdown基準の相対画像をpreview directory内の実fileへ限定する。"""
+
+    parsed = urlsplit(target)
+    if parsed.scheme or parsed.netloc:
+        return None
+    root = markdown.parent.resolve()
+    path = (root / unquote(parsed.path)).resolve()
+    if not path.is_relative_to(root) or not path.is_file():
+        return None
+    return path
+
+
+def _render_markdown_preview(markdown: Path, value: str) -> None:
+    """Markdownの相対画像を安全なStreamlit画像へ置換してpreviewする。"""
+
+    cursor = 0
+    for match in _MARKDOWN_IMAGE_BLOCK.finditer(value):
+        prefix = value[cursor : match.start()]
+        if prefix.strip():
+            st.markdown(prefix, unsafe_allow_html=False)
+        target = match.group("target")
+        parsed = urlsplit(target)
+        if parsed.scheme or parsed.netloc:
+            st.markdown(match.group(0), unsafe_allow_html=False)
+        elif image := _preview_image_path(markdown, target):
+            st.image(image, caption=match.group("caption") or None)
+        else:
+            st.warning("Preview画像が欠落または参照範囲外です。")
+        cursor = match.end()
+    suffix = value[cursor:]
+    if suffix.strip():
+        st.markdown(suffix, unsafe_allow_html=False)
+
+
 def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) -> None:
     """hash検証済みMarkdownとDOCXのpreview・downloadを表示する。"""
 
+    markdown: tuple[Path, bytes] | None = None
+    docx: tuple[Path, bytes] | None = None
     for artifact in record.outputs:
         path = _valid_artifact(entry.record_path.parent, artifact)
         if path is None:
@@ -1502,19 +1413,25 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
             continue
         if path.suffix.casefold() == ".md":
             value = path.read_bytes()
-            with st.expander("Markdown preview"):
-                st.markdown(value.decode("utf-8"), unsafe_allow_html=False)
+            markdown = path, value
+        elif path.suffix.casefold() == ".docx":
+            docx = path, path.read_bytes()
+    if markdown is not None:
+        with st.expander("Markdown preview"):
+            _render_markdown_preview(markdown[0], markdown[1].decode("utf-8"))
+    with st.container(horizontal=True, wrap=False):
+        if markdown is not None:
             st.download_button(
                 "Markdownをdownload",
-                value,
-                file_name=path.name,
+                markdown[1],
+                file_name=markdown[0].name,
                 mime="text/markdown",
             )
-        elif path.suffix.casefold() == ".docx":
+        if docx is not None:
             st.download_button(
                 "DOCXをdownload",
-                path.read_bytes(),
-                file_name=path.name,
+                docx[1],
+                file_name=docx[0].name,
                 mime=(
                     "application/vnd.openxmlformats-officedocument."
                     "wordprocessingml.document"
@@ -1814,8 +1731,8 @@ def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
         st.rerun()
 
 
-def _render_record(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """最上位記録の状態、進捗、エラー、成果物とResumeを表示する。"""
+def _render_record(entry: HistoryEntry) -> None:
+    """最上位記録のProgressBar、詳細および比較TextAreaを表示する。"""
 
     record = entry.record
     if record is None:
@@ -1824,21 +1741,22 @@ def _render_record(entry: HistoryEntry, registry: WorkerRegistry) -> None:
     if isinstance(record, (TranslationRecord, ReviewRecord, UpgradeRecord)):
         _render_task_progress(entry, record)
     else:
-        completed = len(record.result.sources) if record.result is not None else 0
-        total = len(record.inputs)
+        completed = int(record.status == "succeeded")
         st.progress(
-            completed / total if total else 0.0,
-            text=f"{completed} / {total} file",
+            float(completed),
+            text=f"{completed} / 1 Task — REGISTER — {record.status}",
         )
-        with st.container(border=True):
-            st.subheader("進捗詳細")
-            st.write("現在のTask: REGISTER")
-            current = (
-                "参照資料を登録中" if record.status == "processing" else record.status
-            )
-            st.write(f"現在の処理: {current}")
-            st.write(f"状態: {record.status}")
+        with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
             st.write(f"更新時刻: {record.updated_at.isoformat()}")
+            st.caption("LLM進捗はありません。")
+
+
+def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> None:
+    """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。"""
+
+    record = entry.record
+    if record is None:
+        return
     processing_id = entry.processing_id or "-"
     if record.error is not None:
         st.error(
@@ -1867,7 +1785,7 @@ def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
     if entry is None:
         _render_future_state(processing_id, registry)
         return
-    _render_record(entry, registry)
+    _render_record(entry)
 
 
 def _render_processing_panel(
@@ -1875,7 +1793,7 @@ def _render_processing_panel(
     registry: WorkerRegistry,
     entries: list[HistoryEntry] | None = None,
 ) -> None:
-    """選択中の進捗・比較・成果物領域を折り畳み可能に表示する。"""
+    """進捗と比較を折り畳み、成果物操作をその外側へ表示する。"""
 
     entries = entries if entries is not None else _history_entries()
     current = next(
@@ -1919,15 +1837,42 @@ def _render_processing_panel(
 
         render_progress()
     progress_panel.update(expanded=True, state=status)
+    refreshed = _entry_by_id(processing_id)
+    if refreshed is not None:
+        _render_record_actions(refreshed, registry)
 
 
-def _session_title(processing_id: str | None, selected: HistoryEntry | None) -> str:
-    """入力設定領域に表示する処理IDとPipeline種類を返す。"""
+def _render_session_title(processing_id: str | None) -> None:
+    """Session IDをStreamlit AppBarと同じ高さへ表示する。"""
 
-    if processing_id is None:
-        return "新規セッション - パイプライン選択"
-    pipeline = selected.kind.upper() if selected is not None else "処理準備中"
-    return f"{processing_id} - {pipeline}"
+    title = html.escape(processing_id or "新規セッション")
+    st.html(
+        f"""
+        <style>
+        #translate-session-title {{
+            position: fixed;
+            top: 0;
+            left: 22rem;
+            z-index: 999990;
+            height: 3.75rem;
+            max-width: calc(100vw - 40rem);
+            display: flex;
+            align-items: center;
+            overflow: hidden;
+            color: inherit;
+            font-size: 0.875rem;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            pointer-events: none;
+        }}
+        @media (max-width: 768px) {{
+            #translate-session-title {{ left: 5rem; max-width: calc(100vw - 15rem); }}
+        }}
+        </style>
+        <div id="translate-session-title" aria-label="Session ID">{title}</div>
+        """
+    )
 
 
 def main() -> None:
@@ -1942,13 +1887,10 @@ def main() -> None:
     registry = worker_registry()
     entries = _history_entries()
     selected_id = _render_history_sidebar(entries)
-    selected = next(
-        (entry for entry in entries if entry.processing_id == selected_id), None
-    )
-    title = _session_title(selected_id, selected)
+    _render_session_title(selected_id)
     expander_key = selected_id or "new"
     with st.expander(
-        f"{title} - 入力と設定",
+        "入力と設定",
         expanded=selected_id is None,
         key=f"pipeline-setup-{expander_key}",
         icon=":material/tune:",

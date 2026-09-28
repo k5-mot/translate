@@ -18,6 +18,33 @@ from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 
 
+def _assert_progress_layout(app: AppTest, processing_id: str) -> None:
+    """進捗領域、詳細Collapseおよびsidebar履歴の配置を検証する。"""
+
+    settings = next(
+        expander for expander in app.get("status") if expander.label == "入力と設定"
+    )
+    assert settings.label == "入力と設定"
+    assert not settings.proto.expanded
+    progress = next(
+        status for status in app.get("status") if status.label == "進捗と処理内容"
+    )
+    assert progress.proto.expanded
+    assert app.sidebar.subheader[0].value == "処理履歴"
+    assert any(
+        button.key == f"history-{processing_id}" for button in app.sidebar.button
+    )
+    detail = next(
+        expander for expander in app.get("status") if expander.label == "進捗詳細"
+    )
+    assert not detail.proto.expanded
+    details = {markdown.value for markdown in app.markdown}
+    assert any(value.startswith("更新時刻: ") for value in details)
+    assert any(value.startswith("REVIEW: ") for value in details)
+    progress_text = app.get("progress")[0].proto.text
+    assert all(value in progress_text for value in ("Task", "REVIEW", "processing"))
+
+
 def test_streamlit_renders_progress_and_verified_translation_pair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -111,7 +138,7 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
         LLMCallArtifact(
             call_id="call-1",
             task="TRANSLATE",
-            status="succeeded",
+            status="partial",
             fingerprint="translate",
             target_ids=["span-1"],
             attempts=1,
@@ -136,30 +163,7 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
     app.run(timeout=10)
 
     assert not app.exception
-    settings = next(
-        expander
-        for expander in app.get("status")
-        if expander.label.endswith("入力と設定")
-    )
-    assert settings.label == f"{processing_id} - TRANSLATE - 入力と設定"
-    assert not settings.proto.expanded
-    progress = next(
-        status for status in app.get("status") if status.label == "進捗と処理内容"
-    )
-    assert progress.proto.expanded
-    assert app.get("progress")
-    assert app.sidebar.subheader[0].value == "処理履歴"
-    assert any(
-        button.key == f"history-{processing_id}" for button in app.sidebar.button
-    )
-    assert any(subheader.value == "進捗詳細" for subheader in app.subheader)
-    details = {markdown.value for markdown in app.markdown}
-    assert {
-        "現在のTask: REVIEW",
-        "現在の処理: 翻訳品質と修正候補を確認中",
-        "状態: processing",
-        f"更新時刻: {now.isoformat()}",
-    } <= details
+    _assert_progress_layout(app, processing_id)
     text_areas = {area.label: area for area in app.text_area}
     assert text_areas["翻訳前 (英語)"].value == "[span-1]\nEnglish"
     assert text_areas["翻訳後 (日本語)"].value == "[span-1]\n日本語"
