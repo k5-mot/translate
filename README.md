@@ -58,14 +58,24 @@ uv run translate-ja translate inputs/sample.pdf --resume <uuidv7>
 最上位の処理記録として持ちます。LLM Taskの診断は同じ階層の
 `task-structure.json`、`task-translate.json`、`task-review.json`へ保存します。
 
-## 🖥️ UIモック
+## 🖥️ Streamlit UI
 
-初期実装のStreamlit画面はPipelineへ接続しないモックです。
+Streamlit UIからTranslate、Review、RegisterのPipelineを実行し、
+処理履歴、TaskとLLM Callの進捗、Resumeおよび成果物を確認できます。
 
 ```powershell
-# UI用Dependencyを追加して画面モックを起動する。
+# UI用Dependencyを追加してlocalhostで起動する。
 uv sync --extra ui
-uv run streamlit run main.py
+uv run streamlit run main.py --server.address localhost
+```
+
+Dockerで起動する場合は `.env` を用意し、次を実行します。
+ホスト上のLLMやDoclingへ接続するURLには、必要に応じて
+`host.docker.internal` を使用してください。
+
+```powershell
+# Streamlit用imageをbuildし、port 8501で起動する。
+docker compose up --build
 ```
 
 ## 🧪 品質確認
@@ -84,6 +94,7 @@ uv run pytest
 ## 🧭 設計資料
 
 - 確定仕様: [SPEC.md](SPEC.md)
+- Streamlit UI仕様: [SPEC_v2.md](SPEC_v2.md)
 - 用語とContext: [CONTEXT.md](CONTEXT.md)
 - 実装規則: [CODING_RULES.md](CODING_RULES.md)
 - 文書規則: [DOCUMENTATION_RULES.md](DOCUMENTATION_RULES.md)

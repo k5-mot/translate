@@ -95,6 +95,17 @@ uv run streamlit run main.py --server.address localhost
 - localhost以外へbindする場合のTLS、認証、reverse proxyおよびaccess制御は運用側の責務とする。
 - 設定値とsecretはUIへ表示しない。UIは `.env` を書き換えない。
 
+### 🐳 Docker起動
+
+- `Dockerfile` の基盤imageは `ghcr.io/astral-sh/uv:python3.12-trixie` とする。
+- imageは `uv sync --frozen --all-extras --no-dev` でUIとRegisterを含む実行依存を固定する。
+- DOCX公開に必要なPandocをDebian packageから導入する。
+- containerはStreamlitを `0.0.0.0:8501` で起動する。
+- `docker-compose.yml` は `.env` を環境変数として渡す。imageへ `.env` を複製しない。
+- `outputs` と `.translate-ui` はホストdirectoryをbind mountし、container再作成後も保持する。
+- ホスト上の外部serviceへは `host.docker.internal` で接続できる構成とする。
+- healthcheckは `/_stcore/health` をcontainer内から確認する。
+
 ## 🧭 画面構成
 
 画面は次の4領域で構成する。
