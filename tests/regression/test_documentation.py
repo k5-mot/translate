@@ -178,12 +178,8 @@ def test_function_explanations_cover_private_nested_and_comment_forms(
 def test_all_python_functions_have_explanations() -> None:
     """公開入口・製品・Testの全関数で説明の存在を検査し、欠落位置を一覧にする。"""
 
-    paths = [
-        PROJECT_ROOT / "main.py",
-        PROJECT_ROOT / "cli_v1.py",
-        PROJECT_ROOT / "main_v1.py",
-    ]
-    for directory in ("translate", "translate_v1", "tests"):
+    paths = [PROJECT_ROOT / "main.py"]
+    for directory in ("translate", "tests"):
         paths.extend(sorted((PROJECT_ROOT / directory).rglob("*.py")))
     missing = [
         f"{path.relative_to(PROJECT_ROOT).as_posix()}:{location}"

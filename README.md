@@ -94,9 +94,6 @@ uv run ty check
 uv run pytest
 ```
 
-`translate_v1`は参照用に保持しますが、新しい成果物やResume状態との互換性は
-ありません。
-
 ## 🧭 設計資料
 
 - 確定仕様: [SPEC.md](SPEC.md)
