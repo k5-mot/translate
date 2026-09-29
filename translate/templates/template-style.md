@@ -1,6 +1,6 @@
 # 📚 template.docx スタイル一覧
 
-[template.docx](template.docx) の `word/styles.xml` に明示定義された全 110 スタイルを記録しています。表示名は XML の値をそのまま記載しています。Word の言語設定により組み込みスタイルの表示名は異なる場合があります。
+[template.docx](template.docx) の `word/styles.xml` に明示定義された 110 個の文書用スタイルを記録しています。これに加えて、Word が保存時に生成する `Normal (Web)`、`Normal Table`、`No List` の 3 個の補助スタイルがあり、明示定義は合計 113 個です。表示名は基準テンプレートの XML 値を記載しています。Word の言語設定や保存処理により、組み込みスタイルの表示名と内部の `w:styleId` は変わる場合があります。
 
 `paragraph` は段落、`character` は文字、`table` は表のスタイルです。継承元は style ID で、`—` は明示指定なしを表します。参照だけが存在する `TableNormal` は本テンプレート内の定義数に含めません。
 
@@ -121,10 +121,16 @@
 
 `Heading1`～`Heading9` はテンプレート内に自動採番を持ちます。生成 DOCX では本文番号との重複を避けるため、その採番指定を除去し、見出し階層を保持します。この変換時の処理で参照テンプレート本体を書き換えることはありません。
 
-同梱テンプレートのヘッダーは空、フッターは中央揃えのページ番号（`PAGE`）のみです。先頭ページのフッターは空で、以降は現在のページ番号を表示します。仮の社名・文書名・機密表示・更新日や付録用接頭辞は含みません。利用者指定の独自テンプレートのヘッダー／フッターへ、この同梱資産の中立化は適用しません。既存成果物も書き換えません。
+同梱テンプレートの表示用サンプルテキストは英語のみです。表紙の先頭ページ用ヘッダー／フッターは空にします。2 ページ目以降のヘッダーは、左に `Example System Detail Design Specification`、右に `SYS-DD-001` を配置し、下罫線を表示します。
 
-目次の対象は `Heading1`～`Heading6`、図一覧は `ImageCaption`、表一覧は `TableCaption` です。各一覧の日本語見出しには `TOCHeading`、項目には `TOC1`～`TOC6` を使用します。一覧は生成時の静的な項目一覧で、ページ番号や Word による自動更新は含みません。
+2 ページ目以降のフッターは、上罫線付きの 3 列構成です。左に `CONFIDENTIAL / Example Corporation`、中央に章番号とページ番号、右に `Last updated: ` と保存日を表示します。通常章の中央列は `STYLEREF` と `PAGE` を組み合わせた `章番号-ページ番号`、付録は `A-ページ番号` です。保存日は `SAVEDATE` フィールドを `yyyy-MM-dd` 形式で表示します。
+
+これらは同梱 `template.docx` の仕様です。利用者指定の独自テンプレートのヘッダー／フッターは書き換えません。既存成果物も書き換えません。
+
+目次の対象は `Heading1`～`Heading6`、図一覧は `ImageCaption`、表一覧は `TableCaption` です。各一覧の見出しには `TOCHeading`、項目には `TOC1`～`TOC6` を使用します。生成 DOCX には Word の目次、図一覧および表一覧fieldを保持し、文書を開いた時にページ番号と項目を更新します。
+
+`TableCaption` と `ImageCaption` は中央揃えです。`SourceCode` と `EquationBlock` は四辺を罫線で囲みます。`Note`、`Tip`、`Important`、`Warning` および `Caution` は、Markdown の `custom-style` から対応する色付き注記styleへ変換します。Pandoc が使用する固定style IDと、Word がテンプレート保存時に再割り当てしたstyle IDが異なる場合は、DOCX Taskが表示名によって参照先を解決します。
 
 ## 🔄 更新手順
 
-テンプレート変更時は ZIP 内の `word/styles.xml` の全 `w:style` を確認し、`w:styleId`、`w:type`、`w:name/@w:val`、`w:basedOn/@w:val` とこの表を照合してください。Style ID の欠落・重複や表示名・継承元の差があれば、この文書を同時に更新します。
+テンプレート変更時は ZIP 内の `word/styles.xml` の全 `w:style` を確認し、`w:type`、`w:name/@w:val`、`w:basedOn/@w:val` とこの表を照合してください。`w:styleId` は Word による再割り当てを許容しますが、文書用スタイルの欠落・重複、表示名、継承関係に差があれば、この文書を同時に更新します。併せて、全ページをレンダリングし、先頭ページのヘッダー／フッターが空であること、通常章と付録のヘッダー／フッター、英語のみの表示用サンプルテキストを確認します。

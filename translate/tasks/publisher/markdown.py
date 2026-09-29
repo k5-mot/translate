@@ -16,6 +16,13 @@ if TYPE_CHECKING:
     from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_ALERT_STYLES = {
+    "note": "Note / 注記",
+    "tip": "Tip / ヒント",
+    "important": "Important / 重要",
+    "warning": "Warning / 警告",
+    "caution": "Caution / 注意",
+}
 
 
 def convert_document(
@@ -72,8 +79,9 @@ def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
     if block.kind == "blockquote":
         return "\n".join(f"> {line}" for line in text.splitlines())
     if block.kind == "alert":
-        label = (block.alert_kind or "note").upper()
-        return f"> [!{label}]\n" + "\n".join(f"> {line}" for line in text.splitlines())
+        kind = block.alert_kind or "note"
+        label = kind.upper()
+        return f'::: {{custom-style="{_ALERT_STYLES[kind]}"}}\n**{label}:** {text}\n:::'
     if block.kind == "code":
         raw = block.content.text() if block.content is not None else ""
         longest = max((len(value) for value in re.findall(r"`+", raw)), default=0)
