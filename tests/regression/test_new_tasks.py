@@ -19,6 +19,7 @@ from translate.tasks.preprocess.structure import (
     _schema,
 )
 from translate.tasks.publisher.lint import lint
+from translate.tasks.publisher.markdown import convert_block
 from translate.tasks.review.align import align
 from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
@@ -185,6 +186,24 @@ def test_lint_checks_asset_existence_without_translation_quality(
 
     assert not result.valid
     assert [diagnostic.code for diagnostic in result.diagnostics] == ["missing_asset"]
+
+
+def test_markdown_alert_uses_bundled_word_style_name() -> None:
+    """Alertをtemplate内の色付きWord styleへ一意に対応させる。"""
+
+    block = Block(
+        id="note",
+        order=0,
+        kind="alert",
+        alert_kind="note",
+        content=_unit("note/content", "Reference details."),
+    )
+
+    value = convert_block(block, 30.0)
+
+    assert value == (
+        '::: {custom-style="Note / 注記"}\n**NOTE:** Reference details\\.\n:::'
+    )
 
 
 def test_load_converts_minimal_docling_document() -> None:

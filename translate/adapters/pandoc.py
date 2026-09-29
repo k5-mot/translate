@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
@@ -9,8 +10,19 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 from translate.artifact_store import replace_path
+
+_WORD_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_MATH_NAMESPACE = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_WORD = f"{{{_WORD_NAMESPACE}}}"
+_STYLE_ROLES = {
+    "TableCaption": (("TableCaption",), ("表タイトル", "Table Caption")),
+    "ImageCaption": (("ImageCaption",), ("図タイトル", "Image Caption")),
+    "SourceCode": (("SourceCode",), ("コードブロック", "Source Code")),
+    "Equation": (("EquationBlock",), ("数式ブロック", "Equation Block")),
+}
 
 
 class PandocError(RuntimeError):
@@ -93,9 +105,16 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
             capture_output=True,
             timeout=timeout,
         )
+        _finalize_docx(temporary)
         _validate_docx(temporary)
         replace_path(temporary, output)
-    except (OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
+    except (
+        ET.ParseError,
+        KeyError,
+        OSError,
+        subprocess.SubprocessError,
+        zipfile.BadZipFile,
+    ) as error:
         raise PandocError("pandoc DOCX publication failed") from error
     finally:
         temporary.unlink(missing_ok=True)
@@ -145,3 +164,144 @@ def _validate_docx(path: Path) -> None:
         required = {"[Content_Types].xml", "word/document.xml"}
         if not required.issubset(archive.namelist()) or archive.testzip() is not None:
             raise PandocError("invalid DOCX package")
+
+
+def _finalize_docx(path: Path) -> None:
+    """Pandoc固定styleを参照templateの実styleへ結び、field更新を予約する。"""
+
+    descriptor, rewritten_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.stem}.finalize.",
+        suffix=".docx",
+    )
+    os.close(descriptor)
+    rewritten = Path(rewritten_name)
+    try:
+        with (
+            zipfile.ZipFile(path) as source,
+            zipfile.ZipFile(rewritten, "w") as target,
+        ):
+            styles = _parse_xml(source.read("word/styles.xml"))
+            mappings, names = _style_mappings(styles)
+            for info in source.infolist():
+                value = source.read(info.filename)
+                if info.filename == "word/document.xml":
+                    value = _finalize_document(value, mappings, names)
+                elif info.filename == "word/settings.xml":
+                    value = _enable_field_updates(value)
+                target.writestr(info, value)
+        replace_path(rewritten, path)
+    finally:
+        rewritten.unlink(missing_ok=True)
+
+
+def _parse_xml(value: bytes) -> ET.Element:
+    """元のnamespace prefixを登録してOOXMLを解析する。"""
+
+    # DOCX Taskが生成したOOXMLに限定し、外部entityを使用しない。
+    for _, namespace in ET.iterparse(  # noqa: S314
+        io.BytesIO(value), events=("start-ns",)
+    ):
+        prefix, uri = namespace
+        if prefix != "xml":
+            ET.register_namespace(prefix, uri)
+    return ET.fromstring(value)  # noqa: S314
+
+
+def _style_mappings(
+    styles: ET.Element,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Pandoc style IDからtemplate style IDと表示名への対応を得る。"""
+
+    namespace = {"w": _WORD_NAMESPACE}
+    styles_by_id: dict[str, ET.Element] = {}
+    styles_by_name: dict[str, ET.Element] = {}
+    for style in styles.findall("w:style", namespace):
+        style_id = style.get(f"{_WORD}styleId")
+        name = style.find("w:name", namespace)
+        display_name = name.get(f"{_WORD}val") if name is not None else None
+        if style_id:
+            styles_by_id[style_id] = style
+        if display_name:
+            styles_by_name[display_name] = style
+
+    mappings: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for source_id, (preferred_ids, preferred_names) in _STYLE_ROLES.items():
+        style = next(
+            (
+                styles_by_name[value]
+                for value in preferred_names
+                if value in styles_by_name
+            ),
+            None,
+        )
+        if style is None:
+            style = next(
+                (
+                    styles_by_id[value]
+                    for value in preferred_ids
+                    if value in styles_by_id
+                ),
+                None,
+            )
+        if style is None:
+            continue
+        target_id = style.get(f"{_WORD}styleId")
+        name = style.find("w:name", namespace)
+        display_name = name.get(f"{_WORD}val") if name is not None else None
+        if target_id and display_name:
+            mappings[source_id] = target_id
+            names[source_id] = display_name
+    return mappings, names
+
+
+def _finalize_document(
+    value: bytes,
+    mappings: dict[str, str],
+    names: dict[str, str],
+) -> bytes:
+    """本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。"""
+
+    namespace = {"m": _MATH_NAMESPACE, "w": _WORD_NAMESPACE}
+    document = _parse_xml(value)
+    for style in document.findall(".//w:pStyle", namespace):
+        current = style.get(f"{_WORD}val")
+        if current in mappings:
+            style.set(f"{_WORD}val", mappings[current])
+    equation_style = mappings.get("Equation")
+    if equation_style is not None:
+        for paragraph in document.findall(".//w:p", namespace):
+            if paragraph.find("m:oMathPara", namespace) is None:
+                continue
+            properties = paragraph.find("w:pPr", namespace)
+            if properties is None:
+                properties = ET.Element(f"{_WORD}pPr")
+                paragraph.insert(0, properties)
+            style = properties.find("w:pStyle", namespace)
+            if style is None:
+                style = ET.Element(f"{_WORD}pStyle")
+                properties.insert(0, style)
+            style.set(f"{_WORD}val", equation_style)
+    for instruction in document.findall(".//w:instrText", namespace):
+        if instruction.text is None:
+            continue
+        instruction.text = instruction.text.replace(
+            "Image Caption", names.get("ImageCaption", "Image Caption")
+        ).replace("Table Caption", names.get("TableCaption", "Table Caption"))
+    for field in document.findall(".//w:fldChar", namespace):
+        if field.get(f"{_WORD}fldCharType") == "begin":
+            field.set(f"{_WORD}dirty", "true")
+    return ET.tostring(document, encoding="utf-8", xml_declaration=True)
+
+
+def _enable_field_updates(value: bytes) -> bytes:
+    """Wordで開いた時に目次、図一覧および表一覧を更新させる。"""
+
+    namespace = {"w": _WORD_NAMESPACE}
+    settings = _parse_xml(value)
+    update = settings.find("w:updateFields", namespace)
+    if update is None:
+        update = ET.SubElement(settings, f"{_WORD}updateFields")
+    update.set(f"{_WORD}val", "true")
+    return ET.tostring(settings, encoding="utf-8", xml_declaration=True)
