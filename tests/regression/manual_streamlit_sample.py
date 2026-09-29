@@ -1,4 +1,4 @@
-"""sample3.pdfをStreamlit UIから翻訳するPlaywright受入検証。"""
+"""sample.pdfをStreamlit UIから翻訳するPlaywright受入検証。"""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def verify(url: str, source: Path, timeout_seconds: float) -> None:
         _wait_for_translation(page, timeout_seconds)
         _download(page, "Markdownをdownload", ".md")
         _download(page, "DOCXをdownload", ".docx")
-        evidence = Path("test-results/streamlit-sample3-success.png")
+        evidence = Path("test-results/streamlit-sample-success.png")
         evidence.parent.mkdir(parents=True, exist_ok=True)
         page.screenshot(path=str(evidence), full_page=True)
         browser.close()
@@ -93,7 +93,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8501")
-    parser.add_argument("--source", type=Path, default=Path("inputs/sample3.pdf"))
+    parser.add_argument("--source", type=Path, default=Path("inputs/sample.pdf"))
     parser.add_argument("--timeout", type=float, default=21_600)
     parser.add_argument("--processing-id")
     arguments = parser.parse_args()
