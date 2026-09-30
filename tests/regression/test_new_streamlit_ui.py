@@ -26,6 +26,7 @@ from translate.tasks.translation.translate import TranslationItem, TranslationRe
 from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
+    _delete_history_entry,
     _history_entries,
     _live_call_counts,
     _preview,
@@ -167,6 +168,84 @@ def test_worker_registry_rejects_duplicate_active_id() -> None:
         assert not registry.submit("processing-id", wait_for_gate)
     finally:
         gate.set()
+
+
+def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
+    tmp_path: Path,
+) -> None:
+    """終了済み履歴の処理directoryと同じIDの保存入力だけを削除する。"""
+
+    processing_id = str(uuid7())
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"pdf")
+    record = _record(processing_id, source, datetime.now(UTC)).model_copy(
+        update={"status": "failed"}
+    )
+    processing_directory = tmp_path / "outputs/source" / processing_id
+    record_path = processing_directory / "translation.json"
+    write_model(record_path, record)
+    staged = tmp_path / ".translate-ui" / processing_id
+    staged.mkdir(parents=True)
+    (staged / "source.pdf").write_bytes(b"pdf")
+    untouched = tmp_path / "outputs/source/untouched"
+    untouched.mkdir(parents=True)
+    entry = HistoryEntry(
+        kind="translate",
+        record_path=record_path,
+        updated_at=record.updated_at,
+        record=record,
+    )
+
+    _delete_history_entry(
+        entry,
+        WorkerRegistry(),
+        outputs_root=tmp_path / "outputs",
+        work_root=tmp_path / ".translate-ui",
+    )
+
+    assert not processing_directory.exists()
+    assert not staged.exists()
+    assert untouched.is_dir()
+
+
+def test_streamlit_delete_button_requires_confirmation_and_removes_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """画面の確認欄を選んだ後だけ選択中の終了済み履歴を削除する。"""
+
+    monkeypatch.chdir(tmp_path)
+    processing_id = str(uuid7())
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"pdf")
+    record = _record(processing_id, source, datetime.now(UTC)).model_copy(
+        update={"status": "failed"}
+    )
+    processing_directory = tmp_path / "outputs/source" / processing_id
+    write_model(processing_directory / "translation.json", record)
+    staged = tmp_path / ".translate-ui" / processing_id
+    staged.mkdir(parents=True)
+    (staged / "source.pdf").write_bytes(b"pdf")
+    app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py"))
+    app.query_params["processing"] = processing_id
+
+    app.run(timeout=10)
+
+    delete = next(
+        button for button in app.button if button.key == f"delete-{processing_id}"
+    )
+    assert delete.disabled
+    confirmation = next(
+        checkbox
+        for checkbox in app.checkbox
+        if checkbox.key == f"confirm-delete-{processing_id}"
+    )
+    confirmation.check().run(timeout=10)
+    next(
+        button for button in app.button if button.key == f"delete-{processing_id}"
+    ).click().run(timeout=10)
+
+    assert not processing_directory.exists()
+    assert not staged.exists()
 
 
 def test_live_call_counts_reads_in_progress_artifacts(tmp_path: Path) -> None:

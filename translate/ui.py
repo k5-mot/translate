@@ -1778,6 +1778,70 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
         else:
             _render_registration_result(entry, record)
     _render_resume(entry, registry)
+    _render_history_delete(entry, registry)
+
+
+def _render_history_delete(entry: HistoryEntry, registry: WorkerRegistry) -> None:
+    """終了済みの選択履歴だけを確認操作付きで削除する。"""
+
+    record = entry.record
+    processing_id = entry.processing_id
+    if (
+        record is None
+        or processing_id is None
+        or record.status == "processing"
+        or registry.active(processing_id)
+    ):
+        return
+    with st.expander("履歴を削除", expanded=False, icon=":material/delete:"):
+        confirmed = st.checkbox(
+            "成果物と保存済み入力を削除する",
+            key=f"confirm-delete-{processing_id}",
+        )
+        if st.button(
+            "削除",
+            key=f"delete-{processing_id}",
+            disabled=not confirmed,
+            type="secondary",
+        ):
+            try:
+                _delete_history_entry(entry, registry)
+            except (InputError, OSError) as error:
+                st.error(str(error))
+            else:
+                st.query_params.clear()
+                st.rerun()
+
+
+def _delete_history_entry(
+    entry: HistoryEntry,
+    registry: WorkerRegistry,
+    *,
+    outputs_root: Path | None = None,
+    work_root: Path | None = None,
+) -> None:
+    """終了済み記録の正確な処理directoryと保存入力だけを削除する。"""
+
+    processing_id = entry.processing_id
+    record = entry.record
+    if processing_id is None or record is None:
+        raise InputError("valid processing history is required")
+    if record.status == "processing" or registry.active(processing_id):
+        raise InputError("active processing history cannot be deleted")
+    outputs = (outputs_root or Path.cwd() / "outputs").resolve()
+    processing_directory = entry.record_path.parent.resolve()
+    if (
+        processing_directory.name != processing_id
+        or processing_directory.parent.parent != outputs
+    ):
+        raise InputError("history path is outside the outputs directory")
+    staged_root = (work_root or Path.cwd() / ".translate-ui").resolve()
+    staged_directory = (staged_root / processing_id).resolve()
+    if staged_directory.parent != staged_root:
+        raise InputError("saved input path is outside the UI work directory")
+    shutil.rmtree(processing_directory)
+    if staged_directory.is_dir():
+        shutil.rmtree(staged_directory)
 
 
 def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
