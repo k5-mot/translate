@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import zipfile
 from typing import TYPE_CHECKING
 
 import pytest
 from PIL import Image as PILImage
 
+from translate.adapters.llm import LLMInputExceededError, StructuredResult
+from translate.common.config import Config
 from translate.glossary import relevant_glossary
-from translate.models.artifacts import ReviewResult
+from translate.models.artifacts import CheckResult, ReviewResult
 from translate.models.document import (
     Block,
     Document,
@@ -19,7 +22,7 @@ from translate.models.document import (
     TextSpan,
     TextUnit,
 )
-from translate.models.review import ReviewTarget, Revision, TextEdit
+from translate.models.review import ReviewResponse, ReviewTarget, Revision, TextEdit
 from translate.tasks.converter.unpack import _validate_entries
 from translate.tasks.preprocess.load import (
     _assign_cell_images,
@@ -33,6 +36,7 @@ from translate.tasks.preprocess.structure import (
     StructureResponse,
     _apply_page,
     _bound_image,
+    _normalize_heading_levels,
     _schema,
 )
 from translate.tasks.preprocess.structure import (
@@ -44,6 +48,7 @@ from translate.tasks.review.align import align
 from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
 from translate.tasks.review.review import _chunks as review_chunks
+from translate.tasks.review.review import _execute as execute_review
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -467,6 +472,83 @@ def test_structure_rejects_kind_without_required_block_content() -> None:
     assert diagnostics == ["call invalid_kind table code"]
 
 
+def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
+    """ページ境界のlevel=1誤補正をDocling初期levelへ戻す。"""
+
+    first = Block(
+        id="h1",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("h1/content", "Document"),
+    )
+    second = Block(
+        id="h2",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("h2/content", "Section"),
+    )
+    document = Document(
+        pages=[Page(number=1, blocks=[first]), Page(number=2, blocks=[second])]
+    )
+    diagnostics: list[str] = []
+
+    _normalize_heading_levels(document, {"h1": 1, "h2": 2}, diagnostics)
+
+    assert second.level == 2
+    assert diagnostics == [
+        "h2 level_normalized llm=1 baseline=2 reason=page_boundary_reset"
+    ]
+
+
+def test_structure_allows_explicit_chapter_reset_to_level_one() -> None:
+    """章見出しはページ境界でもlevel=1を維持する。"""
+
+    heading = Block(
+        id="chapter",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("chapter/content", "CHAPTER II"),
+    )
+    document = Document(
+        pages=[Page(number=1, blocks=[]), Page(number=2, blocks=[heading])]
+    )
+    diagnostics: list[str] = []
+
+    _normalize_heading_levels(document, {"chapter": 2}, diagnostics)
+
+    assert heading.level == 1
+    assert diagnostics == []
+
+
+def test_structure_does_not_normalize_same_page_heading_reset() -> None:
+    """同一ページ内の明示的な階層変更は補正対象にしない。"""
+
+    first = Block(
+        id="h1",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("h1/content", "Document"),
+    )
+    second = Block(
+        id="h2",
+        order=1,
+        kind="heading",
+        level=1,
+        content=_unit("h2/content", "Section"),
+    )
+    document = Document(pages=[Page(number=1, blocks=[first, second])])
+    diagnostics: list[str] = []
+
+    _normalize_heading_levels(document, {"h1": 1, "h2": 2}, diagnostics)
+
+    assert second.level == 1
+    assert diagnostics == []
+
+
 def test_load_splits_long_text_without_loss() -> None:
     """長大Docling文字列を安定IDと有限byteのSpanへ欠落なく分ける。"""
 
@@ -581,3 +663,64 @@ def test_review_chunks_keep_one_large_translated_span_intact() -> None:
     assert len(parts) > 1
     assert "".join(part.source for part in parts) == target.source
     assert [item.id for part in parts for item in part.spans] == [span.id]
+
+
+def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
+    """単一対象の入力超過もさらに分割し、親Callを失敗で終わらせない。"""
+
+    class SizeLimitedClient:
+        def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
+            """3,000 bytesを超す入力だけprovider上限超過として拒否する。"""
+
+            user = values["user"]
+            assert isinstance(user, str)
+            if len(user.encode("utf-8")) > 3000:
+                message = "provider context limit"
+                raise LLMInputExceededError(message)
+            return StructuredResult(
+                response=ReviewResponse(),
+                attempts=1,
+                input_tokens=100,
+                output_tokens=10,
+            )
+
+    spans = [
+        TextSpan(
+            id=f"span-{index}",
+            source="English " * 100,
+            translated="訳" * 300,
+        )
+        for index in range(4)
+    ]
+    target = ReviewTarget(
+        id="target/part-0001",
+        source="".join(span.source for span in spans),
+        translation="".join(span.text() for span in spans),
+        target_ids=["unit"],
+        spans=spans,
+    )
+
+    responses = execute_review(
+        client=SizeLimitedClient(),  # type: ignore[arg-type]
+        config=Config(
+            openai_base_url="http://localhost",
+            openai_review_model="review",
+            review_input_tokens=8192,
+        ),
+        targets=[target],
+        checked=CheckResult(findings=[]),
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+    )
+
+    artifacts = [
+        json.loads(path.read_text()) for path in tmp_path.glob("calls/*/call.json")
+    ]
+    statuses = [artifact["status"] for artifact in artifacts]
+    assert "split" in statuses
+    assert "failed" not in statuses
+    assert len(responses) > 1
+    assert all(response == ReviewResponse() for _, response, _ in responses)

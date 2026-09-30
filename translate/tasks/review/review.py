@@ -384,11 +384,13 @@ def _execute(
             output_tokens=config.review_output_tokens,
         )
     except (LLMInputExceededError, LLMOutputExceededError) as error:
-        if len(targets) < 2 or depth >= config.llm_split_max_depth:
+        if depth >= config.llm_split_max_depth:
             fail_llm_call(call_directory, artifact, error, attempts=1)
             raise
-        middle = len(targets) // 2
-        groups = (targets[:middle], targets[middle:])
+        groups = _retry_groups(targets)
+        if not groups:
+            fail_llm_call(call_directory, artifact, error, attempts=1)
+            raise
         child_ids = [
             llm_call_id(
                 "REVIEW", [target.id for target in group], [*lineage, str(index)]
@@ -424,6 +426,24 @@ def _execute(
         output_tokens=result.output_tokens,
     )
     return [(call_id, result.response, targets)]
+
+
+def _retry_groups(targets: list[ReviewTarget]) -> tuple[list[ReviewTarget], ...]:
+    """上限超過したCallを、単一の事前分割済み対象も含めて縮小する。"""
+
+    if len(targets) >= 2:
+        middle = len(targets) // 2
+        return (targets[:middle], targets[middle:])
+    if not targets:
+        return ()
+    maximum_bytes = max(1, _target_bytes(targets) // 2)
+    try:
+        parts = _split_large_target(targets[0], maximum_bytes)
+    except ValueError:
+        return ()
+    if len(parts) < 2:
+        return ()
+    return tuple([part] for part in parts)
 
 
 def _schema(config: Config) -> dict[str, object]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, get_args
 
@@ -60,7 +61,7 @@ class StructurePatch(StructureModel):
 
     block_id: str
     kind: BlockKind | None = None
-    level: int | None = None
+    level: int | None = Field(default=None, ge=1, le=6)
     alert_kind: AlertKind | None = None
     caption_source_id: str | None = None
 
@@ -97,8 +98,15 @@ def structure(
     diagnostics: list[str] = []
     _write_diagnostics(diagnostics_path, diagnostics)
     updated = document.model_copy(deep=True)
+    baseline_levels = {
+        block.id: block.level
+        for page in updated.pages
+        for block in page.blocks
+        if block.kind == "heading"
+    }
     client = LLMClient(config)
     used_call_ids: list[str] = []
+    heading_history: list[dict[str, object]] = []
     for page in updated.pages:
         page_responses: list[tuple[str, StructureResponse]] = []
         image = task_directory / "pages" / f"page-{page.number:04d}.png"
@@ -120,12 +128,18 @@ def structure(
                     image=image,
                     task_directory=task_directory,
                     rules=rules,
+                    heading_history=heading_history,
                     lineage=[f"page-{page.number:04d}", f"chunk-{index:04d}"],
                     depth=0,
                 )
             )
         used_call_ids.extend(call_id for call_id, _ in page_responses)
         _apply_page(page, page_responses, diagnostics)
+        heading_history.extend(_page_heading_history(page))
+        del heading_history[:-8]
+        write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
+    _normalize_heading_levels(updated, baseline_levels, diagnostics)
+    for page in updated.pages:
         write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
     _write_diagnostics(diagnostics_path, diagnostics)
     write_model(
@@ -229,6 +243,7 @@ def _execute(
     image: Path,
     task_directory: Path,
     rules: str,
+    heading_history: list[dict[str, object]],
     lineage: list[str],
     depth: int,
 ) -> list[tuple[str, StructureResponse]]:
@@ -244,6 +259,7 @@ def _execute(
             "blocks": [block.model_dump(mode="json") for block in blocks],
             "image": sha256_file(image),
             "rules": canonical_hash(rules),
+            "heading_history": heading_history,
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "disabled",
@@ -274,10 +290,14 @@ def _execute(
             system=(
                 "Inspect the page image and return only necessary structural patches. "
                 "Never rewrite text or IDs. Caption is not a block kind; associate a "
-                "caption only with caption_source_id.\n\n" + rules
+                "caption only with caption_source_id. Heading levels are document-global; "
+                "do not reset them at a page boundary.\n\n" + rules
             ),
             user=json.dumps(
-                {"blocks": [_block_payload(block) for block in blocks]},
+                {
+                    "heading_history": heading_history,
+                    "blocks": [_block_payload(block) for block in blocks],
+                },
                 ensure_ascii=False,
             ),
             contract=(
@@ -313,6 +333,7 @@ def _execute(
                     image=image,
                     task_directory=task_directory,
                     rules=rules,
+                    heading_history=heading_history,
                     lineage=[*lineage, str(index)],
                     depth=depth + 1,
                 )
@@ -386,6 +407,71 @@ def _apply_page(
             block.order = order
 
 
+def _page_heading_history(page: Page) -> list[dict[str, object]]:
+    """処理済みページから次ページへ渡す短い見出し履歴を作る。"""
+
+    return [
+        {
+            "level": block.level,
+            "text": _excerpt(block.content.text("source"), 256)
+            if block.content is not None
+            else "",
+        }
+        for block in sorted(page.blocks, key=lambda item: item.order)
+        if block.kind == "heading"
+        and block.level is not None
+        and block.content is not None
+    ]
+
+
+_TOP_LEVEL_MARKER = re.compile(
+    r"^\s*(?:chapter\b|part\b|appendix\b|付録\b|第\s*\d+\s*[章編])",
+    re.IGNORECASE,
+)
+_NUMBERED_TOP_LEVEL = re.compile(r"^\s*\d+[.)、\uFF1A:]\s+")
+
+
+def _normalize_heading_levels(
+    document: Document,
+    baseline_levels: dict[str, int | None],
+    diagnostics: list[str],
+) -> None:
+    """ページ境界でのlevel=1リセットを初期階層へ戻す。"""
+
+    previous_level: int | None = None
+    previous_page_number: int | None = None
+    for page in sorted(document.pages, key=lambda item: item.number):
+        page_boundary = (
+            previous_page_number is not None and page.number > previous_page_number
+        )
+        for block in sorted(page.blocks, key=lambda item: item.order):
+            if block.kind != "heading" or block.level is None:
+                continue
+            baseline = baseline_levels.get(block.id)
+            text = block.content.text("source").strip() if block.content else ""
+            if (
+                previous_level is not None
+                and page_boundary
+                and block.level == 1
+                and baseline is not None
+                and baseline > 1
+                and not _is_top_level_marker(text)
+            ):
+                diagnostics.append(
+                    f"{block.id} level_normalized llm=1 baseline={baseline} "
+                    "reason=page_boundary_reset"
+                )
+                block.level = baseline
+            previous_level = block.level
+        previous_page_number = page.number
+
+
+def _is_top_level_marker(text: str) -> bool:
+    """章・付録など明示的な最上位見出し表現か判定する。"""
+
+    return bool(_TOP_LEVEL_MARKER.search(text) or _NUMBERED_TOP_LEVEL.search(text))
+
+
 def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
     """提案kindが既存Blockの保持する必須fieldだけで成立するか返す。"""
 
@@ -428,7 +514,7 @@ def _schema(maximum_items: int) -> dict[str, object]:
                             "type": "string",
                             "enum": list(get_args(BlockKind)),
                         },
-                        "level": {"type": "integer"},
+                        "level": {"type": "integer", "minimum": 1, "maximum": 6},
                         "alert_kind": {
                             "type": "string",
                             "enum": list(get_args(AlertKind)),
