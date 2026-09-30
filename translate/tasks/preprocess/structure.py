@@ -8,9 +8,14 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, get_args
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
+from translate.adapters.llm import (
+    LLMClient,
+    LLMError,
+    LLMInputExceededError,
+    LLMOutputExceededError,
+)
 from translate.adapters.pdf import render_page
 from translate.artifact_store import (
     begin_llm_call,
@@ -41,6 +46,7 @@ if TYPE_CHECKING:
 
 # ローカルGemma VLMで安定して処理できる実測上限にpage画像を収める。
 MAX_VISION_PIXELS = 1_000_000
+MAX_BLOCK_EXCERPT_BYTES = 1024
 
 
 class StructureModel(BaseModel):
@@ -57,6 +63,15 @@ class StructurePatch(StructureModel):
     level: int | None = None
     alert_kind: AlertKind | None = None
     caption_source_id: str | None = None
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def ignore_caption_as_kind(cls, value: object) -> object:
+        """captionをBlock種別と誤認した応答だけを未指定として扱う。"""
+
+        if isinstance(value, str) and value.strip().casefold() == "caption":
+            return None
+        return value
 
 
 class StructureResponse(StructureModel):
@@ -146,16 +161,46 @@ def _chunks(
 def _block_bytes(blocks: list[Block]) -> int:
     """STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。"""
 
-    value = [
-        {
-            "block_id": block.id,
-            "kind": block.kind,
-            "text": block.content.text("source") if block.content is not None else "",
-            "level": block.level,
-        }
-        for block in blocks
-    ]
+    value = [_block_payload(block) for block in blocks]
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) + 1024
+
+
+def _block_payload(block: Block) -> dict[str, object]:
+    """分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。"""
+
+    text = block.content.text("source") if block.content is not None else ""
+    return {
+        "block_id": block.id,
+        "kind": block.kind,
+        "text": _excerpt(text, MAX_BLOCK_EXCERPT_BYTES),
+        "level": block.level,
+    }
+
+
+def _excerpt(value: str, maximum_bytes: int) -> str:
+    """UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。"""
+
+    if len(value.encode("utf-8")) <= maximum_bytes:
+        return value
+    marker = "\n…\n"
+    side = (maximum_bytes - len(marker.encode("utf-8"))) // 2
+    head = _take_utf8(value, side)
+    tail = _take_utf8(value[::-1], side)[::-1]
+    return f"{head}{marker}{tail}"
+
+
+def _take_utf8(value: str, maximum_bytes: int) -> str:
+    """文字境界を保って先頭から指定byteまで返す。"""
+
+    result: list[str] = []
+    size = 0
+    for character in value:
+        encoded = len(character.encode("utf-8"))
+        if size + encoded > maximum_bytes:
+            break
+        result.append(character)
+        size += encoded
+    return "".join(result)
 
 
 def _bound_image(path: Path) -> None:
@@ -195,7 +240,7 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "STRUCTURE",
-            "schema": 1,
+            "schema": 3,
             "blocks": [block.model_dump(mode="json") for block in blocks],
             "image": sha256_file(image),
             "rules": canonical_hash(rules),
@@ -228,22 +273,11 @@ def _execute(
             response_type=StructureResponse,
             system=(
                 "Inspect the page image and return only necessary structural patches. "
-                "Never rewrite text or IDs.\n\n" + rules
+                "Never rewrite text or IDs. Caption is not a block kind; associate a "
+                "caption only with caption_source_id.\n\n" + rules
             ),
             user=json.dumps(
-                {
-                    "blocks": [
-                        {
-                            "block_id": block.id,
-                            "kind": block.kind,
-                            "level": block.level,
-                            "text": block.content.text("source")
-                            if block.content is not None
-                            else "",
-                        }
-                        for block in blocks
-                    ]
-                },
+                {"blocks": [_block_payload(block) for block in blocks]},
                 ensure_ascii=False,
             ),
             contract=(
@@ -252,10 +286,11 @@ def _execute(
                 f"At most {len(blocks)} patches."
             ),
             native_schema=_schema(len(blocks)),
+            input_tokens=config.structure_input_tokens,
             output_tokens=config.structure_output_tokens,
             image=image,
         )
-    except LLMOutputExceededError as error:
+    except (LLMInputExceededError, LLMOutputExceededError) as error:
         if len(blocks) < 2 or depth >= config.llm_split_max_depth:
             fail_llm_call(call_directory, artifact, error, attempts=1)
             raise
@@ -312,12 +347,20 @@ def _apply_page(
             if block is None:
                 diagnostics.append(f"{call_id} unknown_block {patch.block_id}")
                 continue
-            if patch.kind is not None:
+            if patch.kind is not None and not _kind_is_compatible(block, patch):
+                diagnostics.append(
+                    f"{call_id} invalid_kind {patch.block_id} {patch.kind}"
+                )
+            elif patch.kind is not None:
                 block.kind = patch.kind
-            if patch.level is not None:
+            if patch.level is not None and block.kind == "heading":
                 block.level = patch.level
-            if patch.alert_kind is not None:
+            elif patch.level is not None:
+                diagnostics.append(f"{call_id} invalid_level {patch.block_id}")
+            if patch.alert_kind is not None and block.kind == "alert":
                 block.alert_kind = patch.alert_kind
+            elif patch.alert_kind is not None:
+                diagnostics.append(f"{call_id} invalid_alert_kind {patch.block_id}")
             if patch.caption_source_id is not None:
                 source = blocks.get(patch.caption_source_id)
                 if (
@@ -341,6 +384,31 @@ def _apply_page(
         ]
         for order, block in enumerate(page.blocks):
             block.order = order
+
+
+def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
+    """提案kindが既存Blockの保持する必須fieldだけで成立するか返す。"""
+
+    kind = patch.kind
+    if kind is None:
+        return True
+    content_required = kind in {
+        "paragraph",
+        "heading",
+        "blockquote",
+        "list_item",
+        "alert",
+        "code",
+        "formula",
+        "footnote",
+    }
+    return not (
+        (content_required and block.content is None)
+        or (kind == "heading" and patch.level is None and block.level is None)
+        or (kind == "alert" and patch.alert_kind is None and block.alert_kind is None)
+        or (kind == "figure" and block.image is None)
+        or (kind == "table" and not block.cells)
+    )
 
 
 def _schema(maximum_items: int) -> dict[str, object]:

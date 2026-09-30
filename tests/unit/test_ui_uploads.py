@@ -82,11 +82,11 @@ def test_atomic_write_retries_transient_windows_access_denied(
     attempts = 0
 
     def replace(path: Path, destination: Path) -> Path:
-        """最初のfile replaceだけWindowsのアクセス拒否を再現する。"""
+        """5回続くWindowsのアクセス拒否を再現する。"""
 
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= 5:
             raise PermissionError(
                 13,
                 "Access is denied",
@@ -101,5 +101,5 @@ def test_atomic_write_retries_transient_windows_access_denied(
 
     atomic_write_bytes(target, b"new")
 
-    assert attempts == 2
+    assert attempts == 6
     assert target.read_bytes() == b"new"

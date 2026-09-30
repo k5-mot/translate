@@ -43,7 +43,7 @@ def upsert_revision(
     )
     if {str(item.id) for item in existing} >= set(ids):
         return False
-    client.upsert(
+    client.upload_points(
         collection_name=collection,
         points=[
             models.PointStruct(
@@ -51,6 +51,7 @@ def upsert_revision(
             )
             for point in points
         ],
+        batch_size=64,
         wait=True,
     )
     verified = client.retrieve(

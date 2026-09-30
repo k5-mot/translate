@@ -113,6 +113,7 @@ translate/
 ├── __main__.py
 ├── cli.py
 ├── artifact_store.py
+├── glossary.py
 ├── common/
 │   ├── __init__.py
 │   ├── config.py
@@ -183,6 +184,7 @@ translate/
 | rootの `main.py` | Pipelineへ接続しないStreamlitのモック画面を提供する |
 | `cli.py` | CLI引数を検査し、Pipelineを呼び出して終了コードと成果物pathを表示する |
 | `artifact_store.py` | `outputs` のpath生成、排他lock、fingerprint、Task成果物およびLLM Call進捗の原子的な保存と再読込みを隠蔽する |
+| `glossary.py` | 用語集CSVをparseし、LLM Callの英語原文に一致する行だけを抽出する |
 | `common/config.py` | 環境変数を読み取り、Pydantic設定モデルとして検証する |
 | `common/logger.py` | 標準Libraryのloggingが出力するlevel名へ色を付ける |
 | `models/document.py` | `Document`、`Page`、`Block`、`TextUnit`、`TextSpan`、画像および表モデルを定義する |
@@ -866,6 +868,7 @@ english-short,english-long,japanese-short,japanese-long,kind,description,note,re
 - `english-short` と `english-long` の空でない値は、全行・両列を通じて大文字と小文字を区別せず一意とする。
 - LLM Callごとに、そのCallの英語原文へ大文字と小文字を区別せず出現する英語表記を一つ以上持つ行だけを渡す。
 - 採用した行はCSVの記載順を保持し、長さ、列種別または一致位置によって並べ替えない。
+- 該当行が多い場合は、Taskのユーザー入力枠の3分の1を上限としてCSV記載順に採用する。上限を超える行は渡さず、CSV行を途中で切断しない。
 - CHECKは用語集を参照せず、用語の一致または不一致を検査しない。
 
 ### 📏 実行制限
@@ -883,7 +886,7 @@ english-short,english-long,japanese-short,japanese-long,kind,description,note,re
 | 1chunkの `TextUnit` | 64件 |
 | 1chunkの `ReviewTarget` | 32件 |
 | 1回のPipeline開始における同一LLM Callの総試行回数 | 3回（初回を含む） |
-| 出力超過時の分割深度 | 6 |
+| 入力または出力超過時の分割深度 | 6 |
 | 1要求のtimeout | 1,800秒 |
 | 1Taskのdeadline | 21,600秒 |
 
@@ -912,7 +915,7 @@ english-short,english-long,japanese-short,japanese-long,kind,description,note,re
 | `REVIEW_OUTPUT_TOKENS` | 4,096 | 4,096 | REVIEW出力 |
 | `REVIEW_MAX_TARGETS` | 32 | 32 | 1chunkの `ReviewTarget` 数 |
 | `LLM_RETRY_ATTEMPTS` | 3 | 3 | 1回のPipeline開始における同一LLM Callの総試行回数 |
-| `LLM_SPLIT_MAX_DEPTH` | 6 | 6 | 出力超過時の分割深度 |
+| `LLM_SPLIT_MAX_DEPTH` | 6 | 6 | 入力または出力超過時の分割深度 |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | 1,800 | 1,800 | 1要求のtimeout |
 | `LLM_TASK_DEADLINE_SECONDS` | 21,600 | 21,600 | 1Taskのdeadline |
 
@@ -1022,7 +1025,7 @@ LLM診断情報はCallディレクトリへ保存せず、処理ディレクト�
 
 Resumeでは `call_id`、fingerprint、`response_sha256` およびPydantic検証がすべて一致するCallだけを再利用する。一つでも一致しないCallはそのCallだけを再実行し、同じTask内の有効なCallを再実行してはならない。
 
-出力超過で分割する場合は、親Callを `split` として子Call IDを先に原子的に保存してから子Callを送信する。Resume時に親Callを再送してはならない。TRANSLATEでIDが欠落した場合、または訳文が空の場合は、有効な応答を `partial` として保存し、該当IDだけの子Callを作成する。
+送信前の保守的な入力検査、endpointのcontext超過応答、または出力超過によって分割する場合は、親Callを `split` として子Call IDを先に原子的に保存してから子Callを送信する。Resume時に親Callを再送してはならない。TRANSLATEでIDが欠落した場合、または訳文が空の場合は、有効な応答を `partial` として保存し、該当IDだけの子Callを作成する。
 
 各Taskの進捗は最上位JSONの `LLMProgress` にも集約し、`planned_calls`、`completed_calls`、`reused_calls`、`failed_calls` および `updated_at` を保持する。分割によって `planned_calls` が増えることを許容する。Call Artifactを進捗の正本とし、集約値に不整合がある場合はCall Artifactから再計算する。
 
@@ -1034,6 +1037,7 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 - 変更が必要なBlockの `StructurePatch` だけを返す。
 - Block本文の再出力を要求しない。
 - 入力上限を超えるページは連続するBlock単位で分割する。
+- Block本文は構造分類用promptに限り先頭と末尾を合わせて最大1,024 UTF-8 byteへ省略し、Document本文は変更しない。
 
 `StructureResponse` は `patches: list[StructurePatch]` を持ち、`StructurePatch` は次のfieldを持つ。
 
@@ -1046,6 +1050,11 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 | `caption_source_id` | `str \| None` |
 
 `level`、`alert_kind` および `caption_source_id` は該当する変更がない場合に省略できる。Pydantic検証後、既存Blockと整合するpatchだけを適用する。
+`caption` は `BlockKind` ではない。LLMが `kind="caption"` を返した場合は応答全体を失敗させず、そのpatchの `kind` だけを未指定として扱う。Captionの関連付けには `caption_source_id` を使用する。
+
+Doclingが異なる開始位置のセルへ重複する結合範囲を返した場合、LOADは競合したセルだけを1行1列へ縮退し、各セルの開始位置と本文を保持する。正常な結合セルは変更しない。
+表と画像が一部だけ重なり、親参照またはセル参照による所属根拠がない場合、LOADは画像を表へ移さず独立した図として保持する。明示的な所属根拠と座標が矛盾する場合は処理を失敗させる。
+提案された `kind` に必要な `content`、`level`、`alert_kind`、`image` または `cells` が既存Blockとpatchに存在しない場合は、その `kind` 変更だけを適用せず診断情報へ記録する。
 
 ### 🌐 TRANSLATE
 
@@ -1053,7 +1062,8 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 - `code` と `line_break` はLLMへ送信しない。
 - 応答に存在しないIDと、`text.strip()` が空になるIDを未完了対象として扱い、有効な応答を `partial` として保存して対象IDだけを1回再送する。
 - 部分再送後も空の翻訳はDocumentへ保持し、CHECK、REVIEWおよびFIXの対象とする。同じIDだけを無制限に再送してはならない。
-- 通常は `TextUnit` を分断しない。単一の `TextUnit` が入力上限を超える場合だけ一時的な断片へ分割し、応答後に再結合する。
+- LOADは単一のDocling文字列を最大1,024 UTF-8 byteの安定した `TextSpan` へ欠落なく分割する。`TextUnit` 自体は分断せず、Spanを連結した原文は入力と完全一致させる。
+- TRANSLATEは通常 `TextUnit` 内のSpan群を同じCallへ含め、入力上限を超える場合だけSpan境界でCallを分割する。
 
 `TranslationResponse` は `translations: list[TranslationItem]` を持ち、`TranslationItem` は `span_id: str` と `text: str` を持つ。
 
@@ -1064,12 +1074,13 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 - Revisionは同じchunk内の `TextSpan.id` だけを対象とする。
 - CHECK結果は参考情報として渡し、同じ指摘の再出力を強制しない。
 - LLM応答にはFinding IDおよびRevision IDを含めない。Pydantic検証後、applicationが `call_id` と応答内の順序から決定的なIDを付与する。
+- 単一の `ReviewTarget` が入力上限を超える場合は、英語原文と訳文Spanを欠落なく複数Callへ分割する。Revisionが参照するSpan IDは変更しない。
 
 ### 🔁 再試行
 
 1. 接続失敗、timeoutおよびrate limitは、安全上限内の指数backoffで再試行する。
 2. Schema不正は検証エラーを渡して1回だけ再試行する。
-3. 出力超過は同じ要求を繰り返さず、対象を半分に分割する。
+3. 送信前検査、HTTP 400/413のcontext超過、または出力超過は同じ要求を繰り返さず、対象を分割する。
 4. TRANSLATEの欠落IDと空訳IDは対象分だけ1回再送する。
 5. 最小単位でも成功しない場合はそのTaskを失敗とする。
 6. 成功したLLM CallはArtifactとして直ちに保存し、Task完了前に停止しても再開時に再利用する。

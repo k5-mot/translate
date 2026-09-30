@@ -4,6 +4,9 @@
 - 明らかな見出し階層、コード、引用、Alertの誤判定だけを補正する。
 - ページ画像と本文を照合し、図表直下または直上の短い説明文だけをcaptionとして対応付ける。
 - captionを図表へ移す場合は`caption_source_id`を返し、対象本文を重複して残さない。
+- `caption`は`kind`ではない。captionの対応付けには`caption_source_id`だけを使用する。
+- `content`のないtableやfigureをcode、formula、headingなど本文必須の`kind`へ変更しない。
+- headingへ変更する場合は`level`、alertへ変更する場合は`alert_kind`も返す。
 - 連続したcode blockが同じコード領域なら、統合できるよう同じ`kind`にする。
 - 本文をcodeへ変更するのは、等幅表示、行番号、構文記号など画像上の根拠がある場合に限る。
 - `kind`が`heading`でない要素の`level`と、`alert`でない要素の`alert_kind`は`null`にする。

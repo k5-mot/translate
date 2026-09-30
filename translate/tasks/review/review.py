@@ -7,7 +7,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from translate.adapters.embedding import embed
-from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
+from translate.adapters.llm import (
+    LLMClient,
+    LLMError,
+    LLMInputExceededError,
+    LLMOutputExceededError,
+)
 from translate.adapters.qdrant import search as search_qdrant
 from translate.artifact_store import (
     begin_llm_call,
@@ -20,6 +25,7 @@ from translate.artifact_store import (
     mark_split_llm_call,
     write_model,
 )
+from translate.glossary import relevant_glossary
 from translate.models.artifacts import (
     CheckResult,
     LLMCallArtifact,
@@ -39,6 +45,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from translate.common.config import Config
+    from translate.models.document import TextSpan
 
 
 def review(
@@ -60,8 +67,8 @@ def review(
     _write_diagnostics(diagnostics_path, diagnostics)
     client = LLMClient(config)
     responses: list[tuple[str, ReviewResponse, list[ReviewTarget]]] = []
-    # Schema・message形式へ1024 bytes、JSON wrapperへ256 bytesを予約する。
-    overhead = len((rules + glossary).encode("utf-8")) + 1280
+    # Schema、message形式および抽出済み用語集へ2,048 bytesを予約する。
+    overhead = len(rules.encode("utf-8")) + 2048
     for index, chunk in enumerate(
         _chunks(
             targets, config.review_max_targets, config.review_input_tokens - overhead
@@ -157,20 +164,116 @@ def _chunks(
     result: list[list[ReviewTarget]] = []
     current: list[ReviewTarget] = []
     for target in targets:
-        if _target_bytes([target]) > maximum_bytes:
-            raise ValueError(
-                f"single ReviewTarget exceeds review input limit: {target.id}"
-            )
-        if current and (
-            len(current) >= maximum_targets
-            or _target_bytes([*current, target]) > maximum_bytes
-        ):
-            result.append(current)
-            current = []
-        current.append(target)
+        for part in _split_large_target(target, maximum_bytes):
+            if current and (
+                len(current) >= maximum_targets
+                or _target_bytes([*current, part]) > maximum_bytes
+            ):
+                result.append(current)
+                current = []
+            current.append(part)
     if current:
         result.append(current)
     return result
+
+
+def _split_large_target(target: ReviewTarget, maximum_bytes: int) -> list[ReviewTarget]:
+    """長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。"""
+
+    if _target_bytes([target]) <= maximum_bytes:
+        return [target]
+    span_groups = _split_spans(target, maximum_bytes) or [[]]
+    parts: list[ReviewTarget] = []
+    remaining_source = target.source
+    for index, spans in enumerate(span_groups):
+        remaining_groups = len(span_groups) - index
+        source_length = (
+            len(remaining_source) + remaining_groups - 1
+        ) // remaining_groups
+        part = target.model_copy(
+            update={
+                "id": f"{target.id}/part-{index + 1:04d}",
+                "source": "",
+                "translation": "".join(
+                    "\n" if span.kind == "line_break" else span.text() for span in spans
+                )
+                if spans
+                else "",
+                "spans": spans,
+            },
+            deep=True,
+        )
+        source = _source_prefix(part, remaining_source[:source_length], maximum_bytes)
+        parts.append(part.model_copy(update={"source": source}))
+        remaining_source = remaining_source[len(source) :]
+    while remaining_source:
+        index = len(parts)
+        part = target.model_copy(
+            update={
+                "id": f"{target.id}/part-{index + 1:04d}",
+                "source": "",
+                "translation": "",
+                "spans": [],
+            },
+            deep=True,
+        )
+        source = _source_prefix(part, remaining_source, maximum_bytes)
+        if not source:
+            raise ValueError(
+                f"single ReviewTarget exceeds review input limit: {target.id}"
+            )
+        parts.append(part.model_copy(update={"source": source}))
+        remaining_source = remaining_source[len(source) :]
+    return parts
+
+
+def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str:
+    """ReviewTargetへ収まる最長の原文prefixをUnicode文字境界で返す。"""
+
+    low = 0
+    high = len(source)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = target.model_copy(update={"source": source[:middle]})
+        if _target_bytes([candidate]) <= maximum_bytes:
+            low = middle
+        else:
+            high = middle - 1
+    return source[:low]
+
+
+def _split_spans(target: ReviewTarget, maximum_bytes: int) -> list[list[TextSpan]]:
+    """修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。"""
+
+    groups: list[list[TextSpan]] = []
+    current: list[TextSpan] = []
+    for span in target.spans:
+        projected = [*current, span]
+        candidate = target.model_copy(
+            update={
+                "id": f"{target.id}/part-9999",
+                "source": "",
+                "spans": projected,
+            }
+        )
+        if current and _target_bytes([candidate]) > maximum_bytes:
+            groups.append(current)
+            projected = [span]
+            candidate = target.model_copy(
+                update={
+                    "id": f"{target.id}/part-9999",
+                    "source": "",
+                    "spans": projected,
+                }
+            )
+        if _target_bytes([candidate]) > maximum_bytes:
+            raise ValueError(
+                f"single ReviewTarget span exceeds review input limit: {span.id}"
+            )
+        current = projected
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _target_bytes(targets: list[ReviewTarget]) -> int:
@@ -208,7 +311,14 @@ def _execute(
     target_ids = [target.id for target in targets]
     call_id = llm_call_id("REVIEW", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
-    rag = _rag_context(config, "\n".join(target.source for target in targets))
+    source = "\n".join(target.source for target in targets)
+    payload_budget = config.review_input_tokens - len(rules.encode("utf-8")) - 2048
+    selected_glossary = relevant_glossary(
+        glossary,
+        source,
+        maximum_bytes=max(0, payload_budget // 3),
+    )
+    rag = _rag_context(config, source)
     relevant_findings = [
         finding.model_dump(mode="json")
         for finding in checked.findings
@@ -220,11 +330,11 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "REVIEW",
-            "schema": 1,
+            "schema": 2,
             "targets": [target.model_dump(mode="json") for target in targets],
             "check": relevant_findings,
             "rules": canonical_hash(rules),
-            "glossary": canonical_hash(glossary),
+            "glossary": canonical_hash(selected_glossary),
             "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_review_model,
             "mode": config.llm_structured_output_mode,
@@ -260,9 +370,9 @@ def _execute(
             user=_user_payload(
                 targets,
                 relevant_findings,
-                glossary,
+                selected_glossary,
                 rag,
-                config.review_input_tokens - len(rules.encode("utf-8")) - 1024,
+                payload_budget,
             ),
             contract=(
                 '{"findings":[{"category":string,"severity":"info|warning|error",'
@@ -270,9 +380,10 @@ def _execute(
                 '"edits":[{"span_id":string,"text":string}]}]}.'
             ),
             native_schema=_schema(config),
+            input_tokens=config.review_input_tokens,
             output_tokens=config.review_output_tokens,
         )
-    except LLMOutputExceededError as error:
+    except (LLMInputExceededError, LLMOutputExceededError) as error:
         if len(targets) < 2 or depth >= config.llm_split_max_depth:
             fail_llm_call(call_directory, artifact, error, attempts=1)
             raise
@@ -406,7 +517,7 @@ def _user_payload(
         if len(value.encode("utf-8")) <= maximum_bytes:
             return value
         if not selected:
-            raise ValueError("review prompt exceeds input limit")
+            raise LLMInputExceededError("review prompt exceeds input limit")
         selected.pop()
 
 

@@ -43,16 +43,20 @@ class ProcessingInUseError(RuntimeError):
 
 
 ProcessingRecord = TranslationRecord | ReviewRecord | UpgradeRecord
+PATH_REPLACE_ATTEMPTS = 8
 
 
 def replace_path(source: Path, destination: Path) -> None:
     """Windowsの一時的なアクセス拒否を再試行してpathを原子的に置換する。"""
 
-    for attempt in range(5):
+    for attempt in range(PATH_REPLACE_ATTEMPTS):
         try:
             source.replace(destination)
         except PermissionError as error:
-            if getattr(error, "winerror", None) != 5 or attempt == 4:
+            if (
+                getattr(error, "winerror", None) != 5
+                or attempt == PATH_REPLACE_ATTEMPTS - 1
+            ):
                 raise
             time.sleep(0.05 * (2**attempt))
         else:

@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from pydantic import ValidationError
+from qdrant_client.http import models as qdrant_models
 
-from translate.adapters.llm import LLMClient
+from translate.adapters import qdrant
+from translate.adapters.llm import LLMClient, LLMInputExceededError
 from translate.artifact_store import canonical_hash, load_model, write_model
 from translate.common.config import Config, ConfigError, load_config
 from translate.models.artifacts import ArtifactFile, LLMCallIndex, LLMTaskDiagnostics
@@ -93,6 +97,50 @@ def test_partial_qdrant_settings_are_rejected() -> None:
         config.qdrant_enabled()
 
 
+def test_qdrant_registration_uses_bounded_upload_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """大量PointをQdrant clientの有限batch uploadへ委譲する。"""
+
+    points = [
+        {
+            "id": f"00000000-0000-0000-0000-{index:012d}",
+            "vector": [0.0, 1.0],
+            "payload": {"chunk_index": index},
+        }
+        for index in range(65)
+    ]
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    client.retrieve.side_effect = [
+        [],
+        [MagicMock(id=point["id"]) for point in points],
+    ]
+    monkeypatch.setattr(
+        qdrant,
+        "_client",
+        MagicMock(return_value=(client, qdrant_models)),
+    )
+
+    written = qdrant.upsert_revision(
+        config=Config(
+            qdrant_uri="http://qdrant",
+            qdrant_collection="translation",
+        ),
+        source_key="source/sample.pdf",
+        revision="revision",
+        points=points,
+        vector_size=2,
+    )
+
+    assert written is True
+    client.upload_points.assert_called_once()
+    assert client.upload_points.call_args.kwargs["batch_size"] == 64
+    assert client.upload_points.call_args.kwargs["wait"] is True
+    assert len(client.upload_points.call_args.kwargs["points"]) == 65
+    client.upsert.assert_not_called()
+
+
 def test_document_json_uses_schema_version_one() -> None:
     """Documentの永続化Schema versionとJSON互換性を確認する。"""
 
@@ -123,6 +171,50 @@ def test_llm_payload_disables_hidden_reasoning() -> None:
     assert payload["reasoning_effort"] == "none"
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["thinking_budget_tokens"] == 0
+
+
+def test_llm_rejects_oversized_complete_prompt_before_http() -> None:
+    """本文以外のsystemと契約を含む実入力を送信前に制限する。"""
+
+    client = LLMClient(Config(openai_base_url="http://llm"))
+
+    with pytest.raises(LLMInputExceededError, match="task limit"):
+        client.structured(
+            model="model",
+            response_type=LLMTaskDiagnostics,
+            system="s" * 100,
+            user="user",
+            contract="contract",
+            native_schema=LLMTaskDiagnostics.model_json_schema(),
+            input_tokens=64,
+            output_tokens=128,
+        )
+
+
+def test_llm_classifies_provider_context_error_for_task_splitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """endpointのcontext超過HTTP 400を通常のLLM失敗と区別する。"""
+
+    response = httpx.Response(
+        400,
+        json={"error": {"message": "maximum context length exceeded"}},
+        request=httpx.Request("POST", "http://llm/chat/completions"),
+    )
+    monkeypatch.setattr(httpx, "post", MagicMock(return_value=response))
+    client = LLMClient(Config(openai_base_url="http://llm"))
+
+    with pytest.raises(LLMInputExceededError, match="provider context"):
+        client.structured(
+            model="model",
+            response_type=LLMTaskDiagnostics,
+            system="system",
+            user="user",
+            contract="contract",
+            native_schema=LLMTaskDiagnostics.model_json_schema(),
+            input_tokens=8192,
+            output_tokens=128,
+        )
 
 
 def test_llm_call_index_rejects_duplicate_ids() -> None:

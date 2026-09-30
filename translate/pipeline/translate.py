@@ -259,7 +259,7 @@ def _translate_locked(
         {
             "task": "LOAD",
             "input": sha256_file(normalize_dir / "document.json"),
-            "schema": 1,
+            "schema": 2,
         }
     )
     _perform(
@@ -283,7 +283,7 @@ def _translate_locked(
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "disabled",
-            "call_index": 1,
+            "call_index": 3,
         }
     )
     reused_structure = reusable_task(record, TaskName.STRUCTURE, structure_fp, root)
@@ -319,7 +319,7 @@ def _translate_locked(
             if backend == "llm"
             else config.libretranslate_url,
             "thinking": "disabled" if backend == "llm" else None,
-            "call_index": 1 if backend == "llm" else None,
+            "call_index": 2 if backend == "llm" else None,
         }
     )
     reused_translation = reusable_task(record, translation_task, translation_fp, root)
@@ -381,7 +381,7 @@ def _translate_locked(
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
             "thinking": "disabled",
-            "call_index": 1,
+            "call_index": 2,
         }
     )
     reused_review = reusable_task(record, TaskName.REVIEW, review_fp, root)
