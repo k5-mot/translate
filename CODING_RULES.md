@@ -1,8 +1,7 @@
 # 📜 コーディング規約
 
 本書は、このRepositoryで実装する際の共通規則と、Python、TypeScript、
-Java固有の規則を定める。製品の振る舞い、対応環境、採用構成および
-配置制約はOpenSpecで管理し、本書へ重複記載しない。
+Java固有の規則を定める。
 
 ## 🧭 共通規則
 
@@ -27,8 +26,6 @@ Java固有の規則を定める。製品の振る舞い、対応環境、採用�
 
 - MUST; 再実装の前に導入済みVersionのAPIと、入出力、例外、Retry単位、
   永続化および副作用を比較し、同等の機能は既存APIへ委譲すること
-- MUST; 既存APIでは満たせない契約がある場合は、その具体的な差と検証根拠を
-  OpenSpecの設計に記録し、独自実装を必要な差分に限定すること
 - MUST; Module新設や共通化では、実際の利用元、責務、既存Codeまたは依存APIで
   不足する理由を説明すること。配置変更だけを重複機能の解消とみなさないこと
 
@@ -105,8 +102,6 @@ uv run pytest
 ### ⚙️ 品質検査の参考設定
 
 次はLintとFormatの参考例である。Projectの実際の設定を置き換えるものではない。
-製品のDependency、Version制約および検査対象Pathは例へ複製せず、
-その採用方針はOpenSpec、実際の値はProjectの設定Fileで管理する。
 
 ```toml
 [tool.ruff]
@@ -162,7 +157,84 @@ skip-magic-trailing-comma = false
 line-ending = "lf"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
+```
 
+### 📝 Docstring
+
+Pythonの関数およびMethodのDocstringはGoogle Styleを基準とする。
+
+- MUST; すべての関数およびMethodにDocstringを記載すること。非公開関数、
+  特殊Method、入れ子関数およびTest関数も対象とする
+- MUST; Docstringの先頭に、関数の目的を簡潔に表す説明Titleを記載すること
+- MUST; 説明Titleの後に空行を設け、関数の処理内容、前提、制約または副作用を
+  説明する本文を記載すること
+- MUST; 引数を持つ関数では`Args:`を記載し、すべての引数について名前、
+  型および説明を記載すること
+- MUST; 戻り値を持つ関数では`Returns:`を記載し、戻り値の型および意味を
+  記載すること
+- MUST; `raise`する可能性がある関数では`Raises:`を記載し、発生し得る例外と
+  その発生条件を記載すること
+- MUST; `yield`を使用する関数では`Yields:`を記載し、生成する値の型および
+  意味を記載すること
+- MUST; 名前が`_`で始まらない公開関数および公開Methodでは`Examples:`を記載し、
+  代表的な使用方法を示すこと
+- MUST; 名前が`_`で始まらない公開関数および公開Methodでは`Note:`を記載し、
+  利用時に知っておくべき注意事項、制約または補足事項を記載すること
+- MAY; 名前が`_`で始まる非公開関数および非公開Methodでは`Examples:`および
+  `Note:`を省略してもよい
+- MUST; 使用しない`Raises:`または`Yields:`を形式的に記載しないこと
+- MUST; Docstringの内容を実装と一致させ、引数、戻り値、例外、生成値または
+  振る舞いを変更した場合は同じ変更でDocstringを更新すること
+
+基本形は次のとおりとする。
+
+```python
+def example(name: str, enabled: bool = False) -> bool:
+    """処理を実行する。
+
+    指定された値を使用して対象の処理を実行する。
+
+    Args:
+        name (str): 処理対象の名前。
+        enabled (bool, optional): 処理を有効化する場合はTrue。
+
+    Returns:
+        bool: 処理に成功した場合はTrue、失敗した場合はFalse。
+
+    Raises:
+        ValueError: nameが不正な場合に発生する。
+
+    Examples:
+        関数の基本的な使用方法を示す。
+
+        >>> example("test", True)
+        True
+
+    Note:
+        実行前に必要な初期化処理を完了しておくこと。
+    """
+```
+
+Generatorでは`Returns:`の代わりに`Yields:`を使用する。
+
+```python
+def iter_items() -> Iterator[str]:
+    """要素を順番に取得する。
+
+    利用可能な要素を一件ずつ返す。
+
+    Yields:
+        str: 取得した要素。
+
+    Examples:
+        要素を順番に処理する。
+
+        >>> for item in iter_items():
+        ...     print(item)
+
+    Note:
+        要素の返却順序は保証しない。
+    """
 ```
 
 ## 🟦 TypeScript
