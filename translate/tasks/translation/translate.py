@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from translate.adapters.embedding import embed
-from translate.adapters.llm import LLMClient, LLMError, LLMOutputExceededError
+from translate.adapters.llm import (
+    LLMClient,
+    LLMError,
+    LLMInputExceededError,
+    LLMOutputExceededError,
+)
 from translate.adapters.qdrant import search as search_qdrant
 from translate.artifact_store import (
     begin_llm_call,
@@ -22,6 +27,7 @@ from translate.artifact_store import (
     mark_split_llm_call,
     write_model,
 )
+from translate.glossary import relevant_glossary
 from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, TextSpan, iter_text_units
 
@@ -72,7 +78,7 @@ def translate(
     updated = document.model_copy(deep=True)
     client = LLMClient(config)
     context = previous_context or {}
-    overhead = len((rules + glossary).encode("utf-8")) + 2048
+    overhead = len(rules.encode("utf-8")) + 2048
     chunks = _chunks(
         updated,
         config.translate_max_units,
@@ -221,15 +227,22 @@ def _execute(
     target_ids = [span.id for span in spans]
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
-    rag = _rag_context(config, "\n".join(span.source for span in spans))
+    source = "\n".join(span.source for span in spans)
+    payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
+    selected_glossary = relevant_glossary(
+        glossary,
+        source,
+        maximum_bytes=max(0, payload_budget // 3),
+    )
+    rag = _rag_context(config, source)
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": 1,
+            "schema": 2,
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),
-            "glossary": canonical_hash(glossary),
+            "glossary": canonical_hash(selected_glossary),
             "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_translation_model,
             "mode": config.llm_structured_output_mode,
@@ -268,9 +281,9 @@ def _execute(
             ),
             user=_user_payload(
                 spans,
-                glossary,
+                selected_glossary,
                 rag,
-                config.translate_input_tokens,
+                payload_budget,
                 previous_context,
             ),
             contract=(
@@ -278,9 +291,10 @@ def _execute(
                 f"At most {len(spans)} items."
             ),
             native_schema=_schema(len(spans)),
+            input_tokens=config.translate_input_tokens,
             output_tokens=config.translate_output_tokens,
         )
-    except LLMOutputExceededError as error:
+    except (LLMInputExceededError, LLMOutputExceededError) as error:
         return _split_call(
             artifact=artifact,
             error=error,
@@ -348,7 +362,7 @@ def _execute(
 def _split_call(
     *,
     artifact: LLMCallArtifact,
-    error: LLMOutputExceededError,
+    error: LLMInputExceededError | LLMOutputExceededError,
     client: LLMClient,
     config: Config,
     spans: list[TextSpan],
@@ -450,7 +464,7 @@ def _user_payload(
         if len(value.encode("utf-8")) <= maximum_bytes:
             return value
         if not selected:
-            raise ValueError("translation prompt exceeds input limit")
+            raise LLMInputExceededError("translation prompt exceeds input limit")
         selected.pop()
 
 

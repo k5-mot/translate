@@ -296,9 +296,9 @@ Review画面はFIXを実行せず、REPORTに含まれる指摘と修正候補�
 - fileの拡張子は大文字と小文字を区別せず検査する。MIME typeだけを信頼しない。
 - 保存は一時fileへ書き込んだ後、同一filesystem内で原子的に確定する。Windowsの
   `WinError 5` による一時的なpath置換失敗は、50 msから始まる指数backoffで再試行し、
-  初回を含む5回で確定できなければ失敗とする。
+  初回を含む8回で確定できなければ失敗とする。
 - Streamlitの `server.maxUploadSize` を1file当たりの上限とし、application独自の別のsize設定を追加しない。
-- 保存した入力はResumeのために自動削除しない。初期UIは削除画面を提供しない。
+- 保存した入力はResumeのために自動削除しない。終了済み履歴を利用者が確認付きで削除した場合だけ、対応する保存入力も削除する。
 
 ## ⚙️ Pipeline接続契約
 
@@ -716,6 +716,15 @@ outputs/*/*/upgrade.json
 - CLIから開始した処理も同じArtifact契約であるため、履歴と成果物の表示対象とする。
 - `translate_v1`、`runs`、またはその他の旧directoryは列挙対象としない。
 
+### 🗑️ 履歴の削除
+
+- 選択中の `succeeded`、`failed` または `cancelled` 履歴にだけ削除操作を表示する。
+- 削除前に「成果物と保存済み入力を削除する」の確認を必須とする。
+- 実行中の最上位記録、またはUI worker登録表で未完了の処理IDは削除を拒否する。
+- 削除対象は、選択した処理IDと一致する `outputs/<basename>/<processing-id>/` および存在する場合の `.translate-ui/<processing-id>/` だけとする。
+- 解決済みpathが上記root直下の規定階層と一致しない場合は削除を拒否する。
+- 削除後は選択中のquery parameterを解除し、新規処理画面へ戻る。
+
 ## ⏯️ Resume
 
 Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表に未完了の
@@ -749,7 +758,7 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 - TranslateのMarkdownとDOCXのdownload buttonは横並びにする。
 - 現行実装はMarkdownとDOCXの各buttonを `st.columns(2)` の固定二列へ配置する。
 - browser上のpreviewは利便性のための表示であり、downloadされるbyte列を変換しない。
-- UIから成果物、処理directoryまたは入力fileを削除しない。
+- 履歴の確認付き削除操作を除き、UIから成果物、処理directoryまたは入力fileを個別に削除しない。
 
 ## ⚠️ 入力検証とエラー表示
 
@@ -905,13 +914,14 @@ uv run playwright install chromium
 12. 既存test、Ruff、formatterおよびtyの品質確認に通過する。
 13. TRANSLATE、REVIEWおよびFIXの処理前・処理後を、同一対象の検証済みArtifactから二つの読取専用TextAreaへ表示できる。
 14. Reviewは同じReviewTargetの英語原文と日本語訳を二列で、Upgradeは同じVersionChangeの英語v1、日本語v1および英語v2を三列で表示できる。
+15. 終了済みの選択履歴について、対象pathと利用者確認を検査して成果物と保存入力を削除できる。
 
 ## 🚧 将来候補
 
 次は初期Streamlit UIの実装対象に含めず、必要性を確認してから別仕様で検討する。
 
 - 実行中の外部要求への協調的な中断通知
-- 保存済みupload fileの一覧・容量表示・明示的な削除
+- 保存済みupload fileの一覧・容量表示・履歴と独立した個別削除
 - ユーザー認証と外部公開向けの運用構成
 - Langfuseによる観測
 - worker数、batch、cacheおよび処理履歴列挙の性能最適化

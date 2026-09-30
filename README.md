@@ -94,6 +94,31 @@ uv run ty check
 uv run pytest
 ```
 
+### 🧳 検証ログの収集
+
+CLIを実行しながらconsole出力、Git状態、入力PDFのhash、処理記録、Task診断および
+LLM Call状態をZIPへまとめられます。`.env`は値を含めず、設定済みかどうかだけを
+記録します。
+
+```powershell
+# sample1の中断済みTranslateを再開し、終了後に診断ZIPを作成する。
+.\scripts\dump-verification.ps1 `
+  -Label sample1-translate `
+  -Target translate-ja `
+  -Arguments @("translate", "inputs/sample1.pdf", "--backend", "llm", "--resume", "<uuidv7>")
+
+# Streamlitを起動し、Ctrl+Cで終了した後に診断ZIPを作成する。
+.\scripts\dump-verification.ps1 `
+  -Label streamlit `
+  -Target streamlit `
+  -Arguments @("run", "main.py", "--server.address", "localhost")
+
+# Commandを実行せず、現在保存済みの状態だけを収集する。
+.\scripts\dump-verification.ps1 -Label current-state
+```
+
+ZIPは`.diagnostics/`へ作成されます。不具合報告時は生成されたZIPを添付してください。
+
 ## 🧭 設計資料
 
 - 確定仕様: [SPEC.md](SPEC.md)

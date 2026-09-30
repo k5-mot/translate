@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
     from translate.common.config import Config
 
+MESSAGE_OVERHEAD_BYTES = 256
+
 
 class LLMError(RuntimeError):
     """LLM要求が有限再試行後も完了しなかったことを表す。"""
@@ -25,6 +27,10 @@ class LLMError(RuntimeError):
 
 class LLMOutputExceededError(LLMError):
     """LLMが出力上限へ到達し、対象分割が必要であることを表す。"""
+
+
+class LLMInputExceededError(LLMError):
+    """LLM入力が上限を超え、対象分割が必要であることを表す。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,7 @@ class LLMClient:
         user: str,
         contract: str,
         native_schema: dict[str, object],
+        input_tokens: int | None = None,
         output_tokens: int,
         image: Path | None = None,
     ) -> StructuredResult[ResponseT]:
@@ -71,6 +78,14 @@ class LLMClient:
         feedback = ""
         last_error: Exception | None = None
         for attempt in range(1, self.config.llm_retry_attempts + 1):
+            _validate_input_size(
+                system=system,
+                user=f"{user}{feedback}",
+                contract=contract,
+                native_schema=native_schema,
+                mode=self.config.llm_structured_output_mode,
+                maximum_bytes=input_tokens,
+            )
             payload = self._payload(
                 model=model,
                 system=system,
@@ -87,9 +102,16 @@ class LLMClient:
                     json=payload,
                     timeout=self.config.llm_request_timeout_seconds,
                 )
-                response.raise_for_status()
-                content, finish_reason, input_tokens, used_output_tokens = _response(
-                    response
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as error:
+                    if _is_input_overflow(error):
+                        raise LLMInputExceededError(
+                            "LLM input exceeded the provider context limit"
+                        ) from error
+                    raise
+                content, finish_reason, used_input_tokens, used_output_tokens = (
+                    _response(response)
                 )
                 _reject_length_finish(finish_reason)
                 parsed = _parse_content(
@@ -101,10 +123,10 @@ class LLMClient:
                 return StructuredResult(
                     response=validated,
                     attempts=attempt,
-                    input_tokens=input_tokens,
+                    input_tokens=used_input_tokens,
                     output_tokens=used_output_tokens,
                 )
-            except LLMOutputExceededError:
+            except (LLMInputExceededError, LLMOutputExceededError):
                 raise
             except (ValueError, UnicodeError, ValidationError) as error:
                 last_error = error
@@ -191,6 +213,58 @@ def _reject_length_finish(finish_reason: str | None) -> None:
 
     if finish_reason == "length":
         raise LLMOutputExceededError("LLM output reached its token limit")
+
+
+def _validate_input_size(
+    *,
+    system: str,
+    user: str,
+    contract: str,
+    native_schema: dict[str, object],
+    mode: str,
+    maximum_bytes: int | None,
+) -> None:
+    """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。"""
+
+    if maximum_bytes is None:
+        return
+    system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
+    schema_text = (
+        json.dumps(native_schema, ensure_ascii=False, separators=(",", ":"))
+        if mode == "json_schema"
+        else ""
+    )
+    size = (
+        len((system_text + user + schema_text).encode("utf-8")) + MESSAGE_OVERHEAD_BYTES
+    )
+    if size > maximum_bytes:
+        raise LLMInputExceededError(
+            f"LLM input exceeds task limit: {size} > {maximum_bytes}"
+        )
+
+
+def _is_input_overflow(error: httpx.HTTPStatusError) -> bool:
+    """OpenAI互換endpointの入力・context超過応答を識別する。"""
+
+    if error.response.status_code == 413:
+        return True
+    if error.response.status_code != 400:
+        return False
+    message = error.response.text.casefold()
+    return any(
+        marker in message
+        for marker in (
+            "context length",
+            "context_length_exceeded",
+            "maximum context",
+            "prompt is too long",
+            "too many tokens",
+            "input tokens",
+            "input length",
+            "maximum sequence length",
+            "max sequence length",
+        )
+    )
 
 
 def _response(

@@ -50,6 +50,7 @@ TEXT_KINDS = {
     "program_listing": "code",
     "formula": "formula",
 }
+MAX_TEXT_SPAN_BYTES = 1024
 
 
 def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any]:
@@ -197,7 +198,7 @@ def _inline(
     href: str | None = None,
     marks: list[TextMark] | None = None,
 ) -> list[TextSpan]:
-    """Docling文字列を一つのInline列へ変換する。
+    """Docling文字列を有限byteのInline列へ変換する。
 
     Args:
         ref: 安定IDのprefix。
@@ -207,20 +208,40 @@ def _inline(
         marks: Inline装飾。
 
     Returns:
-        空文字なら空、それ以外は一要素のInline列。
+        空文字なら空、それ以外は原文を欠落なく分割したInline列。
     """
 
     if not text:
         return []
     return [
         TextSpan(
-            id=f"{ref}/span-0001",
-            source=text,
+            id=f"{ref}/span-{index:04d}",
+            source=part,
             kind=kind,
             href=href,
             marks=marks or [],
         )
+        for index, part in enumerate(_split_utf8(text, MAX_TEXT_SPAN_BYTES), 1)
     ]
+
+
+def _split_utf8(value: str, maximum_bytes: int) -> list[str]:
+    """Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。"""
+
+    parts: list[str] = []
+    current: list[str] = []
+    current_bytes = 0
+    for character in value:
+        character_bytes = len(character.encode("utf-8"))
+        if current and current_bytes + character_bytes > maximum_bytes:
+            parts.append("".join(current))
+            current = []
+            current_bytes = 0
+        current.append(character)
+        current_bytes += character_bytes
+    if current:
+        parts.append("".join(current))
+    return parts
 
 
 def _inline_from_item(
@@ -507,7 +528,7 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
     if not isinstance(data, dict):
         raise ValueError("unsupported Docling table")
     cells: dict[tuple[int, int], _CellSource] = {}
-    occupied: dict[tuple[int, int], tuple[int, int]] = {}
+    occupied: dict[tuple[int, int], set[tuple[int, int]]] = {}
     for raw, row, column, path, inline_ref in _raw_cells(data, ref):
         start_row, start_col, rowspan, colspan = _cell_shape(raw, row, column)
         key = (start_row, start_col)
@@ -553,13 +574,18 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
             raise ValueError("grid cell lies outside its span")
         for r in range(start_row, start_row + rowspan):
             for c in range(start_col, start_col + colspan):
-                if (r, c) in occupied and occupied[r, c] != key:
-                    raise ValueError("overlapping table cell spans")
-                occupied[r, c] = key
+                occupied.setdefault((r, c), set()).add(key)
         cells[key].variants.append(raw)
         cells[key].refs.add(path)
         if isinstance(raw.get("self_ref"), str):
             cells[key].refs.add(raw["self_ref"])
+    conflicting = {
+        key for owners in occupied.values() if len(owners) > 1 for key in owners
+    }
+    # Doclingが矛盾する結合範囲を返しても、各セルの本文と開始位置は保持する。
+    for key in conflicting:
+        cells[key].cell.rowspan = 1
+        cells[key].cell.colspan = 1
     return list(cells.values())
 
 
@@ -772,6 +798,7 @@ def _assign_cell_images(document: dict[str, Any], pages: dict[int, Page]) -> Non
             if box is None:
                 raise TableImageOwnershipError(page.number, figure.id)
             containing = []
+            ambiguous_overlap = False
             for ref in page_tables:
                 with _ownership_context(page.number, ref):
                     table_box = _item_box(tables[ref], page)
@@ -786,7 +813,12 @@ def _assign_cell_images(document: dict[str, Any], pages: dict[int, Page]) -> Non
                 elif max(table_box[0], box[0]) < min(table_box[2], box[2]) and max(
                     table_box[1], box[1]
                 ) < min(table_box[3], box[3]):
-                    raise TableImageOwnershipError(page.number, figure.id)
+                    if declared_ref is not None or parent_ref in sources:
+                        raise TableImageOwnershipError(page.number, figure.id)
+                    ambiguous_overlap = True
+            # 所属根拠のない部分重複は推測せず、独立した図として保持する。
+            if ambiguous_overlap:
+                continue
             if len(containing) > 1:
                 raise TableImageOwnershipError(page.number, figure.id)
             if parent_ref in sources and containing != [parent_ref]:

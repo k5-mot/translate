@@ -301,7 +301,7 @@ def _review_locked(
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
             "thinking": "disabled",
-            "call_index": 1,
+            "call_index": 2,
         }
     )
     reused = reusable_task(record, TaskName.REVIEW, review_fp, root)
@@ -384,7 +384,7 @@ def _preprocess_pair(
                 "task": task.value,
                 "source": sha256_file(current_source),
                 "translation": sha256_file(current_translation),
-                "schema": 1,
+                "schema": 2 if task == TaskName.LOAD else 1,
             }
         )
         _perform(
