@@ -8,13 +8,14 @@ from translate import ui
 from translate.artifact_store import sha256_file, write_model
 from translate.models.artifacts import (
     AlignmentResult,
+    CheckResult,
     FixResult,
     LLMCallArtifact,
     ReviewResult,
     RevisionOutcome,
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.review import ReviewTarget, Revision, TextEdit
+from translate.models.review import Finding, ReviewTarget, Revision, TextEdit
 from translate.models.upgrade import UpgradePlan, VersionChange
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 from translate.ui import (
@@ -22,6 +23,7 @@ from translate.ui import (
     _fix_comparison,
     _preview_image_path,
     _review_context,
+    _review_rows,
     _translation_comparison,
     _upgrade_context,
 )
@@ -128,6 +130,74 @@ def test_review_context_keeps_source_and_translation_on_same_target(
     assert values is not None
     assert "[target-1]\nEnglish" in values[0]
     assert "[target-1]\n日本語" in values[1]
+
+
+def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) -> None:
+    """Review一覧の行構造を検証する。"""
+
+    write_model(
+        tmp_path / "review/align/alignment.json",
+        AlignmentResult(
+            groups=[],
+            targets=[
+                ReviewTarget(
+                    id="target-1",
+                    source="English source",
+                    translation="現在の訳",
+                    target_ids=["unit-1"],
+                )
+            ],
+        ),
+    )
+    write_model(
+        tmp_path / "review/check/findings.json",
+        CheckResult(
+            findings=[
+                Finding(
+                    id="check/target-1/extreme_short",
+                    origin="check",
+                    category="extreme_short",
+                    severity="warning",
+                    target_ids=["unit-1"],
+                    message="短すぎます。",
+                )
+            ]
+        ),
+    )
+    write_model(
+        tmp_path / "review/review/review.json",
+        ReviewResult(
+            findings=[],
+            revisions=[
+                Revision(
+                    id="revision-1",
+                    target_id="unit-1",
+                    edits=[TextEdit(span_id="span-1", text="提案訳")],
+                )
+            ],
+        ),
+    )
+
+    findings, revisions = _review_rows(tmp_path)
+
+    assert findings == [
+        {
+            "種別": "CHECK",
+            "重要度": "警告",
+            "カテゴリ": "extreme_short",
+            "対象": "unit-1",
+            "原文": "English source",
+            "内容": "短すぎます。",
+        }
+    ]
+    assert revisions == [
+        {
+            "候補ID": "revision-1",
+            "対象": "unit-1",
+            "現在の訳": "現在の訳",
+            "提案訳": "提案訳",
+        }
+    ]
 
 
 def test_upgrade_context_uses_placeholders_without_guessing(tmp_path: Path) -> None:

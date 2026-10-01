@@ -935,7 +935,16 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
 
 
 def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
-    """検証済みALIGNまたはDocumentからReview対象をIDで返す。"""
+    """Review対象をIDで取得する。
+
+    検証済みALIGNまたはDocumentから、原文と現在訳を対象IDごとに取得する。
+
+    Args:
+        root (Path): 処理成果物のルートディレクトリ。
+
+    Returns:
+        dict[str, tuple[str, str]]: 対象IDを原文と現在訳へ対応付けた辞書。
+    """
 
     values: dict[str, tuple[str, str]] = {}
     for relative in ("review/align/alignment.json", "upgrade/align/result.json"):
@@ -946,12 +955,10 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
             alignment = load_model(path, AlignmentResult)
         except ArtifactError:
             continue
-        values.update(
-            {
-                target.id: (target.source, target.translation)
-                for target in alignment.targets
-            }
-        )
+        for target in alignment.targets:
+            value = (target.source, target.translation)
+            values[target.id] = value
+            values.update(dict.fromkeys(target.target_ids, value))
     document = _load_first_document(
         root,
         [
@@ -962,12 +969,10 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
         ],
     )
     if document is not None:
-        values.update(
-            {
-                target.id: (target.source, target.translation)
-                for target in targets_from_document(document)
-            }
-        )
+        for target in targets_from_document(document):
+            value = (target.source, target.translation)
+            values[target.id] = value
+            values.update(dict.fromkeys(target.target_ids, value))
     return values
 
 
@@ -1441,16 +1446,139 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
             )
 
 
-def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
-    """hash検証済みReview reportのpreviewとdownloadを表示する。"""
+def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Review成果を一覧表示用に整形する。
 
+    CHECKとREVIEWの成果物を読み、指摘行と修正候補行へ分ける。
+
+    Args:
+        root (Path): 処理成果物のルートディレクトリ。
+
+    Returns:
+        tuple[list[dict[str, str]], list[dict[str, str]]]: 指摘行と修正候補行。
+    """
+
+    checked: CheckResult | None = None
+    reviewed: ReviewResult | None = None
+    for path, model_type in (
+        (root / "review/check/findings.json", CheckResult),
+        (root / "review/review/review.json", ReviewResult),
+    ):
+        if not path.is_file():
+            continue
+        try:
+            value = load_model(path, model_type)
+        except ArtifactError:
+            continue
+        if isinstance(value, CheckResult):
+            checked = value
+        else:
+            reviewed = value
+
+    targets = _review_targets(root)
+
+    def target_text(target_ids: list[str], index: int) -> str:
+        """対象ID群の本文を連結する。"""
+
+        return " / ".join(
+            value[index]
+            for target_id in target_ids
+            if (value := targets.get(target_id)) is not None and value[index]
+        )
+
+    findings = [] if checked is None else list(checked.findings)
+    if reviewed is not None:
+        findings.extend(reviewed.findings)
+    severity_labels = {"error": "エラー", "warning": "警告", "info": "情報"}
+    finding_rows = [
+        {
+            "種別": finding.origin.upper(),
+            "重要度": severity_labels.get(finding.severity, finding.severity),
+            "カテゴリ": finding.category,
+            "対象": ", ".join(finding.target_ids) or "-",
+            "原文": target_text(finding.target_ids, 0),
+            "内容": finding.message,
+        }
+        for finding in findings
+    ]
+
+    revisions = [] if reviewed is None else reviewed.revisions
+    revision_rows = [
+        {
+            "候補ID": revision.id,
+            "対象": revision.target_id,
+            "現在の訳": target_text([revision.target_id], 1) or "不明",
+            "提案訳": " / ".join(edit.text for edit in revision.edits) or "変更なし",
+        }
+        for revision in revisions
+    ]
+    return finding_rows, revision_rows
+
+
+def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
+    """Review成果物を表示する。
+
+    Review一覧、Markdown reportのpreviewおよびdownload操作を描画する。
+
+    Args:
+        entry (HistoryEntry): 表示対象の履歴項目。
+        record (ReviewRecord): 成功したReviewの最上位記録。
+    """
+
+    finding_rows, revision_rows = _review_rows(entry.record_path.parent)
+    error_count = sum(row["重要度"] == "エラー" for row in finding_rows)
+    warning_count = sum(row["重要度"] == "警告" for row in finding_rows)
+    columns = st.columns(4)
+    with columns[0]:
+        st.metric("指摘", len(finding_rows))
+    with columns[1]:
+        st.metric("エラー", error_count)
+    with columns[2]:
+        st.metric("警告", warning_count)
+    with columns[3]:
+        st.metric("修正候補", len(revision_rows))
+
+    with st.expander(f"指摘一覧 ({len(finding_rows)})", expanded=True):
+        if finding_rows:
+            st.dataframe(
+                finding_rows,
+                column_config={
+                    "種別": st.column_config.TextColumn("種別", width="small"),
+                    "重要度": st.column_config.TextColumn("重要度", width="small"),
+                    "カテゴリ": st.column_config.TextColumn("カテゴリ", width="medium"),
+                    "対象": st.column_config.TextColumn("対象", width="medium"),
+                    "原文": st.column_config.TextColumn("原文", width="large"),
+                    "内容": st.column_config.TextColumn("内容", width="large"),
+                },
+                hide_index=True,
+                height=min(460, max(150, 38 + len(finding_rows) * 35)),
+            )
+        else:
+            st.success("指摘はありません。")
+
+    with st.expander(f"修正候補一覧 ({len(revision_rows)})", expanded=True):
+        if revision_rows:
+            st.dataframe(
+                revision_rows,
+                column_config={
+                    "候補ID": st.column_config.TextColumn("候補ID", width="medium"),
+                    "対象": st.column_config.TextColumn("対象", width="medium"),
+                    "現在の訳": st.column_config.TextColumn("現在の訳", width="large"),
+                    "提案訳": st.column_config.TextColumn("提案訳", width="large"),
+                },
+                hide_index=True,
+                height=min(460, max(150, 38 + len(revision_rows) * 35)),
+            )
+        else:
+            st.caption("修正候補はありません。")
     for artifact in record.outputs:
         path = _valid_artifact(entry.record_path.parent, artifact)
         if path is None:
             st.error("成果物が欠落または変更されています。")
             continue
         value = path.read_bytes()
-        st.markdown(value.decode("utf-8"), unsafe_allow_html=False)
+        with st.expander("Review report (Markdown)", expanded=False):
+            st.markdown(value.decode("utf-8"), unsafe_allow_html=False)
         st.download_button(
             "Review reportをdownload",
             value,
