@@ -163,56 +163,66 @@ docstring-code-line-length = "dynamic"
 
 Pythonの関数およびMethodのDocstringはGoogle Styleを基準とする。
 
+本節では、配布対象のPython PackageおよびApplication Entry Pointを製品Codeとする。
+`tests/`配下のTest Case、FixtureおよびTest専用HelperをTest Codeとする。
+
+すべてのPython Codeには、次の共通規則を適用する。
+
 - MUST; すべての関数およびMethodにDocstringを記載すること。非公開関数、
   特殊Method、入れ子関数およびTest関数も対象とする
 - MUST; Docstringの先頭に、関数の目的を簡潔に表す説明Titleを記載すること
-- MAY; 説明Titleだけで契約を十分に表せる単純な関数、特殊Method、入れ子関数
-  およびTest関数では、一行Docstringを使用してもよい
-- MUST; 入出力の制約、副作用、状態遷移または失敗条件が説明Titleだけでは
-  明確でない場合、Titleの後に空行を設けて本文を記載すること
-- MUST; 名前と型注釈だけでは用途、単位、範囲または制約が明確でない引数は、
-  `Args:`へ名前と説明を記載すること
-- MUST; 型注釈だけでは戻り値の意味、順序または欠損時の扱いが明確でない場合、
-  `Returns:`へ説明を記載すること
-- MUST; 呼び出し元が処理する必要のある例外を明示的に送出する場合、`Raises:`へ
-  例外と発生条件を記載すること
+- MUST; 関数が送出または下位処理から伝播し、呼び出し元が処理する必要のある
+  例外は、`Raises:`へ例外と発生条件を記載すること
 - MUST; `yield`を使用する関数では`Yields:`を記載し、生成する値の型および
-  意味を記載すること
-- SHOULD; Repository外から直接利用される公開APIで、型注釈だけでは使用方法が
-  明確でない場合、`Examples:`へ代表的な使用方法を記載すること
-- SHOULD; 利用時に知る必要がある注意事項または制約がある場合だけ、`Note:`を
-  記載すること
-- MUST NOT; `Args:`、`Returns:`、`Raises:`、`Examples:`または`Note:`を、
-  形式を満たすためだけの定型文で追加しないこと
+  意味を記載すること。この場合、`Returns:`は記載しないこと
+- MUST NOT; 実装にない検証、例外、副作用または性能特性をDocstringへ記載しないこと
+- MUST NOT; 各Sectionを形式的に埋めるため、複数の関数へ流用できる定型文を
+  記載しないこと
 - MUST; Docstringの内容を実装と一致させ、引数、戻り値、例外、生成値または
   振る舞いを変更した場合は同じ変更でDocstringを更新すること
 
-基本形は次のとおりとする。
+製品Codeには、次の規則も適用する。
+
+- MUST; `self`および`cls`を除く引数を持つ関数では、すべての引数を`Args:`へ
+  記載し、処理上の用途を説明すること。必要に応じて単位、範囲、許容値および
+  欠損時の扱いも記載すること
+- MUST; `None`以外の値を返す関数では、`Returns:`へ戻り値の意味を記載すること。
+  必要に応じて形式、順序および欠損時の扱いも記載すること
+- MUST; Titleだけでは処理方式、入出力の制約、副作用、状態遷移または失敗条件が
+  明確にならない場合、Titleの後に空行を設けて本文を記載すること
+- MAY; 引数を持たず、値を返さない単純な関数、特殊MethodまたはPropertyでは、
+  Titleだけの一行Docstringを使用してもよい
+- SHOULD; Repository外から直接利用される公開APIで、型注釈と説明だけでは
+  使用方法が明確でない場合、`Examples:`へ代表的な使用方法を記載すること
+- SHOULD; 利用時に知る必要がある注意事項または制約がある場合、`Note:`へ
+  記載すること
+
+Test Codeには、次の規則を適用する。
+
+- MAY; Test名と説明Titleから検証目的が明確な場合、一行Docstringを使用してもよい
+- MUST; Test名と説明Titleだけでは前提条件、操作または期待結果が明確にならない場合、
+  Titleの後に空行を設けて本文を記載すること
+- MAY; Test関数、FixtureおよびTest専用Helperでは、引数と戻り値の役割がTest Code
+  から明確な場合、`Args:`および`Returns:`を省略してもよい
+- MUST NOT; Test Codeへ形式を満たすことだけを目的とした`Examples:`または`Note:`を
+  記載しないこと
+
+製品Codeの基本形は次のとおりとする。
 
 ```python
-def example(name: str, enabled: bool = False) -> bool:
-    """処理を実行する。
+def sha256_file(path: Path) -> str:
+    """File内容のSHA-256 Hashを返す。
 
-    指定された値を使用して対象の処理を実行する。
+    Fileを分割して読み込むため、全内容をMemoryへ読み込まずに計算する。
 
     Args:
-        name (str): 処理対象の名前。
-        enabled (bool, optional): 処理を有効化する場合はTrue。
+        path (Path): Hashを計算するFileのPath。
 
     Returns:
-        bool: 処理に成功した場合はTrue、失敗した場合はFalse。
+        str: 小文字の16進数で表した64文字のSHA-256 Hash値。
 
     Raises:
-        ValueError: nameが不正な場合に発生する。
-
-    Examples:
-        関数の基本的な使用方法を示す。
-
-        >>> example("test", True)
-        True
-
-    Note:
-        実行前に必要な初期化処理を完了しておくこと。
+        OSError: Fileを開けない、または読み込めない場合。
     """
 ```
 
