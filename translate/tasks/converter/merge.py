@@ -28,7 +28,22 @@ def merge(
     task_directory: Path,
     processing_directory: Path,
 ) -> Path:
-    """part順にcollection、pageおよびassetを一つのDocling文書へ統合する。"""
+    """part順にcollection、pageおよびassetを一つのDocling文書へ統合する。
+
+    Args:
+        manifest (UnpackManifest): 変換元Taskが生成したManifest。
+        source (Path): 変換または検証対象の入力Source。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+
+    Returns:
+        Path: part順にcollection、pageおよびassetを一つのDocling文書へ統合する。
+
+    Raises:
+        ValueError: `Docling document must be an object`、`Docling pages must be an
+            object`、`Docling produced no documents`、`Docling origin must be an
+            object`のいずれかと判定した場合。
+    """
 
     with temporary_task_directory(task_directory) as temporary:
         merged: dict[str, Any] | None = None
@@ -66,7 +81,17 @@ def merge(
 
 
 def _remap(value: Any, offsets: dict[str, int], page_offset: int, part: str) -> Any:
-    """任意深度のDocling参照、page番号およびasset URIを全体namespaceへ移す。"""
+    """任意深度のDocling参照、page番号およびasset URIを全体namespaceへ移す。
+
+    Args:
+        value (Any): 文書全体のNamespaceへ参照を移すDocling要素。
+        offsets (dict[str, int]): Part別のPage番号Offset。
+        page_offset (int): 文書全体に合わせるPage番号Offset。
+        part (str): 参照を書き換えるPart名。
+
+    Returns:
+        Any: 任意深度のDocling参照、page番号およびasset URIを全体namespaceへ移す。
+    """
 
     if isinstance(value, list):
         return [_remap(item, offsets, page_offset, part) for item in value]
@@ -94,7 +119,19 @@ def _remap(value: Any, offsets: dict[str, int], page_offset: int, part: str) -> 
 
 
 def _mapped_pages(pages: dict[str, Any], page_offset: int) -> dict[str, Any]:
-    """Docling pages objectのkeyを文書全体の連番へ変換する。"""
+    """Docling pages objectのkeyを文書全体の連番へ変換する。
+
+    Args:
+        pages (dict[str, Any]): Page番号または参照別のPage Data。
+        page_offset (int): 文書全体に合わせるPage番号Offset。
+
+    Returns:
+        dict[str, Any]: Docling pages objectのkeyを文書全体の連番へ変換する。
+
+    Raises:
+        ValueError: `f'invalid Docling page key: {key}'`、`f'duplicate mapped page:
+            {mapped}'`のいずれかと判定した場合。
+    """
 
     result: dict[str, Any] = {}
     for key, value in pages.items():
@@ -108,7 +145,18 @@ def _mapped_pages(pages: dict[str, Any], page_offset: int) -> dict[str, Any]:
 
 
 def _append_document(merged: dict[str, Any], mapped: dict[str, Any]) -> None:
-    """collection、pageおよびdocument treeを既存結果へ追加する。"""
+    """collection、pageおよびdocument treeを既存結果へ追加する。
+
+    Args:
+        merged (dict[str, Any]): 統合先または統合済みのDocument要素。
+        mapped (dict[str, Any]): 参照とPage番号を変換済みの要素。
+
+    Raises:
+        ValueError: `f'Docling collection must be a list: {name}'`、`Docling pages must be
+            objects`、`mapped page IDs collide`、`f'Docling tree must be an object:
+            {tree_name}'`、`f'Docling tree children must be a list:
+            {tree_name}'`のいずれかと判定した場合。
+    """
 
     for name in _COLLECTIONS:
         current = merged.setdefault(name, [])
@@ -136,7 +184,15 @@ def _append_document(merged: dict[str, Any], mapped: dict[str, Any]) -> None:
 
 
 def _copy_assets(source: Path, target: Path) -> None:
-    """part専用namespaceへassetを複製し、既存衝突を拒否する。"""
+    """part専用namespaceへassetを複製し、既存衝突を拒否する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        target (Path): AssetをCopyする統合先Directory。
+
+    Raises:
+        ValueError: `f'asset namespace collision: {target.name}'`と判定した場合。
+    """
 
     if not source.exists():
         return
@@ -146,7 +202,14 @@ def _copy_assets(source: Path, target: Path) -> None:
 
 
 def _validate_references(document: dict[str, Any]) -> None:
-    """collection参照が統合後の存在範囲内にあることを再帰検査する。"""
+    """collection参照が統合後の存在範囲内にあることを再帰検査する。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+
+    Raises:
+        ValueError: `f'unresolved Docling reference: {reference}'`と判定した場合。
+    """
 
     limits = {
         name: len(value)
@@ -165,7 +228,14 @@ def _validate_references(document: dict[str, Any]) -> None:
 
 
 def _iter_references(value: Any) -> list[str]:
-    """Docling JSON内のself_refと$refを再帰的に列挙する。"""
+    """Docling JSON内のself_refと$refを再帰的に列挙する。
+
+    Args:
+        value (Any): 参照を再帰探索するDocling JSON要素。
+
+    Returns:
+        list[str]: Docling JSON内のself_refと$refを再帰的に列挙する。
+    """
 
     if isinstance(value, list):
         return [reference for item in value for reference in _iter_references(item)]

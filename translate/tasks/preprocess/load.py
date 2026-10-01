@@ -91,6 +91,8 @@ def _walk_refs(
     Args:
         document: Docling document。
         value: tree nodeまたは値。
+        list_level: 親Listから継承した階層Level。
+        ordered: 親Listが順序付きかどうか。List外ではNone。
 
     Yields:
         可視内容のない親を平坦化した参照先要素、親list階層、順序付きかどうかの組。
@@ -226,7 +228,15 @@ def _inline(
 
 
 def _split_utf8(value: str, maximum_bytes: int) -> list[str]:
-    """Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。"""
+    """Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。
+
+    Args:
+        value (str): UTF-8 Byte上限で分割するText。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        list[str]: Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。
+    """
 
     parts: list[str] = []
     current: list[str] = []
@@ -438,7 +448,12 @@ class TableImageOwnershipError(ValueError):
     """本文やasset pathを公開せず、所属失敗の対象だけを診断へ渡す。"""
 
     def __init__(self, page: int | None, ref: str) -> None:
-        """検証済み形式のDocling IDとページを保持し、任意文字列IDを公開しない。"""
+        """検証済み形式のDocling IDとページを保持し、任意文字列IDを公開しない。
+
+        Args:
+            page (int | None): 処理対象のPageまたはPage番号。
+            ref (str): Docling要素を指すJSON参照。
+        """
 
         self.page = page
         self.target_id = (
@@ -452,7 +467,18 @@ class TableImageOwnershipError(ValueError):
 
 @contextmanager
 def _ownership_context(page: int | None, ref: str) -> Iterator[None]:
-    """所属検証の詳細例外を、内容を含まない対象付き診断へ正規化する。"""
+    """所属検証の詳細例外を、内容を含まない対象付き診断へ正規化する。
+
+    Args:
+        page (int | None): 処理対象のPageまたはPage番号。
+        ref (str): Docling要素を指すJSON参照。
+
+    Yields:
+        None: 所属検証の詳細例外を、内容を含まない対象付き診断へ正規化する。
+
+    Raises:
+        TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
+    """
 
     try:
         yield
@@ -463,7 +489,20 @@ def _ownership_context(page: int | None, ref: str) -> Iterator[None]:
 def _cell_shape(
     raw: dict[str, Any], row: int, column: int
 ) -> tuple[int, int, int, int]:
-    """半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。"""
+    """半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。
+
+    Args:
+        raw (dict[str, Any]): 正規化前の入力Data。
+        row (int): Table Cellの開始Row位置。
+        column (int): Table Cellの開始Column。
+
+    Returns:
+        tuple[int, int, int, int]: 半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。
+
+    Raises:
+        ValueError: `invalid table cell position`、`invalid table cell span`、`conflicting
+            table cell span`のいずれかと判定した場合。
+    """
 
     start_row = raw.get("start_row_offset_idx", raw.get("row", row))
     start_col = raw.get("start_col_offset_idx", raw.get("col", column))
@@ -488,7 +527,19 @@ def _cell_shape(
 def _raw_cells(
     data: dict[str, Any], ref: str
 ) -> Iterator[tuple[dict[str, Any], int, int, str, str]]:
-    """gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。"""
+    """gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。
+
+    Args:
+        data (dict[str, Any]): 解析または変換対象のMapping Data。
+        ref (str): Docling要素を指すJSON参照。
+
+    Yields:
+        tuple[dict[str: gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。
+
+    Raises:
+        ValueError: `invalid table grid row`、`invalid table grid cell`、`invalid table
+            cells`、`invalid table cell`、`unsupported Docling table cells`のいずれかと判定した場合。
+    """
 
     grid = data.get("grid")
     if isinstance(grid, list):
@@ -522,7 +573,20 @@ def _raw_cells(
 
 
 def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
-    """同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。"""
+    """同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        ref (str): Docling要素を指すJSON参照。
+
+    Returns:
+        list[_CellSource]: 同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。
+
+    Raises:
+        ValueError: `unsupported Docling table`、`table cell exceeds table
+            dimensions`、`conflicting table cell representations`、`conflicting table cell
+            header roles`、`grid cell lies outside its span`のいずれかと判定した場合。
+    """
 
     data = item.get("data")
     if not isinstance(data, dict):
@@ -590,14 +654,34 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
 
 
 def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
-    """別表現の重複を除いた論理セルを内部文書へ渡す。"""
+    """別表現の重複を除いた論理セルを内部文書へ渡す。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        ref (str): Docling要素を指すJSON参照。
+
+    Returns:
+        list[TableCell]: 別表現の重複を除いた論理セルを内部文書へ渡す。
+    """
 
     with _ownership_context(_page_number(item), ref):
         return [source.cell for source in _normalized_cells(item, ref)]
 
 
 def _top_left_box(raw: Any, page: Page) -> tuple[float, float, float, float] | None:
-    """存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。"""
+    """存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。
+
+    Args:
+        raw (Any): 正規化前の入力Data。
+        page (Page): 処理対象のPageまたはPage番号。
+
+    Returns:
+        tuple[float, float, float, float] | None: 存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。
+
+    Raises:
+        ValueError: `invalid image ownership geometry`、`missing page height for image
+            ownership`、`unknown image ownership coordinate origin`のいずれかと判定した場合。
+    """
 
     if raw is None:
         return None
@@ -625,7 +709,18 @@ def _top_left_box(raw: Any, page: Page) -> tuple[float, float, float, float] | N
 def _item_box(
     item: dict[str, Any], page: Page
 ) -> tuple[float, float, float, float] | None:
-    """所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。"""
+    """所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        page (Page): 処理対象のPageまたはPage番号。
+
+    Returns:
+        tuple[float, float, float, float] | None: 所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。
+
+    Raises:
+        ValueError: `conflicting image ownership provenance`と判定した場合。
+    """
 
     provenance = item.get("prov") or []
     boxes = {
@@ -642,7 +737,15 @@ def _item_box(
 def _contains(
     outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]
 ) -> bool:
-    """距離閾値を使わず矩形全体の包含を判定する。"""
+    """距離閾値を使わず矩形全体の包含を判定する。
+
+    Args:
+        outer (tuple[float, float, float, float]): 包含判定で外側になる座標矩形。
+        inner (tuple[float, float, float, float]): 内側に含まれるか判定する座標矩形。
+
+    Returns:
+        bool: 距離閾値を使わず矩形全体の包含を判定する。
+    """
 
     return (
         outer[0] <= inner[0]
@@ -655,7 +758,19 @@ def _contains(
 def _cell_box(
     raw: dict[str, Any], page: Page
 ) -> tuple[float, float, float, float] | None:
-    """セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。"""
+    """セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。
+
+    Args:
+        raw (dict[str, Any]): 正規化前の入力Data。
+        page (Page): 処理対象のPageまたはPage番号。
+
+    Returns:
+        tuple[float, float, float, float] | None: セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。
+
+    Raises:
+        ValueError: `cell ownership references another page`、`conflicting cell ownership
+            provenance`のいずれかと判定した場合。
+    """
 
     if ("page_no" in raw and raw["page_no"] != page.number) or any(
         not isinstance(value, dict) or value.get("page_no") != page.number
@@ -672,7 +787,20 @@ def _cell_box(
 def _geometric_cell(
     cells: list[_CellSource], box: tuple[float, float, float, float], page: Page
 ) -> set[int]:
-    """セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。"""
+    """セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。
+
+    Args:
+        cells (list[_CellSource]): Markdownの一行へ配置するTable Cell列。
+        box (tuple[float, float, float, float]): 判定対象の座標矩形。
+        page (Page): 処理対象のPageまたはPage番号。
+
+    Returns:
+        set[int]: セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。
+
+    Raises:
+        ValueError: `conflicting cell ownership geometry`、`ambiguous table image
+            cell`のいずれかと判定した場合。
+    """
 
     direct: set[int] = set()
     rows: set[int] = set()
@@ -721,7 +849,18 @@ def _geometric_cell(
 def _explicit_image_owners(
     sources: dict[str, list[_CellSource]], pictures: dict[str, dict[str, Any]]
 ) -> dict[str, set[tuple[str, int]]]:
-    """セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。"""
+    """セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。
+
+    Args:
+        sources (dict[str, list[_CellSource]]): Register対象として収集したSource。
+        pictures (dict[str, dict[str, Any]]): 参照別の画像Metadata。
+
+    Returns:
+        dict[str, set[tuple[str, int]]]: セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。
+
+    Raises:
+        TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
+    """
 
     owners: dict[str, set[tuple[str, int]]] = {}
     refs: dict[str, set[tuple[str, int]]] = {}
@@ -762,7 +901,15 @@ def _explicit_image_owners(
 
 
 def _assign_cell_images(document: dict[str, Any], pages: dict[int, Page]) -> None:
-    """一意に確定した画像だけを表セルへ移し、body/collection由来の独立図を除く。"""
+    """一意に確定した画像だけを表セルへ移し、body/collection由来の独立図を除く。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        pages (dict[int, Page]): Page番号または参照別のPage Data。
+
+    Raises:
+        TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
+    """
 
     tables = {
         str(item.get("self_ref")): item
@@ -974,6 +1121,9 @@ def _normalized_pages(document: dict[str, Any]) -> dict[int, Page]:
 
     Returns:
         ページ番号をkeyとする内部Page map。
+
+    Raises:
+        ValueError: Docling page mapを検証して内部Page mapへ変換する処理を完了できない場合。
     """
 
     raw_pages = document.get("pages")
@@ -1077,7 +1227,15 @@ def load_document(document: dict[str, Any]) -> Document:
 
 
 def load(source: Path, output_dir: Path) -> Document:
-    """Docling JSONを共通Documentへ変換して原子的に保存する。"""
+    """Docling JSONを共通Documentへ変換して原子的に保存する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        output_dir (Path): Task成果物の出力Directory。
+
+    Returns:
+        Document: Docling JSONを共通Documentへ変換して原子的に保存する。
+    """
 
     document = load_document(json.loads(source.read_text(encoding="utf-8")))
     with temporary_task_directory(output_dir) as temporary:

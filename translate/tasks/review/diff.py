@@ -47,7 +47,18 @@ def diff(
     baseline: AlignmentResult,
     task_directory: Path,
 ) -> UpgradePlan:
-    """一意な同文と既存ALIGNから版間変更と再利用方針を確定する。"""
+    """一意な同文と既存ALIGNから版間変更と再利用方針を確定する。
+
+    Args:
+        source_v1 (Document): 比較基準にする英文v1。
+        source_v2 (Document): 変更を反映する英文v2。
+        translation_v1 (Document): 比較基準にする日本語v1。
+        baseline (AlignmentResult): 版間差分の基準にするALIGN結果。
+        task_directory (Path): 対象Taskの成果物Directory。
+
+    Returns:
+        UpgradePlan: 一意な同文と既存ALIGNから版間変更と再利用方針を確定する。
+    """
 
     old = _elements(source_v1)
     new = _elements(source_v2)
@@ -119,7 +130,14 @@ def diff(
 
 
 def _elements(document: Document) -> list[_Element]:
-    """空でないTextUnitを文書の読み順で列挙する。"""
+    """空でないTextUnitを文書の読み順で列挙する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        list[_Element]: 空でないTextUnitを文書の読み順で列挙する。
+    """
 
     values = [
         (role, unit, _normalize(unit.text("source")))
@@ -139,7 +157,17 @@ def _version_pairs(
     old: list[_Element],
     new: list[_Element],
 ) -> dict[int, tuple[int, ChangeMethod]]:
-    """一意な同文を優先し、残りへ既存ALIGNの保守的な対応を使う。"""
+    """一意な同文を優先し、残りへ既存ALIGNの保守的な対応を使う。
+
+    Args:
+        source_v1 (Document): 比較基準にする英文v1。
+        source_v2 (Document): 変更を反映する英文v2。
+        old (list[_Element]): 旧版の比較要素または対応する旧要素。
+        new (list[_Element]): 新版の比較要素または現在の要素。
+
+    Returns:
+        dict[int, tuple[int, ChangeMethod]]: 一意な同文を優先し、残りへ既存ALIGNの保守的な対応を使う。
+    """
 
     old_keys = _key_positions(old)
     new_keys = _key_positions(new)
@@ -167,7 +195,14 @@ def _version_pairs(
 
 
 def _key_positions(elements: list[_Element]) -> dict[tuple[str, str], list[int]]:
-    """roleと正規化textごとの出現位置を保持する。"""
+    """roleと正規化textごとの出現位置を保持する。
+
+    Args:
+        elements (list[_Element]): 位置を索引化する比較要素列。
+
+    Returns:
+        dict[tuple[str, str], list[int]]: roleと正規化textごとの出現位置を保持する。
+    """
 
     result: dict[tuple[str, str], list[int]] = {}
     for element in elements:
@@ -176,7 +211,14 @@ def _key_positions(elements: list[_Element]) -> dict[tuple[str, str], list[int]]
 
 
 def _baseline_pairs(alignment: AlignmentResult) -> dict[str, list[str]]:
-    """1対1の英文v1と日本語v1対応だけをID索引へ変換する。"""
+    """1対1の英文v1と日本語v1対応だけをID索引へ変換する。
+
+    Args:
+        alignment (AlignmentResult): Reportへ記録するALIGN結果。
+
+    Returns:
+        dict[str, list[str]]: 1対1の英文v1と日本語v1対応だけをID索引へ変換する。
+    """
 
     return {
         group.source_ids[0]: group.translation_ids
@@ -188,7 +230,15 @@ def _baseline_pairs(alignment: AlignmentResult) -> dict[str, list[str]]:
 
 
 def _compatible(source_v2: TextUnit, translation_v1: TextUnit | None) -> bool:
-    """再利用対象Spanの件数、kindおよび日本語textを検査する。"""
+    """再利用対象Spanの件数、kindおよび日本語textを検査する。
+
+    Args:
+        source_v2 (TextUnit): 変更を反映する英文v2。
+        translation_v1 (TextUnit | None): 比較基準にする日本語v1。
+
+    Returns:
+        bool: 再利用対象Spanの件数、kindおよび日本語textを検査する。
+    """
 
     if translation_v1 is None:
         return False
@@ -205,7 +255,14 @@ def _compatible(source_v2: TextUnit, translation_v1: TextUnit | None) -> bool:
 
 
 def _translatable_spans(unit: TextUnit) -> list[TextSpan]:
-    """翻訳対象となるSpanだけを読み順で返す。"""
+    """翻訳対象となるSpanだけを読み順で返す。
+
+    Args:
+        unit (TextUnit): 変換または検証対象のTextUnit。
+
+    Returns:
+        list[TextSpan]: 翻訳対象となるSpanだけを読み順で返す。
+    """
 
     return [span for span in unit.spans if span.kind not in {"code", "line_break"}]
 
@@ -219,7 +276,20 @@ def _change(
     action: ChangeAction,
     method: ChangeMethod,
 ) -> VersionChange:
-    """一つの版間対応を永続化modelへ変換する。"""
+    """一つの版間対応を永続化modelへ変換する。
+
+    Args:
+        index (int): 対象要素の読み順Index。
+        new (_Element): 新版の比較要素または現在の要素。
+        old (_Element | None): 旧版の比較要素または対応する旧要素。
+        translation_ids (list[str]): Upgrade変更へ関連付ける旧訳ID列。
+        kind (ChangeKind): 生成する版間変更の種別。
+        action (ChangeAction): Task本体として実行するCallable。
+        method (ChangeMethod): Docling APIへ送信するHTTP Method。
+
+    Returns:
+        VersionChange: 一つの版間対応を永続化modelへ変換する。
+    """
 
     return VersionChange.model_validate(
         {
@@ -235,6 +305,13 @@ def _change(
 
 
 def _normalize(value: str) -> str:
-    """NFKC化したtextの前後と連続空白を正規化する。"""
+    """NFKC化したtextの前後と連続空白を正規化する。
+
+    Args:
+        value (str): 版間比較用にUnicodeと空白を正規化するText。
+
+    Returns:
+        str: NFKC化したtextの前後と連続空白を正規化する。
+    """
 
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", value).strip())

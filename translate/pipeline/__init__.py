@@ -10,7 +10,19 @@ class InputError(ValueError):
 
 
 def resolve_processing_id(processing_id: str | None, resume_id: str | None) -> str:
-    """UI指定ID、Resume IDまたは新規UUIDv7を一意に決定する。"""
+    """UI指定ID、Resume IDまたは新規UUIDv7を一意に決定する。
+
+    Args:
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+        resume_id (str | None): Resume対象として指定された処理ID。
+
+    Returns:
+        str: UI指定ID、Resume IDまたは新規UUIDv7を一意に決定する。
+
+    Raises:
+        InputError: `processing ID and resume ID cannot be used together`、`processing ID
+            must be a canonical UUIDv7`のいずれかと判定した場合。
+    """
 
     if processing_id is not None and resume_id is not None:
         raise InputError("processing ID and resume ID cannot be used together")

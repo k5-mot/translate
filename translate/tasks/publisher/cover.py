@@ -15,7 +15,16 @@ if TYPE_CHECKING:
 def create_cover(
     source: Path, task_directory: Path, processing_directory: Path
 ) -> CoverResult:
-    """150 DPIの表紙PNGとmanifestを生成する。"""
+    """150 DPIの表紙PNGとmanifestを生成する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+
+    Returns:
+        CoverResult: 150 DPIの表紙PNGとmanifestを生成する。
+    """
 
     task_directory.mkdir(parents=True, exist_ok=True)
     image_path = task_directory / "cover.png"

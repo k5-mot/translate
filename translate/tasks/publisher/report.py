@@ -19,7 +19,17 @@ def create_report(
     reviewed: ReviewResult,
     output: Path,
 ) -> Path:
-    """件数、対応、指摘、修正候補の順にReview Reportを保存する。"""
+    """件数、対応、指摘、修正候補の順にReview Reportを保存する。
+
+    Args:
+        alignment (AlignmentResult): Reportへ記録するALIGN結果。
+        checked (CheckResult): Reportへ記録するCHECK結果。
+        reviewed (ReviewResult): 修正候補を含むReview結果。
+        output (Path): 変換結果を書き込むFile Path。
+
+    Returns:
+        Path: 件数、対応、指摘、修正候補の順にReview Reportを保存する。
+    """
 
     findings = [*checked.findings, *reviewed.findings]
     counts = Counter((finding.severity, finding.category) for finding in findings)

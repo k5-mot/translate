@@ -81,7 +81,24 @@ def register_paths(
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> RegistrationOutcome:
-    """入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。"""
+    """入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+        resume_id (str | None): Resume対象として指定された処理ID。
+        outputs (Path | None): 成果物Root Directory。
+
+    Returns:
+        RegistrationOutcome: 入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+
+    Raises:
+        InputError: `at least one registration path is required`、`source-id is required for
+            multiple registration paths`、`Docling settings are required for binary
+            references`、`processing ID already exists`のいずれかと判定した場合。
+    """
 
     if not paths:
         raise InputError("at least one registration path is required")
@@ -154,7 +171,18 @@ def _register_sources(
     sources: list[_Source],
     config: Config,
 ) -> None:
-    """各資料の新revisionを書込み確認し、進捗を最上位記録へ保存する。"""
+    """各資料の新revisionを書込み確認し、進捗を最上位記録へ保存する。
+
+    Args:
+        record (RegistrationRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        sources (list[_Source]): Register対象として収集したSource。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Raises:
+        ValueError: `f'reference contains no extractable text:
+            {source.logical_path}'`と判定した場合。
+    """
 
     completed = {
         item.logical_path: item
@@ -236,7 +264,21 @@ def _register_sources(
 def _collect(
     paths: list[Path], source_id: str | None, outputs_root: Path
 ) -> list[_Source]:
-    """入力をsymlink非追跡で展開し、重複しない論理path順へ正規化する。"""
+    """入力をsymlink非追跡で展開し、重複しない論理path順へ正規化する。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        outputs_root (Path): 成果物Root Directory。
+
+    Returns:
+        list[_Source]: 入力をsymlink非追跡で展開し、重複しない論理path順へ正規化する。
+
+    Raises:
+        ValueError: `f'unsupported registration file: {root.name}'`、`f'registration path
+            does not exist: {value}'`、`no supported reference documents found`、`registration
+            inputs contain duplicate logical paths`のいずれかと判定した場合。
+    """
 
     collected: list[tuple[Path, str]] = []
     for value in paths:
@@ -283,7 +325,15 @@ def _collect(
 
 
 def _extract(path: Path, config: Config) -> str:
-    """text形式はUTF-8で読み、binary形式はDocling本文を抽出する。"""
+    """text形式はUTF-8で読み、binary形式はDocling本文を抽出する。
+
+    Args:
+        path (Path): 本文を抽出する登録対象FileのPath。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        str: text形式はUTF-8で読み、binary形式はDocling本文を抽出する。
+    """
 
     if path.suffix.casefold() in _TEXT:
         return (
@@ -300,7 +350,19 @@ def _extract(path: Path, config: Config) -> str:
 
 
 def _docling_text(path: Path, config: Config) -> str:
-    """一つの文書をDoclingへ送り、collection直下の本文を読み順で連結する。"""
+    """一つの文書をDoclingへ送り、collection直下の本文を読み順で連結する。
+
+    Args:
+        path (Path): Doclingへ送信する登録対象FileのPath。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        str: 一つの文書をDoclingへ送り、collection直下の本文を読み順で連結する。
+
+    Raises:
+        ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
+            be an object`のいずれかと判定した場合。
+    """
 
     payload, _job_id, _polls = DoclingClient(config).convert(path)
     with tempfile.TemporaryDirectory(prefix="translate-docling-") as temporary_name:
@@ -325,7 +387,14 @@ def _docling_text(path: Path, config: Config) -> str:
 
 
 def _chunks(value: str) -> list[str]:
-    """段落境界を優先し、最大1000文字・最大100文字重複で分割する。"""
+    """段落境界を優先し、最大1000文字・最大100文字重複で分割する。
+
+    Args:
+        value (str): Chunkへ分割する抽出済み本文Text。
+
+    Returns:
+        list[str]: 段落境界を優先し、最大1000文字・最大100文字重複で分割する。
+    """
 
     text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
     chunks: list[str] = []
@@ -347,7 +416,15 @@ def _chunks(value: str) -> list[str]:
 
 
 def _revision(source: _Source, config: Config) -> str:
-    """入力hash、抽出条件、chunk schema、Embedding modelからrevisionを作る。"""
+    """入力hash、抽出条件、chunk schema、Embedding modelからrevisionを作る。
+
+    Args:
+        source (_Source): 変換または検証対象の入力Source。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        str: 入力hash、抽出条件、chunk schema、Embedding modelからrevisionを作る。
+    """
 
     return canonical_hash(
         {
@@ -370,7 +447,16 @@ def _fingerprint(
     source_id: str | None,
     config: Config,
 ) -> str:
-    """Register Resume判定に必要な順序付き入力と出力影響設定をhash化する。"""
+    """Register Resume判定に必要な順序付き入力と出力影響設定をhash化する。
+
+    Args:
+        sources (list[_Source]): Register対象として収集したSource。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        str: Register Resume判定に必要な順序付き入力と出力影響設定をhash化する。
+    """
 
     return canonical_hash(
         {
@@ -398,7 +484,24 @@ def _record(
     config: Config,
     resuming: bool,
 ) -> RegistrationRecord:
-    """新規Register記録を作るか、入力とfingerprint一致後に保存済み記録を返す。"""
+    """新規Register記録を作るか、入力とfingerprint一致後に保存済み記録を返す。
+
+    Args:
+        path (Path): Registration Recordを書き込むPath。
+        registration_id (str): 作成またはResumeするRegister処理ID。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        sources (list[_Source]): Register対象として収集したSource。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        resuming (bool): 既存処理をResumeしているかどうか。
+
+    Returns:
+        RegistrationRecord: 新規Register記録を作るか、入力とfingerprint一致後に保存済み記録を返す。
+
+    Raises:
+        InputError: `resume inputs or settings do not match the saved
+            registration`、`registration to resume does not exist`のいずれかと判定した場合。
+    """
 
     inputs = [source.input for source in sources]
     if path.is_file():
@@ -427,7 +530,14 @@ def _record(
 
 
 def _validate_source_id(value: str) -> None:
-    """source-idをWindowsを含む安全な単一path要素へ限定する。"""
+    """source-idをWindowsを含む安全な単一path要素へ限定する。
+
+    Args:
+        value (str): 安全なPath要素か検証するSource ID。
+
+    Raises:
+        InputError: `source-id must be a safe single path component`と判定した場合。
+    """
 
     if (
         not value
@@ -442,7 +552,17 @@ def _validate_source_id(value: str) -> None:
 
 
 def _single_top_name(paths: list[Path]) -> str:
-    """単一fileまたはdirectoryの成果物最上位名を返す。"""
+    """単一fileまたはdirectoryの成果物最上位名を返す。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+
+    Returns:
+        str: 単一fileまたはdirectoryの成果物最上位名を返す。
+
+    Raises:
+        InputError: `source-id is required for multiple paths`と判定した場合。
+    """
 
     if len(paths) != 1:
         raise InputError("source-id is required for multiple paths")

@@ -78,7 +78,22 @@ def review_pdfs(
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> ReviewOutcome:
-    """二つのPDFを独立に前処理し、ALIGN、CHECK、REVIEW、REPORTを実行する。"""
+    """二つのPDFを独立に前処理し、ALIGN、CHECK、REVIEW、REPORTを実行する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        translation (Path): Review対象の日本語訳。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+        resume_id (str | None): Resume対象として指定された処理ID。
+        outputs (Path | None): 成果物Root Directory。
+
+    Returns:
+        ReviewOutcome: 二つのPDFを独立に前処理し、ALIGN、CHECK、REVIEW、REPORTを実行する。
+
+    Raises:
+        InputError: `processing ID already exists`と判定した場合。
+    """
 
     source = source.resolve()
     translation = translation.resolve()
@@ -118,7 +133,19 @@ def _review_locked(
     record_path: Path,
     record: ReviewRecord,
 ) -> ReviewOutcome:
-    """排他取得後の比較Review Task列を実行する。"""
+    """排他取得後の比較Review Task列を実行する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        translation (Path): Review対象の日本語訳。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        root (Path): 対象処理の成果物Root Directory。
+        record_path (Path): 処理Record JSONのPath。
+        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        ReviewOutcome: 排他取得後の比較Review Task列を実行する。
+    """
 
     template_root = Path(__file__).parents[1] / "templates"
     rules = (template_root / "review-rules.md").read_text(encoding="utf-8")
@@ -364,7 +391,18 @@ def _preprocess_pair(
     source_merge_dir: Path,
     translation_merge_dir: Path,
 ) -> tuple[Document, Document]:
-    """POSITION、NORMALIZE、LOADを原文と訳文の両方へ同じ順序で適用する。"""
+    """POSITION、NORMALIZE、LOADを原文と訳文の両方へ同じ順序で適用する。
+
+    Args:
+        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        source_merge_dir (Path): 原文側の統合済みDocument Directory。
+        translation_merge_dir (Path): 訳文側の統合済みDocument Directory。
+
+    Returns:
+        tuple[Document, Document]: POSITION、NORMALIZE、LOADを原文と訳文の両方へ同じ順序で適用する。
+    """
 
     current_source = source_merge_dir / "document.json"
     current_translation = translation_merge_dir / "document.json"
@@ -417,7 +455,20 @@ def _perform[ResultT](
     task_directories: list[Path],
     action: Callable[[], ResultT],
 ) -> ResultT | None:
-    """比較Reviewの一Taskを再利用または状態更新付きで実行する。"""
+    """比較Reviewの一Taskを再利用または状態更新付きで実行する。
+
+    Args:
+        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        task_directories (list[Path]): 再利用判定用のTask Directory列。
+        action (Callable[[], ResultT]): Task本体として実行するCallable。
+
+    Returns:
+        ResultT | None: 比較Reviewの一Taskを再利用または状態更新付きで実行する。
+    """
 
     if reusable_task(record, task, fingerprint, root):
         return None
@@ -441,7 +492,15 @@ def _perform[ResultT](
 def _call_pair[FirstT, SecondT](
     first: Callable[[], FirstT], second: Callable[[], SecondT]
 ) -> tuple[FirstT, SecondT]:
-    """同じTaskの原文分岐と訳文分岐を順に実行する。"""
+    """同じTaskの原文分岐と訳文分岐を順に実行する。
+
+    Args:
+        first (Callable[[], FirstT]): 原文側処理を実行するCallable。
+        second (Callable[[], SecondT]): 訳文側処理を実行するCallable。
+
+    Returns:
+        tuple[FirstT, SecondT]: 同じTaskの原文分岐と訳文分岐を順に実行する。
+    """
 
     return first(), second()
 
@@ -451,7 +510,16 @@ def _align_and_write(
     translation: Document,
     directory: Path,
 ) -> AlignmentResult:
-    """ALIGN結果を専用directoryへ保存する。"""
+    """ALIGN結果を専用directoryへ保存する。
+
+    Args:
+        source (Document): 変換または検証対象の入力Source。
+        translation (Document): Review対象の日本語訳。
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        AlignmentResult: ALIGN結果を専用directoryへ保存する。
+    """
 
     result = align(source, translation)
     write_model(directory / "alignment.json", result)
@@ -459,7 +527,15 @@ def _align_and_write(
 
 
 def _check_and_write(targets: list[ReviewTarget], directory: Path) -> CheckResult:
-    """CHECK結果を専用directoryへ保存する。"""
+    """CHECK結果を専用directoryへ保存する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        CheckResult: CHECK結果を専用directoryへ保存する。
+    """
 
     result = check(targets)
     write_model(directory / "findings.json", result)
@@ -467,7 +543,15 @@ def _check_and_write(targets: list[ReviewTarget], directory: Path) -> CheckResul
 
 
 def _input(path: Path, role: str) -> InputFile:
-    """指定PDFのResume比較用入力情報を作る。"""
+    """指定PDFのResume比較用入力情報を作る。
+
+    Args:
+        path (Path): Resume比較用情報を作成するPDFのPath。
+        role (str): 入力または比較要素のRole。
+
+    Returns:
+        InputFile: 指定PDFのResume比較用入力情報を作る。
+    """
 
     return InputFile(
         role=role,
@@ -484,7 +568,22 @@ def _review_record(
     translation: InputFile,
     resuming: bool,
 ) -> ReviewRecord:
-    """新規Review記録を作るか、二入力一致後に保存済み記録を返す。"""
+    """新規Review記録を作るか、二入力一致後に保存済み記録を返す。
+
+    Args:
+        path (Path): Review Recordを書き込むPath。
+        review_id (str): 作成またはResumeするReview処理ID。
+        source (InputFile): 変換または検証対象の入力Source。
+        translation (InputFile): Review対象の日本語訳。
+        resuming (bool): 既存処理をResumeしているかどうか。
+
+    Returns:
+        ReviewRecord: 新規Review記録を作るか、二入力一致後に保存済み記録を返す。
+
+    Raises:
+        InputError: `resume inputs do not match the saved review`、`review to resume does not
+            exist`のいずれかと判定した場合。
+    """
 
     if path.is_file():
         record = load_model(path, ReviewRecord)
@@ -511,7 +610,15 @@ def _review_record(
 
 
 def _validate_pdf(path: Path, role: str) -> None:
-    """Review入力roleを存在するPDF fileへ限定する。"""
+    """Review入力roleを存在するPDF fileへ限定する。
+
+    Args:
+        path (Path): 入力条件を検証するPDFのPath。
+        role (str): 入力または比較要素のRole。
+
+    Raises:
+        InputError: `f'{role} must be a PDF file'`と判定した場合。
+    """
 
     if not path.is_file() or path.suffix.casefold() != ".pdf":
         raise InputError(f"{role} must be a PDF file")
@@ -524,7 +631,15 @@ def _update_llm_progress(
     task: LLMTaskName,
     reused: bool,
 ) -> None:
-    """Call Artifactを正本としてREVIEWの集約進捗を再計算する。"""
+    """Call Artifactを正本としてREVIEWの集約進捗を再計算する。
+
+    Args:
+        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task_directory (Path): 対象Taskの成果物Directory。
+        task (LLMTaskName): 状態またはCallを記録するTask名。
+        reused (bool): LLM Callを再利用できたかどうか。
+    """
 
     calls = [
         load_model(path, LLMCallArtifact)

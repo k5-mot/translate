@@ -22,7 +22,20 @@ def unpack(
     task_directory: Path,
     processing_directory: Path,
 ) -> UnpackManifest:
-    """全entryの安全性確認後にJSONとassetをpart別namespaceへ展開する。"""
+    """全entryの安全性確認後にJSONとassetをpart別namespaceへ展開する。
+
+    Args:
+        manifest (DoclingManifest): 変換元Taskが生成したManifest。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+
+    Returns:
+        UnpackManifest: 全entryの安全性確認後にJSONとassetをpart別namespaceへ展開する。
+
+    Raises:
+        ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
+            be an object`のいずれかと判定した場合。
+    """
 
     parts: list[UnpackedPart] = []
     with temporary_task_directory(task_directory) as temporary:
@@ -73,7 +86,17 @@ def unpack(
 
 
 def _validate_entries(infos: list[zipfile.ZipInfo], root: Path) -> None:
-    """ZIP全entryのpath、重複、symlinkおよび展開先境界を検査する。"""
+    """ZIP全entryのpath、重複、symlinkおよび展開先境界を検査する。
+
+    Args:
+        infos (list[zipfile.ZipInfo]): 検証または展開対象のZIP Entry。
+        root (Path): 対象処理の成果物Root Directory。
+
+    Raises:
+        ValueError: `f'unsafe ZIP entry: {info.filename}'`、`f'duplicate ZIP entry:
+            {info.filename}'`、`f'ZIP entry escapes output directory:
+            {info.filename}'`のいずれかと判定した場合。
+    """
 
     seen: set[str] = set()
     seen_casefold: set[str] = set()
@@ -106,7 +129,16 @@ def _extract_assets(
     infos: list[zipfile.ZipInfo],
     root: Path,
 ) -> list[Path]:
-    """artifacts配下のfileだけを検査済み相対pathへ展開する。"""
+    """artifacts配下のfileだけを検査済み相対pathへ展開する。
+
+    Args:
+        archive (zipfile.ZipFile): Assetを読み出すDocling ZIP Archive。
+        infos (list[zipfile.ZipInfo]): 検証または展開対象のZIP Entry。
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        list[Path]: artifacts配下のfileだけを検査済み相対pathへ展開する。
+    """
 
     results: list[Path] = []
     for info in infos:

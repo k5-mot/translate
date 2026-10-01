@@ -68,7 +68,14 @@ class StructurePatch(StructureModel):
     @field_validator("kind", mode="before")
     @classmethod
     def ignore_caption_as_kind(cls, value: object) -> object:
-        """captionをBlock種別と誤認した応答だけを未指定として扱う。"""
+        """captionをBlock種別と誤認した応答だけを未指定として扱う。
+
+        Args:
+            value (object): STRUCTURE応答が返したBlock種別候補。
+
+        Returns:
+            object: captionをBlock種別と誤認した応答だけを未指定として扱う。
+        """
 
         if isinstance(value, str) and value.strip().casefold() == "caption":
             return None
@@ -89,7 +96,22 @@ def structure(
     config: Config,
     rules: str,
 ) -> Document:
-    """page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。"""
+    """page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        source_pdf (Path): Page画像を取得する原文PDF Path。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        rules (str): LLM Promptへ含める追加規則。
+
+    Returns:
+        Document: page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+
+    Raises:
+        ValueError: `structure model is required`と判定した場合。
+    """
 
     if config.openai_structure_model is None:
         raise ValueError("structure model is required")
@@ -153,7 +175,19 @@ def structure(
 def _chunks(
     blocks: list[Block], maximum_blocks: int, maximum_bytes: int
 ) -> list[list[Block]]:
-    """連続Blockを件数と保守的UTF-8 byte上限内へ分割する。"""
+    """連続Blockを件数と保守的UTF-8 byte上限内へ分割する。
+
+    Args:
+        blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
+        maximum_blocks (int): 一つのSTRUCTURE Callへ含める最大Block数。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        list[list[Block]]: 連続Blockを件数と保守的UTF-8 byte上限内へ分割する。
+
+    Raises:
+        ValueError: `f'single Block exceeds structure input limit: {block.id}'`と判定した場合。
+    """
 
     result: list[list[Block]] = []
     current: list[Block] = []
@@ -173,14 +207,28 @@ def _chunks(
 
 
 def _block_bytes(blocks: list[Block]) -> int:
-    """STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。"""
+    """STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。
+
+    Args:
+        blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
+
+    Returns:
+        int: STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。
+    """
 
     value = [_block_payload(block) for block in blocks]
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8")) + 1024
 
 
 def _block_payload(block: Block) -> dict[str, object]:
-    """分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。"""
+    """分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。
+
+    Args:
+        block (Block): 変換または検証対象のDocument Block。
+
+    Returns:
+        dict[str, object]: 分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。
+    """
 
     text = block.content.text("source") if block.content is not None else ""
     return {
@@ -192,7 +240,15 @@ def _block_payload(block: Block) -> dict[str, object]:
 
 
 def _excerpt(value: str, maximum_bytes: int) -> str:
-    """UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。"""
+    """UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。
+
+    Args:
+        value (str): 先頭と末尾を残して短縮するText。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。
+    """
 
     if len(value.encode("utf-8")) <= maximum_bytes:
         return value
@@ -204,7 +260,15 @@ def _excerpt(value: str, maximum_bytes: int) -> str:
 
 
 def _take_utf8(value: str, maximum_bytes: int) -> str:
-    """文字境界を保って先頭から指定byteまで返す。"""
+    """文字境界を保って先頭から指定byteまで返す。
+
+    Args:
+        value (str): 先頭からByte上限まで切り出すText。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: 文字境界を保って先頭から指定byteまで返す。
+    """
 
     result: list[str] = []
     size = 0
@@ -218,7 +282,11 @@ def _take_utf8(value: str, maximum_bytes: int) -> str:
 
 
 def _bound_image(path: Path) -> None:
-    """縦横比を保ったままSTRUCTURE画像を画素数上限内へ縮小する。"""
+    """縦横比を保ったままSTRUCTURE画像を画素数上限内へ縮小する。
+
+    Args:
+        path (Path): 画素数上限へ縮小するPage画像のPath。
+    """
 
     with Image.open(path) as source:
         width, height = source.size
@@ -247,7 +315,22 @@ def _execute(
     lineage: list[str],
     depth: int,
 ) -> list[tuple[str, StructureResponse]]:
-    """一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。"""
+    """一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+
+    Args:
+        client (LLMClient): 外部処理を呼び出すClient。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
+        image (Path): Multimodal Callへ添付する画像File。
+        task_directory (Path): 対象Taskの成果物Directory。
+        rules (str): LLM Promptへ含める追加規則。
+        heading_history (list[dict[str, object]]): 前Pageまでの確定見出し階層。
+        lineage (list[str]): 親から子へ連なるLLM Call ID列。
+        depth (int): 分割LLM Callの現在の深さ。
+
+    Returns:
+        list[tuple[str, StructureResponse]]: 一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+    """
 
     target_ids = [block.id for block in blocks]
     call_id = llm_call_id("STRUCTURE", target_ids, lineage)
@@ -358,7 +441,13 @@ def _apply_page(
     responses: list[tuple[str, StructureResponse]],
     diagnostics: list[str],
 ) -> None:
-    """既存Blockと整合するpatchだけをpageへ順序どおり適用する。"""
+    """既存Blockと整合するpatchだけをpageへ順序どおり適用する。
+
+    Args:
+        page (Page): 処理対象のPageまたはPage番号。
+        responses (list[tuple[str, StructureResponse]]): Block IDとSTRUCTURE応答の一覧。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+    """
 
     blocks = {block.id: block for block in page.blocks}
     caption_sources: set[str] = set()
@@ -408,7 +497,14 @@ def _apply_page(
 
 
 def _page_heading_history(page: Page) -> list[dict[str, object]]:
-    """処理済みページから次ページへ渡す短い見出し履歴を作る。"""
+    """処理済みページから次ページへ渡す短い見出し履歴を作る。
+
+    Args:
+        page (Page): 処理対象のPageまたはPage番号。
+
+    Returns:
+        list[dict[str, object]]: 処理済みページから次ページへ渡す短い見出し履歴を作る。
+    """
 
     return [
         {
@@ -436,7 +532,13 @@ def _normalize_heading_levels(
     baseline_levels: dict[str, int | None],
     diagnostics: list[str],
 ) -> None:
-    """ページ境界でのlevel=1リセットを初期階層へ戻す。"""
+    """ページ境界でのlevel=1リセットを初期階層へ戻す。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        baseline_levels (dict[str, int | None]): 補正前のBlock ID別見出しLevel。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+    """
 
     previous_level: int | None = None
     previous_page_number: int | None = None
@@ -467,13 +569,28 @@ def _normalize_heading_levels(
 
 
 def _is_top_level_marker(text: str) -> bool:
-    """章・付録など明示的な最上位見出し表現か判定する。"""
+    """章・付録など明示的な最上位見出し表現か判定する。
+
+    Args:
+        text (str): 正規化、検索または表示するText。
+
+    Returns:
+        bool: 章・付録など明示的な最上位見出し表現か判定する。
+    """
 
     return bool(_TOP_LEVEL_MARKER.search(text) or _NUMBERED_TOP_LEVEL.search(text))
 
 
 def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
-    """提案kindが既存Blockの保持する必須fieldだけで成立するか返す。"""
+    """提案kindが既存Blockの保持する必須fieldだけで成立するか返す。
+
+    Args:
+        block (Block): 変換または検証対象のDocument Block。
+        patch (StructurePatch): Blockへ適用予定のSTRUCTURE変更。
+
+    Returns:
+        bool: 提案kindが既存Blockの保持する必須fieldだけで成立するか返す。
+    """
 
     kind = patch.kind
     if kind is None:
@@ -498,7 +615,14 @@ def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """STRUCTURE専用の浅いnative JSON Schemaを作る。"""
+    """STRUCTURE専用の浅いnative JSON Schemaを作る。
+
+    Args:
+        maximum_items (int): Structured Outputへ含める最大要素数。
+
+    Returns:
+        dict[str, object]: STRUCTURE専用の浅いnative JSON Schemaを作る。
+    """
 
     return {
         "type": "object",
@@ -532,7 +656,14 @@ def _schema(maximum_items: int) -> dict[str, object]:
 
 
 def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。"""
+    """Resume前の累計試行数を読める場合だけ引き継ぐ。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
+    """
 
     path = directory / "call.json"
     if not path.is_file():
@@ -544,7 +675,12 @@ def _previous_attempts(directory: Path) -> int:
 
 
 def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """STRUCTUREの適用外項目を処理ディレクトリ直下へ保存する。"""
+    """STRUCTUREの適用外項目を処理ディレクトリ直下へ保存する。
+
+    Args:
+        path (Path): STRUCTURE診断を書き込むJSON FileのPath。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+    """
 
     write_model(
         path,

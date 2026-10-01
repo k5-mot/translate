@@ -91,7 +91,23 @@ def translate_pdf(
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> TranslationOutcome:
-    """仕様順にTaskを実行し、有効なTaskとLLM Callだけを再利用する。"""
+    """仕様順にTaskを実行し、有効なTaskとLLM Callだけを再利用する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+        resume_id (str | None): Resume対象として指定された処理ID。
+        outputs (Path | None): 成果物Root Directory。
+
+    Returns:
+        TranslationOutcome: 仕様順にTaskを実行し、有効なTaskとLLM Callだけを再利用する。
+
+    Raises:
+        InputError: `backend must be llm or libretranslate`、`processing ID already
+            exists`のいずれかと判定した場合。
+    """
 
     source = source.resolve()
     _validate_source(source)
@@ -140,7 +156,19 @@ def _translate_locked(
     record_path: Path,
     record: TranslationRecord,
 ) -> TranslationOutcome:
-    """排他取得後のTranslate Task列を実行する。"""
+    """排他取得後のTranslate Task列を実行する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        backend (str): 翻訳に使用するBackend名。
+        root (Path): 対象処理の成果物Root Directory。
+        record_path (Path): 処理Record JSONのPath。
+        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        TranslationOutcome: 排他取得後のTranslate Task列を実行する。
+    """
 
     template_root = Path(__file__).parents[1] / "templates"
     structure_rules = (template_root / "structure-rules.md").read_text(encoding="utf-8")
@@ -569,7 +597,20 @@ def _perform[ResultT](
     task_directory: Path,
     action: Callable[[], ResultT],
 ) -> ResultT | None:
-    """一つのTaskを再利用または状態更新付きで実行する。"""
+    """一つのTaskを再利用または状態更新付きで実行する。
+
+    Args:
+        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        task_directory (Path): 対象Taskの成果物Directory。
+        action (Callable[[], ResultT]): Task本体として実行するCallable。
+
+    Returns:
+        ResultT | None: 一つのTaskを再利用または状態更新付きで実行する。
+    """
 
     if reusable_task(record, task, fingerprint, root):
         return None
@@ -592,7 +633,15 @@ def _perform[ResultT](
 
 
 def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
-    """CHECK結果を指定phaseのfileへ保存する。"""
+    """CHECK結果を指定phaseのfileへ保存する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        path (Path): CHECK結果を書き込むJSON FileのPath。
+
+    Returns:
+        CheckResult: CHECK結果を指定phaseのfileへ保存する。
+    """
 
     result = check(targets)
     write_model(path, result)
@@ -600,7 +649,13 @@ def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
 
 
 def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) -> None:
-    """FIX結果のDocumentとoutcomeを別fileへ保存する。"""
+    """FIX結果のDocumentとoutcomeを別fileへ保存する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        reviewed (ReviewResult): 修正候補を含むReview結果。
+        directory (Path): LLM Call Artifactの保存Directory。
+    """
 
     result = apply_revisions(document, reviewed)
     directory.mkdir(parents=True, exist_ok=True)
@@ -609,7 +664,13 @@ def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) 
 
 
 def _lint_and_write(document: Document, asset_root: Path, directory: Path) -> None:
-    """LINTを実行し、valid=falseも正常な検査結果として保存する。"""
+    """LINTを実行し、valid=falseも正常な検査結果として保存する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+        directory (Path): LLM Call Artifactの保存Directory。
+    """
 
     result = lint(document, asset_root)
     directory.mkdir(parents=True, exist_ok=True)
@@ -623,7 +684,23 @@ def _translation_record(
     backend: str,
     resuming: bool,
 ) -> TranslationRecord:
-    """新規記録を作るか、入力一致を確認して保存済み記録を返す。"""
+    """新規記録を作るか、入力一致を確認して保存済み記録を返す。
+
+    Args:
+        path (Path): Translation Recordを書き込むPath。
+        translation_id (str): 作成またはResumeするTranslate処理ID。
+        source (InputFile): 変換または検証対象の入力Source。
+        backend (str): 翻訳に使用するBackend名。
+        resuming (bool): 既存処理をResumeしているかどうか。
+
+    Returns:
+        TranslationRecord: 新規記録を作るか、入力一致を確認して保存済み記録を返す。
+
+    Raises:
+        InputError: `resume input does not match the saved translation`、`resume backend does
+            not match the saved translation`、`translation to resume does not
+            exist`のいずれかと判定した場合。
+    """
 
     if path.is_file():
         record = load_model(path, TranslationRecord)
@@ -648,14 +725,28 @@ def _translation_record(
 
 
 def _validate_source(source: Path) -> None:
-    """Translate入力を存在するPDF fileへ限定する。"""
+    """Translate入力を存在するPDF fileへ限定する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+
+    Raises:
+        InputError: `translate source must be a PDF file`と判定した場合。
+    """
 
     if not source.is_file() or source.suffix.casefold() != ".pdf":
         raise InputError("translate source must be a PDF file")
 
 
 def _tree_hash(directory: Path) -> str:
-    """directory配下fileの相対pathとhashから決定的なfingerprintを作る。"""
+    """directory配下fileの相対pathとhashから決定的なfingerprintを作る。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        str: directory配下fileの相対pathとhashから決定的なfingerprintを作る。
+    """
 
     if not directory.exists():
         return canonical_hash([])
@@ -675,7 +766,15 @@ def _update_llm_progress(
     task: LLMTaskName,
     reused: bool,
 ) -> None:
-    """Call Artifactを正本としてTaskのLLM集約進捗を再計算する。"""
+    """Call Artifactを正本としてTaskのLLM集約進捗を再計算する。
+
+    Args:
+        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task_directory (Path): 対象Taskの成果物Directory。
+        task (LLMTaskName): 状態またはCallを記録するTask名。
+        reused (bool): LLM Callを再利用できたかどうか。
+    """
 
     calls = [
         load_model(path, LLMCallArtifact)
@@ -714,7 +813,17 @@ def _stop(
     code: str,
     message: str,
 ) -> None:
-    """公開条件を満たさない処理を説明可能な最上位失敗として停止する。"""
+    """公開条件を満たさない処理を説明可能な最上位失敗として停止する。
+
+    Args:
+        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        code (str): 診断または停止理由を識別するCode。
+        message (str): 診断または停止理由のMessage。
+
+    Raises:
+        PipelineError: 公開条件を満たさない処理を説明可能な最上位失敗として停止する処理を完了できない場合。
+    """
 
     record.status = "failed"
     record.error = ProcessingError(code=code, message=message, retryable=False)

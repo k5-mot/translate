@@ -19,7 +19,16 @@ def translate_lite(
     task_directory: Path,
     config: Config,
 ) -> Document:
-    """LLM Call成果を作らず、最大64件ずつ英語Spanを日本語へ翻訳する。"""
+    """LLM Call成果を作らず、最大64件ずつ英語Spanを日本語へ翻訳する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        task_directory (Path): 対象Taskの成果物Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        Document: LLM Call成果を作らず、最大64件ずつ英語Spanを日本語へ翻訳する。
+    """
 
     updated = document.model_copy(deep=True)
     spans = [

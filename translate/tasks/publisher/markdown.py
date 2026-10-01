@@ -33,7 +33,19 @@ def convert_document(
     excluded_pages: set[int],
     pandoc_timeout: float,
 ) -> Path:
-    """表紙とassetを含む一つのPandoc Markdown成果を作る。"""
+    """表紙とassetを含む一つのPandoc Markdown成果を作る。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        output (Path): 変換結果を書き込むFile Path。
+        cover_image (Path): Markdownへ埋め込む表紙画像Path。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+        excluded_pages (set[int]): Markdown出力から除外するPage番号集合。
+        pandoc_timeout (float): Pandoc ProcessのTimeout秒数。
+
+    Returns:
+        Path: 表紙とassetを含む一つのPandoc Markdown成果を作る。
+    """
 
     output.parent.mkdir(parents=True, exist_ok=True)
     cover_target = output.parent / "assets" / "cover.png"
@@ -65,7 +77,15 @@ def convert_document(
 
 
 def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
-    """一つのBlockをPandoc Markdown断片へ変換する。"""
+    """一つのBlockをPandoc Markdown断片へ変換する。
+
+    Args:
+        block (Block): 変換または検証対象のDocument Block。
+        pandoc_timeout (float): Pandoc ProcessのTimeout秒数。
+
+    Returns:
+        str: 一つのBlockをPandoc Markdown断片へ変換する。
+    """
 
     text = convert_text_unit(block.content) if block.content is not None else ""
     if block.kind == "heading":
@@ -104,7 +124,14 @@ def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
 
 
 def convert_text_unit(unit: TextUnit | None) -> str:
-    """TextUnitの最終層と書式をPandoc inline記法へ変換する。"""
+    """TextUnitの最終層と書式をPandoc inline記法へ変換する。
+
+    Args:
+        unit (TextUnit | None): 変換または検証対象のTextUnit。
+
+    Returns:
+        str: TextUnitの最終層と書式をPandoc inline記法へ変換する。
+    """
 
     if unit is None:
         return ""
@@ -112,7 +139,14 @@ def convert_text_unit(unit: TextUnit | None) -> str:
 
 
 def _convert_span(span: TextSpan) -> str:
-    """一つのTextSpanをescapeし、linkとmarkを適用する。"""
+    """一つのTextSpanをescapeし、linkとmarkを適用する。
+
+    Args:
+        span (TextSpan): 変換またはPayload作成対象のTextSpan。
+
+    Returns:
+        str: 一つのTextSpanをescapeし、linkとmarkを適用する。
+    """
 
     if span.kind == "line_break":
         return "  \n"
@@ -135,7 +169,15 @@ def _convert_span(span: TextSpan) -> str:
 
 
 def _convert_table(block: Block, timeout: float) -> str:
-    """TableCellをPandoc ASTへ対応付けてgrid tableを得る。"""
+    """TableCellをPandoc ASTへ対応付けてgrid tableを得る。
+
+    Args:
+        block (Block): 変換または検証対象のDocument Block。
+        timeout (float): 外部処理のTimeout秒数。
+
+    Returns:
+        str: TableCellをPandoc ASTへ対応付けてgrid tableを得る。
+    """
 
     if not block.cells:
         return ""
@@ -165,7 +207,16 @@ def _convert_table(block: Block, timeout: float) -> str:
 
 
 def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
-    """指定行の開始cellだけをPandoc Rowへ変換する。"""
+    """指定行の開始cellだけをPandoc Rowへ変換する。
+
+    Args:
+        cells (list[TableCell]): Markdownの一行へ配置するTable Cell列。
+        row (int): Pandoc Rowへ変換するTableのRow番号。
+        columns (int): 出力TableのColumn数。
+
+    Returns:
+        list[object]: 指定行の開始cellだけをPandoc Rowへ変換する。
+    """
 
     starts = {cell.column: cell for cell in cells if cell.row == row}
     occupied = {
@@ -192,25 +243,53 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
 
 
 def _pandoc_plain(unit: TextUnit | None) -> dict[str, object]:
-    """TextUnitを表cell用の単純なPandoc Plainへ変換する。"""
+    """TextUnitを表cell用の単純なPandoc Plainへ変換する。
+
+    Args:
+        unit (TextUnit | None): 変換または検証対象のTextUnit。
+
+    Returns:
+        dict[str, object]: TextUnitを表cell用の単純なPandoc Plainへ変換する。
+    """
 
     text = unit.text() if unit is not None else ""
     return {"t": "Plain", "c": [{"t": "Str", "c": text}] if text else []}
 
 
 def _escape(value: str) -> str:
-    """plain textとして解釈させるMarkdown制御文字をescapeする。"""
+    """plain textとして解釈させるMarkdown制御文字をescapeする。
+
+    Args:
+        value (str): Markdown制御文字をEscapeするPlain Text。
+
+    Returns:
+        str: plain textとして解釈させるMarkdown制御文字をescapeする。
+    """
 
     return re.sub(r"([\\`*{}\[\]()#+.!_|>~-])", r"\\\1", value)
 
 
 def _escape_url(value: str) -> str:
-    """Markdown link target内の空白と括弧をpercent表記にする。"""
+    """Markdown link target内の空白と括弧をpercent表記にする。
+
+    Args:
+        value (str): Percent EncodeするMarkdown Link Target。
+
+    Returns:
+        str: Markdown link target内の空白と括弧をpercent表記にする。
+    """
 
     return value.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
 
 
 def _anchor(value: str) -> str:
-    """Document IDをPandocで安全なanchorへ変換する。"""
+    """Document IDをPandocで安全なanchorへ変換する。
+
+    Args:
+        value (str): Pandoc Anchorへ変換するDocument ID。
+
+    Returns:
+        str: Document IDをPandocで安全なanchorへ変換する。
+    """
 
     return re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-") or "item"

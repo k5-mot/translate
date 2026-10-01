@@ -23,7 +23,17 @@ def split(
     processing_directory: Path,
     pages_per_part: int,
 ) -> SplitManifest:
-    """PDFを固定page数で分割し、原子的にManifestとpartを公開する。"""
+    """PDFを固定page数で分割し、原子的にManifestとpartを公開する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+        pages_per_part (int): 一つの分割PDFへ含めるPage数。
+
+    Returns:
+        SplitManifest: PDFを固定page数で分割し、原子的にManifestとpartを公開する。
+    """
 
     total_pages = page_count(source)
     with temporary_task_directory(task_directory) as temporary:

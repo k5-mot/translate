@@ -15,7 +15,17 @@ if TYPE_CHECKING:
 
 
 def page_count(source: Path) -> int:
-    """有効なPDFのpage数を返し、空文書を拒否する。"""
+    """有効なPDFのpage数を返し、空文書を拒否する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+
+    Returns:
+        int: 有効なPDFのpage数を返し、空文書を拒否する。
+
+    Raises:
+        ValueError: `PDF has no pages`と判定した場合。
+    """
 
     with pdfium.PdfDocument(source) as document:
         count = len(document)
@@ -25,7 +35,19 @@ def page_count(source: Path) -> int:
 
 
 def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list[Path]:
-    """PDFを指定page数ずつ分割して順序付きpathを返す。"""
+    """PDFを指定page数ずつ分割して順序付きpathを返す。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        output_directory (Path): 分割PDFの出力Directory。
+        pages_per_part (int): 一つの分割PDFへ含めるPage数。
+
+    Returns:
+        list[Path]: PDFを指定page数ずつ分割して順序付きpathを返す。
+
+    Raises:
+        ValueError: `pages_per_part must be positive`、`PDF has no pages`のいずれかと判定した場合。
+    """
 
     if pages_per_part < 1:
         raise ValueError("pages_per_part must be positive")
@@ -49,7 +71,20 @@ def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list
 def render_page(
     source: Path, page_number: int, output: Path, dpi: int
 ) -> tuple[int, int]:
-    """1始まりのPDF pageをPNGへ変換し、pixel寸法を返す。"""
+    """1始まりのPDF pageをPNGへ変換し、pixel寸法を返す。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        page_number (int): 1から始まる変換対象Page番号。
+        output (Path): 変換結果を書き込むFile Path。
+        dpi (int): PDF PageをRasterizeする解像度。
+
+    Returns:
+        tuple[int, int]: 生成したPNGの幅と高さをPixel単位で並べたTuple。
+
+    Raises:
+        ValueError: `f'PDF page is out of range: {page_number}'`と判定した場合。
+    """
 
     with pdfium.PdfDocument(source) as pdf:
         if not 1 <= page_number <= len(pdf):
@@ -76,7 +111,14 @@ def render_page(
 
 
 def extract_pages_text(path: Path) -> list[str]:
-    """PDFの各pageから埋込みtext layerを抽出する。"""
+    """PDFの各pageから埋込みtext layerを抽出する。
+
+    Args:
+        path (Path): Text Layerを抽出するPDF FileのPath。
+
+    Returns:
+        list[str]: PDFの各pageから埋込みtext layerを抽出する。
+    """
 
     values: list[str] = []
     with pdfium.PdfDocument(path) as pdf:

@@ -67,7 +67,23 @@ def translate(
     glossary: str,
     previous_context: TranslationContext | None = None,
 ) -> Document:
-    """対象Spanをchunk化し、Call成果を再利用しながら日本語訳を設定する。"""
+    """対象Spanをchunk化し、Call成果を再利用しながら日本語訳を設定する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        previous_context (TranslationContext | None): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        Document: 対象Spanをchunk化し、Call成果を再利用しながら日本語訳を設定する。
+
+    Raises:
+        ValueError: `translation model is required`と判定した場合。
+    """
 
     if config.openai_translation_model is None:
         raise ValueError("translation model is required")
@@ -141,7 +157,17 @@ def _chunks(
     maximum_bytes: int,
     previous_context: TranslationContext | None = None,
 ) -> list[list[TextSpan]]:
-    """TextUnitを通常は分断せず、件数と保守的byte上限内へchunk化する。"""
+    """TextUnitを通常は分断せず、件数と保守的byte上限内へchunk化する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        maximum_units (int): 一つのTRANSLATE Callへ含める最大TextUnit数。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+        previous_context (TranslationContext | None): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        list[list[TextSpan]]: TextUnitを通常は分断せず、件数と保守的byte上限内へchunk化する。
+    """
 
     context = previous_context or {}
     groups = [
@@ -181,7 +207,19 @@ def _split_large_group(
     maximum_bytes: int,
     previous_context: TranslationContext,
 ) -> list[list[TextSpan]]:
-    """単一TextUnitだけが上限を超える場合にSpan境界で分割する。"""
+    """単一TextUnitだけが上限を超える場合にSpan境界で分割する。
+
+    Args:
+        group (list[TextSpan]): 同じTextUnitに属する翻訳対象Span列。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+        previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        list[list[TextSpan]]: 単一TextUnitだけが上限を超える場合にSpan境界で分割する。
+
+    Raises:
+        ValueError: `f'single TextSpan exceeds translation input limit: {span.id}'`と判定した場合。
+    """
 
     if _span_bytes(group, previous_context) <= maximum_bytes:
         return [group]
@@ -202,7 +240,15 @@ def _split_large_group(
 
 
 def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> int:
-    """prompt overheadを含む保守的なUTF-8 byte数を計算する。"""
+    """prompt overheadを含む保守的なUTF-8 byte数を計算する。
+
+    Args:
+        spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
+        previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        int: prompt overheadを含む保守的なUTF-8 byte数を計算する。
+    """
 
     payload = [_translation_item(span, previous_context) for span in spans]
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 1024
@@ -222,7 +268,24 @@ def _execute(
     diagnostics: list[str],
     previous_context: TranslationContext,
 ) -> list[tuple[str, TranslationResponse]]:
-    """一つの論理Callを再利用または送信し、必要時だけ子Callへ分割する。"""
+    """一つの論理Callを再利用または送信し、必要時だけ子Callへ分割する。
+
+    Args:
+        client (LLMClient): 外部処理を呼び出すClient。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
+        task_directory (Path): 対象Taskの成果物Directory。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        lineage (list[str]): 親から子へ連なるLLM Call ID列。
+        depth (int): 分割LLM Callの現在の深さ。
+        allow_missing_retry (bool): 分割Retryで未返却項目を許容するかどうか。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+        previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        list[tuple[str, TranslationResponse]]: 一つの論理Callを再利用または送信し、必要時だけ子Callへ分割する。
+    """
 
     target_ids = [span.id for span in spans]
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
@@ -374,7 +437,29 @@ def _split_call(
     diagnostics: list[str],
     previous_context: TranslationContext,
 ) -> list[tuple[str, TranslationResponse]]:
-    """出力超過した親Callを半分の子Callへ置換する。"""
+    """出力超過した親Callを半分の子Callへ置換する。
+
+    Args:
+        artifact (LLMCallArtifact): 状態または応答を更新するLLM Call Artifact。
+        error (LLMInputExceededError | LLMOutputExceededError): 記録または分類する例外。
+        client (LLMClient): 外部処理を呼び出すClient。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
+        task_directory (Path): 対象Taskの成果物Directory。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        lineage (list[str]): 親から子へ連なるLLM Call ID列。
+        depth (int): 分割LLM Callの現在の深さ。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+        previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        list[tuple[str, TranslationResponse]]: 出力超過した親Callを半分の子Callへ置換する。
+
+    Raises:
+        LLMInputExceededError | LLMOutputExceededError:
+            親Callで分割できない入力上限または出力上限Errorを再送出する場合。
+    """
 
     parent_directory = task_directory / "calls" / artifact.call_id
     if len(spans) < 2 or depth >= config.llm_split_max_depth:
@@ -408,7 +493,14 @@ def _split_call(
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """TRANSLATE専用の浅いnative JSON Schemaを作る。"""
+    """TRANSLATE専用の浅いnative JSON Schemaを作る。
+
+    Args:
+        maximum_items (int): Structured Outputへ含める最大要素数。
+
+    Returns:
+        dict[str, object]: TRANSLATE専用の浅いnative JSON Schemaを作る。
+    """
 
     return {
         "type": "object",
@@ -433,7 +525,15 @@ def _schema(maximum_items: int) -> dict[str, object]:
 
 
 def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
-    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。"""
+    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        query (str): RAG検索へ使用する原文Query。
+
+    Returns:
+        list[dict[str, object]]: 設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
+    """
 
     if not query.strip() or not config.qdrant_enabled():
         return []
@@ -448,7 +548,21 @@ def _user_payload(
     maximum_bytes: int,
     previous_context: TranslationContext | None = None,
 ) -> str:
-    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。"""
+    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+
+    Args:
+        spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        rag (list[dict[str, object]]): Promptへ含める検索済み参考文列。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+        previous_context (TranslationContext | None): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        str: 低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+
+    Raises:
+        LLMInputExceededError: `translation prompt exceeds input limit`と判定した場合。
+    """
 
     selected = list(rag)
     context = previous_context or {}
@@ -471,7 +585,15 @@ def _user_payload(
 def _translation_item(
     span: TextSpan, previous_context: TranslationContext
 ) -> dict[str, str]:
-    """一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。"""
+    """一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。
+
+    Args:
+        span (TextSpan): 変換またはPayload作成対象のTextSpan。
+        previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
+
+    Returns:
+        dict[str, str]: 一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。
+    """
 
     item = {"span_id": span.id, "source": span.source}
     previous = previous_context.get(span.id)
@@ -482,7 +604,14 @@ def _translation_item(
 
 
 def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。"""
+    """Resume前の累計試行数を読める場合だけ引き継ぐ。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
+    """
 
     path = directory / "call.json"
     if not path.is_file():
@@ -494,7 +623,12 @@ def _previous_attempts(directory: Path) -> int:
 
 
 def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """TRANSLATEの適用外項目を処理ディレクトリ直下へ保存する。"""
+    """TRANSLATEの適用外項目を処理ディレクトリ直下へ保存する。
+
+    Args:
+        path (Path): TRANSLATE診断を書き込むJSON FileのPath。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+    """
 
     write_model(
         path,

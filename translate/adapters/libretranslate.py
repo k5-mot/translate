@@ -13,7 +13,21 @@ if TYPE_CHECKING:
 
 
 def translate_texts(values: list[str], config: Config) -> list[str]:
-    """文字列配列を一括送信し、同じ件数の日本語訳を返す。"""
+    """文字列配列を一括送信し、同じ件数の日本語訳を返す。
+
+    Args:
+        values (list[str]): 一括処理する入力Text列。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        list[str]: 文字列配列を一括送信し、同じ件数の日本語訳を返す。
+
+    Raises:
+        ValueError: `LibreTranslate URL is required`、`LibreTranslate response is
+            invalid`、`LibreTranslate response count does not match input`のいずれかと判定した場合。
+        TimeoutError: `LibreTranslate task deadline exceeded`と判定した場合。
+        RuntimeError: `LibreTranslate returned no response`と判定した場合。
+    """
 
     if config.libretranslate_url is None:
         raise ValueError("LibreTranslate URL is required")

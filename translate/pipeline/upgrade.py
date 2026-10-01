@@ -95,7 +95,25 @@ def upgrade_pdfs(
     resume_id: str | None = None,
     outputs: Path | None = None,
 ) -> UpgradeOutcome:
-    """三つのPDFを比較し、再利用可能な既存訳を保った日本語v2を生成する。"""
+    """三つのPDFを比較し、再利用可能な既存訳を保った日本語v2を生成する。
+
+    Args:
+        source_v1 (Path): 比較基準にする英文v1。
+        source_v2 (Path): 変更を反映する英文v2。
+        translation_v1 (Path): 比較基準にする日本語v1。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+        resume_id (str | None): Resume対象として指定された処理ID。
+        outputs (Path | None): 成果物Root Directory。
+
+    Returns:
+        UpgradeOutcome: 三つのPDFを比較し、再利用可能な既存訳を保った日本語v2を生成する。
+
+    Raises:
+        InputError: `backend must be llm or libretranslate`、`processing ID already
+            exists`のいずれかと判定した場合。
+    """
 
     source_v1 = source_v1.resolve()
     source_v2 = source_v2.resolve()
@@ -152,7 +170,18 @@ def _upgrade_locked(
     record_path: Path,
     record: UpgradeRecord,
 ) -> UpgradeOutcome:
-    """排他取得後のUpgrade Task列を実行する。"""
+    """排他取得後のUpgrade Task列を実行する。
+
+    Args:
+        files (dict[_Role, Path]): Role別の入力File。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        root (Path): 対象処理の成果物Root Directory。
+        record_path (Path): 処理Record JSONのPath。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        UpgradeOutcome: 排他取得後のUpgrade Task列を実行する。
+    """
 
     template_root = Path(__file__).parents[1] / "templates"
     structure_rules = (template_root / "structure-rules.md").read_text(encoding="utf-8")
@@ -307,7 +336,18 @@ def _convert_inputs(
     record_path: Path,
     record: UpgradeRecord,
 ) -> dict[_Role, Path]:
-    """三入力へconverter Taskを同じ順序で適用する。"""
+    """三入力へconverter Taskを同じ順序で適用する。
+
+    Args:
+        files (dict[_Role, Path]): Role別の入力File。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        root (Path): 対象処理の成果物Root Directory。
+        record_path (Path): 処理Record JSONのPath。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        dict[_Role, Path]: 三入力へconverter Taskを同じ順序で適用する。
+    """
 
     inputs = {
         "source-v1": record.source_v1,
@@ -444,7 +484,17 @@ def _preprocess_inputs(
     record_path: Path,
     record: UpgradeRecord,
 ) -> dict[_Role, Document]:
-    """三入力へ決定的な前処理を同じ順序で適用する。"""
+    """三入力へ決定的な前処理を同じ順序で適用する。
+
+    Args:
+        merge_dirs (dict[_Role, Path]): Role別の統合済みDocument Directory。
+        root (Path): 対象処理の成果物Root Directory。
+        record_path (Path): 処理Record JSONのPath。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        dict[_Role, Document]: 三入力へ決定的な前処理を同じ順序で適用する。
+    """
 
     current = {
         role: directory / "document.json" for role, directory in merge_dirs.items()
@@ -494,7 +544,22 @@ def _translate_changes(
     rules: str,
     glossary: str,
 ) -> Document:
-    """再利用できなかったTextUnitだけを選択backendで翻訳する。"""
+    """再利用できなかったTextUnitだけを選択backendで翻訳する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        report (ReuseReport): 再利用結果または診断Report。
+        context (dict[str, tuple[str, str]]): 変更対象別の原文と旧訳。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+
+    Returns:
+        Document: 再利用できなかったTextUnitだけを選択backendで翻訳する。
+    """
 
     task = TaskName.TRANSLATE if record.backend == "llm" else TaskName.TRANSLATE_LITE
     name = "translate" if record.backend == "llm" else "translate-lite"
@@ -557,7 +622,21 @@ def _review_changes(
     rules: str,
     glossary: str,
 ) -> Document:
-    """全文をCHECKし、今回翻訳したTextUnitだけをLLM REVIEWへ渡す。"""
+    """全文をCHECKし、今回翻訳したTextUnitだけをLLM REVIEWへ渡す。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        changed_unit_ids (set[str]): 再翻訳またはReview対象のTextUnit ID集合。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+
+    Returns:
+        Document: 全文をCHECKし、今回翻訳したTextUnitだけをLLM REVIEWへ渡す。
+    """
 
     check_dir = root / "review" / "check"
     targets = targets_from_document(document)
@@ -687,7 +766,21 @@ def _publish(
     root: Path,
     template_root: Path,
 ) -> UpgradeOutcome:
-    """全文検査後のDocumentを英文v2 assetからDOCXへ公開する。"""
+    """全文検査後のDocumentを英文v2 assetからDOCXへ公開する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        source_v2 (Path): 変更を反映する英文v2。
+        merge_dir (Path): 統合済みDocument Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        template_root (Path): Publisher Template Directory。
+
+    Returns:
+        UpgradeOutcome: 全文検査後のDocumentを英文v2 assetからDOCXへ公開する。
+    """
 
     lint_dir = root / "publisher" / "lint"
     lint_fp = canonical_hash(
@@ -802,7 +895,20 @@ def _perform[ResultT](
     task_directories: list[Path],
     action: Callable[[], ResultT],
 ) -> ResultT | None:
-    """一つのUpgrade Taskを再利用または状態更新付きで実行する。"""
+    """一つのUpgrade Taskを再利用または状態更新付きで実行する。
+
+    Args:
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        task_directories (list[Path]): 再利用判定用のTask Directory列。
+        action (Callable[[], ResultT]): Task本体として実行するCallable。
+
+    Returns:
+        ResultT | None: 一つのUpgrade Taskを再利用または状態更新付きで実行する。
+    """
 
     if reusable_task(record, task, fingerprint, root):
         return None
@@ -824,7 +930,14 @@ def _perform[ResultT](
 
 
 def _call_all(actions: Sequence[Callable[[], object]]) -> list[object]:
-    """同じTaskの三入力分岐を決定的な順序で実行する。"""
+    """同じTaskの三入力分岐を決定的な順序で実行する。
+
+    Args:
+        actions (Sequence[Callable[[], object]]): 並列実行するTask Callable列。
+
+    Returns:
+        list[object]: 同じTaskの三入力分岐を決定的な順序で実行する。
+    """
 
     return [action() for action in actions]
 
@@ -834,7 +947,16 @@ def _align_and_write(
     translation: Document,
     directory: Path,
 ) -> AlignmentResult:
-    """英文v1と日本語v1のALIGN結果を保存する。"""
+    """英文v1と日本語v1のALIGN結果を保存する。
+
+    Args:
+        source (Document): 変換または検証対象の入力Source。
+        translation (Document): Review対象の日本語訳。
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        AlignmentResult: 英文v1と日本語v1のALIGN結果を保存する。
+    """
 
     result = align(source, translation)
     write_model(directory / "result.json", result)
@@ -842,7 +964,15 @@ def _align_and_write(
 
 
 def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
-    """CHECK結果を指定phaseのfileへ保存する。"""
+    """CHECK結果を指定phaseのfileへ保存する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        path (Path): CHECK結果を書き込むJSON FileのPath。
+
+    Returns:
+        CheckResult: CHECK結果を指定phaseのfileへ保存する。
+    """
 
     result = check(targets)
     write_model(path, result)
@@ -850,7 +980,13 @@ def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
 
 
 def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) -> None:
-    """FIX結果のDocumentと適用結果を保存する。"""
+    """FIX結果のDocumentと適用結果を保存する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        reviewed (ReviewResult): 修正候補を含むReview結果。
+        directory (Path): LLM Call Artifactの保存Directory。
+    """
 
     result = apply_revisions(document, reviewed)
     write_model(directory / "document.json", result.document)
@@ -858,13 +994,27 @@ def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) 
 
 
 def _lint_and_write(document: Document, asset_root: Path, directory: Path) -> None:
-    """LINT結果を公開判定用に保存する。"""
+    """LINT結果を公開判定用に保存する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+        directory (Path): LLM Call Artifactの保存Directory。
+    """
 
     write_model(directory / "report.json", lint(document, asset_root))
 
 
 def _input(path: Path, role: str) -> InputFile:
-    """指定PDFのResume比較用入力情報を作る。"""
+    """指定PDFのResume比較用入力情報を作る。
+
+    Args:
+        path (Path): Resume比較用情報を作成するPDFのPath。
+        role (str): 入力または比較要素のRole。
+
+    Returns:
+        InputFile: 指定PDFのResume比較用入力情報を作る。
+    """
 
     return InputFile(
         role=role,
@@ -883,7 +1033,24 @@ def _upgrade_record(
     backend: str,
     resuming: bool,
 ) -> UpgradeRecord:
-    """新規記録を作るか、三入力一致後に保存済み記録を返す。"""
+    """新規記録を作るか、三入力一致後に保存済み記録を返す。
+
+    Args:
+        path (Path): Upgrade Recordを書き込むPath。
+        upgrade_id (str): 作成またはResumeするUpgrade処理ID。
+        source_v1 (InputFile): 比較基準にする英文v1。
+        source_v2 (InputFile): 変更を反映する英文v2。
+        translation_v1 (InputFile): 比較基準にする日本語v1。
+        backend (str): 翻訳に使用するBackend名。
+        resuming (bool): 既存処理をResumeしているかどうか。
+
+    Returns:
+        UpgradeRecord: 新規記録を作るか、三入力一致後に保存済み記録を返す。
+
+    Raises:
+        InputError: `resume inputs do not match the saved upgrade`、`resume backend does not
+            match the saved upgrade`、`upgrade to resume does not exist`のいずれかと判定した場合。
+    """
 
     if path.is_file():
         record = load_model(path, UpgradeRecord)
@@ -915,14 +1082,29 @@ def _upgrade_record(
 
 
 def _validate_pdf(path: Path, role: str) -> None:
-    """Upgrade入力を存在するPDF fileへ限定する。"""
+    """Upgrade入力を存在するPDF fileへ限定する。
+
+    Args:
+        path (Path): 入力条件を検証するPDFのPath。
+        role (str): 入力または比較要素のRole。
+
+    Raises:
+        InputError: `f'{role} must be a PDF file'`と判定した場合。
+    """
 
     if not path.is_file() or path.suffix.casefold() != ".pdf":
         raise InputError(f"{role} must be a PDF file")
 
 
 def _tree_hash(directory: Path) -> str:
-    """directory配下fileの相対pathとhashをfingerprint化する。"""
+    """directory配下fileの相対pathとhashをfingerprint化する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        str: directory配下fileの相対pathとhashをfingerprint化する。
+    """
 
     if not directory.exists():
         return canonical_hash([])
@@ -942,7 +1124,15 @@ def _update_llm_progress(
     task: LLMTaskName,
     reused: bool,
 ) -> None:
-    """Call ArtifactからUpgradeのLLM集約進捗を再計算する。"""
+    """Call ArtifactからUpgradeのLLM集約進捗を再計算する。
+
+    Args:
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task_directory (Path): 対象Taskの成果物Directory。
+        task (LLMTaskName): 状態またはCallを記録するTask名。
+        reused (bool): LLM Callを再利用できたかどうか。
+    """
 
     calls = [
         load_model(path, LLMCallArtifact)
@@ -981,7 +1171,17 @@ def _stop(
     code: str,
     message: str,
 ) -> None:
-    """公開条件を満たさないUpgradeを説明可能な失敗として停止する。"""
+    """公開条件を満たさないUpgradeを説明可能な失敗として停止する。
+
+    Args:
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        code (str): 診断または停止理由を識別するCode。
+        message (str): 診断または停止理由のMessage。
+
+    Raises:
+        PipelineError: 公開条件を満たさないUpgradeを説明可能な失敗として停止する処理を完了できない場合。
+    """
 
     record.status = "failed"
     record.error = ProcessingError(code=code, message=message, retryable=False)

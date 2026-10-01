@@ -53,7 +53,14 @@ class TextSpan(DocumentModel):
     href: str | None = None
 
     def text(self, layer: TextLayer = "revised") -> str:
-        """指定層までの値をrevised、translated、sourceの順で選ぶ。"""
+        """指定層までの値をrevised、translated、sourceの順で選ぶ。
+
+        Args:
+            layer (TextLayer): 取得するTextの優先Layer。
+
+        Returns:
+            str: 指定層までの値をrevised、translated、sourceの順で選ぶ。
+        """
 
         if layer == "revised" and self.revised is not None:
             return self.revised
@@ -69,7 +76,14 @@ class TextUnit(DocumentModel):
     spans: list[TextSpan] = Field(default_factory=list)
 
     def text(self, layer: TextLayer = "revised") -> str:
-        """Spanの改行種別を保ちながら指定層のplain textを返す。"""
+        """Spanの改行種別を保ちながら指定層のplain textを返す。
+
+        Args:
+            layer (TextLayer): 取得するTextの優先Layer。
+
+        Returns:
+            str: Spanの改行種別を保ちながら指定層のplain textを返す。
+        """
 
         return "".join(
             "\n" if span.kind == "line_break" else span.text(layer)
@@ -137,7 +151,14 @@ class Document(DocumentModel):
 
 
 def iter_text_units(document: Document) -> Iterator[tuple[str, TextUnit]]:
-    """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。"""
+    """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Yields:
+        tuple[str: 文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+    """
 
     for page in sorted(document.pages, key=lambda item: item.number):
         for block in sorted(page.blocks, key=lambda item: item.order):
@@ -156,6 +177,13 @@ def iter_text_units(document: Document) -> Iterator[tuple[str, TextUnit]]:
 
 
 def text_unit_index(document: Document) -> dict[str, TextUnit]:
-    """FIXと検証で使用するTextUnit IDの索引を作る。"""
+    """FIXと検証で使用するTextUnit IDの索引を作る。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
+    """
 
     return {unit.id: unit for _, unit in iter_text_units(document)}

@@ -22,7 +22,14 @@ CODE = {"code", "program_listing"}
 
 def _clean(value: str) -> str:
     # Note 1: Cleanup is deterministic; semantic corrections belong to STRUCTURE.
-    """非code本文の制御文字・連続記号・空白を整えるための決定的なtext補正を行う。"""
+    """非code本文の制御文字・連続記号・空白を整えるための決定的なtext補正を行う。
+
+    Args:
+        value (str): 決定的な補正を適用する本文Text。
+
+    Returns:
+        str: 非code本文の制御文字・連続記号・空白を整えるための決定的なtext補正を行う。
+    """
 
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
     value = re.sub(r"\.{3,}", "...", value)
@@ -31,7 +38,14 @@ def _clean(value: str) -> str:
 
 
 def _refs(value: Any) -> set[str]:
-    """任意のDocling subtreeに含まれる参照を再帰的に集める。"""
+    """任意のDocling subtreeに含まれる参照を再帰的に集める。
+
+    Args:
+        value (Any): 参照を再帰探索するDocling Subtree。
+
+    Returns:
+        set[str]: 任意のDocling subtreeに含まれる参照を再帰的に集める。
+    """
 
     if isinstance(value, list):
         return set().union(*(_refs(item) for item in value), set())
@@ -42,7 +56,14 @@ def _refs(value: Any) -> set[str]:
 
 
 def _page(item: dict[str, Any]) -> int | None:
-    """先頭の出典情報に整数のページ番号がある場合だけ返し、目次ページの識別に使う。"""
+    """先頭の出典情報に整数のページ番号がある場合だけ返し、目次ページの識別に使う。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+
+    Returns:
+        int | None: 先頭の出典情報に整数のページ番号がある場合だけ返し、目次ページの識別に使う。
+    """
 
     provenance = item.get("prov")
     if isinstance(provenance, list) and provenance and isinstance(provenance[0], dict):
@@ -52,7 +73,13 @@ def _page(item: dict[str, Any]) -> int | None:
 
 
 def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None:
-    """除外対象への子参照を文書treeから取り除き、解決できる残りの参照先にも再帰適用する。"""
+    """除外対象への子参照を文書treeから取り除き、解決できる残りの参照先にも再帰適用する。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        node (Any): 再帰的に走査または並べ替えるNode。
+        removed (set[str]): 除外したNode参照を収集する集合。
+    """
 
     if not isinstance(node, dict):
         return
@@ -80,7 +107,15 @@ def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None
 
 
 def normalize(source: Path, output_dir: Path) -> Path:
-    """不要要素を参照treeから除き、非code本文をcleanする。"""
+    """不要要素を参照treeから除き、非code本文をcleanする。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        output_dir (Path): Task成果物の出力Directory。
+
+    Returns:
+        Path: 不要要素を参照treeから除き、非code本文をcleanする。
+    """
 
     document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
     removed_reasons: dict[str, str] = {}

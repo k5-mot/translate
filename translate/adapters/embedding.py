@@ -14,7 +14,20 @@ if TYPE_CHECKING:
 
 
 def embed(values: list[str], config: Config) -> list[list[float]]:
-    """最大16件ずつEmbeddingし、件数、次元および有限値を検証する。"""
+    """最大16件ずつEmbeddingし、件数、次元および有限値を検証する。
+
+    Args:
+        values (list[str]): 一括処理する入力Text列。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        list[list[float]]: 最大16件ずつEmbeddingし、件数、次元および有限値を検証する。
+
+    Raises:
+        ValueError: `embedding endpoint and model are required`、`embedding response count
+            does not match input`、`embedding vector must contain finite values`、`embedding
+            vector dimension changed`のいずれかと判定した場合。
+    """
 
     if config.openai_base_url is None or config.openai_embedding_model is None:
         raise ValueError("embedding endpoint and model are required")
@@ -38,7 +51,22 @@ def embed(values: list[str], config: Config) -> list[list[float]]:
 
 
 def _request(values: list[str], config: Config, base_url: str) -> list[list[float]]:
-    """一batchを仕様で許可されたHTTP失敗だけ再試行する。"""
+    """一batchを仕様で許可されたHTTP失敗だけ再試行する。
+
+    Args:
+        values (list[str]): 一括処理する入力Text列。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        base_url (str): Embedding APIの接続先URL。
+
+    Returns:
+        list[list[float]]: 一batchを仕様で許可されたHTTP失敗だけ再試行する。
+
+    Raises:
+        TimeoutError: `embedding deadline exceeded`と判定した場合。
+        RuntimeError: `embedding endpoint returned no response`と判定した場合。
+        ValueError: `embedding response data must be an array`、`embedding response vector is
+            invalid`のいずれかと判定した場合。
+    """
 
     headers = {"Content-Type": "application/json"}
     if config.openai_api_key:

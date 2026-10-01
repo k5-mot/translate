@@ -59,6 +59,16 @@ class _Upload:
         return self._value
 
 
+def test_streamlit_ui_does_not_use_deprecated_container_width() -> None:
+    """Streamlit UIが廃止予定のuse_container_widthを使用しない。"""
+
+    source = (Path(__file__).resolve().parents[2] / "translate/ui.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "use_container_width" not in source
+
+
 def _upload(name: str, value: bytes = b"value") -> UploadedFile:
     """UI helperへ渡すTest用uploadをUploadedFile型として返す。"""
 

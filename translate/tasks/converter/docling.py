@@ -26,7 +26,20 @@ def convert(
     processing_directory: Path,
     config: Config,
 ) -> DoclingManifest:
-    """全partをDoclingへ送り、検証済みZIPとjob情報を原子的に公開する。"""
+    """全partをDoclingへ送り、検証済みZIPとjob情報を原子的に公開する。
+
+    Args:
+        manifest (SplitManifest): 変換元Taskが生成したManifest。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        DoclingManifest: 変換済みZIP、Job IDおよびPolling回数のTuple。
+
+    Raises:
+        ValueError: `Docling returned a corrupt ZIP`と判定した場合。
+    """
 
     client = DoclingClient(config)
     parts: list[DoclingPart] = []
