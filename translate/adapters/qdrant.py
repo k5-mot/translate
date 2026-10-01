@@ -21,7 +21,21 @@ def upsert_revision(
     points: list[dict[str, Any]],
     vector_size: int,
 ) -> bool:
-    """新revisionを確認後に旧revisionへ置換し、既存なら書込みを省略する。"""
+    """新revisionを確認後に旧revisionへ置換し、既存なら書込みを省略する。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        source_key (str): 旧Revisionを識別するSource Key。
+        revision (str): 登録内容の世代を識別するRevision Hash。
+        points (list[dict[str, Any]]): Qdrantへ登録するVector Point列。
+        vector_size (int): Qdrant CollectionのVector次元数。
+
+    Returns:
+        bool: 新revisionを確認後に旧revisionへ置換し、既存なら書込みを省略する。
+
+    Raises:
+        RuntimeError: `Qdrant registration verification failed`と判定した場合。
+    """
 
     client, models = _client(config)
     collection = config.qdrant_collection or ""
@@ -82,7 +96,16 @@ def upsert_revision(
 
 
 def search(config: Config, vector: list[float], limit: int = 5) -> list[dict[str, Any]]:
-    """Qdrantからscore降順、同score時Point ID順で参照文脈を返す。"""
+    """Qdrantからscore降順、同score時Point ID順で参照文脈を返す。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        vector (list[float]): 類似検索用のEmbedding Vector。
+        limit (int): Qdrantから取得する最大件数。
+
+    Returns:
+        list[dict[str, Any]]: Qdrantからscore降順、同score時Point ID順で参照文脈を返す。
+    """
 
     client, _models = _client(config)
     collection = config.qdrant_collection or ""
@@ -100,7 +123,18 @@ def search(config: Config, vector: list[float], limit: int = 5) -> list[dict[str
 
 
 def _client(config: Config) -> tuple[Any, Any]:
-    """optional qdrant-clientを遅延importし、検証済み設定でClientを作る。"""
+    """optional qdrant-clientを遅延importし、検証済み設定でClientを作る。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        tuple[Any, Any]: optional qdrant-clientを遅延importし、検証済み設定でClientを作る。
+
+    Raises:
+        QdrantUnavailableError: `qdrant-client is required for this operation`と判定した場合。
+        ValueError: `Qdrant settings are required`と判定した場合。
+    """
 
     try:
         module = importlib.import_module("qdrant_client")
@@ -124,7 +158,18 @@ def _client(config: Config) -> tuple[Any, Any]:
 def _validate_collection(
     client: Any, models: Any, collection: str, vector_size: int
 ) -> None:
-    """既存collectionのvector次元とCosine距離が現在設定と一致するか検査する。"""
+    """既存collectionのvector次元とCosine距離が現在設定と一致するか検査する。
+
+    Args:
+        client (Any): 外部処理を呼び出すClient。
+        models (Any): QdrantのModel定義Module。
+        collection (str): 検証対象のQdrant Collection名。
+        vector_size (int): Qdrant CollectionのVector次元数。
+
+    Raises:
+        ValueError: `named Qdrant vectors are not supported`、`Qdrant collection vector
+            configuration does not match`のいずれかと判定した場合。
+    """
 
     info = client.get_collection(collection)
     vectors = info.config.params.vectors

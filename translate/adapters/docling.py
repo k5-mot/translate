@@ -24,7 +24,14 @@ class DoclingClient:
     """Docling jobの送信、poll、downloadと有限再試行を隠蔽する。"""
 
     def __init__(self, config: Config) -> None:
-        """検証済み設定を保持し、接続はconvertまで遅延する。"""
+        """検証済み設定を保持し、接続はconvertまで遅延する。
+
+        Args:
+            config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+        Raises:
+            ValueError: `Docling server URL is required`と判定した場合。
+        """
 
         if config.docling_server_url is None:
             raise ValueError("Docling server URL is required")
@@ -37,7 +44,22 @@ class DoclingClient:
     def convert(
         self, source: Path, poll_interval: float = 1.0
     ) -> tuple[bytes, str, int]:
-        """文書を送信し、完了したZIP、job ID、poll回数を返す。"""
+        """文書を送信し、完了したZIP、job ID、poll回数を返す。
+
+        Args:
+            source (Path): 変換または検証対象の入力Source。
+            poll_interval (float): Docling Job状態の確認間隔秒数。
+
+        Returns:
+            tuple[bytes, str, int]: 変換済みZIP、Job IDおよびPolling回数のTuple。
+
+        Raises:
+            ValueError: `f'unsupported Docling document: {source.name}'`と判定した場合。
+            RuntimeError: `Docling submit response must be an object`、`Docling response has no
+                task_id`、`Docling status response must be an object`、`f'Docling task did not
+                complete: {task_id}'`のいずれかと判定した場合。
+            TimeoutError: `f'Docling task timed out: {task_id}'`と判定した場合。
+        """
 
         suffix = source.suffix.casefold()
         if suffix not in _CONTENT_TYPES:
@@ -90,7 +112,21 @@ class DoclingClient:
         deadline: float,
         **kwargs: Any,
     ) -> httpx.Response:
-        """streamを巻き戻し、仕様で再試行可能なHTTP失敗だけを再送する。"""
+        """streamを巻き戻し、仕様で再試行可能なHTTP失敗だけを再送する。
+
+        Args:
+            method (str): Docling APIへ送信するHTTP Method。
+            url (str): Request送信先URL。
+            deadline (float): Pollingを終了するMonotonic Clock上の期限。
+            **kwargs (Any): HTTP Clientへ渡す追加Request引数。
+
+        Returns:
+            httpx.Response: streamを巻き戻し、仕様で再試行可能なHTTP失敗だけを再送する。
+
+        Raises:
+            httpx.HTTPError: HTTP Retryを使い切り、最後の通信Errorを再送出する場合。
+            TimeoutError: `Docling task deadline exceeded`と判定した場合。
+        """
 
         last_error: Exception | None = None
         for attempt in range(1, self.config.http_retry_attempts + 1):
@@ -127,7 +163,11 @@ class DoclingClient:
         raise TimeoutError("Docling task deadline exceeded")
 
     def _request_data(self) -> dict[str, str | list[str]]:
-        """Docling変換品質を固定するmultipart fieldを返す。"""
+        """Docling変換品質を固定するmultipart fieldを返す。
+
+        Returns:
+            dict[str, str | list[str]]: Docling変換品質を固定するmultipart fieldを返す。
+        """
 
         return {
             "to_formats": "json",

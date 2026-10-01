@@ -57,7 +57,23 @@ def review(
     rules: str,
     glossary: str,
 ) -> ReviewResult:
-    """ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。"""
+    """ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        checked (CheckResult): Reportへ記録するCHECK結果。
+        task_directory (Path): 対象Taskの成果物Directory。
+        processing_directory (Path): 対象処理の成果物Directory。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        rules (str): LLM Promptへ含める追加規則。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+
+    Returns:
+        ReviewResult: ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。
+
+    Raises:
+        ValueError: `review model is required`と判定した場合。
+    """
 
     if config.openai_review_model is None:
         raise ValueError("review model is required")
@@ -159,7 +175,16 @@ def _chunks(
     maximum_targets: int,
     maximum_bytes: int,
 ) -> list[list[ReviewTarget]]:
-    """ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。"""
+    """ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        maximum_targets (int): 一つのREVIEW Callへ含める最大Target数。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        list[list[ReviewTarget]]: ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。
+    """
 
     result: list[list[ReviewTarget]] = []
     current: list[ReviewTarget] = []
@@ -178,7 +203,18 @@ def _chunks(
 
 
 def _split_large_target(target: ReviewTarget, maximum_bytes: int) -> list[ReviewTarget]:
-    """長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。"""
+    """長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。
+
+    Args:
+        target (ReviewTarget): 入力上限へ収めるReview対象。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        list[ReviewTarget]: 長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。
+
+    Raises:
+        ValueError: `f'single ReviewTarget exceeds review input limit: {target.id}'`と判定した場合。
+    """
 
     if _target_bytes([target]) <= maximum_bytes:
         return [target]
@@ -228,7 +264,16 @@ def _split_large_target(target: ReviewTarget, maximum_bytes: int) -> list[Review
 
 
 def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str:
-    """ReviewTargetへ収まる最長の原文prefixをUnicode文字境界で返す。"""
+    """ReviewTargetへ収まる最長の原文prefixをUnicode文字境界で返す。
+
+    Args:
+        target (ReviewTarget): 原文Prefixを取得するReview対象。
+        source (str): 変換または検証対象の入力Source。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: ReviewTargetへ収まる最長の原文prefixをUnicode文字境界で返す。
+    """
 
     low = 0
     high = len(source)
@@ -243,7 +288,19 @@ def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str
 
 
 def _split_spans(target: ReviewTarget, maximum_bytes: int) -> list[list[TextSpan]]:
-    """修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。"""
+    """修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。
+
+    Args:
+        target (ReviewTarget): Span単位へ分割するReview対象。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        list[list[TextSpan]]: 修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。
+
+    Raises:
+        ValueError: `f'single ReviewTarget span exceeds review input limit:
+            {span.id}'`と判定した場合。
+    """
 
     groups: list[list[TextSpan]] = []
     current: list[TextSpan] = []
@@ -277,14 +334,28 @@ def _split_spans(target: ReviewTarget, maximum_bytes: int) -> list[list[TextSpan
 
 
 def _target_bytes(targets: list[ReviewTarget]) -> int:
-    """REVIEW promptへ渡す対象の保守的byte数を返す。"""
+    """REVIEW promptへ渡す対象の保守的byte数を返す。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+
+    Returns:
+        int: REVIEW promptへ渡す対象の保守的byte数を返す。
+    """
 
     value = [_target_payload(target) for target in targets]
     return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
 
 
 def _target_payload(target: ReviewTarget) -> dict[str, object]:
-    """重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。"""
+    """重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。
+
+    Args:
+        target (ReviewTarget): LLM Payloadへ変換するReview対象。
+
+    Returns:
+        dict[str, object]: 重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。
+    """
 
     return {
         "id": target.id,
@@ -454,7 +525,14 @@ def _execute(
 
 
 def _retry_groups(targets: list[ReviewTarget]) -> tuple[list[ReviewTarget], ...]:
-    """上限超過したCallを、単一の事前分割済み対象も含めて縮小する。"""
+    """上限超過したCallを、単一の事前分割済み対象も含めて縮小する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+
+    Returns:
+        tuple[list[ReviewTarget], ...]: 上限超過したCallを、単一の事前分割済み対象も含めて縮小する。
+    """
 
     if len(targets) >= 2:
         middle = len(targets) // 2
@@ -472,7 +550,14 @@ def _retry_groups(targets: list[ReviewTarget]) -> tuple[list[ReviewTarget], ...]
 
 
 def _schema(config: Config) -> dict[str, object]:
-    """REVIEW専用の浅いnative JSON Schemaを作る。"""
+    """REVIEW専用の浅いnative JSON Schemaを作る。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Returns:
+        dict[str, object]: REVIEW専用の浅いnative JSON Schemaを作る。
+    """
 
     return {
         "type": "object",
@@ -531,7 +616,15 @@ def _schema(config: Config) -> dict[str, object]:
 
 
 def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
-    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。"""
+    """設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
+
+    Args:
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        query (str): RAG検索へ使用する原文Query。
+
+    Returns:
+        list[dict[str, object]]: 設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
+    """
 
     if not query.strip() or not config.qdrant_enabled():
         return []
@@ -546,7 +639,21 @@ def _user_payload(
     rag: list[dict[str, object]],
     maximum_bytes: int,
 ) -> str:
-    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。"""
+    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+        findings (list[dict[str, object]]): LLMへ渡す既存Review指摘。
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        rag (list[dict[str, object]]): Promptへ含める検索済み参考文列。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: 低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+
+    Raises:
+        LLMInputExceededError: `review prompt exceeds input limit`と判定した場合。
+    """
 
     selected = list(rag)
     while True:
@@ -567,7 +674,14 @@ def _user_payload(
 
 
 def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。"""
+    """Resume前の累計試行数を読める場合だけ引き継ぐ。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
+    """
 
     path = directory / "call.json"
     if not path.is_file():
@@ -579,7 +693,12 @@ def _previous_attempts(directory: Path) -> int:
 
 
 def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """REVIEWの適用外項目を処理ディレクトリ直下へ保存する。"""
+    """REVIEWの適用外項目を処理ディレクトリ直下へ保存する。
+
+    Args:
+        path (Path): REVIEW診断を書き込むJSON FileのPath。
+        diagnostics (list[str]): 検証中に追記する診断Message列。
+    """
 
     write_model(
         path,

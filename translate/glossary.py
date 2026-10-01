@@ -10,7 +10,16 @@ from functools import lru_cache
 def relevant_glossary(
     glossary: str, source: str, maximum_bytes: int | None = None
 ) -> str:
-    """英語名が原文に現れ、入力枠へ収まる完全なCSV行だけを返す。"""
+    """英語名が原文に現れ、入力枠へ収まる完全なCSV行だけを返す。
+
+    Args:
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        source (str): 変換または検証対象の入力Source。
+        maximum_bytes (int | None): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: 英語名が原文に現れ、入力枠へ収まる完全なCSV行だけを返す。
+    """
 
     rows = _rows(glossary) if glossary.strip() and source.strip() else ()
     if not rows:
@@ -46,7 +55,16 @@ def relevant_glossary(
 def _bounded_csv(
     header: tuple[str, ...], rows: list[tuple[str, ...]], maximum_bytes: int
 ) -> str:
-    """CSVの行境界を壊さず、先に定義された用語からbyte上限へ収める。"""
+    """CSVの行境界を壊さず、先に定義された用語からbyte上限へ収める。
+
+    Args:
+        header (tuple[str, ...]): 出力CSVのHeader行。
+        rows (list[tuple[str, ...]]): CSVまたは比較表示を構成する行。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        str: CSVの行境界を壊さず、先に定義された用語からbyte上限へ収める。
+    """
 
     if maximum_bytes <= 0:
         return ""
@@ -63,7 +81,14 @@ def _bounded_csv(
 
 
 def _csv_row(row: tuple[str, ...]) -> str:
-    """一つのCSV行を標準csv規則で直列化する。"""
+    """一つのCSV行を標準csv規則で直列化する。
+
+    Args:
+        row (tuple[str, ...]): CSV形式へ直列化する一行分のField列。
+
+    Returns:
+        str: 一つのCSV行を標準csv規則で直列化する。
+    """
 
     output = io.StringIO(newline="")
     csv.writer(output, lineterminator="\n").writerow(row)
@@ -72,7 +97,14 @@ def _csv_row(row: tuple[str, ...]) -> str:
 
 @lru_cache(maxsize=2)
 def _rows(glossary: str) -> tuple[tuple[str, ...], ...]:
-    """同じ用語集をCallごとに再parseせず、変更時だけ読直す。"""
+    """同じ用語集をCallごとに再parseせず、変更時だけ読直す。
+
+    Args:
+        glossary (str): 対象文書へ適用するCSV形式の用語集。
+
+    Returns:
+        tuple[tuple[str, ...], ...]: 同じ用語集をCallごとに再parseせず、変更時だけ読直す。
+    """
 
     return tuple(
         tuple(row) for row in csv.reader(io.StringIO(glossary.lstrip("\ufeff")))
@@ -80,7 +112,15 @@ def _rows(glossary: str) -> tuple[tuple[str, ...], ...]:
 
 
 def _contains_term(folded_source: str, term: str) -> bool:
-    """ASCII英数字の語境界を保ちながら大小文字を無視して検索する。"""
+    """ASCII英数字の語境界を保ちながら大小文字を無視して検索する。
+
+    Args:
+        folded_source (str): 大小文字を正規化した検索対象Text。
+        term (str): 用語集から検索する見出し語。
+
+    Returns:
+        bool: ASCII英数字の語境界を保ちながら大小文字を無視して検索する。
+    """
 
     value = term.strip().casefold()
     if not value:
@@ -101,6 +141,13 @@ def _contains_term(folded_source: str, term: str) -> bool:
 
 
 def _ascii_alnum(value: str) -> bool:
-    """一文字がASCII英数字かを返す。"""
+    """一文字がASCII英数字かを返す。
+
+    Args:
+        value (str): ASCII英数字か判定する一文字。
+
+    Returns:
+        bool: 一文字がASCII英数字かを返す。
+    """
 
     return value.isascii() and value.isalnum()

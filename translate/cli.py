@@ -29,7 +29,18 @@ def upgrade_command(
     backend: Annotated[str, typer.Option("--backend")] = "llm",
     resume: Annotated[str | None, typer.Option("--resume")] = None,
 ) -> None:
-    """英文二版と日本語旧版から日本語新版DOCXを生成する。"""
+    """英文二版と日本語旧版から日本語新版DOCXを生成する。
+
+    Args:
+        source_v1 (Path): 比較基準にする英文v1。
+        source_v2 (Path): 変更を反映する英文v2。
+        translation_v1 (Path): 比較基準にする日本語v1。
+        backend (str): 翻訳に使用するBackend名。
+        resume (str | None): CLIで指定されたResume対象ID。
+
+    Raises:
+        typer.Exit: ユーザー中断、入力Errorまたは処理失敗でCLIを終了する場合。
+    """
 
     try:
         outcome = upgrade_pdfs(
@@ -58,7 +69,16 @@ def translate_command(
     backend: Annotated[str, typer.Option("--backend")] = "llm",
     resume: Annotated[str | None, typer.Option("--resume")] = None,
 ) -> None:
-    """英語PDFを日本語MarkdownおよびDOCXへ変換する。"""
+    """英語PDFを日本語MarkdownおよびDOCXへ変換する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        backend (str): 翻訳に使用するBackend名。
+        resume (str | None): CLIで指定されたResume対象ID。
+
+    Raises:
+        typer.Exit: ユーザー中断、入力Errorまたは処理失敗でCLIを終了する場合。
+    """
 
     try:
         outcome = translate_pdf(
@@ -86,7 +106,16 @@ def review_command(
     translation: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     resume: Annotated[str | None, typer.Option("--resume")] = None,
 ) -> None:
-    """独立した英語原文PDFと日本語訳文PDFを比較する。"""
+    """独立した英語原文PDFと日本語訳文PDFを比較する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        translation (Path): Review対象の日本語訳。
+        resume (str | None): CLIで指定されたResume対象ID。
+
+    Raises:
+        typer.Exit: ユーザー中断、入力Errorまたは処理失敗でCLIを終了する場合。
+    """
 
     try:
         outcome = review_pdfs(source, translation, load_config(), resume_id=resume)
@@ -108,7 +137,16 @@ def register_command(
     source_id: Annotated[str | None, typer.Option("--source-id")] = None,
     resume: Annotated[str | None, typer.Option("--resume")] = None,
 ) -> None:
-    """参照資料をEmbeddingしてQdrantへ登録する。"""
+    """参照資料をEmbeddingしてQdrantへ登録する。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        resume (str | None): CLIで指定されたResume対象ID。
+
+    Raises:
+        typer.Exit: ユーザー中断、入力Errorまたは処理失敗でCLIを終了する場合。
+    """
 
     try:
         outcome = register_paths(

@@ -47,7 +47,12 @@ PATH_REPLACE_ATTEMPTS = 8
 
 
 def replace_path(source: Path, destination: Path) -> None:
-    """Windowsの一時的なアクセス拒否を再試行してpathを原子的に置換する。"""
+    """Windowsの一時的なアクセス拒否を再試行してpathを原子的に置換する。
+
+    Args:
+        source (Path): 置換元となる一時FileまたはDirectoryのPath。
+        destination (Path): 置換後の公開先Path。
+    """
 
     for attempt in range(PATH_REPLACE_ATTEMPTS):
         try:
@@ -64,7 +69,17 @@ def replace_path(source: Path, destination: Path) -> None:
 
 
 def sha256_file(path: Path) -> str:
-    """fileのraw byte列に対するSHA-256をstreaming計算する。"""
+    """fileのraw byte列に対するSHA-256をstreaming計算する。
+
+    Args:
+        path (Path): Hashを計算するFileのPath。
+
+    Returns:
+        str: 小文字の16進数で表した64文字のSHA-256 Hash値。
+
+    Raises:
+        OSError: Fileを開けない、または読み込めない場合。
+    """
 
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -74,7 +89,14 @@ def sha256_file(path: Path) -> str:
 
 
 def canonical_hash(value: BaseModel | Any) -> str:
-    """Pydantic JSON modeまたはJSON互換値のcanonical SHA-256を返す。"""
+    """Pydantic JSON modeまたはJSON互換値のcanonical SHA-256を返す。
+
+    Args:
+        value (BaseModel | Any): JSONへ正規化してHashを計算する値。
+
+    Returns:
+        str: Pydantic JSON modeまたはJSON互換値のcanonical SHA-256を返す。
+    """
 
     data = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
     encoded = json.dumps(
@@ -87,7 +109,12 @@ def canonical_hash(value: BaseModel | Any) -> str:
 
 
 def atomic_write_bytes(path: Path, value: bytes) -> None:
-    """同一directoryの一時fileを同期してから置換保存する。"""
+    """同一directoryの一時fileを同期してから置換保存する。
+
+    Args:
+        path (Path): Byte列を保存するFileのPath。
+        value (bytes): 原子的に保存するByte列。
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -107,27 +134,53 @@ def atomic_write_bytes(path: Path, value: bytes) -> None:
 
 
 def atomic_write_text(path: Path, value: str) -> None:
-    """UTF-8 textを途中状態を公開せず保存する。"""
+    """UTF-8 textを途中状態を公開せず保存する。
+
+    Args:
+        path (Path): Textを保存するFileのPath。
+        value (str): UTF-8で保存するText。
+    """
 
     atomic_write_bytes(path, value.encode("utf-8"))
 
 
 def write_model(path: Path, value: BaseModel) -> None:
-    """Pydantic modelをUTF-8、LF、末尾改行付きJSONで原子的に保存する。"""
+    """Pydantic modelをUTF-8、LF、末尾改行付きJSONで原子的に保存する。
+
+    Args:
+        path (Path): JSON Modelを保存するFileのPath。
+        value (BaseModel): JSON modeで直列化するPydantic Model。
+    """
 
     text = json.dumps(value.model_dump(mode="json"), ensure_ascii=False, indent=2)
     atomic_write_text(path, f"{text}\n")
 
 
 def write_json(path: Path, value: Any) -> None:
-    """JSON互換値をUTF-8、LF、末尾改行付きで原子的に保存する。"""
+    """JSON互換値をUTF-8、LF、末尾改行付きで原子的に保存する。
+
+    Args:
+        path (Path): JSONを保存するFileのPath。
+        value (Any): JSONへ直列化する値。
+    """
 
     text = json.dumps(value, ensure_ascii=False, indent=2)
     atomic_write_text(path, f"{text}\n")
 
 
 def load_model[ModelT: BaseModel](path: Path, model_type: type[ModelT]) -> ModelT:
-    """JSON成果物を読み、指定Pydantic modelで検証する。"""
+    """JSON成果物を読み、指定Pydantic modelで検証する。
+
+    Args:
+        path (Path): 読み込むJSON成果物のPath。
+        model_type (type[ModelT]): JSON検証用のPydantic Model Type。
+
+    Returns:
+        ModelT: JSON成果物を読み、指定Pydantic modelで検証する。
+
+    Raises:
+        ArtifactError: JSON成果物を読み、指定Pydantic modelで検証する処理を完了できない場合。
+    """
 
     try:
         return model_type.model_validate_json(path.read_text(encoding="utf-8"))
@@ -137,7 +190,16 @@ def load_model[ModelT: BaseModel](path: Path, model_type: type[ModelT]) -> Model
 
 
 def llm_call_id(task: str, target_ids: list[str], lineage: list[str]) -> str:
-    """Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。"""
+    """Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。
+
+    Args:
+        task (str): 状態またはCallを記録するTask名。
+        target_ids (list[str]): LLM Call対象の安定識別ID列。
+        lineage (list[str]): 親から子へ連なるLLM Call ID列。
+
+    Returns:
+        str: Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。
+    """
 
     value = canonical_hash({"task": task, "target_ids": target_ids, "lineage": lineage})
     return f"call-{value}"
@@ -152,7 +214,19 @@ def begin_llm_call(
     target_ids: list[str],
     previous_attempts: int = 0,
 ) -> LLMCallArtifact:
-    """送信前のCall状態を原子的に保存する。"""
+    """送信前のCall状態を原子的に保存する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+        call_id (str): 一意に識別するLLM Call ID。
+        task (LLMTaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        target_ids (list[str]): LLM Call対象の安定識別ID列。
+        previous_attempts (int): Resume前までに消費した試行回数。
+
+    Returns:
+        LLMCallArtifact: 送信前のCall状態を原子的に保存する。
+    """
 
     now = datetime.now(UTC)
     artifact = LLMCallArtifact(
@@ -180,7 +254,21 @@ def complete_llm_call(
     status: str = "succeeded",
     child_call_ids: list[str] | None = None,
 ) -> LLMCallArtifact:
-    """検証済み応答を先に保存し、そのhash付きCall状態を公開する。"""
+    """検証済み応答を先に保存し、そのhash付きCall状態を公開する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+        artifact (LLMCallArtifact): 状態または応答を更新するLLM Call Artifact。
+        response (BaseModel): 保存する検証済みLLM応答Model。
+        attempts (int): LLM Callで消費した試行回数。
+        input_tokens (int | None): Providerが報告した入力Token数。
+        output_tokens (int | None): Providerが報告した出力Token数。
+        status (str): 抽出対象のLLM Call状態。
+        child_call_ids (list[str] | None): 分割実行で生成した子Call ID列。
+
+    Returns:
+        LLMCallArtifact: 検証済み応答を先に保存し、そのhash付きCall状態を公開する。
+    """
 
     response_path = directory / "response.json"
     write_model(response_path, response)
@@ -207,7 +295,17 @@ def fail_llm_call(
     *,
     attempts: int,
 ) -> LLMCallArtifact:
-    """LLM Call失敗を本文なしのProcessingErrorとして保存する。"""
+    """LLM Call失敗を本文なしのProcessingErrorとして保存する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+        artifact (LLMCallArtifact): 状態または応答を更新するLLM Call Artifact。
+        error (BaseException): 記録または分類する例外。
+        attempts (int): LLM Callで消費した試行回数。
+
+    Returns:
+        LLMCallArtifact: LLM Call失敗を本文なしのProcessingErrorとして保存する。
+    """
 
     updated = artifact.model_copy(
         update={
@@ -231,7 +329,16 @@ def mark_split_llm_call(
     artifact: LLMCallArtifact,
     child_call_ids: list[str],
 ) -> LLMCallArtifact:
-    """親Callを再送しないよう子Call IDとsplit状態を先に保存する。"""
+    """親Callを再送しないよう子Call IDとsplit状態を先に保存する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+        artifact (LLMCallArtifact): 状態または応答を更新するLLM Call Artifact。
+        child_call_ids (list[str]): 分割実行で生成した子Call ID列。
+
+    Returns:
+        LLMCallArtifact: 親Callを再送しないよう子Call IDとsplit状態を先に保存する。
+    """
 
     updated = artifact.model_copy(
         update={
@@ -251,7 +358,17 @@ def load_reusable_llm_response[ResponseT: BaseModel](
     fingerprint: str,
     response_type: type[ResponseT],
 ) -> tuple[LLMCallArtifact, ResponseT] | None:
-    """ID、fingerprint、hash、Schemaが一致する成功Callだけを再利用する。"""
+    """ID、fingerprint、hash、Schemaが一致する成功Callだけを再利用する。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+        call_id (str): 一意に識別するLLM Call ID。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        response_type (type[ResponseT]): 応答を検証するPydantic Model Type。
+
+    Returns:
+        tuple[LLMCallArtifact, ResponseT] | None: ID、fingerprint、hash、Schemaが一致する成功Callだけを再利用する。
+    """
 
     call_path = directory / "call.json"
     response_path = directory / "response.json"
@@ -272,7 +389,18 @@ def load_reusable_llm_response[ResponseT: BaseModel](
 
 
 def describe_artifact(processing_directory: Path, path: Path) -> ArtifactFile:
-    """処理ディレクトリ配下のfileをArtifactFileへ変換する。"""
+    """処理ディレクトリ配下のfileをArtifactFileへ変換する。
+
+    Args:
+        processing_directory (Path): 対象処理の成果物Directory。
+        path (Path): Artifact情報を作成する公開済みFileのPath。
+
+    Returns:
+        ArtifactFile: 処理ディレクトリ配下のfileをArtifactFileへ変換する。
+
+    Raises:
+        ArtifactError: `artifact must be a file inside the processing directory`と判定した場合。
+    """
 
     resolved_root = processing_directory.resolve()
     resolved_path = path.resolve()
@@ -290,7 +418,19 @@ def describe_staged_artifact(
     published_path: Path,
     staged_path: Path,
 ) -> ArtifactFile:
-    """一時fileの内容を、公開後の相対pathでArtifactFileへ変換する。"""
+    """一時fileの内容を、公開後の相対pathでArtifactFileへ変換する。
+
+    Args:
+        processing_directory (Path): 対象処理の成果物Directory。
+        published_path (Path): 公開後の成果物Path。
+        staged_path (Path): 一時Directory内の成果物Path。
+
+    Returns:
+        ArtifactFile: 一時fileの内容を、公開後の相対pathでArtifactFileへ変換する。
+
+    Raises:
+        ArtifactError: `staged artifact must publish inside processing directory`と判定した場合。
+    """
 
     resolved_root = processing_directory.resolve()
     resolved_published = published_path.resolve()
@@ -309,7 +449,15 @@ def describe_staged_artifact(
 def task_artifacts(
     processing_directory: Path, task_directory: Path
 ) -> list[ArtifactFile]:
-    """Task directory内の公開fileをpath順のArtifact一覧へ変換する。"""
+    """Task directory内の公開fileをpath順のArtifact一覧へ変換する。
+
+    Args:
+        processing_directory (Path): 対象処理の成果物Directory。
+        task_directory (Path): 対象Taskの成果物Directory。
+
+    Returns:
+        list[ArtifactFile]: Task directory内の公開fileをpath順のArtifact一覧へ変換する。
+    """
 
     return [
         describe_artifact(processing_directory, path)
@@ -324,7 +472,17 @@ def reusable_task(
     fingerprint: str,
     processing_directory: Path,
 ) -> bool:
-    """成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。"""
+    """成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        processing_directory (Path): 対象処理の成果物Directory。
+
+    Returns:
+        bool: 成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
+    """
 
     state = next((item for item in record.tasks if item.task == task), None)
     if state is None or state.status != "succeeded" or state.fingerprint != fingerprint:
@@ -342,7 +500,14 @@ def start_task(
     task: TaskName,
     fingerprint: str,
 ) -> None:
-    """Taskをprocessingとして最上位記録へ追加または置換する。"""
+    """Taskをprocessingとして最上位記録へ追加または置換する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+    """
 
     state = TaskState(
         task=task,
@@ -366,7 +531,16 @@ def finish_task(
     *,
     skipped: bool = False,
 ) -> None:
-    """Taskの成功または省略を成果物一覧とともに保存する。"""
+    """Taskの成功または省略を成果物一覧とともに保存する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        artifacts (list[ArtifactFile]): 完了Taskへ関連付ける成果物一覧。
+        skipped (bool): Taskを省略して完了したかどうか。
+    """
 
     existing = next((item for item in record.tasks if item.task == task), None)
     state = TaskState(
@@ -391,7 +565,16 @@ def fail_task(
     *,
     code: str = "task_failed",
 ) -> None:
-    """実行中Taskと処理全体を本文なしの失敗情報で終了する。"""
+    """実行中Taskと処理全体を本文なしの失敗情報で終了する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+        task (TaskName): 状態またはCallを記録するTask名。
+        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        error (BaseException): 記録または分類する例外。
+        code (str): 診断または停止理由を識別するCode。
+    """
 
     existing = next((item for item in record.tasks if item.task == task), None)
     processing_error = ProcessingError(
@@ -416,7 +599,12 @@ def fail_task(
 
 
 def cancel_processing(record: ProcessingRecord, record_path: Path) -> None:
-    """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。"""
+    """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        record_path (Path): 処理Record JSONのPath。
+    """
 
     now = datetime.now(UTC)
     for index, state in enumerate(record.tasks):
@@ -430,7 +618,12 @@ def cancel_processing(record: ProcessingRecord, record_path: Path) -> None:
 
 
 def _replace_task(record: ProcessingRecord, state: TaskState) -> None:
-    """同名Task状態を一つだけ維持し、未登録なら末尾へ追加する。"""
+    """同名Task状態を一つだけ維持し、未登録なら末尾へ追加する。
+
+    Args:
+        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
+        state (TaskState): Taskへ設定する新しい状態。
+    """
 
     for index, current in enumerate(record.tasks):
         if current.task == state.task:
@@ -440,7 +633,16 @@ def _replace_task(record: ProcessingRecord, state: TaskState) -> None:
 
 
 def processing_directory(outputs: Path, source: Path, processing_id: str) -> Path:
-    """入力basenameと処理IDから成果物rootを決定する。"""
+    """入力basenameと処理IDから成果物rootを決定する。
+
+    Args:
+        outputs (Path): 成果物Root Directory。
+        source (Path): 変換または検証対象の入力Source。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        Path: 入力basenameと処理IDから成果物rootを決定する。
+    """
 
     basename = source.stem if source.is_file() else source.name
     return outputs / basename / processing_id
@@ -448,7 +650,14 @@ def processing_directory(outputs: Path, source: Path, processing_id: str) -> Pat
 
 @contextmanager
 def temporary_task_directory(path: Path) -> Iterator[Path]:
-    """Task成果を隣接一時directoryで構築し、成功時だけ公開する。"""
+    """Task成果を隣接一時directoryで構築し、成功時だけ公開する。
+
+    Args:
+        path (Path): 成功時に公開するTask DirectoryのPath。
+
+    Yields:
+        Path: Task成果を隣接一時directoryで構築し、成功時だけ公開する。
+    """
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(
@@ -466,7 +675,18 @@ def temporary_task_directory(path: Path) -> Iterator[Path]:
 
 
 def _replace_directory(temporary: Path, path: Path) -> Path | None:
-    """既存Taskを退避し、一時directoryを同一volume内で公開する。"""
+    """既存Taskを退避し、一時directoryを同一volume内で公開する。
+
+    Args:
+        temporary (Path): 公開先と置換する一時Directory。
+        path (Path): 一時Directoryの公開先Task Directory。
+
+    Returns:
+        Path | None: 既存Taskを退避し、一時directoryを同一volume内で公開する。
+
+    Raises:
+        ArtifactError: `f'refusing to replace linked task directory: {path}'`と判定した場合。
+    """
 
     if path.is_symlink():
         raise ArtifactError(f"refusing to replace linked task directory: {path}")
@@ -488,13 +708,25 @@ class ProcessingLock:
     """同じ処理IDへの同時操作を即時拒否する排他lock。"""
 
     def __init__(self, directory: Path) -> None:
-        """排他対象directoryを保持し、取得はcontext開始まで遅延する。"""
+        """排他対象directoryを保持し、取得はcontext開始まで遅延する。
+
+        Args:
+            directory (Path): LLM Call Artifactの保存Directory。
+        """
 
         self.directory = directory
         self._lock: portalocker.Lock | None = None
 
     def __enter__(self) -> Self:
-        """非待機でlockを取得し、競合時は専用例外を送出する。"""
+        """非待機でlockを取得し、競合時は専用例外を送出する。
+
+        Returns:
+            Self: 非待機でlockを取得し、競合時は専用例外を送出する。
+
+        Raises:
+            ProcessingInUseError: `f'processing ID is already in use:
+                {self.directory.name}'`と判定した場合。
+        """
 
         self.directory.mkdir(parents=True, exist_ok=True)
         lock = portalocker.Lock(self.directory / ".lock", mode="a+b", timeout=0)
@@ -513,7 +745,13 @@ class ProcessingLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """このinstanceが保持するlockだけを解放する。"""
+        """このinstanceが保持するlockだけを解放する。
+
+        Args:
+            exc_type (type[BaseException] | None): Context終了時に送出中の例外Type。
+            exc_value (BaseException | None): Context終了時に送出中の例外Instance。
+            traceback (TracebackType | None): Context終了時に送出中のTraceback。
+        """
 
         if self._lock is not None:
             self._lock.release()

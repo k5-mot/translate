@@ -76,7 +76,14 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def validate_token_budgets(self) -> Self:
-        """Task別の入出力と予約tokenがcontext上限内であることを検査する。"""
+        """Task別の入出力と予約tokenがcontext上限内であることを検査する。
+
+        Returns:
+            Self: Task別の入出力と予約tokenがcontext上限内であることを検査する。
+
+        Raises:
+            ValueError: `LLM token budget exceeds model context`と判定した場合。
+        """
 
         budgets = (
             (
@@ -96,7 +103,11 @@ class Config(BaseModel):
         return self
 
     def require_translate(self, backend: Literal["llm", "libretranslate"]) -> None:
-        """Translateに必要なendpoint設定が揃っていることを検査する。"""
+        """Translateに必要なendpoint設定が揃っていることを検査する。
+
+        Args:
+            backend (Literal['llm', 'libretranslate']): 翻訳に使用するBackend名。
+        """
 
         self._require_docling()
         if backend == "llm":
@@ -134,7 +145,14 @@ class Config(BaseModel):
         )
 
     def qdrant_enabled(self) -> bool:
-        """任意のRAG設定が完全に有効かを返し、部分設定は拒否する。"""
+        """任意のRAG設定が完全に有効かを返し、部分設定は拒否する。
+
+        Returns:
+            bool: 任意のRAG設定が完全に有効かを返し、部分設定は拒否する。
+
+        Raises:
+            ConfigError: `Qdrant RAG settings must be complete`と判定した場合。
+        """
 
         values = (
             self.openai_embedding_model,
@@ -152,7 +170,15 @@ class Config(BaseModel):
 
     @staticmethod
     def _require(label: str, *values: str | None) -> None:
-        """一つでも空の必須設定があれば用途名付きで拒否する。"""
+        """一つでも空の必須設定があれば用途名付きで拒否する。
+
+        Args:
+            label (str): 不足設定をErrorへ示す表示名。
+            *values (str | None): 一括処理する入力Text列。
+
+        Raises:
+            ConfigError: `f'{label} settings are incomplete'`と判定した場合。
+        """
 
         if not all(value and value.strip() for value in values):
             raise ConfigError(f"{label} settings are incomplete")
@@ -209,7 +235,18 @@ def load_config(
     directory: Path | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Config:
-    """現在directoryの.envへprocess環境変数を上書きし、設定を検証する。"""
+    """現在directoryの.envへprocess環境変数を上書きし、設定を検証する。
+
+    Args:
+        directory (Path | None): LLM Call Artifactの保存Directory。
+        environ (Mapping[str, str] | None): Process環境変数の代替Mapping。
+
+    Returns:
+        Config: 現在directoryの.envへprocess環境変数を上書きし、設定を検証する。
+
+    Raises:
+        ConfigError: 現在directoryの.envへprocess環境変数を上書きし、設定を検証する処理を完了できない場合。
+    """
 
     base = directory or Path.cwd()
     dotenv = dotenv_values(base / ".env")

@@ -30,7 +30,18 @@ class PandocError(RuntimeError):
 
 
 def check_pandoc(timeout: float) -> str:
-    """必要なoptionとDOCX extensionを確認し、実行file pathを返す。"""
+    """必要なoptionとDOCX extensionを確認し、実行file pathを返す。
+
+    Args:
+        timeout (float): 外部処理のTimeout秒数。
+
+    Returns:
+        str: 必要なoptionとDOCX extensionを確認し、実行file pathを返す。
+
+    Raises:
+        PandocError: `pandoc is required`、`pandoc feature check failed`、`f"pandoc lacks
+            required features: {', '.join(missing)}"`のいずれかと判定した場合。
+    """
 
     executable = shutil.which("pandoc")
     if executable is None:
@@ -65,7 +76,21 @@ def check_pandoc(timeout: float) -> str:
 
 
 def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Path:
-    """固定optionでMarkdownをDOCXへ変換し、成功したfileだけを公開する。"""
+    """固定optionでMarkdownをDOCXへ変換し、成功したfileだけを公開する。
+
+    Args:
+        markdown (Path): DOCX変換またはPreview対象のMarkdown Path。
+        output (Path): 変換結果を書き込むFile Path。
+        template (Path): DOCX Style用のReference DOCX Path。
+        timeout (float): 外部処理のTimeout秒数。
+
+    Returns:
+        Path: 固定optionでMarkdownをDOCXへ変換し、成功したfileだけを公開する。
+
+    Raises:
+        PandocError: `markdown and reference DOCX must exist`、`pandoc DOCX publication
+            failed`のいずれかと判定した場合。
+    """
 
     executable = check_pandoc(timeout)
     if not markdown.is_file() or not template.is_file():
@@ -122,7 +147,18 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
 
 
 def table_to_markdown(table: dict[str, object], timeout: float) -> str:
-    """Pandocの構文木を介して結合セル対応grid tableへ変換する。"""
+    """Pandocの構文木を介して結合セル対応grid tableへ変換する。
+
+    Args:
+        table (dict[str, object]): Pandoc Markdownへ変換するTable Data。
+        timeout (float): 外部処理のTimeout秒数。
+
+    Returns:
+        str: Pandocの構文木を介して結合セル対応grid tableへ変換する。
+
+    Raises:
+        PandocError: `pandoc table conversion failed`と判定した場合。
+    """
 
     executable = check_pandoc(timeout)
     try:
@@ -158,7 +194,14 @@ def table_to_markdown(table: dict[str, object], timeout: float) -> str:
 
 
 def _validate_docx(path: Path) -> None:
-    """DOCXがCRCエラーなく必須部品を持つZIPであることを検査する。"""
+    """DOCXがCRCエラーなく必須部品を持つZIPであることを検査する。
+
+    Args:
+        path (Path): Package構造を検証するDOCX FileのPath。
+
+    Raises:
+        PandocError: `invalid DOCX package`と判定した場合。
+    """
 
     with zipfile.ZipFile(path) as archive:
         required = {"[Content_Types].xml", "word/document.xml"}
@@ -167,7 +210,11 @@ def _validate_docx(path: Path) -> None:
 
 
 def _finalize_docx(path: Path) -> None:
-    """Pandoc固定styleを参照templateの実styleへ結び、field更新を予約する。"""
+    """Pandoc固定styleを参照templateの実styleへ結び、field更新を予約する。
+
+    Args:
+        path (Path): StyleとFieldを仕上げるDOCX FileのPath。
+    """
 
     descriptor, rewritten_name = tempfile.mkstemp(
         dir=path.parent,
@@ -196,7 +243,14 @@ def _finalize_docx(path: Path) -> None:
 
 
 def _parse_xml(value: bytes) -> ET.Element:
-    """元のnamespace prefixを登録してOOXMLを解析する。"""
+    """元のnamespace prefixを登録してOOXMLを解析する。
+
+    Args:
+        value (bytes): 解析するOOXMLのByte列。
+
+    Returns:
+        ET.Element: 元のnamespace prefixを登録してOOXMLを解析する。
+    """
 
     # DOCX Taskが生成したOOXMLに限定し、外部entityを使用しない。
     for _, namespace in ET.iterparse(  # noqa: S314
@@ -211,7 +265,14 @@ def _parse_xml(value: bytes) -> ET.Element:
 def _style_mappings(
     styles: ET.Element,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Pandoc style IDからtemplate style IDと表示名への対応を得る。"""
+    """Pandoc style IDからtemplate style IDと表示名への対応を得る。
+
+    Args:
+        styles (ET.Element): Style定義を保持するOOXML要素。
+
+    Returns:
+        tuple[dict[str, str], dict[str, str]]: Pandoc style IDからtemplate style IDと表示名への対応を得る。
+    """
 
     namespace = {"w": _WORD_NAMESPACE}
     styles_by_id: dict[str, ET.Element] = {}
@@ -261,7 +322,16 @@ def _finalize_document(
     mappings: dict[str, str],
     names: dict[str, str],
 ) -> bytes:
-    """本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。"""
+    """本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。
+
+    Args:
+        value (bytes): Style参照を更新するDocument XMLのByte列。
+        mappings (dict[str, str]): 旧Style IDからTemplate Style IDへの対応表。
+        names (dict[str, str]): Style IDと表示名の対応表。
+
+    Returns:
+        bytes: 本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。
+    """
 
     namespace = {"m": _MATH_NAMESPACE, "w": _WORD_NAMESPACE}
     document = _parse_xml(value)
@@ -296,7 +366,14 @@ def _finalize_document(
 
 
 def _enable_field_updates(value: bytes) -> bytes:
-    """Wordで開いた時に目次、図一覧および表一覧を更新させる。"""
+    """Wordで開いた時に目次、図一覧および表一覧を更新させる。
+
+    Args:
+        value (bytes): Field自動更新設定を追加するSettings XMLのByte列。
+
+    Returns:
+        bytes: Wordで開いた時に目次、図一覧および表一覧を更新させる。
+    """
 
     namespace = {"w": _WORD_NAMESPACE}
     settings = _parse_xml(value)

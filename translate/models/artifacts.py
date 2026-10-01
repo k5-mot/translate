@@ -56,7 +56,17 @@ class ArtifactModel(BaseModel):
 
 
 def _validate_aware(value: datetime) -> datetime:
-    """永続化日時がUTCへ変換可能なtimezone-aware値であることを保証する。"""
+    """永続化日時がUTCへ変換可能なtimezone-aware値であることを保証する。
+
+    Args:
+        value (datetime): Timezone情報を検証する日時。
+
+    Returns:
+        datetime: 永続化日時がUTCへ変換可能なtimezone-aware値であることを保証する。
+
+    Raises:
+        ValueError: `datetime must be timezone-aware`と判定した場合。
+    """
 
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
@@ -64,7 +74,17 @@ def _validate_aware(value: datetime) -> datetime:
 
 
 def _validate_relative_path(value: str) -> str:
-    """Artifact pathを安全なPOSIX相対pathに限定する。"""
+    """Artifact pathを安全なPOSIX相対pathに限定する。
+
+    Args:
+        value (str): Artifactへ記録する相対Path。
+
+    Returns:
+        str: Artifact pathを安全なPOSIX相対pathに限定する。
+
+    Raises:
+        ValueError: `path must be a safe POSIX relative path`と判定した場合。
+    """
 
     path = PurePosixPath(value)
     if not value or path.is_absolute() or ".." in path.parts or "\\" in value:
@@ -153,7 +173,17 @@ class LLMCallIndex(ArtifactModel):
     @field_validator("call_ids")
     @classmethod
     def validate_unique_calls(cls, value: list[str]) -> list[str]:
-        """Call IDを出現順を保った重複なしの一覧へ限定する。"""
+        """Call IDを出現順を保った重複なしの一覧へ限定する。
+
+        Args:
+            value (list[str]): 重複を検査するLLM Call ID列。
+
+        Returns:
+            list[str]: Call IDを出現順を保った重複なしの一覧へ限定する。
+
+        Raises:
+            ValueError: `call IDs must be unique`と判定した場合。
+        """
 
         if len(value) != len(set(value)):
             raise ValueError("call IDs must be unique")
@@ -388,7 +418,15 @@ class CoverResult(ArtifactModel):
 
     @model_validator(mode="after")
     def validate_pages(self) -> Self:
-        """除外pageを正の昇順かつ重複なしに限定する。"""
+        """除外pageを正の昇順かつ重複なしに限定する。
+
+        Returns:
+            Self: 除外pageを正の昇順かつ重複なしに限定する。
+
+        Raises:
+            ValueError: `excluded pages must be unique and sorted`、`excluded pages must be
+                positive`のいずれかと判定した場合。
+        """
 
         if self.excluded_page_numbers != sorted(set(self.excluded_page_numbers)):
             raise ValueError("excluded pages must be unique and sorted")

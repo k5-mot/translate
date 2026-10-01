@@ -13,7 +13,15 @@ if TYPE_CHECKING:
 
 
 def lint(document: Document, asset_root: Path) -> LintResult:
-    """公開に必要な構造条件を検査し、すべての診断を返す。"""
+    """公開に必要な構造条件を検査し、すべての診断を返す。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+
+    Returns:
+        LintResult: 公開に必要な構造条件を検査し、すべての診断を返す。
+    """
 
     diagnostics: list[LintDiagnostic] = []
     ids: dict[str, str] = {}
@@ -49,7 +57,15 @@ def _validate_block(
     asset_root: Path,
     diagnostics: list[LintDiagnostic],
 ) -> None:
-    """一つのBlockが種類別の必須fieldと内部制約を満たすか検査する。"""
+    """一つのBlockが種類別の必須fieldと内部制約を満たすか検査する。
+
+    Args:
+        block (Block): 変換または検証対象のDocument Block。
+        path (str): 診断位置として記録するBlockの論理Path。
+        ids (dict[str, str]): 重複を検査するRecord ID索引。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+        diagnostics (list[LintDiagnostic]): 検証中に追記する診断Message列。
+    """
 
     content_kinds = {
         "paragraph",
@@ -112,7 +128,14 @@ def _validate_unit(
     ids: dict[str, str],
     diagnostics: list[LintDiagnostic],
 ) -> None:
-    """TextUnitと配下SpanのID一意性を検査する。"""
+    """TextUnitと配下SpanのID一意性を検査する。
+
+    Args:
+        unit (TextUnit): 変換または検証対象のTextUnit。
+        path (str): 診断位置として記録するTextUnitの論理Path。
+        ids (dict[str, str]): 重複を検査するRecord ID索引。
+        diagnostics (list[LintDiagnostic]): 検証中に追記する診断Message列。
+    """
 
     _record_id(ids, unit.id, "TextUnit", path, diagnostics)
     for index, span in enumerate(unit.spans):
@@ -126,7 +149,15 @@ def _validate_image(
     asset_root: Path,
     diagnostics: list[LintDiagnostic],
 ) -> None:
-    """Image ID、asset pathおよびCaptionを検査する。"""
+    """Image ID、asset pathおよびCaptionを検査する。
+
+    Args:
+        image (Image): Multimodal Callへ添付する画像File。
+        path (str): 診断位置として記録するImageの論理Path。
+        ids (dict[str, str]): 重複を検査するRecord ID索引。
+        asset_root (Path): 参照先Assetを検証するRoot Directory。
+        diagnostics (list[LintDiagnostic]): 検証中に追記する診断Message列。
+    """
 
     _record_id(ids, image.id, "Image", path, diagnostics)
     relative = PurePosixPath(image.asset_path)
@@ -150,7 +181,15 @@ def _record_id(
     path: str,
     diagnostics: list[LintDiagnostic],
 ) -> None:
-    """IDの最初の所有者を記録し、重複を診断する。"""
+    """IDの最初の所有者を記録し、重複を診断する。
+
+    Args:
+        ids (dict[str, str]): 重複を検査するRecord ID索引。
+        value (str): 所有元の重複を検査するRecord ID。
+        kind (str): ID所有元として記録する要素種別。
+        path (str): Record IDの所有元を示す論理Path。
+        diagnostics (list[LintDiagnostic]): 検証中に追記する診断Message列。
+    """
 
     if value in ids:
         _add(
@@ -169,6 +208,13 @@ def _add(
     path: str,
     message: str,
 ) -> None:
-    """一つのLINT診断を順序どおり追加する。"""
+    """一つのLINT診断を順序どおり追加する。
+
+    Args:
+        diagnostics (list[LintDiagnostic]): 検証中に追記する診断Message列。
+        code (str): 診断または停止理由を識別するCode。
+        path (str): LINT診断の発生位置を示す論理Path。
+        message (str): 診断または停止理由のMessage。
+    """
 
     diagnostics.append(LintDiagnostic(code=code, path=path, message=message))

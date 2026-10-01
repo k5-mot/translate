@@ -35,7 +35,15 @@ class _Element:
 
 
 def align(source: Document, translation: Document) -> AlignmentResult:
-    """一意なanchorと一致するrole列だけから1対1対応を作る。"""
+    """一意なanchorと一致するrole列だけから1対1対応を作る。
+
+    Args:
+        source (Document): 変換または検証対象の入力Source。
+        translation (Document): Review対象の日本語訳。
+
+    Returns:
+        AlignmentResult: 一意なanchorと一致するrole列だけから1対1対応を作る。
+    """
 
     source_elements = _elements(source)
     translation_elements = _elements(translation)
@@ -68,7 +76,14 @@ def align(source: Document, translation: Document) -> AlignmentResult:
 
 
 def _elements(document: Document) -> list[_Element]:
-    """空文字列を除いた文書要素を読み順の内部表現へ変換する。"""
+    """空文字列を除いた文書要素を読み順の内部表現へ変換する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        list[_Element]: 空文字列を除いた文書要素を読み順の内部表現へ変換する。
+    """
 
     values = [
         (role, unit, unit.text("source").strip())
@@ -84,7 +99,15 @@ def _anchor_pairs(
     source: list[_Element],
     translation: list[_Element],
 ) -> list[tuple[int, int]]:
-    """両文書で一意かつ順序が逆転しない同一anchorを抽出する。"""
+    """両文書で一意かつ順序が逆転しない同一anchorを抽出する。
+
+    Args:
+        source (list[_Element]): 変換または検証対象の入力Source。
+        translation (list[_Element]): Review対象の日本語訳。
+
+    Returns:
+        list[tuple[int, int]]: 両文書で一意かつ順序が逆転しない同一anchorを抽出する。
+    """
 
     source_anchors = _anchor_positions(source)
     translation_anchors = _anchor_positions(translation)
@@ -106,7 +129,14 @@ def _anchor_pairs(
 
 
 def _anchor_positions(elements: list[_Element]) -> dict[str, list[int]]:
-    """各anchorが現れる要素位置を保持する。"""
+    """各anchorが現れる要素位置を保持する。
+
+    Args:
+        elements (list[_Element]): 位置を索引化する比較要素列。
+
+    Returns:
+        dict[str, list[int]]: 各anchorが現れる要素位置を保持する。
+    """
 
     result: dict[str, list[int]] = {}
     for element in elements:
@@ -116,7 +146,15 @@ def _anchor_positions(elements: list[_Element]) -> dict[str, list[int]]:
 
 
 def _anchors(text: str, role: str) -> set[str]:
-    """標準正規表現とNFKCだけで仕様上のanchorを正規化する。"""
+    """標準正規表現とNFKCだけで仕様上のanchorを正規化する。
+
+    Args:
+        text (str): 正規化、検索または表示するText。
+        role (str): 入力または比較要素のRole。
+
+    Returns:
+        set[str]: 標準正規表現とNFKCだけで仕様上のanchorを正規化する。
+    """
 
     normalized = unicodedata.normalize("NFKC", text)
     anchors = {
@@ -135,7 +173,16 @@ def _build_result(
     translation: list[_Element],
     pairs: dict[int, tuple[int, AlignmentMethod]],
 ) -> AlignmentResult:
-    """確定pairと未対応要素から連番IDの結果を組み立てる。"""
+    """確定pairと未対応要素から連番IDの結果を組み立てる。
+
+    Args:
+        source (list[_Element]): 変換または検証対象の入力Source。
+        translation (list[_Element]): Review対象の日本語訳。
+        pairs (dict[int, tuple[int, AlignmentMethod]]): 対応付け済み要素Indexと方式のMapping。
+
+    Returns:
+        AlignmentResult: 確定pairと未対応要素から連番IDの結果を組み立てる。
+    """
 
     reverse_pairs = {
         translation_index: source_index

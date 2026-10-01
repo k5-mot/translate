@@ -16,7 +16,15 @@ if TYPE_CHECKING:
 
 
 def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
-    """先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。"""
+    """先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        fallback (int): 幾何情報がない場合の読み順。
+
+    Returns:
+        tuple[int, float, float, int]: 先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
+    """
 
     provenance = item.get("prov")
     entry = provenance[0] if isinstance(provenance, list) and provenance else None
@@ -36,7 +44,15 @@ def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
 
 
 def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any] | None:
-    """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。"""
+    """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        ref (str): Docling要素を指すJSON参照。
+
+    Returns:
+        dict[str, Any] | None: Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
+    """
 
     value: Any = document
     try:
@@ -48,7 +64,14 @@ def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any] | None:
 
 
 def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | None:
-    """bboxを左、右、上、下が同じ向きの比較値へ正規化する。"""
+    """bboxを左、右、上、下が同じ向きの比較値へ正規化する。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+
+    Returns:
+        tuple[int, float, float, float, float] | None: bboxを左、右、上、下が同じ向きの比較値へ正規化する。
+    """
 
     provenance = item.get("prov")
     entry = provenance[0] if isinstance(provenance, list) and provenance else None
@@ -68,7 +91,15 @@ def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | 
 
 
 def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。"""
+    """同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。
+
+    Args:
+        first (dict[str, Any]): 連続性を判定する先行要素。
+        second (dict[str, Any]): 連続性を判定する後続要素。
+
+    Returns:
+        bool: 同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。
+    """
 
     labels = {str(first.get("label", "")), str(second.get("label", ""))}
     if len(labels) != 1 or not labels <= {
@@ -92,7 +123,14 @@ def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
 def _tail_geometry(
     item: dict[str, Any],
 ) -> tuple[int, float, float, float, float] | None:
-    """連鎖結合では最後の断片の座標を使い、先頭bboxとの距離で後続を取り残さない。"""
+    """連鎖結合では最後の断片の座標を使い、先頭bboxとの距離で後続を取り残さない。
+
+    Args:
+        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+
+    Returns:
+        tuple[int, float, float, float, float] | None: 連鎖結合では最後の断片の座標を使い、先頭bboxとの距離で後続を取り残さない。
+    """
 
     provenance = item.get("prov")
     return (
@@ -101,7 +139,15 @@ def _tail_geometry(
 
 
 def _mapped_ref(ref: str, mapping: dict[str, str]) -> str:
-    """完全なIDを優先し、残るcollection参照はindex segment単位で一度だけ写す。"""
+    """完全なIDを優先し、残るcollection参照はindex segment単位で一度だけ写す。
+
+    Args:
+        ref (str): Docling要素を指すJSON参照。
+        mapping (dict[str, str]): 旧参照から新参照への対応表。
+
+    Returns:
+        str: 完全なIDを優先し、残るcollection参照はindex segment単位で一度だけ写す。
+    """
 
     if ref in mapping:
         return mapping[ref]
@@ -111,7 +157,15 @@ def _mapped_ref(ref: str, mapping: dict[str, str]) -> str:
 
 
 def _rewrite_ref(value: Any, mapping: dict[str, str]) -> Any:
-    """構造上の参照だけを更新し、本文やURL等の一般文字列は保持する。"""
+    """構造上の参照だけを更新し、本文やURL等の一般文字列は保持する。
+
+    Args:
+        value (Any): 内部参照を書き換えるDocument要素。
+        mapping (dict[str, str]): 旧参照から新参照への対応表。
+
+    Returns:
+        Any: 構造上の参照だけを更新し、本文やURL等の一般文字列は保持する。
+    """
 
     if isinstance(value, list):
         return [_rewrite_ref(item, mapping) for item in value]
@@ -126,7 +180,14 @@ def _rewrite_ref(value: Any, mapping: dict[str, str]) -> Any:
 
 
 def _unsafe_merge_refs(document: dict[str, Any]) -> set[str]:
-    """所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。"""
+    """所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+
+    Returns:
+        set[str]: 所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
+    """
 
     incoming: dict[str, list[tuple[str, ...]]] = defaultdict(list)
     pending: list[tuple[Any, tuple[str, ...]]] = [(document, ())]
@@ -165,7 +226,15 @@ def _unsafe_merge_refs(document: dict[str, Any]) -> set[str]:
 
 
 def _merge_metadata_safe(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """所有内容や異なる表示属性を黙って捨てる結合を拒否する。"""
+    """所有内容や異なる表示属性を黙って捨てる結合を拒否する。
+
+    Args:
+        first (dict[str, Any]): Metadataを保持する先行要素。
+        second (dict[str, Any]): Metadataを統合する後続要素。
+
+    Returns:
+        bool: 所有内容や異なる表示属性を黙って捨てる結合を拒否する。
+    """
 
     first_geometry, second_geometry = _geometry(first), _geometry(second)
     owned = ("children", "captions", "caption", "title", "image")
@@ -199,7 +268,15 @@ def _merge_metadata_safe(first: dict[str, Any], second: dict[str, Any]) -> bool:
 def _compact_fragments(
     document: dict[str, Any], merged: list[dict[str, str]]
 ) -> dict[str, Any]:
-    """消費元だけを除去して全構造参照を再採番し、reportに出力側IDを残す。"""
+    """消費元だけを除去して全構造参照を再採番し、reportに出力側IDを残す。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        merged (list[dict[str, str]]): 統合先または統合済みのDocument要素。
+
+    Returns:
+        dict[str, Any]: 消費元だけを除去して全構造参照を再採番し、reportに出力側IDを残す。
+    """
 
     consumed = {item["from"] for item in merged}
     mapping: dict[str, str] = {}
@@ -220,7 +297,15 @@ def _compact_fragments(
 
 
 def _table_shape(data: dict[str, Any], key: str) -> tuple[int, int] | None:  # noqa: PLR0911
-    """セル範囲と宣言寸法を検査し、不整合や重なるセルを結合対象から外す。"""
+    """セル範囲と宣言寸法を検査し、不整合や重なるセルを結合対象から外す。
+
+    Args:
+        data (dict[str, Any]): 行数または列数を取得するTable Data。
+        key (str): Data内で行数または列数を保持するKey。
+
+    Returns:
+        tuple[int, int] | None: セル範囲と宣言寸法を検査し、不整合や重なるセルを結合対象から外す。
+    """
 
     cells = data[key]
     if not isinstance(cells, list) or not cells:
@@ -259,7 +344,15 @@ def _table_shape(data: dict[str, Any], key: str) -> tuple[int, int] | None:  # n
 def _merge_table(  # noqa: PLR0911
     first: dict[str, Any], second: dict[str, Any]
 ) -> bool:
-    """同一ページで近接し列数が一致する表を、セル行位置と参照を補正して先頭の表へ結合する。"""
+    """同一ページで近接し列数が一致する表を、セル行位置と参照を補正して先頭の表へ結合する。
+
+    Args:
+        first (dict[str, Any]): 結合先となる先行Table Fragment。
+        second (dict[str, Any]): 結合可否を判定する後続Table Fragment。
+
+    Returns:
+        bool: 同一ページで近接し列数が一致する表を、セル行位置と参照を補正して先頭の表へ結合する。
+    """
 
     if first.get("label") != "table" or second.get("label") != "table":
         return False
@@ -337,7 +430,16 @@ def _merge_fragments(
     unsafe: set[str],
     visited: set[int],
 ) -> None:
-    """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。"""
+    """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        node (Any): 再帰的に走査または並べ替えるNode。
+        merged (list[dict[str, str]]): 統合先または統合済みのDocument要素。
+        warnings (list[dict[str, str]]): 統合処理で追記する警告一覧。
+        unsafe (set[str]): 安全に統合できない要素参照集合。
+        visited (set[int]): 再帰走査済みNodeの識別集合。
+    """
 
     if not isinstance(node, dict) or not isinstance(node.get("children"), list):
         return
@@ -438,7 +540,15 @@ def _merge_fragments(
 def _reading_order(
     document: dict[str, Any], children: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。"""
+    """座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        children (list[dict[str, Any]]): 読み順を決定する子要素列。
+
+    Returns:
+        list[dict[str, Any]]: 座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
+    """
 
     positioned: dict[
         int, list[tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]]
@@ -478,7 +588,15 @@ def _reading_order(
             entry: tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]],
             column_positions: tuple[float, ...] = tuple(columns),
         ) -> tuple[int, int, float, float, float, int]:
-            """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。"""
+            """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+
+            Args:
+                entry (tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]): 読み順、要素、幾何情報を保持するSort対象。
+                column_positions (tuple[float, ...]): Table Cellを整列するColumn境界。
+
+            Returns:
+                tuple[int, int, float, float, float, int]: 欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+            """
 
             index, _child, item, geometry = entry
             _page, left, _right, top, bottom = geometry
@@ -508,7 +626,14 @@ def _sort_children(
     report: list[dict[str, Any]],
     visited: set[int] | None = None,
 ) -> None:
-    """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。"""
+    """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。
+
+    Args:
+        document (dict[str, Any]): 変換または検証対象のDocument。
+        node (Any): 再帰的に走査または並べ替えるNode。
+        report (list[dict[str, Any]]): 読み順補正の警告を追記するReport。
+        visited (set[int] | None): 再帰走査済みNodeの識別集合。
+    """
 
     if not isinstance(node, dict):
         return
@@ -541,7 +666,15 @@ def _sort_children(
 
 
 def position(source: Path, output_dir: Path) -> Path:
-    """読み順を補正してJSONとreportを原子的に保存する。"""
+    """読み順を補正してJSONとreportを原子的に保存する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        output_dir (Path): Task成果物の出力Directory。
+
+    Returns:
+        Path: 読み順を補正してJSONとreportを原子的に保存する。
+    """
 
     document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
     changed: list[dict[str, Any]] = []

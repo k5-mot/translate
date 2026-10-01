@@ -80,7 +80,14 @@ _MARKDOWN_IMAGE_BLOCK = re.compile(
 def _task_stages(
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
 ) -> tuple[TaskStage, ...]:
-    """処理種類とbackendに対応する固定Task列を返す。"""
+    """処理種類とbackendに対応する固定Task列を返す。
+
+    Args:
+        record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        tuple[TaskStage, ...]: 処理種類とbackendに対応する固定Task列を返す。
+    """
 
     common: tuple[TaskStage, ...] = (
         ("SPLIT", TaskName.SPLIT, None),
@@ -143,7 +150,11 @@ class HistoryEntry(BaseModel):
 
     @property
     def processing_id(self) -> str | None:
-        """有効な最上位記録から処理IDを返す。"""
+        """有効な最上位記録から処理IDを返す。
+
+        Returns:
+            str | None: 有効な最上位記録から処理IDを返す。
+        """
 
         if isinstance(self.record, TranslationRecord):
             return self.record.translation_id
@@ -167,7 +178,15 @@ class WorkerRegistry:
         self._lock = Lock()
 
     def submit(self, processing_id: str, operation: Callable[[], object]) -> bool:
-        """同じ処理IDが未完了でない場合だけworkerへ登録する。"""
+        """同じ処理IDが未完了でない場合だけworkerへ登録する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+            operation (Callable[[], object]): Background Threadで実行する処理。
+
+        Returns:
+            bool: 同じ処理IDが未完了でない場合だけworkerへ登録する。
+        """
 
         with self._lock:
             existing = self._futures.get(processing_id)
@@ -177,13 +196,27 @@ class WorkerRegistry:
             return True
 
     def future(self, processing_id: str) -> Future[object] | None:
-        """処理IDに対応するFutureをthread-safeに取得する。"""
+        """処理IDに対応するFutureをthread-safeに取得する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+
+        Returns:
+            Future[object] | None: 処理IDに対応するFutureをthread-safeに取得する。
+        """
 
         with self._lock:
             return self._futures.get(processing_id)
 
     def active(self, processing_id: str) -> bool:
-        """処理IDのFutureが待機中または実行中かを返す。"""
+        """処理IDのFutureが待機中または実行中かを返す。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+
+        Returns:
+            bool: 処理IDのFutureが待機中または実行中かを返す。
+        """
 
         future = self.future(processing_id)
         return future is not None and not future.done()
@@ -191,13 +224,26 @@ class WorkerRegistry:
 
 @st.cache_resource(show_spinner=False)
 def worker_registry() -> WorkerRegistry:
-    """Streamlitの再読込み間で共有するworker登録表を返す。"""
+    """Streamlitの再読込み間で共有するworker登録表を返す。
+
+    Returns:
+        WorkerRegistry: Streamlitの再読込み間で共有するworker登録表を返す。
+    """
 
     return WorkerRegistry()
 
 
 def _execute_translate(source: Path, backend: str, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでTranslate Pipelineを実行する。"""
+    """最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
+    """
 
     return translate_pdf(
         source,
@@ -208,7 +254,16 @@ def _execute_translate(source: Path, backend: str, processing_id: str) -> object
 
 
 def _execute_review(source: Path, translation: Path, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでReview Pipelineを実行する。"""
+    """最新設定を読み、UI指定IDでReview Pipelineを実行する。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        translation (Path): Review対象の日本語訳。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 最新設定を読み、UI指定IDでReview Pipelineを実行する。
+    """
 
     return review_pdfs(
         source,
@@ -221,7 +276,16 @@ def _execute_review(source: Path, translation: Path, processing_id: str) -> obje
 def _execute_register(
     paths: list[Path], source_id: str | None, processing_id: str
 ) -> object:
-    """最新設定を読み、UI指定IDでRegister Pipelineを実行する。"""
+    """最新設定を読み、UI指定IDでRegister Pipelineを実行する。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 最新設定を読み、UI指定IDでRegister Pipelineを実行する。
+    """
 
     return register_paths(
         paths,
@@ -238,7 +302,18 @@ def _execute_upgrade(
     backend: str,
     processing_id: str,
 ) -> object:
-    """最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。"""
+    """最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
+
+    Args:
+        source_v1 (Path): 比較基準にする英文v1。
+        source_v2 (Path): 変更を反映する英文v2。
+        translation_v1 (Path): 比較基準にする日本語v1。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
+    """
 
     return upgrade_pdfs(
         source_v1,
@@ -251,7 +326,16 @@ def _execute_upgrade(
 
 
 def _resume_translate(source: Path, backend: str, processing_id: str) -> object:
-    """保存済みTranslate入力とIDでPipelineをResumeする。"""
+    """保存済みTranslate入力とIDでPipelineをResumeする。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 保存済みTranslate入力とIDでPipelineをResumeする。
+    """
 
     return translate_pdf(
         source,
@@ -262,7 +346,16 @@ def _resume_translate(source: Path, backend: str, processing_id: str) -> object:
 
 
 def _resume_review(source: Path, translation: Path, processing_id: str) -> object:
-    """保存済みReview入力とIDでPipelineをResumeする。"""
+    """保存済みReview入力とIDでPipelineをResumeする。
+
+    Args:
+        source (Path): 変換または検証対象の入力Source。
+        translation (Path): Review対象の日本語訳。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 保存済みReview入力とIDでPipelineをResumeする。
+    """
 
     return review_pdfs(
         source,
@@ -275,7 +368,16 @@ def _resume_review(source: Path, translation: Path, processing_id: str) -> objec
 def _resume_register(
     paths: list[Path], source_id: str | None, processing_id: str
 ) -> object:
-    """保存済みRegister入力とIDでPipelineをResumeする。"""
+    """保存済みRegister入力とIDでPipelineをResumeする。
+
+    Args:
+        paths (list[Path]): 列挙された入力Path。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 保存済みRegister入力とIDでPipelineをResumeする。
+    """
 
     return register_paths(
         paths,
@@ -292,7 +394,18 @@ def _resume_upgrade(
     backend: str,
     processing_id: str,
 ) -> object:
-    """保存済みUpgrade入力とIDでPipelineをResumeする。"""
+    """保存済みUpgrade入力とIDでPipelineをResumeする。
+
+    Args:
+        source_v1 (Path): 比較基準にする英文v1。
+        source_v2 (Path): 変更を反映する英文v2。
+        translation_v1 (Path): 比較基準にする日本語v1。
+        backend (str): 翻訳に使用するBackend名。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        object: 保存済みUpgrade入力とIDでPipelineをResumeする。
+    """
 
     return upgrade_pdfs(
         source_v1,
@@ -305,7 +418,19 @@ def _resume_upgrade(
 
 
 def _safe_upload_name(name: str, suffixes: set[str]) -> str:
-    """upload名を安全な単一basenameと対応拡張子に限定する。"""
+    """upload名を安全な単一basenameと対応拡張子に限定する。
+
+    Args:
+        name (str): 安全なUpload File名へ変換する元の名前。
+        suffixes (set[str]): 許可する小文字のFile拡張子集合。
+
+    Returns:
+        str: upload名を安全な単一basenameと対応拡張子に限定する。
+
+    Raises:
+        InputError: `upload name must be a safe file basename`、`uploaded file extension is
+            not supported`のいずれかと判定した場合。
+    """
 
     if (
         not name
@@ -326,7 +451,20 @@ def _stage_uploads(
     *,
     work_root: Path | None = None,
 ) -> list[Path]:
-    """upload群を一時directoryで完成させてから原子的に公開する。"""
+    """upload群を一時directoryで完成させてから原子的に公開する。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+        uploads (list[tuple[UploadedFile, Path]]): 保存または照合するUpload File一覧。
+        work_root (Path | None): Uploadの一時保存Root Directory。
+
+    Returns:
+        list[Path]: upload群を一時directoryで完成させてから原子的に公開する。
+
+    Raises:
+        InputError: `staged inputs already exist for processing ID`、`staged upload path must
+            be relative`のいずれかと判定した場合。
+    """
 
     root = (work_root or Path.cwd() / ".translate-ui").resolve()
     destination = root / processing_id
@@ -351,7 +489,15 @@ def _stage_uploads(
 
 
 def _stage_translate(upload: UploadedFile, processing_id: str) -> Path:
-    """Translate用PDFを原のbasenameで保存する。"""
+    """Translate用PDFを原のbasenameで保存する。
+
+    Args:
+        upload (UploadedFile): 保存または照合するUpload File。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        Path: Translate用PDFを原のbasenameで保存する。
+    """
 
     name = _safe_upload_name(upload.name, {".pdf"})
     return _stage_uploads(processing_id, [(upload, Path("translate") / name)])[0]
@@ -360,7 +506,16 @@ def _stage_translate(upload: UploadedFile, processing_id: str) -> Path:
 def _stage_review(
     source: UploadedFile, translation: UploadedFile, processing_id: str
 ) -> tuple[Path, Path]:
-    """Reviewの原文PDFと訳文PDFをrole別directoryへ保存する。"""
+    """Reviewの原文PDFと訳文PDFをrole別directoryへ保存する。
+
+    Args:
+        source (UploadedFile): 変換または検証対象の入力Source。
+        translation (UploadedFile): Review対象の日本語訳。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        tuple[Path, Path]: Reviewの原文PDFと訳文PDFをrole別directoryへ保存する。
+    """
 
     source_name = _safe_upload_name(source.name, {".pdf"})
     translation_name = _safe_upload_name(translation.name, {".pdf"})
@@ -375,7 +530,19 @@ def _stage_review(
 
 
 def _stage_register(uploads: list[UploadedFile], processing_id: str) -> list[Path]:
-    """Register入力をupload順のdirectoryと原のbasenameで保存する。"""
+    """Register入力をupload順のdirectoryと原のbasenameで保存する。
+
+    Args:
+        uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        list[Path]: Register入力をupload順のdirectoryと原のbasenameで保存する。
+
+    Raises:
+        InputError: `at most 100 registration files can be uploaded`、`registration uploads
+            contain duplicate basenames`のいずれかと判定した場合。
+    """
 
     if len(uploads) > 100:
         raise InputError("at most 100 registration files can be uploaded")
@@ -395,7 +562,17 @@ def _stage_upgrade(
     translation_v1: UploadedFile,
     processing_id: str,
 ) -> tuple[Path, Path, Path]:
-    """Upgrade三入力をrole別directoryへ保存する。"""
+    """Upgrade三入力をrole別directoryへ保存する。
+
+    Args:
+        source_v1 (UploadedFile): 比較基準にする英文v1。
+        source_v2 (UploadedFile): 変更を反映する英文v2。
+        translation_v1 (UploadedFile): 比較基準にする日本語v1。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        tuple[Path, Path, Path]: Upgrade三入力をrole別directoryへ保存する。
+    """
 
     values = [
         (
@@ -419,7 +596,16 @@ def _stage_upgrade(
 def _start_translate(
     upload: UploadedFile, backend: str, registry: WorkerRegistry
 ) -> str:
-    """Translate入力を保存し、background workerへ登録する。"""
+    """Translate入力を保存し、background workerへ登録する。
+
+    Args:
+        upload (UploadedFile): 保存または照合するUpload File。
+        backend (str): 翻訳に使用するBackend名。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+
+    Returns:
+        str: Translate入力を保存し、background workerへ登録する。
+    """
 
     processing_id = str(uuid7())
     source = _stage_translate(upload, processing_id)
@@ -435,7 +621,16 @@ def _start_review(
     translation_upload: UploadedFile,
     registry: WorkerRegistry,
 ) -> str:
-    """Review二入力を保存し、background workerへ登録する。"""
+    """Review二入力を保存し、background workerへ登録する。
+
+    Args:
+        source_upload (UploadedFile): Review原文のUpload File。
+        translation_upload (UploadedFile): Review訳文のUpload File。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+
+    Returns:
+        str: Review二入力を保存し、background workerへ登録する。
+    """
 
     processing_id = str(uuid7())
     source, translation = _stage_review(
@@ -453,7 +648,20 @@ def _start_register(
     source_id: str | None,
     registry: WorkerRegistry,
 ) -> str:
-    """Register入力を保存し、background workerへ登録する。"""
+    """Register入力を保存し、background workerへ登録する。
+
+    Args:
+        uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
+        source_id (str | None): 登録対象へ付与する論理Source ID。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+
+    Returns:
+        str: Register入力を保存し、background workerへ登録する。
+
+    Raises:
+        InputError: `at least one registration file is required`、`source_id is required for
+            multiple registration files`のいずれかと判定した場合。
+    """
 
     if not uploads:
         raise InputError("at least one registration file is required")
@@ -475,7 +683,18 @@ def _start_upgrade(
     backend: str,
     registry: WorkerRegistry,
 ) -> str:
-    """Upgrade三入力を保存し、background workerへ登録する。"""
+    """Upgrade三入力を保存し、background workerへ登録する。
+
+    Args:
+        source_v1 (UploadedFile): 比較基準にする英文v1。
+        source_v2 (UploadedFile): 変更を反映する英文v2。
+        translation_v1 (UploadedFile): 比較基準にする日本語v1。
+        backend (str): 翻訳に使用するBackend名。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+
+    Returns:
+        str: Upgrade三入力を保存し、background workerへ登録する。
+    """
 
     processing_id = str(uuid7())
     paths = _stage_upgrade(source_v1, source_v2, translation_v1, processing_id)
@@ -487,7 +706,14 @@ def _start_upgrade(
 
 
 def _history_entries(outputs: Path | None = None) -> list[HistoryEntry]:
-    """outputs直下の新Schema処理記録を新しい順に100件返す。"""
+    """outputs直下の新Schema処理記録を新しい順に100件返す。
+
+    Args:
+        outputs (Path | None): 成果物Root Directory。
+
+    Returns:
+        list[HistoryEntry]: outputs直下の新Schema処理記録を新しい順に100件返す。
+    """
 
     root = (outputs or Path.cwd() / "outputs").resolve()
     definitions: tuple[tuple[str, ProcessingKind, type[ProcessingRecord]], ...] = (
@@ -526,7 +752,14 @@ def _history_entries(outputs: Path | None = None) -> list[HistoryEntry]:
 
 
 def _entry_by_id(processing_id: str) -> HistoryEntry | None:
-    """最新の履歴列挙から指定処理IDを探す。"""
+    """最新の履歴列挙から指定処理IDを探す。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+
+    Returns:
+        HistoryEntry | None: 最新の履歴列挙から指定処理IDを探す。
+    """
 
     return next(
         (entry for entry in _history_entries() if entry.processing_id == processing_id),
@@ -535,7 +768,14 @@ def _entry_by_id(processing_id: str) -> HistoryEntry | None:
 
 
 def _entry_label(entry: HistoryEntry) -> str:
-    """処理履歴の選択欄に種類、入力、状態とIDを表示する。"""
+    """処理履歴の選択欄に種類、入力、状態とIDを表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+
+    Returns:
+        str: 処理履歴の選択欄に種類、入力、状態とIDを表示する。
+    """
 
     record = entry.record
     if isinstance(record, TranslationRecord):
@@ -553,21 +793,33 @@ def _entry_label(entry: HistoryEntry) -> str:
 
 
 def _selected_processing_id() -> str | None:
-    """URL query parameterから選択中の処理IDを取得する。"""
+    """URL query parameterから選択中の処理IDを取得する。
+
+    Returns:
+        str | None: URL query parameterから選択中の処理IDを取得する。
+    """
 
     value = st.query_params.get("processing")
     return value if isinstance(value, str) and value else None
 
 
 def _select_processing(processing_id: str) -> None:
-    """選択処理IDをURLへ保存し、全体を再読込みする。"""
+    """選択処理IDをURLへ保存し、全体を再読込みする。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+    """
 
     st.query_params["processing"] = processing_id
     st.rerun()
 
 
 def _render_translate_form(registry: WorkerRegistry) -> None:
-    """Translateのuploadとbackend選択を表示する。"""
+    """Translateのuploadとbackend選択を表示する。
+
+    Args:
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
     backend = st.selectbox("翻訳backend", ["llm", "libretranslate"])
@@ -585,7 +837,11 @@ def _render_translate_form(registry: WorkerRegistry) -> None:
 
 
 def _render_review_form(registry: WorkerRegistry) -> None:
-    """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。"""
+    """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。
+
+    Args:
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
     translation = st.file_uploader(
@@ -605,7 +861,11 @@ def _render_review_form(registry: WorkerRegistry) -> None:
 
 
 def _render_register_form(registry: WorkerRegistry) -> None:
-    """Registerの複数fileとsource_id入力を表示する。"""
+    """Registerの複数fileとsource_id入力を表示する。
+
+    Args:
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     uploads = st.file_uploader(
         "参照資料",
@@ -635,7 +895,11 @@ def _render_register_form(registry: WorkerRegistry) -> None:
 
 
 def _render_upgrade_form(registry: WorkerRegistry) -> None:
-    """Upgradeの英文二版、日本語旧版およびbackend選択を表示する。"""
+    """Upgradeの英文二版、日本語旧版およびbackend選択を表示する。
+
+    Args:
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     source_v1 = st.file_uploader("英文v1 PDF", type=["pdf"], key="upgrade-source-v1")
     source_v2 = st.file_uploader("英文v2 PDF", type=["pdf"], key="upgrade-source-v2")
@@ -675,7 +939,14 @@ def _render_upgrade_form(registry: WorkerRegistry) -> None:
 
 
 def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
-    """左sidebarの縦並び一覧から処理を選択し、選択IDを返す。"""
+    """左sidebarの縦並び一覧から処理を選択し、選択IDを返す。
+
+    Args:
+        entries (list[HistoryEntry]): 表示対象の処理履歴一覧。
+
+    Returns:
+        str | None: 左sidebarの縦並び一覧から処理を選択し、選択IDを返す。
+    """
 
     valid_entries = [entry for entry in entries if entry.processing_id is not None]
     invalid_entries = [entry for entry in entries if entry.error is not None]
@@ -699,7 +970,12 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
 
 
 def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
-    """Artifact公開前の待機・準備状態またはworker失敗を表示する。"""
+    """Artifact公開前の待機・準備状態またはworker失敗を表示する。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     future = registry.future(processing_id)
     st.progress(0.0, text="0 / ? Task — 準備 — preparing")
@@ -722,7 +998,11 @@ def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
 
 
 def _render_future_error(future: Future[object]) -> None:
-    """完了済みFutureの例外を回収し、利用者向けに表示する。"""
+    """完了済みFutureの例外を回収し、利用者向けに表示する。
+
+    Args:
+        future (Future[object]): 状態または例外を表示するBackground Future。
+    """
 
     try:
         future.result()
@@ -733,7 +1013,15 @@ def _render_future_error(future: Future[object]) -> None:
 
 
 def _live_call_counts(root: Path, task: TaskName) -> tuple[int, int, int]:
-    """実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。"""
+    """実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+
+    Returns:
+        tuple[int, int, int]: 実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
+    """
 
     calls = _llm_calls(root, task)
     completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
@@ -742,7 +1030,15 @@ def _live_call_counts(root: Path, task: TaskName) -> tuple[int, int, int]:
 
 
 def _llm_call_directory(root: Path, task: TaskName) -> Path | None:
-    """処理種類によるSTRUCTURE配置差を吸収してCall directoryを返す。"""
+    """処理種類によるSTRUCTURE配置差を吸収してCall directoryを返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+
+    Returns:
+        Path | None: 処理種類によるSTRUCTURE配置差を吸収してCall directoryを返す。
+    """
 
     candidates = {
         TaskName.STRUCTURE: [
@@ -756,7 +1052,15 @@ def _llm_call_directory(root: Path, task: TaskName) -> Path | None:
 
 
 def _llm_calls(root: Path, task: TaskName) -> list[LLMCallArtifact]:
-    """一階層のCall記録だけを読み、壊れた途中fileを無視する。"""
+    """一階層のCall記録だけを読み、壊れた途中fileを無視する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+
+    Returns:
+        list[LLMCallArtifact]: 一階層のCall記録だけを読み、壊れた途中fileを無視する。
+    """
 
     directory = _llm_call_directory(root, task)
     if directory is None:
@@ -771,14 +1075,29 @@ def _llm_calls(root: Path, task: TaskName) -> list[LLMCallArtifact]:
 
 
 def _preview(value: str) -> str:
-    """文書由来textを一行240文字以内のplain textへ省略する。"""
+    """文書由来textを一行240文字以内のplain textへ省略する。
+
+    Args:
+        value (str): 一行のPreviewへ短縮する文書Text。
+
+    Returns:
+        str: 文書由来textを一行240文字以内のplain textへ省略する。
+    """
 
     normalized = " ".join(value.split())
     return normalized if len(normalized) <= 240 else f"{normalized[:239]}…"
 
 
 def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
-    """候補から最初に存在する検証済みDocumentを読む。"""
+    """候補から最初に存在する検証済みDocumentを読む。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        candidates (list[str]): 読込み候補のDocument File名。
+
+    Returns:
+        Document | None: 候補から最初に存在する検証済みDocumentを読む。
+    """
 
     for relative in candidates:
         path = root / relative
@@ -794,7 +1113,16 @@ def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
 def _verified_response(
     root: Path, task: TaskName, call: LLMCallArtifact
 ) -> StructureResponse | TranslationResponse | ReviewResponse | None:
-    """確定状態、hashおよびSchemaを検証したLLM応答だけを返す。"""
+    """確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+        call (LLMCallArtifact): 応答Fileを検証するLLM Call Artifact。
+
+    Returns:
+        StructureResponse | TranslationResponse | ReviewResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
+    """
 
     if call.status not in {"succeeded", "partial"} or call.response_sha256 is None:
         return None
@@ -821,14 +1149,31 @@ def _verified_response(
 
 
 def _latest_call(root: Path, task: TaskName, status: str) -> LLMCallArtifact | None:
-    """指定状態で更新時刻が最も新しいLLM Callを返す。"""
+    """指定状態で更新時刻が最も新しいLLM Callを返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+        status (str): 抽出対象のLLM Call状態。
+
+    Returns:
+        LLMCallArtifact | None: 指定状態で更新時刻が最も新しいLLM Callを返す。
+    """
 
     calls = [call for call in _llm_calls(root, task) if call.status == status]
     return max(calls, key=lambda item: item.updated_at) if calls else None
 
 
 def _latest_verified_call(root: Path, task: TaskName) -> LLMCallArtifact | None:
-    """hashとSchemaを検証できる最新の確定済みLLM Callを返す。"""
+    """hashとSchemaを検証できる最新の確定済みLLM Callを返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        task (TaskName): 状態またはCallを記録するTask名。
+
+    Returns:
+        LLMCallArtifact | None: hashとSchemaを検証できる最新の確定済みLLM Callを返す。
+    """
 
     calls = sorted(
         _llm_calls(root, task), key=lambda item: item.updated_at, reverse=True
@@ -840,7 +1185,15 @@ def _latest_verified_call(root: Path, task: TaskName) -> LLMCallArtifact | None:
 
 
 def _comparison_text(rows: list[tuple[str, str]], empty: str = "") -> str:
-    """同じ対象順の最大3件をTextArea用plain textへ整形する。"""
+    """同じ対象順の最大3件をTextArea用plain textへ整形する。
+
+    Args:
+        rows (list[tuple[str, str]]): CSVまたは比較表示を構成する行。
+        empty (str): 表示対象がない場合の代替Text。
+
+    Returns:
+        str: 同じ対象順の最大3件をTextArea用plain textへ整形する。
+    """
 
     if not rows:
         return empty
@@ -853,7 +1206,13 @@ def _comparison_text(rows: list[tuple[str, str]], empty: str = "") -> str:
 def _render_text_areas(
     labels: tuple[str, ...], values: tuple[str, ...], key: str
 ) -> None:
-    """同じ件数の読取専用TextAreaを横並びで表示する。"""
+    """同じ件数の読取専用TextAreaを横並びで表示する。
+
+    Args:
+        labels (tuple[str, ...]): 比較TextAreaへ付けるLabel列。
+        values (tuple[str, ...]): 一括処理する入力Text列。
+        key (str): Table DataまたはWidgetの識別Key。
+    """
 
     columns = st.columns(len(labels))
     for index, (column, label, value) in enumerate(
@@ -871,7 +1230,17 @@ def _render_text_areas(
 
 
 def _diff_text(before: str, after: str, before_label: str, after_label: str) -> str:
-    """二つの表示textから行単位のunified diffを作る。"""
+    """二つの表示textから行単位のunified diffを作る。
+
+    Args:
+        before (str): 変更前として表示するText。
+        after (str): 変更後として表示するText。
+        before_label (str): 変更前TextのLabel。
+        after_label (str): 変更後TextのLabel。
+
+    Returns:
+        str: 二つの表示textから行単位のunified diffを作る。
+    """
 
     return "\n".join(
         difflib.unified_diff(
@@ -885,7 +1254,14 @@ def _diff_text(before: str, after: str, before_label: str, after_label: str) -> 
 
 
 def _render_diff(before: str, after: str, before_label: str, after_label: str) -> None:
-    """TextAreaの下へ追加・削除行を強調する差分Collapseを表示する。"""
+    """TextAreaの下へ追加・削除行を強調する差分Collapseを表示する。
+
+    Args:
+        before (str): 変更前として表示するText。
+        after (str): 変更後として表示するText。
+        before_label (str): 変更前TextのLabel。
+        after_label (str): 変更後TextのLabel。
+    """
 
     with st.expander("差分を表示", expanded=False):
         diff = _diff_text(before, after, before_label, after_label)
@@ -896,7 +1272,14 @@ def _render_diff(before: str, after: str, before_label: str, after_label: str) -
 
 
 def _translation_comparison(root: Path) -> tuple[str, str] | None:
-    """直近の同一TRANSLATE Callから英語と検証済み日本語を返す。"""
+    """直近の同一TRANSLATE Callから英語と検証済み日本語を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        tuple[str, str] | None: 直近の同一TRANSLATE Callから英語と検証済み日本語を返す。
+    """
 
     document = _load_first_document(
         root,
@@ -977,7 +1360,14 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
 
 
 def _review_comparison(root: Path) -> tuple[str, str] | None:
-    """直近の同一REVIEW Callから現在訳と修正候補を返す。"""
+    """直近の同一REVIEW Callから現在訳と修正候補を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        tuple[str, str] | None: 直近の同一REVIEW Callから現在訳と修正候補を返す。
+    """
 
     targets = _review_targets(root)
     confirmed = _latest_verified_call(root, TaskName.REVIEW)
@@ -1009,7 +1399,14 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
 
 
 def _fix_comparison(root: Path) -> tuple[str, str] | None:
-    """適用済みRevision対象のFIX前後を同じTextUnit IDで返す。"""
+    """適用済みRevision対象のFIX前後を同じTextUnit IDで返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        tuple[str, str] | None: 適用済みRevision対象のFIX前後を同じTextUnit IDで返す。
+    """
 
     outcomes_path = root / "review/fix/outcomes.json"
     review_path = root / "review/review/review.json"
@@ -1050,7 +1447,14 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
 
 
 def _fix_rejections(root: Path) -> list[tuple[str, str]]:
-    """FIXが拒否したRevision IDと理由codeの組を返す。"""
+    """FIXが拒否したRevision IDと理由codeの組を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        list[tuple[str, str]]: FIXが拒否したRevision IDと理由codeの組を返す。
+    """
 
     path = root / "review/fix/outcomes.json"
     if not path.is_file():
@@ -1067,7 +1471,14 @@ def _fix_rejections(root: Path) -> list[tuple[str, str]]:
 
 
 def _markdown_code(value: str) -> str:
-    """Artifact由来textを安全な一つのMarkdown inline codeへ変換する。"""
+    """Artifact由来textを安全な一つのMarkdown inline codeへ変換する。
+
+    Args:
+        value (str): Inline Codeとして表示するArtifact Text。
+
+    Returns:
+        str: Artifact由来textを安全な一つのMarkdown inline codeへ変換する。
+    """
 
     normalized = " ".join(value.split())
     longest = max((len(item) for item in re.findall(r"`+", normalized)), default=0)
@@ -1076,7 +1487,11 @@ def _markdown_code(value: str) -> str:
 
 
 def _render_latest_comparison(root: Path) -> None:
-    """既存Artifactから最新の処理前後比較を表示する。"""
+    """既存Artifactから最新の処理前後比較を表示する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+    """
 
     fixed = _fix_comparison(root)
     reviewed = _review_comparison(root)
@@ -1108,7 +1523,14 @@ def _render_latest_comparison(root: Path) -> None:
 
 
 def _review_context(root: Path) -> tuple[str, str] | None:
-    """同一ReviewTargetの英語原文と日本語訳を返す。"""
+    """同一ReviewTargetの英語原文と日本語訳を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        tuple[str, str] | None: 同一ReviewTargetの英語原文と日本語訳を返す。
+    """
 
     path = root / "review/align/alignment.json"
     if not path.is_file():
@@ -1132,7 +1554,15 @@ def _review_context(root: Path) -> tuple[str, str] | None:
 
 
 def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
-    """Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。"""
+    """Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        list[str]: Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。
+    """
 
     calls = [
         (task, call)
@@ -1162,7 +1592,16 @@ def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
 def _unit_text(
     unit_ids: list[str], units: dict[str, TextUnit], layer: TextLayer
 ) -> str | None:
-    """複数TextUnit IDを検証済み索引から一つの表示textへ解決する。"""
+    """複数TextUnit IDを検証済み索引から一つの表示textへ解決する。
+
+    Args:
+        unit_ids (list[str]): Textを結合するTextUnit ID列。
+        units (dict[str, TextUnit]): TextUnit IDからTextUnitへの索引。
+        layer (TextLayer): 取得するTextの優先Layer。
+
+    Returns:
+        str | None: 複数TextUnit IDを検証済み索引から一つの表示textへ解決する。
+    """
 
     if not unit_ids or any(unit_id not in units for unit_id in unit_ids):
         return None
@@ -1170,7 +1609,14 @@ def _unit_text(
 
 
 def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
-    """同一VersionChangeの英文v1、日本語v1、英文v2を返す。"""
+    """同一VersionChangeの英文v1、日本語v1、英文v2を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+
+    Returns:
+        tuple[str, str, str] | None: 同一VersionChangeの英文v1、日本語v1、英文v2を返す。
+    """
 
     plan_path = root / "upgrade/diff/plan.json"
     source_v1 = _load_first_document(root, ["preprocess/source-v1/load/document.json"])
@@ -1229,7 +1675,12 @@ def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
 
 
 def _render_review_context(root: Path, processing_id: str) -> None:
-    """Review tabへ英語原文と日本語訳の対応表示を描画する。"""
+    """Review tabへ英語原文と日本語訳の対応表示を描画する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+    """
 
     values = _review_context(root)
     if values is None:
@@ -1242,7 +1693,12 @@ def _render_review_context(root: Path, processing_id: str) -> None:
 
 
 def _render_upgrade_context(root: Path, processing_id: str) -> None:
-    """Upgrade tabへ三版の対応表示を描画する。"""
+    """Upgrade tabへ三版の対応表示を描画する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        processing_id (str): 新規処理またはResume対象の処理ID。
+    """
 
     values = _upgrade_context(root)
     if values is None:
@@ -1262,7 +1718,13 @@ def _render_llm_progress(
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
     active_task: TaskName | None,
 ) -> None:
-    """現在時刻とSTRUCTURE・TRANSLATE・REVIEWのCall内訳だけを表示する。"""
+    """現在時刻とSTRUCTURE・TRANSLATE・REVIEWのCall内訳だけを表示する。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        active_task (TaskName | None): 進捗内訳を表示する実行中Task。
+    """
 
     st.write(f"更新時刻: {record.updated_at.isoformat()}")
     shown = False
@@ -1285,7 +1747,15 @@ def _render_llm_progress(
 
 
 def _valid_check_artifact(root: Path, relative_path: str) -> bool:
-    """CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。"""
+    """CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        relative_path (str): 処理Directory基準の成果物Path。
+
+    Returns:
+        bool: CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。
+    """
 
     path = root / relative_path
     if not path.is_file():
@@ -1301,7 +1771,15 @@ def _task_progress(
     root: Path,
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
 ) -> tuple[int, int, str]:
-    """固定Task列の完了数、総数、実行中表示名を返す。"""
+    """固定Task列の完了数、総数、実行中表示名を返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
+
+    Returns:
+        tuple[int, int, str]: 固定Task列の完了数、総数、実行中表示名を返す。
+    """
 
     stages = _task_stages(record)
     states = {state.task: state for state in record.tasks}
@@ -1327,7 +1805,12 @@ def _task_progress(
 def _render_task_progress(
     entry: HistoryEntry, record: TranslationRecord | ReviewRecord | UpgradeRecord
 ) -> None:
-    """固定Task列のProgressBarとLLM Call数を表示する。"""
+    """固定Task列のProgressBarとLLM Call数を表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
+    """
 
     root = entry.record_path.parent
     completed, total, active = _task_progress(root, record)
@@ -1357,7 +1840,15 @@ def _render_task_progress(
 
 
 def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
-    """Artifactが処理directory内でsizeとhashに一致する場合だけpathを返す。"""
+    """Artifactが処理directory内でsizeとhashに一致する場合だけpathを返す。
+
+    Args:
+        root (Path): 対象処理の成果物Root Directory。
+        artifact (ArtifactFile): Path、SizeおよびHashを検証する成果物情報。
+
+    Returns:
+        Path | None: Artifactが処理directory内でsizeとhashに一致する場合だけpathを返す。
+    """
 
     resolved_root = root.resolve()
     path = (root / artifact.relative_path).resolve()
@@ -1372,7 +1863,15 @@ def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
 
 
 def _preview_image_path(markdown: Path, target: str) -> Path | None:
-    """Markdown基準の相対画像をpreview directory内の実fileへ限定する。"""
+    """Markdown基準の相対画像をpreview directory内の実fileへ限定する。
+
+    Args:
+        markdown (Path): DOCX変換またはPreview対象のMarkdown Path。
+        target (str): Markdown画像Linkから取得した相対Path。
+
+    Returns:
+        Path | None: Markdown基準の相対画像をpreview directory内の実fileへ限定する。
+    """
 
     parsed = urlsplit(target)
     if parsed.scheme or parsed.netloc:
@@ -1385,7 +1884,12 @@ def _preview_image_path(markdown: Path, target: str) -> Path | None:
 
 
 def _render_markdown_preview(markdown: Path, value: str) -> None:
-    """Markdownの相対画像を安全なStreamlit画像へ置換してpreviewする。"""
+    """Markdownの相対画像を安全なStreamlit画像へ置換してpreviewする。
+
+    Args:
+        markdown (Path): DOCX変換またはPreview対象のMarkdown Path。
+        value (str): 相対画像Linkを置換して表示するMarkdown本文。
+    """
 
     cursor = 0
     for match in _MARKDOWN_IMAGE_BLOCK.finditer(value):
@@ -1407,7 +1911,12 @@ def _render_markdown_preview(markdown: Path, value: str) -> None:
 
 
 def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) -> None:
-    """hash検証済みMarkdownとDOCXのpreview・downloadを表示する。"""
+    """hash検証済みMarkdownとDOCXのpreview・downloadを表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+    """
 
     markdown: tuple[Path, bytes] | None = None
     docx: tuple[Path, bytes] | None = None
@@ -1478,7 +1987,15 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
     targets = _review_targets(root)
 
     def target_text(target_ids: list[str], index: int) -> str:
-        """対象ID群の本文を連結する。"""
+        """対象ID群の本文を連結する。
+
+        Args:
+            target_ids (list[str]): LLM Call対象の安定識別ID列。
+            index (int): 対象要素の読み順Index。
+
+        Returns:
+            str: 対象ID群の本文を連結する。
+        """
 
         return " / ".join(
             value[index]
@@ -1588,7 +2105,12 @@ def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
 
 
 def _render_upgrade_output(entry: HistoryEntry, record: UpgradeRecord) -> None:
-    """hash検証済みの日本語v2 DOCXをdownload対象として表示する。"""
+    """hash検証済みの日本語v2 DOCXをdownload対象として表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+    """
 
     for artifact in record.outputs:
         path = _valid_artifact(entry.record_path.parent, artifact)
@@ -1609,7 +2131,12 @@ def _render_upgrade_output(entry: HistoryEntry, record: UpgradeRecord) -> None:
 def _render_registration_result(
     entry: HistoryEntry, record: RegistrationRecord
 ) -> None:
-    """Registerのcollection、各資料状態と処理記録downloadを表示する。"""
+    """Registerのcollection、各資料状態と処理記録downloadを表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        record (RegistrationRecord): 状態またはTask情報を更新する処理Record。
+    """
 
     if record.result is not None:
         st.write(f"collection: {record.result.collection}")
@@ -1628,7 +2155,14 @@ def _render_registration_result(
 
 
 def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
-    """UI保存済み入力をrole順に取得し、最上位記録のhashと比較する。"""
+    """UI保存済み入力をrole順に取得し、最上位記録のhashと比較する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+
+    Returns:
+        list[Path] | None: UI保存済み入力をrole順に取得し、最上位記録のhashと比較する。
+    """
 
     processing_id = entry.processing_id
     record = entry.record
@@ -1669,7 +2203,16 @@ def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
 def _resume_entry(
     entry: HistoryEntry, paths: list[Path], registry: WorkerRegistry
 ) -> bool:
-    """検証済み入力を使って処理種類別のResumeを登録する。"""
+    """検証済み入力を使って処理種類別のResumeを登録する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        paths (list[Path]): 列挙された入力Path。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+
+    Returns:
+        bool: 検証済み入力を使って処理種類別のResumeを登録する。
+    """
 
     processing_id = entry.processing_id
     record = entry.record
@@ -1694,7 +2237,16 @@ def _resume_entry(
 
 
 def _matches_input(upload: UploadedFile, logical_path: str, sha256: str) -> bool:
-    """uploadのbasenameとSHA-256が保存済み入力に一致するかを返す。"""
+    """uploadのbasenameとSHA-256が保存済み入力に一致するかを返す。
+
+    Args:
+        upload (UploadedFile): 保存または照合するUpload File。
+        logical_path (str): 保存済み入力の論理Path。
+        sha256 (str): 保存済み入力と照合するSHA-256 Hash。
+
+    Returns:
+        bool: uploadのbasenameとSHA-256が保存済み入力に一致するかを返す。
+    """
 
     return (
         upload.name == logical_path
@@ -1705,7 +2257,20 @@ def _matches_input(upload: UploadedFile, logical_path: str, sha256: str) -> bool
 def _stage_resume_uploads(
     entry: HistoryEntry, uploads: list[UploadedFile]
 ) -> list[Path]:
-    """CLI処理の再uploadを保存済み入力情報と比較して保存する。"""
+    """CLI処理の再uploadを保存済み入力情報と比較して保存する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
+
+    Returns:
+        list[Path]: CLI処理の再uploadを保存済み入力情報と比較して保存する。
+
+    Raises:
+        InputError: `processing record is unavailable`、`directory registration must be
+            resumed from the CLI`、`resume uploads do not match the saved
+            inputs`のいずれかと判定した場合。
+    """
 
     record = entry.record
     processing_id = entry.processing_id
@@ -1747,7 +2312,14 @@ def _stage_resume_uploads(
 
 
 def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
-    """保存済み入力がない処理に種類別の再upload formを表示する。"""
+    """保存済み入力がない処理に種類別の再upload formを表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+
+    Returns:
+        list[Path] | None: 保存済み入力がない処理に種類別の再upload formを表示する。
+    """
 
     record = entry.record
     processing_id = entry.processing_id
@@ -1830,7 +2402,12 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
 
 
 def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終端失敗またはworker不明のprocessing記録にResume確認を表示する。"""
+    """終端失敗またはworker不明のprocessing記録にResume確認を表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     record = entry.record
     processing_id = entry.processing_id
@@ -1862,7 +2439,11 @@ def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
 
 
 def _render_record(entry: HistoryEntry) -> None:
-    """最上位記録のProgressBar、詳細および比較TextAreaを表示する。"""
+    """最上位記録のProgressBar、詳細および比較TextAreaを表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+    """
 
     record = entry.record
     if record is None:
@@ -1882,7 +2463,12 @@ def _render_record(entry: HistoryEntry) -> None:
 
 
 def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。"""
+    """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     record = entry.record
     if record is None:
@@ -1910,7 +2496,12 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
 
 
 def _render_history_delete(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終了済みの選択履歴だけを確認操作付きで削除する。"""
+    """終了済みの選択履歴だけを確認操作付きで削除する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     record = entry.record
     processing_id = entry.processing_id
@@ -1948,7 +2539,19 @@ def _delete_history_entry(
     outputs_root: Path | None = None,
     work_root: Path | None = None,
 ) -> None:
-    """終了済み記録の正確な処理directoryと保存入力だけを削除する。"""
+    """終了済み記録の正確な処理directoryと保存入力だけを削除する。
+
+    Args:
+        entry (HistoryEntry): 表示または操作対象の処理履歴。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+        outputs_root (Path | None): 成果物Root Directory。
+        work_root (Path | None): Uploadの一時保存Root Directory。
+
+    Raises:
+        InputError: `valid processing history is required`、`active processing history cannot
+            be deleted`、`history path is outside the outputs directory`、`saved input path is
+            outside the UI work directory`のいずれかと判定した場合。
+    """
 
     processing_id = entry.processing_id
     record = entry.record
@@ -1973,7 +2576,12 @@ def _delete_history_entry(
 
 
 def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
-    """選択処理をArtifactから再読込みして表示する。"""
+    """選択処理をArtifactから再読込みして表示する。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+    """
 
     entry = _entry_by_id(processing_id)
     if entry is None:
@@ -1987,7 +2595,13 @@ def _render_processing_panel(
     registry: WorkerRegistry,
     entries: list[HistoryEntry] | None = None,
 ) -> None:
-    """進捗と比較を折り畳み、成果物操作をその外側へ表示する。"""
+    """進捗と比較を折り畳み、成果物操作をその外側へ表示する。
+
+    Args:
+        processing_id (str): 新規処理またはResume対象の処理ID。
+        registry (WorkerRegistry): Background処理のWorker Registry。
+        entries (list[HistoryEntry] | None): 表示対象の処理履歴一覧。
+    """
 
     entries = entries if entries is not None else _history_entries()
     current = next(
@@ -2037,7 +2651,11 @@ def _render_processing_panel(
 
 
 def _render_session_title(processing_id: str | None) -> None:
-    """Session IDをStreamlit AppBarと同じ高さへ表示する。"""
+    """Session IDをStreamlit AppBarと同じ高さへ表示する。
+
+    Args:
+        processing_id (str | None): 新規処理またはResume対象の処理ID。
+    """
 
     title = html.escape(processing_id or "新規セッション")
     st.html(

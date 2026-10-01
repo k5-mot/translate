@@ -23,7 +23,17 @@ ChangeMethod = Literal["unique_text", "unique_anchor", "ordered_role", "unmatche
 
 
 def _validate_aware(value: datetime) -> datetime:
-    """Upgradeの永続化日時をtimezone-aware値に限定する。"""
+    """Upgradeの永続化日時をtimezone-aware値に限定する。
+
+    Args:
+        value (datetime): Timezone情報を検証する日時。
+
+    Returns:
+        datetime: Upgradeの永続化日時をtimezone-aware値に限定する。
+
+    Raises:
+        ValueError: `datetime must be timezone-aware`と判定した場合。
+    """
 
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")

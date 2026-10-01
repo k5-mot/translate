@@ -10,7 +10,14 @@ from translate.models.review import Finding, ReviewTarget
 
 
 def check(targets: list[ReviewTarget]) -> CheckResult:
-    """正規化した原文と訳文へ固定閾値の検査を適用する。"""
+    """正規化した原文と訳文へ固定閾値の検査を適用する。
+
+    Args:
+        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
+
+    Returns:
+        CheckResult: 正規化した原文と訳文へ固定閾値の検査を適用する。
+    """
 
     findings: list[Finding] = []
     for target in targets:
@@ -44,7 +51,14 @@ def check(targets: list[ReviewTarget]) -> CheckResult:
 
 
 def targets_from_document(document: Document) -> list[ReviewTarget]:
-    """Translate後のDocument内IDからCHECKとREVIEWの対象を作る。"""
+    """Translate後のDocument内IDからCHECKとREVIEWの対象を作る。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        list[ReviewTarget]: Translate後のDocument内IDからCHECKとREVIEWの対象を作る。
+    """
 
     return [
         ReviewTarget(
@@ -60,6 +74,13 @@ def targets_from_document(document: Document) -> list[ReviewTarget]:
 
 
 def _normalize(value: str) -> str:
-    """前後空白を除去し、連続空白を一つのspaceへ縮約する。"""
+    """前後空白を除去し、連続空白を一つのspaceへ縮約する。
+
+    Args:
+        value (str): 空訳判定用に空白を正規化するText。
+
+    Returns:
+        str: 前後空白を除去し、連続空白を一つのspaceへ縮約する。
+    """
 
     return re.sub(r"\s+", " ", value.strip())

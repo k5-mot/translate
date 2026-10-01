@@ -18,7 +18,21 @@ def reuse(
     plan: UpgradePlan,
     task_directory: Path,
 ) -> tuple[Document, ReuseReport]:
-    """Planでreuseと確定した日本語Spanをv2 Documentへ設定する。"""
+    """Planでreuseと確定した日本語Spanをv2 Documentへ設定する。
+
+    Args:
+        source_v2 (Document): 変更を反映する英文v2。
+        translation_v1 (Document): 比較基準にする日本語v1。
+        plan (UpgradePlan): 版間差分から作成したUpgrade Plan。
+        task_directory (Path): 対象Taskの成果物Directory。
+
+    Returns:
+        tuple[Document, ReuseReport]: Planでreuseと確定した日本語Spanをv2 Documentへ設定する。
+
+    Raises:
+        ValueError: `f'invalid reuse mapping: {change.id}'`、`f'incompatible reuse mapping:
+            {change.id}'`のいずれかと判定した場合。
+    """
 
     updated = source_v2.model_copy(deep=True)
     target_units = text_unit_index(updated)
@@ -59,7 +73,17 @@ def previous_context(
     source_v2: Document,
     translation_v1: Document,
 ) -> dict[str, tuple[str, str]]:
-    """modified対象Spanへ対応する旧英日TextUnitを関連付ける。"""
+    """modified対象Spanへ対応する旧英日TextUnitを関連付ける。
+
+    Args:
+        plan (UpgradePlan): 版間差分から作成したUpgrade Plan。
+        source_v1 (Document): 比較基準にする英文v1。
+        source_v2 (Document): 変更を反映する英文v2。
+        translation_v1 (Document): 比較基準にする日本語v1。
+
+    Returns:
+        dict[str, tuple[str, str]]: modified対象Spanへ対応する旧英日TextUnitを関連付ける。
+    """
 
     old_units = text_unit_index(source_v1)
     new_units = text_unit_index(source_v2)
@@ -81,6 +105,13 @@ def previous_context(
 
 
 def _translatable_spans(spans: list[TextSpan]) -> list[TextSpan]:
-    """codeと改行以外の翻訳対象Spanを返す。"""
+    """codeと改行以外の翻訳対象Spanを返す。
+
+    Args:
+        spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
+
+    Returns:
+        list[TextSpan]: codeと改行以外の翻訳対象Spanを返す。
+    """
 
     return [span for span in spans if span.kind not in {"code", "line_break"}]

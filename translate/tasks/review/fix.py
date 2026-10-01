@@ -12,7 +12,15 @@ if TYPE_CHECKING:
 
 
 def apply_revisions(document: Document, review: ReviewResult) -> FixResult:
-    """有効なRevisionだけを順序どおり原子的にDocumentへ反映する。"""
+    """有効なRevisionだけを順序どおり原子的にDocumentへ反映する。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+        review (ReviewResult): Documentへ適用するReview結果。
+
+    Returns:
+        FixResult: 有効なRevisionだけを順序どおり原子的にDocumentへ反映する。
+    """
 
     updated = document.model_copy(deep=True)
     units = text_unit_index(updated)
@@ -48,7 +56,16 @@ def _rejection_reason(  # noqa: PLR0911
     units: dict[str, TextUnit],
     changed_spans: set[str],
 ) -> str | None:
-    """Revision全体を拒否する最初の決定的理由を返す。"""
+    """Revision全体を拒否する最初の決定的理由を返す。
+
+    Args:
+        revision (Revision): 適用可否と棄却理由を判定する修正候補。
+        units (dict[str, TextUnit]): TextUnit IDからTextUnitへの索引。
+        changed_spans (set[str]): 変更済みTextSpan ID集合。
+
+    Returns:
+        str | None: Revision全体を拒否する最初の決定的理由を返す。
+    """
 
     unit = units.get(revision.target_id)
     if unit is None:

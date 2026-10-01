@@ -19,13 +19,25 @@ class ColoredLevelFormatter(logging.Formatter):
     """TTY出力時だけLogRecordのlevelnameへ色を付けるFormatter。"""
 
     def __init__(self, stream: TextIO, fmt: str | None = None) -> None:
-        """出力先のTTY判定に使うstreamと標準Formatter設定を保持する。"""
+        """出力先のTTY判定に使うstreamと標準Formatter設定を保持する。
+
+        Args:
+            stream (TextIO): 色付きLogの出力先Text Stream。
+            fmt (str | None): Log MessageのFormat文字列。
+        """
 
         super().__init__(fmt)
         self.stream = stream
 
     def format(self, record: logging.LogRecord) -> str:
-        """元のLogRecordを変更せず、level名だけを一時的に色付けする。"""
+        """元のLogRecordを変更せず、level名だけを一時的に色付けする。
+
+        Args:
+            record (logging.LogRecord): Level名を色付けするLog Record。
+
+        Returns:
+            str: 元のLogRecordを変更せず、level名だけを一時的に色付けする。
+        """
 
         if not self.stream.isatty() or record.levelno not in _COLORS:
             return super().format(record)

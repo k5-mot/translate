@@ -47,7 +47,14 @@ class LLMClient:
     """生成LLMの接続、再試行、JSON parseおよびPydantic検証を隠蔽する。"""
 
     def __init__(self, config: Config) -> None:
-        """単一endpoint設定を保持し、送信はstructuredまで遅延する。"""
+        """単一endpoint設定を保持し、送信はstructuredまで遅延する。
+
+        Args:
+            config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+        Raises:
+            ValueError: `OpenAI-compatible base URL is required`と判定した場合。
+        """
 
         if config.openai_base_url is None:
             raise ValueError("OpenAI-compatible base URL is required")
@@ -70,7 +77,26 @@ class LLMClient:
         output_tokens: int,
         image: Path | None = None,
     ) -> StructuredResult[ResponseT]:
-        """一つの論理要求を最大試行数内で送信し、検証済み応答を返す。"""
+        """一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
+
+        Args:
+            model (str): LLM APIへ指定するModel名。
+            response_type (type[ResponseT]): 応答を検証するPydantic Model Type。
+            system (str): LLMへ渡すSystem Prompt。
+            user (str): LLMへ渡すUser Prompt。
+            contract (str): 上限値と対応付けるLLM入出力契約名。
+            native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
+            input_tokens (int | None): Providerが報告した入力Token数。
+            output_tokens (int): Providerが報告した出力Token数。
+            image (Path | None): Multimodal Callへ添付する画像File。
+
+        Returns:
+            StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
+
+        Raises:
+            LLMInputExceededError: `LLM input exceeded the provider context limit`と判定した場合。
+            LLMError: `f'LLM structured request failed: {cause}'`と判定した場合。
+        """
 
         _validate_contract(native_schema, contract, self.config)
         deadline = time.monotonic() + self.config.llm_task_deadline_seconds
@@ -166,7 +192,20 @@ class LLMClient:
         output_tokens: int,
         image: Path | None,
     ) -> dict[str, object]:
-        """選択されたstructured output方式のOpenAI互換requestを作る。"""
+        """選択されたstructured output方式のOpenAI互換requestを作る。
+
+        Args:
+            model (str): LLM APIへ指定するModel名。
+            system (str): LLMへ渡すSystem Prompt。
+            user (str): LLMへ渡すUser Prompt。
+            contract (str): 上限値と対応付けるLLM入出力契約名。
+            native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
+            output_tokens (int): Providerが報告した出力Token数。
+            image (Path | None): Multimodal Callへ添付する画像File。
+
+        Returns:
+            dict[str, object]: 選択されたstructured output方式のOpenAI互換requestを作る。
+        """
 
         mode = self.config.llm_structured_output_mode
         system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
@@ -209,7 +248,14 @@ class LLMClient:
 
 
 def _reject_length_finish(finish_reason: str | None) -> None:
-    """出力上限による終了を対象分割用の専用例外へ変換する。"""
+    """出力上限による終了を対象分割用の専用例外へ変換する。
+
+    Args:
+        finish_reason (str | None): Providerが返した生成終了理由。
+
+    Raises:
+        LLMOutputExceededError: `LLM output reached its token limit`と判定した場合。
+    """
 
     if finish_reason == "length":
         raise LLMOutputExceededError("LLM output reached its token limit")
@@ -224,7 +270,20 @@ def _validate_input_size(
     mode: str,
     maximum_bytes: int | None,
 ) -> None:
-    """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。"""
+    """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。
+
+    Args:
+        system (str): LLMへ渡すSystem Prompt。
+        user (str): LLMへ渡すUser Prompt。
+        contract (str): 上限値と対応付けるLLM入出力契約名。
+        native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
+        mode (str): 応答解析または上限判定Mode。
+        maximum_bytes (int | None): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Raises:
+        LLMInputExceededError: `f'LLM input exceeds task limit: {size} >
+            {maximum_bytes}'`と判定した場合。
+    """
 
     if maximum_bytes is None:
         return
@@ -244,7 +303,14 @@ def _validate_input_size(
 
 
 def _is_input_overflow(error: httpx.HTTPStatusError) -> bool:
-    """OpenAI互換endpointの入力・context超過応答を識別する。"""
+    """OpenAI互換endpointの入力・context超過応答を識別する。
+
+    Args:
+        error (httpx.HTTPStatusError): 記録または分類する例外。
+
+    Returns:
+        bool: OpenAI互換endpointの入力・context超過応答を識別する。
+    """
 
     if error.response.status_code == 413:
         return True
@@ -270,7 +336,18 @@ def _is_input_overflow(error: httpx.HTTPStatusError) -> bool:
 def _response(
     response: httpx.Response,
 ) -> tuple[str, str | None, int | None, int | None]:
-    """OpenAI互換応答から本文、終了理由およびtoken使用量を検査して得る。"""
+    """OpenAI互換応答から本文、終了理由およびtoken使用量を検査して得る。
+
+    Args:
+        response (httpx.Response): 保存する検証済みLLM応答Model。
+
+    Returns:
+        tuple[str, str | None, int | None, int | None]: 応答本文、終了理由、入力Token数および出力Token数のTuple。
+
+    Raises:
+        ValueError: `LLM response must be an object`、`LLM response has no choice`、`LLM
+            response content must be text`のいずれかと判定した場合。
+    """
 
     payload = response.json()
     if not isinstance(payload, dict):
@@ -295,7 +372,14 @@ def _response(
 
 
 def _token_count(value: object) -> int | None:
-    """provider値から非負の整数だけをtoken数として採用する。"""
+    """provider値から非負の整数だけをtoken数として採用する。
+
+    Args:
+        value (object): Provider応答から取得したToken数候補。
+
+    Returns:
+        int | None: provider値から非負の整数だけをtoken数として採用する。
+    """
 
     return (
         value
@@ -305,7 +389,19 @@ def _token_count(value: object) -> int | None:
 
 
 def _parse_content(content: str, mode: str, maximum_bytes: int) -> object:
-    """応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。"""
+    """応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。
+
+    Args:
+        content (str): JSONとして解析するLLM応答本文。
+        mode (str): 応答解析または上限判定Mode。
+        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+
+    Returns:
+        object: 応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。
+
+    Raises:
+        LLMOutputExceededError: `LLM response exceeds byte limit`と判定した場合。
+    """
 
     if len(content.encode("utf-8")) > maximum_bytes:
         raise LLMOutputExceededError("LLM response exceeds byte limit")
@@ -320,7 +416,17 @@ def _validate_contract(
     contract: str,
     config: Config,
 ) -> None:
-    """structured output契約のbyte数と入れ子深度を安全上限内に限定する。"""
+    """structured output契約のbyte数と入れ子深度を安全上限内に限定する。
+
+    Args:
+        schema (dict[str, object]): 深さまたは契約を検証するJSON Schema。
+        contract (str): 上限値と対応付けるLLM入出力契約名。
+        config (Config): 接続先、上限値および処理Optionを保持する設定。
+
+    Raises:
+        ValueError: `LLM response contract exceeds byte limit`、`LLM response schema exceeds
+            depth limit`のいずれかと判定した場合。
+    """
 
     selected = (
         schema if config.llm_structured_output_mode == "json_schema" else contract
@@ -333,7 +439,14 @@ def _validate_contract(
 
 
 def _schema_depth(schema: object) -> int:
-    """JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。"""
+    """JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
+
+    Args:
+        schema (object): 深さまたは契約を検証するJSON Schema。
+
+    Returns:
+        int: JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
+    """
 
     if not isinstance(schema, dict):
         return 0
