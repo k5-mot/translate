@@ -306,7 +306,29 @@ def _execute(
     lineage: list[str],
     depth: int,
 ) -> list[tuple[str, ReviewResponse, list[ReviewTarget]]]:
-    """一つのREVIEW Callを再利用または送信し、出力超過時は分割する。"""
+    """一つのREVIEW Callを実行する。
+
+    再利用可能な応答を優先し、入力または出力の上限超過時は対象を分割して
+    子Callを実行する。
+
+    Args:
+        client (LLMClient): structured output対応のLLM client。
+        config (Config): REVIEWのmodelと入出力上限を含む設定。
+        targets (list[ReviewTarget]): 今回のCallで検査する比較対象。
+        checked (CheckResult): 決定的CHECKで得た既知の指摘。
+        task_directory (Path): REVIEW Taskの成果物ディレクトリ。
+        rules (str): REVIEWへ適用する規則。
+        glossary (str): 対象用語だけを抽出する元の用語集。
+        lineage (list[str]): 分割元から今回のCallまでの識別子列。
+        depth (int): 上限超過による再帰分割の深さ。
+
+    Returns:
+        list[tuple[str, ReviewResponse, list[ReviewTarget]]]: Call ID、応答および
+        その応答が対象としたReviewTargetの組。
+
+    Raises:
+        LLMError: LLM呼出しが失敗した場合、または上限内へ分割できない場合。
+    """
 
     target_ids = [target.id for target in targets]
     call_id = llm_call_id("REVIEW", target_ids, lineage)
@@ -364,8 +386,11 @@ def _execute(
             model=config.openai_review_model or "",
             response_type=ReviewResponse,
             system=(
-                "Review English-to-Japanese translations. Return findings and optional "
-                "span-level revision suggestions as JSON only.\n\n" + rules
+                "Act as a strict senior English-to-Japanese translation reviewer. "
+                "Inspect every target against every review rule, report every concrete "
+                "defect, and provide a span-level revision for each safely fixable "
+                "defect. Return empty arrays only after all review criteria pass. "
+                "Never invent a defect. Return JSON only.\n\n" + rules
             ),
             user=_user_payload(
                 targets,
