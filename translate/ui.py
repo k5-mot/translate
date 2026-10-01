@@ -1617,7 +1617,7 @@ def _render_registration_result(
         st.write(f"Point合計: {record.result.total_points}")
         st.dataframe(
             [source.model_dump(mode="json") for source in record.result.sources],
-            use_container_width=True,
+            width="stretch",
         )
     st.download_button(
         "Register記録をdownload",
