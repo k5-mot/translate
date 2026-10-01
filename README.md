@@ -94,30 +94,36 @@ uv run ty check
 uv run pytest
 ```
 
-### 🧳 検証ログの収集
+### 🤖 自動受入検証とCodex修正
 
-CLIを実行しながらconsole出力、Git状態、入力PDFのhash、処理記録、Task診断および
-LLM Call状態をZIPへまとめられます。`.env`は値を含めず、設定済みかどうかだけを
-記録します。
+CLI出力、Git状態、入力PDFのhash、処理記録、Task診断およびLLM Call状態の収集は
+受入検証へ統合されています。各工程の診断ZIPは`.diagnostics/`へ保存されます。
+
+軽量PDFのCLI検証とStreamlit UIのE2E検証は、次のcommandで実行できます。
+既定では`sample.pdf`、`sample3.pdf`、`sample2.pdf`を対象にし、CLI検証後にUI契約を検証します。
+`-IncludeLarge`を指定した場合は、軽量3件のCLI・UI検証が完了してから`sample1.pdf`へ進みます。
+CLIではRegister、Translate、WordによるDOCXからPDFへの変換、Review、Upgradeを順番に実行します。
 
 ```powershell
-# sample1の中断済みTranslateを再開し、終了後に診断ZIPを作成する。
-.\scripts\dump-verification.ps1 `
-  -Label sample1-translate `
-  -Target translate-ja `
-  -Arguments @("translate", "inputs/sample1.pdf", "--backend", "llm", "--resume", "<uuidv7>")
+# 軽量PDF 3件を検証する。Codexによる自動修正は行わない。
+.\scripts\acceptance.ps1
 
-# Streamlitを起動し、Ctrl+Cで終了した後に診断ZIPを作成する。
-.\scripts\dump-verification.ps1 `
-  -Label streamlit `
-  -Target streamlit `
-  -Arguments @("run", "main.py", "--server.address", "localhost")
+# 失敗時にCodexを1回だけ呼び出し、品質検査後に再検証する。
+.\scripts\acceptance.ps1 `
+  -AutoRemediate `
+  -MaxRepairAttempts 1
 
-# Commandを実行せず、現在保存済みの状態だけを収集する。
-.\scripts\dump-verification.ps1 -Label current-state
+# 軽量PDF 3件の成功後、sample1.pdfも追加する。
+.\scripts\acceptance.ps1 `
+  -IncludeLarge `
+  -AutoRemediate `
+  -MaxRepairAttempts 1
 ```
 
-ZIPは`.diagnostics/`へ作成されます。不具合報告時は生成されたZIPを添付してください。
+`-Mode cli`は実PDFのCLI検証だけ、`-Mode ui`は`tests/e2e/test_ui.py`のmock pipelineを使ったUI契約検証だけを実行します。
+Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge、pushは実行しません。
+既存の未コミット変更は診断Bundleへ記録し、修正対象と分離して保持します。
+修正結果は`.diagnostics/`のBundleに保存されます。
 
 ## 🧭 設計資料
 
