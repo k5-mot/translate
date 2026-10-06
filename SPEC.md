@@ -873,55 +873,43 @@ english-short,english-long,japanese-short,japanese-long,kind,description,note,re
 
 ### 📏 実行制限
 
-ローカルLLMのメモリ消費、待ち時間および出力不安定化を抑えるため、次の安全境界を設ける。
+次の環境変数でトークン予算を指定する。未指定時は既定値を使用する。すべて整数とし、`LLM_SAFETY_TOKENS` は1,024以上、それ以外は正の値でなければならない（MUST）。トークン数に個別の固定上限は設けない。`LLM_CONTEXT_TOKENS` にはモデルの公称値ではなく、接続先endpointで実際に使用できるcontext上限を設定する。
 
-| 項目 | 安全境界 |
-|---|---:|
-| Model context | 30,208 tokens |
-| 1要求の入力 | 8,192 tokens |
-| 1要求の出力 | 4,096 tokens |
-| 画像予約 | 2,048 tokens |
-| safety reserve | 1,024以上、4,096 tokens以下 |
-| 1chunkのBlock | 64件 |
-| 1chunkの `TextUnit` | 64件 |
-| 1chunkの `ReviewTarget` | 32件 |
-| 1回のPipeline開始における同一LLM Callの総試行回数 | 3回（初回を含む） |
-| 入力または出力超過時の分割深度 | 6 |
-| 1要求のtimeout | 1,800秒 |
-| 1Taskのdeadline | 21,600秒 |
+| 環境変数 | 既定値 | 対象 |
+|---|---:|---|
+| `LLM_CONTEXT_TOKENS` | 30,208 | endpointのModel context |
+| `LLM_IMAGE_TOKENS` | 2,048 | STRUCTUREの画像予約 |
+| `LLM_SAFETY_TOKENS` | 1,024 | 各Taskの安全余裕 |
+| `STRUCTURE_INPUT_TOKENS` | 6,144 | STRUCTURE入力 |
+| `STRUCTURE_OUTPUT_TOKENS` | 2,048 | STRUCTURE出力 |
+| `TRANSLATE_INPUT_TOKENS` | 8,192 | TRANSLATE入力 |
+| `TRANSLATE_OUTPUT_TOKENS` | 4,096 | TRANSLATE出力 |
+| `REVIEW_INPUT_TOKENS` | 8,192 | REVIEW入力 |
+| `REVIEW_OUTPUT_TOKENS` | 4,096 | REVIEW出力 |
 
-タスク別の既定値はハード上限以下とし、次の値を使用する。
+起動時には次の3条件をすべて検証しなければならない（MUST）。`LLM_IMAGE_TOKENS` は画像を送るSTRUCTUREだけに加算する。
 
-| Task | 入力上限 | 出力上限 |
-|---|---:|---:|
-| STRUCTURE | 6,144 tokens | 2,048 tokens |
-| TRANSLATE | 8,192 tokens | 4,096 tokens |
-| REVIEW | 8,192 tokens | 4,096 tokens |
+```text
+STRUCTURE_INPUT_TOKENS + STRUCTURE_OUTPUT_TOKENS + LLM_IMAGE_TOKENS + LLM_SAFETY_TOKENS <= LLM_CONTEXT_TOKENS
+TRANSLATE_INPUT_TOKENS + TRANSLATE_OUTPUT_TOKENS + LLM_SAFETY_TOKENS <= LLM_CONTEXT_TOKENS
+REVIEW_INPUT_TOKENS + REVIEW_OUTPUT_TOKENS + LLM_SAFETY_TOKENS <= LLM_CONTEXT_TOKENS
+```
 
-上限は次の環境変数で指定する。未指定時は既定値を使用する。環境変数は安全上限を引き上げるものではなく、安全上限以下へ調整するための設定とする。安全上限を超える値、正でない値、および矛盾するtoken budgetは起動時の設定エラーとし、黙って丸めない。
+例えば既定の `LLM_CONTEXT_TOKENS=30208` では、`REVIEW_INPUT_TOKENS=8192`、`REVIEW_OUTPUT_TOKENS=8192`、`LLM_SAFETY_TOKENS=1024` の合計17,408は許可する。同じ入力と安全余裕で出力を24,000にすると合計33,216となり拒否する。整数・最小値・予算条件の違反、および下表の安全上限超過は起動時の設定エラーとし、黙って丸めてはならない。
+
+対象件数、再試行、分割深度および時間には、ローカルLLMのメモリ消費と待ち時間を抑えるため次の安全上限を維持する。
 
 | 環境変数 | 既定値 | 安全上限 | 対象 |
 |---|---:|---:|---|
-| `LLM_CONTEXT_TOKENS` | 30,208 | 30,208 | Model context |
-| `LLM_IMAGE_TOKENS` | 2,048 | 2,048 | 画像予約 |
-| `LLM_SAFETY_TOKENS` | 1,024 | 4,096 | safety reserve |
-| `STRUCTURE_INPUT_TOKENS` | 6,144 | 8,192 | STRUCTURE入力 |
-| `STRUCTURE_OUTPUT_TOKENS` | 2,048 | 4,096 | STRUCTURE出力 |
 | `STRUCTURE_MAX_BLOCKS` | 64 | 64 | 1chunkのBlock数 |
-| `TRANSLATE_INPUT_TOKENS` | 8,192 | 8,192 | TRANSLATE入力 |
-| `TRANSLATE_OUTPUT_TOKENS` | 4,096 | 4,096 | TRANSLATE出力 |
 | `TRANSLATE_MAX_UNITS` | 64 | 64 | 1chunkの `TextUnit` 数 |
-| `REVIEW_INPUT_TOKENS` | 8,192 | 8,192 | REVIEW入力 |
-| `REVIEW_OUTPUT_TOKENS` | 4,096 | 4,096 | REVIEW出力 |
 | `REVIEW_MAX_TARGETS` | 32 | 32 | 1chunkの `ReviewTarget` 数 |
 | `LLM_RETRY_ATTEMPTS` | 3 | 3 | 1回のPipeline開始における同一LLM Callの総試行回数 |
 | `LLM_SPLIT_MAX_DEPTH` | 6 | 6 | 入力または出力超過時の分割深度 |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | 1,800 | 1,800 | 1要求のtimeout |
 | `LLM_TASK_DEADLINE_SECONDS` | 21,600 | 21,600 | 1Taskのdeadline |
 
-`LLM_SAFETY_TOKENS` は1,024以上とする。各Taskについて `入力上限 + 出力上限 + 画像予約 + safety reserve <= Model context` を満たさなければならない。画像を含まない要求では画像予約を計算から除外してよい。
-
-有効な上限は、環境変数、endpointが示す上限および本書の安全上限の最小値とする。入力上限にはルール、Schema、用語集、文書本文およびメッセージ形式をすべて含める。ローカルendpointのTokenizerを利用できない場合は、UTF-8 byte数をtoken数の保守的な上限として使用し、追加のTokenizer依存を導入しない。再試行回数は失敗理由ごとに加算せず、1回のPipeline開始における一つのLLM Callについて全理由を合算して最大3回とする。利用者が明示的にResumeした場合、未完了または失敗したCallには新しい試行枠を与えるが、`attempts` は累計値として保持する。
+入力上限にはルール、Schema、用語集、文書本文およびメッセージ形式をすべて含める。ローカルendpointのTokenizerを利用できない場合は、UTF-8 byte数をtoken数の保守的な上限として使用し、追加のTokenizer依存を導入しない。設定上の予算がendpointの実際の上限を引き上げることはない。endpointの上限超過は実行時に検出して対象を分割する。再試行回数は失敗理由ごとに加算せず、1回のPipeline開始における一つのLLM Callについて全理由を合算して最大3回とする。利用者が明示的にResumeした場合、未完了または失敗したCallには新しい試行枠を与えるが、`attempts` は累計値として保持する。
 
 ### 🧾 Structured output
 
