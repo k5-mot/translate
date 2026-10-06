@@ -227,9 +227,6 @@ class LLMClient:
             "repetition_penalty": 1.01,
             "stream": False,
             "max_tokens": output_tokens,
-            "reasoning_effort": "none",
-            "chat_template_kwargs": {"enable_thinking": False},
-            "thinking_budget_tokens": 0,
             "messages": [
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},

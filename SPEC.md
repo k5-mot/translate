@@ -646,7 +646,7 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。hidden reasoning制御を除く他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。
+`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
@@ -851,9 +851,7 @@ CHECK、FIXおよびpublisherの各TaskはLLMを使用してはならない。
 - 重複IDは該当項目だけを不正とする。
 - LLMへ文書全体の再出力を要求せず、変更または翻訳結果だけを返させる。
 - すべてのPydanticモデルは未知fieldを無視するが、定義済みfieldとTask固有の整合条件は検査する。
-- 3つのLLM Taskはhidden reasoningを使用せず、各要求で
-  `reasoning_effort="none"`、`chat_template_kwargs.enable_thinking=false`、
-  `thinking_budget_tokens=0`を指定する。
+- 3つのLLM Taskは推論制御parameterを指定せず、providerの既定動作を使用する。
 
 ### 📚 用語集
 

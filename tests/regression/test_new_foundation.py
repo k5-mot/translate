@@ -184,8 +184,8 @@ def test_document_json_uses_schema_version_one() -> None:
     assert TextUnit(id="unit", spans=[]).text() == ""
 
 
-def test_llm_payload_disables_hidden_reasoning() -> None:
-    """ローカルLLMのhidden reasoningを全structured要求で無効化する。"""
+def test_llm_payload_uses_provider_default_reasoning() -> None:
+    """推論制御を送らずproviderの既定動作に委ねる。"""
 
     client = LLMClient(Config(openai_base_url="http://llm"))
 
@@ -199,9 +199,9 @@ def test_llm_payload_disables_hidden_reasoning() -> None:
         image=None,
     )
 
-    assert payload["reasoning_effort"] == "none"
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert payload["thinking_budget_tokens"] == 0
+    assert "reasoning_effort" not in payload
+    assert "chat_template_kwargs" not in payload
+    assert "thinking_budget_tokens" not in payload
     assert payload["repetition_penalty"] == 1.01
 
 
