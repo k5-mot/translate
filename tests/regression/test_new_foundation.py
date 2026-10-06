@@ -76,9 +76,12 @@ def test_config_environment_overrides_dotenv(tmp_path: Path) -> None:
 
 
 def test_config_rejects_context_budget_overflow() -> None:
-    """安全なcontextを超えるTask別token予算を拒否する。"""
+    """Task別token予算の超過を設定名と合計付きで拒否する。"""
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(
+        ValidationError,
+        match=r"STRUCTURE token budget: .* = 11264 > LLM_CONTEXT_TOKENS=10000",
+    ):
         Config(
             llm_context_tokens=10000,
             structure_input_tokens=6144,
@@ -86,6 +89,34 @@ def test_config_rejects_context_budget_overflow() -> None:
             llm_image_tokens=2048,
             llm_safety_tokens=1024,
         )
+
+
+def test_config_allows_output_above_previous_individual_limit() -> None:
+    """各token設定が旧個別上限を超えてもcontext予算内なら許可する。"""
+
+    assert Config(review_output_tokens=8192).review_output_tokens == 8192
+    config = Config(
+        llm_context_tokens=65536,
+        llm_image_tokens=4096,
+        llm_safety_tokens=5000,
+        structure_input_tokens=10000,
+        structure_output_tokens=8192,
+        translate_input_tokens=10000,
+        translate_output_tokens=8192,
+        review_input_tokens=10000,
+        review_output_tokens=16384,
+    )
+    assert config.review_output_tokens == 16384
+
+
+def test_config_rejects_review_budget_over_context() -> None:
+    """REVIEWの予算超過を個別上限ではなく合計で拒否する。"""
+
+    with pytest.raises(
+        ValidationError,
+        match=r"REVIEW token budget: .* = 33216 > LLM_CONTEXT_TOKENS=30208",
+    ):
+        Config(review_output_tokens=24000)
 
 
 def test_partial_qdrant_settings_are_rejected() -> None:
@@ -153,8 +184,8 @@ def test_document_json_uses_schema_version_one() -> None:
     assert TextUnit(id="unit", spans=[]).text() == ""
 
 
-def test_llm_payload_disables_hidden_reasoning() -> None:
-    """ローカルLLMのhidden reasoningを全structured要求で無効化する。"""
+def test_llm_payload_uses_provider_default_reasoning() -> None:
+    """推論制御を送らずproviderの既定動作に委ねる。"""
 
     client = LLMClient(Config(openai_base_url="http://llm"))
 
@@ -168,9 +199,10 @@ def test_llm_payload_disables_hidden_reasoning() -> None:
         image=None,
     )
 
-    assert payload["reasoning_effort"] == "none"
-    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
-    assert payload["thinking_budget_tokens"] == 0
+    assert "reasoning_effort" not in payload
+    assert "chat_template_kwargs" not in payload
+    assert "thinking_budget_tokens" not in payload
+    assert payload["repetition_penalty"] == 1.01
 
 
 def test_llm_rejects_oversized_complete_prompt_before_http() -> None:

@@ -47,17 +47,17 @@ class Config(BaseModel):
     http_request_timeout_seconds: float = Field(default=300, gt=0, le=1800)
     external_task_deadline_seconds: float = Field(default=21600, gt=0, le=21600)
 
-    llm_context_tokens: int = Field(default=30208, gt=0, le=30208)
-    llm_image_tokens: int = Field(default=2048, gt=0, le=2048)
-    llm_safety_tokens: int = Field(default=1024, ge=1024, le=4096)
-    structure_input_tokens: int = Field(default=6144, gt=0, le=8192)
-    structure_output_tokens: int = Field(default=2048, gt=0, le=4096)
+    llm_context_tokens: int = Field(default=30208, gt=0)
+    llm_image_tokens: int = Field(default=2048, gt=0)
+    llm_safety_tokens: int = Field(default=1024, ge=1024)
+    structure_input_tokens: int = Field(default=6144, gt=0)
+    structure_output_tokens: int = Field(default=2048, gt=0)
     structure_max_blocks: int = Field(default=64, gt=0, le=64)
-    translate_input_tokens: int = Field(default=8192, gt=0, le=8192)
-    translate_output_tokens: int = Field(default=4096, gt=0, le=4096)
+    translate_input_tokens: int = Field(default=8192, gt=0)
+    translate_output_tokens: int = Field(default=4096, gt=0)
     translate_max_units: int = Field(default=64, gt=0, le=64)
-    review_input_tokens: int = Field(default=8192, gt=0, le=8192)
-    review_output_tokens: int = Field(default=4096, gt=0, le=4096)
+    review_input_tokens: int = Field(default=8192, gt=0)
+    review_output_tokens: int = Field(default=4096, gt=0)
     review_max_targets: int = Field(default=32, gt=0, le=32)
     llm_retry_attempts: int = Field(default=3, gt=0, le=3)
     llm_split_max_depth: int = Field(default=6, gt=0, le=6)
@@ -82,24 +82,33 @@ class Config(BaseModel):
             Self: Task別の入出力と予約tokenがcontext上限内であることを検査する。
 
         Raises:
-            ValueError: `LLM token budget exceeds model context`と判定した場合。
+            ValueError: Task別のtoken予算が`LLM_CONTEXT_TOKENS`を超えた場合。
         """
 
         budgets = (
             (
+                "STRUCTURE",
                 self.structure_input_tokens,
                 self.structure_output_tokens,
                 self.llm_image_tokens,
             ),
-            (self.translate_input_tokens, self.translate_output_tokens, 0),
-            (self.review_input_tokens, self.review_output_tokens, 0),
+            ("TRANSLATE", self.translate_input_tokens, self.translate_output_tokens, 0),
+            ("REVIEW", self.review_input_tokens, self.review_output_tokens, 0),
         )
-        if any(
-            input_tokens + output_tokens + image_tokens + self.llm_safety_tokens
-            > self.llm_context_tokens
-            for input_tokens, output_tokens, image_tokens in budgets
-        ):
-            raise ValueError("LLM token budget exceeds model context")
+        for task, input_tokens, output_tokens, image_tokens in budgets:
+            total = input_tokens + output_tokens + image_tokens + self.llm_safety_tokens
+            if total > self.llm_context_tokens:
+                components = (
+                    f"{task}_INPUT_TOKENS={input_tokens} + "
+                    f"{task}_OUTPUT_TOKENS={output_tokens}"
+                )
+                if image_tokens:
+                    components += f" + LLM_IMAGE_TOKENS={image_tokens}"
+                components += f" + LLM_SAFETY_TOKENS={self.llm_safety_tokens}"
+                raise ValueError(
+                    f"{task} token budget: {components} = {total} > "
+                    f"LLM_CONTEXT_TOKENS={self.llm_context_tokens}"
+                )
         return self
 
     def require_translate(self, backend: Literal["llm", "libretranslate"]) -> None:

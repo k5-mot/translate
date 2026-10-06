@@ -309,7 +309,8 @@ def _execute(
             "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_translation_model,
             "mode": config.llm_structured_output_mode,
-            "thinking": "disabled",
+            "thinking": "provider_default",
+            "repetition_penalty": 1.01,
             "input_tokens": config.translate_input_tokens,
             "output_tokens": config.translate_output_tokens,
         }
