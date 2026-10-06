@@ -432,6 +432,7 @@ def _execute(
             "model": config.openai_review_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "disabled",
+            "repetition_penalty": 1.01,
             "input_tokens": config.review_input_tokens,
             "output_tokens": config.review_output_tokens,
         }

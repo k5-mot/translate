@@ -646,7 +646,7 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、streamingなし、tool callなしとする。provider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。
+`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。hidden reasoning制御を除く他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 

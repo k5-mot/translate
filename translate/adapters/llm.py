@@ -223,6 +223,8 @@ class LLMClient:
         payload: dict[str, object] = {
             "model": model,
             "temperature": 0,
+            # Qwen3.8で観測した反復を抑え、訳語への影響を小さくする。
+            "repetition_penalty": 1.01,
             "stream": False,
             "max_tokens": output_tokens,
             "reasoning_effort": "none",

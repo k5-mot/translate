@@ -311,6 +311,7 @@ def _translate_locked(
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "disabled",
+            "repetition_penalty": 1.01,
             "call_index": 3,
         }
     )
@@ -347,6 +348,7 @@ def _translate_locked(
             if backend == "llm"
             else config.libretranslate_url,
             "thinking": "disabled" if backend == "llm" else None,
+            "repetition_penalty": 1.01 if backend == "llm" else None,
             "call_index": 2 if backend == "llm" else None,
         }
     )
@@ -409,6 +411,7 @@ def _translate_locked(
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
             "thinking": "disabled",
+            "repetition_penalty": 1.01,
             "call_index": 2,
         }
     )

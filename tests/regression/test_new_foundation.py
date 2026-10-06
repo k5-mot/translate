@@ -171,6 +171,7 @@ def test_llm_payload_disables_hidden_reasoning() -> None:
     assert payload["reasoning_effort"] == "none"
     assert payload["chat_template_kwargs"] == {"enable_thinking": False}
     assert payload["thinking_budget_tokens"] == 0
+    assert payload["repetition_penalty"] == 1.01
 
 
 def test_llm_rejects_oversized_complete_prompt_before_http() -> None:

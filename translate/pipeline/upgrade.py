@@ -207,6 +207,7 @@ def _upgrade_locked(
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "disabled",
+            "repetition_penalty": 1.01,
             "call_index": 3,
         }
     )
@@ -577,6 +578,7 @@ def _translate_changes(
             if record.backend == "llm"
             else config.libretranslate_url,
             "thinking": "disabled" if record.backend == "llm" else None,
+            "repetition_penalty": 1.01 if record.backend == "llm" else None,
             "call_index": 2 if record.backend == "llm" else None,
         }
     )
@@ -670,6 +672,7 @@ def _review_changes(
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
             "thinking": "disabled",
+            "repetition_penalty": 1.01,
             "call_index": 2,
         }
     )
