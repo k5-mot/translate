@@ -4,33 +4,77 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import random
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-import httpx
+from openai import (
+    APIConnectionError,
+    APIError,
+    APIResponseValidationError,
+    APIStatusError,
+    APITimeoutError,
+    Omit,
+    OpenAI,
+)
 from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from openai.types.chat import ChatCompletion
+
     from translate.common.config import Config
 
 MESSAGE_OVERHEAD_BYTES = 256
+logger = logging.getLogger(__name__)
 
 
 class LLMError(RuntimeError):
-    """LLM要求が有限再試行後も完了しなかったことを表す。"""
+    """LLM要求が完了せず、利用者向けの原因と対策を持つ。"""
 
 
 class LLMOutputExceededError(LLMError):
     """LLMが出力上限へ到達し、対象分割が必要であることを表す。"""
 
 
+class LLMOutputTokenExceededError(LLMOutputExceededError):
+    """生成が出力token上限で打ち切られたことを表す。"""
+
+
+class LLMResponseTooLargeError(LLMOutputExceededError):
+    """応答本文がbyte数の安全上限を超えたことを表す。"""
+
+
 class LLMInputExceededError(LLMError):
     """LLM入力が上限を超え、対象分割が必要であることを表す。"""
+
+
+class LLMTimeoutError(LLMError):
+    """LLM要求が時間切れになったことを表す。"""
+
+
+class LLMConnectionError(LLMError):
+    """LLM endpointに接続できなかったことを表す。"""
+
+
+class LLMRateLimitError(LLMError):
+    """LLM endpointがrate limitを返したことを表す。"""
+
+
+class LLMAuthenticationError(LLMError):
+    """LLM endpointが認証または権限不足を返したことを表す。"""
+
+
+class LLMProviderError(LLMError):
+    """LLM endpointがその他のHTTPエラーを返したことを表す。"""
+
+
+class LLMInvalidResponseError(LLMError):
+    """LLM応答がJSONまたは応答契約を満たさなかったことを表す。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,14 +103,18 @@ class LLMClient:
         if config.openai_base_url is None:
             raise ValueError("OpenAI-compatible base URL is required")
         self.config = config
-        self.url = f"{config.openai_base_url.rstrip('/')}/chat/completions"
-        self.headers = {"Content-Type": "application/json"}
-        if config.openai_api_key:
-            self.headers["Authorization"] = f"Bearer {config.openai_api_key}"
+        # SDKは認証値を要求するが、ローカルの無認証endpointへは送らない。
+        self.client = OpenAI(
+            api_key=config.openai_api_key or "local-no-auth",
+            base_url=config.openai_base_url,
+            timeout=config.llm_request_timeout_seconds,
+            max_retries=0,
+        )
 
     def structured[ResponseT: BaseModel](
         self,
         *,
+        task: str,
         model: str,
         response_type: type[ResponseT],
         system: str,
@@ -80,6 +128,7 @@ class LLMClient:
         """一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
 
         Args:
+            task (str): Token上限の設定名に用いるTask名。
             model (str): LLM APIへ指定するModel名。
             response_type (type[ResponseT]): 応答を検証するPydantic Model Type。
             system (str): LLMへ渡すSystem Prompt。
@@ -94,16 +143,20 @@ class LLMClient:
             StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
 
         Raises:
-            LLMInputExceededError: `LLM input exceeded the provider context limit`と判定した場合。
-            LLMError: `f'LLM structured request failed: {cause}'`と判定した場合。
+            LLMInputExceededError: 入力予算またはproviderのcontext上限を超えた場合。
+            LLMOutputExceededError: 出力token数または応答byte数を超えた場合。
+            LLMError: 通信、HTTP応答または応答内容の検証に失敗した場合。
         """
 
         _validate_contract(native_schema, contract, self.config)
         deadline = time.monotonic() + self.config.llm_task_deadline_seconds
         validation_retried = False
         feedback = ""
-        last_error: Exception | None = None
+        last_error: LLMError | None = None
+        last_cause: Exception | None = None
+        logger.info("LLM開始 task=%s model=%s", task, model)
         for attempt in range(1, self.config.llm_retry_attempts + 1):
+            logger.debug("LLM要求 task=%s attempt=%d", task, attempt)
             _validate_input_size(
                 system=system,
                 user=f"{user}{feedback}",
@@ -111,6 +164,7 @@ class LLMClient:
                 native_schema=native_schema,
                 mode=self.config.llm_structured_output_mode,
                 maximum_bytes=input_tokens,
+                task=task,
             )
             payload = self._payload(
                 model=model,
@@ -122,40 +176,44 @@ class LLMClient:
                 image=image,
             )
             try:
-                response = httpx.post(
-                    self.url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.config.llm_request_timeout_seconds,
-                )
-                try:
-                    response.raise_for_status()
-                except httpx.HTTPStatusError as error:
-                    if _is_input_overflow(error):
-                        raise LLMInputExceededError(
-                            "LLM input exceeded the provider context limit"
-                        ) from error
-                    raise
+                response = self.client.chat.completions.create(**cast("Any", payload))
                 content, finish_reason, used_input_tokens, used_output_tokens = (
                     _response(response)
                 )
-                _reject_length_finish(finish_reason)
+                _reject_length_finish(finish_reason, task, output_tokens)
                 parsed = _parse_content(
                     content,
                     self.config.llm_structured_output_mode,
                     self.config.llm_response_max_bytes,
                 )
                 validated = response_type.model_validate(parsed)
+                logger.info(
+                    "LLM完了 task=%s attempt=%d input_tokens=%s output_tokens=%s",
+                    task,
+                    attempt,
+                    used_input_tokens,
+                    used_output_tokens,
+                )
                 return StructuredResult(
                     response=validated,
                     attempts=attempt,
                     input_tokens=used_input_tokens,
                     output_tokens=used_output_tokens,
                 )
-            except (LLMInputExceededError, LLMOutputExceededError):
+            except (LLMInputExceededError, LLMOutputExceededError) as error:
+                logger.warning("LLM失敗 task=%s type=%s", task, type(error).__name__)
                 raise
-            except (ValueError, UnicodeError, ValidationError) as error:
-                last_error = error
+            except (
+                APIResponseValidationError,
+                ValueError,
+                UnicodeError,
+                ValidationError,
+            ) as error:
+                last_cause = error
+                last_error = LLMInvalidResponseError(
+                    "LLM応答がJSON形式または契約に適合しません。対策: "
+                    "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
+                )
                 if validation_retried or attempt >= self.config.llm_retry_attempts:
                     break
                 validation_retried = True
@@ -163,23 +221,61 @@ class LLMClient:
                     "\n\nThe previous response was invalid JSON or violated the contract. "
                     "Return one complete JSON object matching the contract exactly."
                 )
-            except (httpx.TransportError, httpx.HTTPStatusError) as error:
-                last_error = error
-                status = (
-                    error.response.status_code
-                    if isinstance(error, httpx.HTTPStatusError)
-                    else None
+            except APITimeoutError as error:
+                last_cause = error
+                last_error = LLMTimeoutError(
+                    f"LLM要求が{self.config.llm_request_timeout_seconds:g}秒で時間切れです。"
+                    "対策: LLM_REQUEST_TIMEOUT_SECONDSとendpointの負荷を確認してください。"
                 )
-                retryable = status is None or status in {408, 429} or status >= 500
-                if not retryable or attempt >= self.config.llm_retry_attempts:
+                if attempt >= self.config.llm_retry_attempts:
                     break
+            except APIConnectionError as error:
+                last_cause = error
+                last_error = LLMConnectionError(
+                    "LLM endpointへ接続できません。対策: OPENAI_BASE_URLと"
+                    "endpointの稼働・ネットワークを確認してください。"
+                )
+                if attempt >= self.config.llm_retry_attempts:
+                    break
+            except APIStatusError as error:
+                if _is_input_overflow(error):
+                    raise LLMInputExceededError(
+                        "providerのcontext上限を超えました。対策: "
+                        "LLM_CONTEXT_TOKENSと各Taskの入力・出力予算を"
+                        "endpointの実際の上限以内に設定してください。"
+                    ) from error
+                last_cause = error
+                last_error = _provider_error(error)
+                if error.status_code not in {408, 429} and error.status_code < 500:
+                    break
+                if attempt >= self.config.llm_retry_attempts:
+                    break
+            except APIError as error:
+                last_cause = error
+                last_error = LLMProviderError(
+                    "OpenAI Python clientがLLM応答を処理できません。対策: "
+                    "endpointの応答形式とサーバーログを確認してください。"
+                )
+                break
             if time.monotonic() >= deadline:
                 break
+            logger.warning(
+                "LLM再試行 task=%s attempt=%d type=%s",
+                task,
+                attempt,
+                type(last_error).__name__,
+            )
             delay = min(2 ** (attempt - 1), max(0.0, deadline - time.monotonic()))
             if delay > 0:
                 time.sleep(random.uniform(0, delay))  # noqa: S311
-        cause = type(last_error).__name__ if last_error is not None else "deadline"
-        raise LLMError(f"LLM structured request failed: {cause}") from last_error
+        if last_error is None:
+            logger.warning("LLM失敗 task=%s type=LLMTimeoutError", task)
+            raise LLMTimeoutError(
+                "LLM Callの期限に達しました。対策: "
+                "LLM_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
+            )
+        logger.warning("LLM失敗 task=%s type=%s", task, type(last_error).__name__)
+        raise last_error from last_cause
 
     def _payload(
         self,
@@ -192,7 +288,7 @@ class LLMClient:
         output_tokens: int,
         image: Path | None,
     ) -> dict[str, object]:
-        """選択されたstructured output方式のOpenAI互換requestを作る。
+        """選択されたstructured output方式のSDK要求引数を作る。
 
         Args:
             model (str): LLM APIへ指定するModel名。
@@ -204,7 +300,7 @@ class LLMClient:
             image (Path | None): Multimodal Callへ添付する画像File。
 
         Returns:
-            dict[str, object]: 選択されたstructured output方式のOpenAI互換requestを作る。
+            dict[str, object]: Chat Completions SDKへ渡す引数。
         """
 
         mode = self.config.llm_structured_output_mode
@@ -222,15 +318,58 @@ class LLMClient:
             ]
         payload: dict[str, object] = {
             "model": model,
-            "temperature": 0,
-            # Qwen3.8で観測した反復を抑え、訳語への影響を小さくする。
-            "repetition_penalty": 1.01,
             "stream": False,
             "max_tokens": output_tokens,
             "messages": [
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},
             ],
+            ### default
+            "temperature": 0.0,
+            "top_p": 0.80,
+            "extra_body": {
+                "top_k": 20,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+                "repetition_penalty": 1.01,
+                "enable_thinking": False,
+                "preserve_thinking": False,
+                "chat_template_kwargs": {
+                    "enable_thinking": False,
+                    "preserve_thinking": False,
+                },
+            },
+            ### thinking
+            # "reasoning_effort": "none",
+            # "temperature": 1.0,
+            # "top_p": 0.95,
+            # "extra_body": {
+            #     "top_k": 20,
+            #     "min_p": 0.0,
+            #     "presence_penalty": 0.0,
+            #     "repetition_penalty": 1.01,
+            #     "enable_thinking": True,
+            #     "preserve_thinking": True,
+            #     "chat_template_kwargs": {
+            #         "enable_thinking": True,
+            #         "preserve_thinking": True,
+            #     },
+            # },
+            ### instruct
+            # "temperature": 0.7,
+            # "top_p": 0.80,
+            # "extra_body": {
+            #     "top_k": 20,
+            #     "min_p": 0.0,
+            #     "presence_penalty": 1.5,
+            #     "repetition_penalty": 1.00,
+            #     "enable_thinking": False,
+            #     "preserve_thinking": False,
+            #     "chat_template_kwargs": {
+            #         "enable_thinking": False,
+            #         "preserve_thinking": False,
+            #     },
+            # },
         }
         if mode == "json_object":
             payload["response_format"] = {"type": "json_object"}
@@ -243,21 +382,37 @@ class LLMClient:
                     "schema": native_schema,
                 },
             }
+        if not self.config.openai_api_key:
+            payload["extra_headers"] = {"Authorization": Omit()}
         return payload
 
 
-def _reject_length_finish(finish_reason: str | None) -> None:
+def _reject_length_finish(
+    finish_reason: str | None, task: str, output_tokens: int
+) -> None:
     """出力上限による終了を対象分割用の専用例外へ変換する。
 
     Args:
         finish_reason (str | None): Providerが返した生成終了理由。
+        task (str): Token上限の設定名に用いるTask名。
+        output_tokens (int): 要求へ指定した最大出力Token数。
 
     Raises:
-        LLMOutputExceededError: `LLM output reached its token limit`と判定した場合。
+        LLMOutputTokenExceededError: 生成が出力Token上限へ到達した場合。
+        LLMInvalidResponseError: content filterで生成が停止した場合。
     """
 
     if finish_reason == "length":
-        raise LLMOutputExceededError("LLM output reached its token limit")
+        setting = f"{task}_OUTPUT_TOKENS"
+        raise LLMOutputTokenExceededError(
+            f"出力トークン上限に到達しました ({setting}={output_tokens})。対策: "
+            f"{setting}を増やし、LLM_CONTEXT_TOKENS内に収めてください。"
+        )
+    if finish_reason == "content_filter":
+        raise LLMInvalidResponseError(
+            "LLM応答がcontent filterで停止しました。対策: "
+            "入力内容とendpointのfilter設定を確認してください。"
+        )
 
 
 def _validate_input_size(
@@ -268,6 +423,7 @@ def _validate_input_size(
     native_schema: dict[str, object],
     mode: str,
     maximum_bytes: int | None,
+    task: str,
 ) -> None:
     """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。
 
@@ -278,6 +434,7 @@ def _validate_input_size(
         native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
         mode (str): 応答解析または上限判定Mode。
         maximum_bytes (int | None): Payloadへ含められるUTF-8 Byte数の上限。
+        task (str): Token上限の設定名に用いるTask名。
 
     Raises:
         LLMInputExceededError: `f'LLM input exceeds task limit: {size} >
@@ -297,23 +454,24 @@ def _validate_input_size(
     )
     if size > maximum_bytes:
         raise LLMInputExceededError(
-            f"LLM input exceeds task limit: {size} > {maximum_bytes}"
+            f"LLM input exceeds task limit: {size} > {maximum_bytes}。対策: "
+            f"{task}_INPUT_TOKENSを増やし、LLM_CONTEXT_TOKENS内に収めてください。"
         )
 
 
-def _is_input_overflow(error: httpx.HTTPStatusError) -> bool:
+def _is_input_overflow(error: APIStatusError) -> bool:
     """OpenAI互換endpointの入力・context超過応答を識別する。
 
     Args:
-        error (httpx.HTTPStatusError): 記録または分類する例外。
+        error (APIStatusError): 記録または分類する例外。
 
     Returns:
         bool: OpenAI互換endpointの入力・context超過応答を識別する。
     """
 
-    if error.response.status_code == 413:
+    if error.status_code == 413:
         return True
-    if error.response.status_code != 400:
+    if error.status_code != 400:
         return False
     message = error.response.text.casefold()
     return any(
@@ -332,13 +490,50 @@ def _is_input_overflow(error: httpx.HTTPStatusError) -> bool:
     )
 
 
+def _provider_error(error: APIStatusError) -> LLMError:
+    """HTTP statusを秘密情報を含まない原因と対策へ変換する。
+
+    Args:
+        error (APIStatusError): SDKが返したHTTPエラー。
+
+    Returns:
+        LLMError: status別の利用者向けエラー。
+    """
+
+    status = error.status_code
+    if status == 408:
+        return LLMTimeoutError(
+            "LLM endpointがHTTP 408で時間切れを返しました。対策: "
+            "LLM_REQUEST_TIMEOUT_SECONDSとendpointの負荷を確認してください。"
+        )
+    if status in {401, 403}:
+        return LLMAuthenticationError(
+            f"LLM認証・権限エラー (HTTP {status})。対策: "
+            "OPENAI_API_KEYとendpointの権限を確認してください。"
+        )
+    if status == 429:
+        return LLMRateLimitError(
+            "LLM endpointのrate limitに達しました (HTTP 429)。対策: "
+            "同時実行数を減らすか、endpointの制限を確認してください。"
+        )
+    if status >= 500:
+        return LLMProviderError(
+            f"LLM endpointがHTTP {status}を返しました。対策: "
+            "endpointの稼働状態とサーバーログを確認してください。"
+        )
+    return LLMProviderError(
+        f"LLM要求がHTTP {status}で拒否されました。対策: "
+        "model名、structured output方式とendpointの対応を確認してください。"
+    )
+
+
 def _response(
-    response: httpx.Response,
+    response: ChatCompletion,
 ) -> tuple[str, str | None, int | None, int | None]:
     """OpenAI互換応答から本文、終了理由およびtoken使用量を検査して得る。
 
     Args:
-        response (httpx.Response): 保存する検証済みLLM応答Model。
+        response (ChatCompletion): SDKが返したLLM応答。
 
     Returns:
         tuple[str, str | None, int | None, int | None]: 応答本文、終了理由、入力Token数および出力Token数のTuple。
@@ -348,25 +543,18 @@ def _response(
             response content must be text`のいずれかと判定した場合。
     """
 
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise ValueError("LLM response must be an object")
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+    if not response.choices:
         raise ValueError("LLM response has no choice")
-    message = choices[0].get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str):
+    choice = response.choices[0]
+    content = choice.message.content
+    if not isinstance(content, str) and choice.finish_reason != "length":
         raise ValueError("LLM response content must be text")
-    usage = payload.get("usage")
-    usage = usage if isinstance(usage, dict) else {}
+    usage = response.usage
     return (
-        content,
-        str(choices[0].get("finish_reason"))
-        if choices[0].get("finish_reason")
-        else None,
-        _token_count(usage.get("prompt_tokens")),
-        _token_count(usage.get("completion_tokens")),
+        content if isinstance(content, str) else "",
+        choice.finish_reason,
+        _token_count(usage.prompt_tokens if usage else None),
+        _token_count(usage.completion_tokens if usage else None),
     )
 
 
@@ -399,11 +587,14 @@ def _parse_content(content: str, mode: str, maximum_bytes: int) -> object:
         object: 応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。
 
     Raises:
-        LLMOutputExceededError: `LLM response exceeds byte limit`と判定した場合。
+        LLMResponseTooLargeError: 応答本文がbyte数の安全上限を超えた場合。
     """
 
     if len(content.encode("utf-8")) > maximum_bytes:
-        raise LLMOutputExceededError("LLM response exceeds byte limit")
+        raise LLMResponseTooLargeError(
+            f"LLM応答が{maximum_bytes} byteの安全上限を超えました。対策: "
+            "LLM_RESPONSE_MAX_BYTESを上限内で増やすか、対象件数を減らしてください。"
+        )
     value = content.strip()
     if mode == "prompt" and value.startswith("```json") and value.endswith("```"):
         value = value[7:-3].strip()

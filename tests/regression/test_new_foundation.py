@@ -3,21 +3,37 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import httpx
+import httpx2
 import pytest
+from openai import APIStatusError, BadRequestError, OpenAI
 from pydantic import ValidationError
 from qdrant_client.http import models as qdrant_models
 
 from translate.adapters import qdrant
-from translate.adapters.llm import LLMClient, LLMInputExceededError
+from translate.adapters.embedding import embed
+from translate.adapters.libretranslate import translate_texts
+from translate.adapters.llm import (
+    LLMAuthenticationError,
+    LLMClient,
+    LLMInputExceededError,
+    LLMOutputTokenExceededError,
+    LLMProviderError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    _provider_error,
+)
 from translate.artifact_store import canonical_hash, load_model, write_model
 from translate.common.config import Config, ConfigError, load_config
+from translate.common.logger import configure_adapter_logging
 from translate.models.artifacts import ArtifactFile, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, Page, TextSpan, TextUnit
+from translate.tasks.translation.translate import TranslationResponse
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,6 +89,79 @@ def test_config_environment_overrides_dotenv(tmp_path: Path) -> None:
     config = load_config(tmp_path, {"PDF_SPLIT_PAGES": "7"})
 
     assert config.pdf_split_pages == 7
+
+
+def test_adapter_log_level_comes_from_dotenv(tmp_path: Path) -> None:
+    """Adapterのログlevelを.envで変更できることを確認する。"""
+
+    (tmp_path / ".env").write_text("LOG_LEVEL=DEBUG\n", encoding="utf-8")
+    assert load_config(tmp_path, {}).log_level == "DEBUG"
+
+
+def test_adapter_logging_writes_debug_to_stderr_without_changing_root(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Adapter専用LoggerだけにDEBUGを設定し、標準エラーへ出力する。"""
+
+    adapter_logger = logging.getLogger("translate.adapters")
+    old_handlers = adapter_logger.handlers[:]
+    old_level = adapter_logger.level
+    old_propagate = adapter_logger.propagate
+    root_level = logging.getLogger().level
+    try:
+        adapter_logger.handlers.clear()
+        configure_adapter_logging("DEBUG")
+        logging.getLogger("translate.adapters.docling").debug("adapter-diagnostic")
+        assert "adapter-diagnostic" in capsys.readouterr().err
+        assert logging.getLogger().level == root_level
+    finally:
+        adapter_logger.handlers = old_handlers
+        adapter_logger.setLevel(old_level)
+        adapter_logger.propagate = old_propagate
+
+
+def test_libretranslate_logs_counts_without_request_content(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """翻訳Adapterのログが件数を示し、本文と認証情報を含まない。"""
+
+    def respond(*_args: object, **_kwargs: object) -> httpx.Response:
+        """実HTTP接続を使わず成功応答を返す。"""
+
+        return httpx.Response(
+            200,
+            json={"translatedText": ["secret-output"]},
+            request=httpx.Request("POST", "http://localhost/translate"),
+        )
+
+    monkeypatch.setattr(httpx, "post", respond)
+    monkeypatch.setattr(logging.getLogger("translate.adapters"), "propagate", True)
+    with caplog.at_level(logging.DEBUG, logger="translate.adapters.libretranslate"):
+        assert translate_texts(
+            ["secret-input"],
+            Config(
+                libretranslate_url="http://localhost",
+                libretranslate_api_key="secret-key",
+            ),
+        ) == ["secret-output"]
+
+    output = caplog.text
+    assert "LibreTranslate開始 items=1" in output
+    assert "LibreTranslate完了 items=1" in output
+    assert "secret-" not in output
+
+
+def test_settings_use_process_environment_without_changing_direct_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """実環境変数を優先し、空値は無視して直接生成の既定値を維持する。"""
+
+    (tmp_path / ".env").write_text("PDF_SPLIT_PAGES=5\n", encoding="utf-8")
+    monkeypatch.setenv("PDF_SPLIT_PAGES", "7")
+    assert load_config(tmp_path).pdf_split_pages == 7
+    assert Config().pdf_split_pages == 10
+    monkeypatch.setenv("PDF_SPLIT_PAGES", "")
+    assert load_config(tmp_path).pdf_split_pages == 5
 
 
 def test_config_rejects_context_budget_overflow() -> None:
@@ -202,7 +291,7 @@ def test_llm_payload_uses_provider_default_reasoning() -> None:
     assert "reasoning_effort" not in payload
     assert "chat_template_kwargs" not in payload
     assert "thinking_budget_tokens" not in payload
-    assert payload["repetition_penalty"] == 1.01
+    assert payload["extra_body"] == {"repetition_penalty": 1.01}
 
 
 def test_llm_rejects_oversized_complete_prompt_before_http() -> None:
@@ -212,6 +301,7 @@ def test_llm_rejects_oversized_complete_prompt_before_http() -> None:
 
     with pytest.raises(LLMInputExceededError, match="task limit"):
         client.structured(
+            task="TRANSLATE",
             model="model",
             response_type=LLMTaskDiagnostics,
             system="s" * 100,
@@ -228,16 +318,25 @@ def test_llm_classifies_provider_context_error_for_task_splitting(
 ) -> None:
     """endpointのcontext超過HTTP 400を通常のLLM失敗と区別する。"""
 
-    response = httpx.Response(
+    response = httpx2.Response(
         400,
         json={"error": {"message": "maximum context length exceeded"}},
-        request=httpx.Request("POST", "http://llm/chat/completions"),
+        request=httpx2.Request("POST", "http://llm/chat/completions"),
     )
-    monkeypatch.setattr(httpx, "post", MagicMock(return_value=response))
     client = LLMClient(Config(openai_base_url="http://llm"))
+    monkeypatch.setattr(
+        client.client.chat.completions,
+        "create",
+        MagicMock(
+            side_effect=BadRequestError(
+                "maximum context length exceeded", response=response, body=None
+            )
+        ),
+    )
 
-    with pytest.raises(LLMInputExceededError, match="provider context"):
+    with pytest.raises(LLMInputExceededError, match="providerのcontext"):
         client.structured(
+            task="TRANSLATE",
             model="model",
             response_type=LLMTaskDiagnostics,
             system="system",
@@ -247,6 +346,196 @@ def test_llm_classifies_provider_context_error_for_task_splitting(
             input_tokens=8192,
             output_tokens=128,
         )
+
+
+@pytest.mark.parametrize(
+    ("api_key", "expected_auth"),
+    [(None, None), ("test-key", "Bearer test-key")],
+)
+def test_llm_sdk_sends_compatible_payload_and_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str | None,
+    expected_auth: str | None,
+) -> None:
+    """SDK経由の互換要求で認証headerを設定どおり送る。"""
+
+    seen: dict[str, object] = {}
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        """送信headerと本文を記録し、正常なChatCompletionを返す。"""
+
+        seen["authorization"] = request.headers.get("Authorization")
+        seen["payload"] = json.loads(request.content)
+        return httpx2.Response(
+            200,
+            json={
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": '{"translations":[]}',
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 9,
+                    "completion_tokens": 4,
+                    "total_tokens": 13,
+                },
+            },
+            request=request,
+        )
+
+    def make_client(**kwargs: object) -> OpenAI:
+        """LLMClientのSDK設定をそのまま使い、HTTPだけ置き換える。"""
+
+        seen["max_retries"] = kwargs["max_retries"]
+        return OpenAI(
+            **kwargs, http_client=httpx2.Client(transport=httpx2.MockTransport(handle))
+        )
+
+    monkeypatch.setattr("translate.adapters.llm.OpenAI", make_client)
+    client = LLMClient(Config(openai_base_url="http://llm", openai_api_key=api_key))
+    result = client.structured(
+        task="TRANSLATE",
+        model="model",
+        response_type=TranslationResponse,
+        system="system",
+        user="user",
+        contract="contract",
+        native_schema=TranslationResponse.model_json_schema(),
+        output_tokens=128,
+    )
+
+    assert result.output_tokens == 4
+    assert seen["max_retries"] == 0
+    assert seen["authorization"] == expected_auth
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert payload["repetition_penalty"] == 1.01
+    assert payload["max_tokens"] == 128
+
+
+def test_llm_reports_output_token_limit_with_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本文が空でもlength終了を出力予算エラーとして説明する。"""
+
+    client = LLMClient(Config(openai_base_url="http://llm"))
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="length")]
+    completion.choices[0].message.content = None
+    completion.usage = None
+    monkeypatch.setattr(
+        client.client.chat.completions, "create", MagicMock(return_value=completion)
+    )
+
+    with pytest.raises(
+        LLMOutputTokenExceededError, match=r"TRANSLATE_OUTPUT_TOKENS=128.*対策:"
+    ):
+        client.structured(
+            task="TRANSLATE",
+            model="model",
+            response_type=LLMTaskDiagnostics,
+            system="system",
+            user="user",
+            contract="contract",
+            native_schema=LLMTaskDiagnostics.model_json_schema(),
+            output_tokens=128,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_type"),
+    [
+        (400, LLMProviderError),
+        (401, LLMAuthenticationError),
+        (408, LLMTimeoutError),
+        (429, LLMRateLimitError),
+        (503, LLMProviderError),
+    ],
+)
+def test_llm_http_error_has_safe_remedy(
+    status: int, expected_type: type[Exception]
+) -> None:
+    """HTTP失敗を分類し、provider本文を出さずに対策を示す。"""
+
+    response = httpx2.Response(
+        status,
+        json={"error": {"message": "secret prompt text"}},
+        request=httpx2.Request("POST", "http://llm/chat/completions"),
+    )
+    error = APIStatusError("secret prompt text", response=response, body=None)
+
+    classified = _provider_error(error)
+
+    assert isinstance(classified, expected_type)
+    assert "対策:" in str(classified)
+    assert "secret prompt text" not in str(classified)
+
+
+@pytest.mark.parametrize(
+    ("api_key", "expected_auth"),
+    [(None, None), ("test-key", "Bearer test-key")],
+)
+def test_embedding_sdk_preserves_order_and_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str | None,
+    expected_auth: str | None,
+) -> None:
+    """SDKのEmbedding要求で認証を保ち、返却順をindex順へ戻す。"""
+
+    seen: dict[str, object] = {}
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        """Embedding要求を記録して逆順の2件を返す。"""
+
+        seen["authorization"] = request.headers.get("Authorization")
+        seen["payload"] = json.loads(request.content)
+        return httpx2.Response(
+            200,
+            json={
+                "object": "list",
+                "model": "embedding-model",
+                "data": [
+                    {"object": "embedding", "index": 1, "embedding": [2.0]},
+                    {"object": "embedding", "index": 0, "embedding": [1.0]},
+                ],
+                "usage": {"prompt_tokens": 2, "total_tokens": 2},
+            },
+            request=request,
+        )
+
+    def make_client(**kwargs: object) -> OpenAI:
+        """Embedding用SDKのHTTPだけtest transportへ置き換える。"""
+
+        seen["max_retries"] = kwargs["max_retries"]
+        return OpenAI(
+            **kwargs, http_client=httpx2.Client(transport=httpx2.MockTransport(handle))
+        )
+
+    monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
+    vectors = embed(
+        ["one", "two"],
+        Config(
+            openai_base_url="http://llm",
+            openai_api_key=api_key,
+            openai_embedding_model="embedding-model",
+        ),
+    )
+
+    assert vectors == [[1.0], [2.0]]
+    assert seen["max_retries"] == 0
+    assert seen["authorization"] == expected_auth
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert payload["encoding_format"] == "float"
 
 
 def test_llm_call_index_rejects_duplicate_ids() -> None:

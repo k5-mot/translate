@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from typing import TYPE_CHECKING
@@ -10,6 +11,8 @@ import httpx
 
 if TYPE_CHECKING:
     from translate.common.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 def translate_texts(values: list[str], config: Config) -> list[str]:
@@ -41,7 +44,9 @@ def translate_texts(values: list[str], config: Config) -> list[str]:
         payload["api_key"] = config.libretranslate_api_key
     deadline = time.monotonic() + config.external_task_deadline_seconds
     response: httpx.Response | None = None
+    logger.info("LibreTranslate開始 items=%d", len(values))
     for attempt in range(1, config.http_retry_attempts + 1):
+        logger.debug("LibreTranslate要求 attempt=%d", attempt)
         try:
             response = httpx.post(
                 f"{config.libretranslate_url.rstrip('/')}/translate",
@@ -58,8 +63,12 @@ def translate_texts(values: list[str], config: Config) -> list[str]:
             )
             retryable = status is None or status in {408, 429} or status >= 500
             if not retryable or attempt >= config.http_retry_attempts:
+                logger.warning(
+                    "LibreTranslate失敗 attempt=%d status=%s", attempt, status
+                )
                 raise
             delay = min(2 ** (attempt - 1), max(0.0, deadline - time.monotonic()))
+            logger.warning("LibreTranslate再試行 attempt=%d status=%s", attempt, status)
             if delay <= 0:
                 raise TimeoutError("LibreTranslate task deadline exceeded") from error
             time.sleep(random.uniform(0, delay))  # noqa: S311
@@ -75,4 +84,5 @@ def translate_texts(values: list[str], config: Config) -> list[str]:
         raise ValueError("LibreTranslate response is invalid")
     if len(translated) != len(values):
         raise ValueError("LibreTranslate response count does not match input")
+    logger.info("LibreTranslate完了 items=%d", len(translated))
     return translated

@@ -335,6 +335,7 @@ def _execute(
     )
     try:
         result = client.structured(
+            task="TRANSLATE",
             model=config.openai_translation_model or "",
             response_type=TranslationResponse,
             system=(

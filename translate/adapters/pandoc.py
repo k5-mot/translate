@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -23,6 +24,7 @@ _STYLE_ROLES = {
     "SourceCode": (("SourceCode",), ("コードブロック", "Source Code")),
     "Equation": (("EquationBlock",), ("数式ブロック", "Equation Block")),
 }
+logger = logging.getLogger(__name__)
 
 
 class PandocError(RuntimeError):
@@ -43,8 +45,10 @@ def check_pandoc(timeout: float) -> str:
             required features: {', '.join(missing)}"`のいずれかと判定した場合。
     """
 
+    logger.debug("Pandoc機能確認開始")
     executable = shutil.which("pandoc")
     if executable is None:
+        logger.warning("Pandoc機能確認失敗 type=MissingExecutable")
         raise PandocError("pandoc is required")
     try:
         help_text = subprocess.run(
@@ -62,6 +66,7 @@ def check_pandoc(timeout: float) -> str:
             timeout=timeout,
         ).stdout
     except (OSError, subprocess.SubprocessError) as error:
+        logger.warning("Pandoc機能確認失敗 type=%s", type(error).__name__)
         raise PandocError("pandoc feature check failed") from error
     missing = [
         option
@@ -71,7 +76,9 @@ def check_pandoc(timeout: float) -> str:
     if "native_numbering" not in extensions:
         missing.append("docx+native_numbering")
     if missing:
+        logger.warning("Pandoc機能確認失敗 missing=%s", ",".join(missing))
         raise PandocError(f"pandoc lacks required features: {', '.join(missing)}")
+    logger.debug("Pandoc機能確認完了")
     return executable
 
 
@@ -92,6 +99,7 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
             failed`のいずれかと判定した場合。
     """
 
+    logger.info("Pandoc公開開始")
     executable = check_pandoc(timeout)
     if not markdown.is_file() or not template.is_file():
         raise PandocError("markdown and reference DOCX must exist")
@@ -140,9 +148,11 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
         subprocess.SubprocessError,
         zipfile.BadZipFile,
     ) as error:
+        logger.warning("Pandoc公開失敗 type=%s", type(error).__name__)
         raise PandocError("pandoc DOCX publication failed") from error
     finally:
         temporary.unlink(missing_ok=True)
+    logger.info("Pandoc公開完了")
     return output
 
 
@@ -160,6 +170,7 @@ def table_to_markdown(table: dict[str, object], timeout: float) -> str:
         PandocError: `pandoc table conversion failed`と判定した場合。
     """
 
+    logger.debug("Pandoc表変換開始")
     executable = check_pandoc(timeout)
     try:
         envelope = json.loads(
@@ -173,7 +184,7 @@ def table_to_markdown(table: dict[str, object], timeout: float) -> str:
             ).stdout
         )
         envelope["blocks"] = [table]
-        return subprocess.run(
+        result = subprocess.run(
             [
                 executable,
                 "--from",
@@ -190,7 +201,10 @@ def table_to_markdown(table: dict[str, object], timeout: float) -> str:
             timeout=timeout,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError, ValueError) as error:
+        logger.warning("Pandoc表変換失敗 type=%s", type(error).__name__)
         raise PandocError("pandoc table conversion failed") from error
+    logger.debug("Pandoc表変換完了")
+    return result
 
 
 def _validate_docx(path: Path) -> None:

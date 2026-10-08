@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
+import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from translate.common.config import Config
+
+logger = logging.getLogger(__name__)
 
 
 class QdrantUnavailableError(RuntimeError):
@@ -39,7 +41,11 @@ def upsert_revision(
 
     client, models = _client(config)
     collection = config.qdrant_collection or ""
+    logger.info("Qdrant登録開始 collection=%s points=%d", collection, len(points))
     if not client.collection_exists(collection):
+        logger.debug(
+            "Qdrant collection作成 collection=%s dimensions=%d", collection, vector_size
+        )
         client.create_collection(
             collection_name=collection,
             vectors_config=models.VectorParams(
@@ -56,7 +62,9 @@ def upsert_revision(
         with_vectors=False,
     )
     if {str(item.id) for item in existing} >= set(ids):
+        logger.info("Qdrant登録省略 collection=%s points=%d", collection, len(points))
         return False
+    logger.debug("Qdrant upload開始 points=%d", len(points))
     client.upload_points(
         collection_name=collection,
         points=[
@@ -75,7 +83,9 @@ def upsert_revision(
         with_vectors=False,
     )
     if {str(item.id) for item in verified} < set(ids):
+        logger.warning("Qdrant登録失敗 type=VerificationError points=%d", len(points))
         raise RuntimeError("Qdrant registration verification failed")
+    logger.debug("Qdrant旧revision削除開始")
     client.delete(
         collection_name=collection,
         points_selector=models.Filter(
@@ -92,6 +102,7 @@ def upsert_revision(
         ),
         wait=True,
     )
+    logger.info("Qdrant登録完了 collection=%s points=%d", collection, len(points))
     return True
 
 
@@ -109,6 +120,7 @@ def search(config: Config, vector: list[float], limit: int = 5) -> list[dict[str
 
     client, _models = _client(config)
     collection = config.qdrant_collection or ""
+    logger.debug("Qdrant検索開始 collection=%s limit=%d", collection, limit)
     response = client.query_points(
         collection_name=collection,
         query=vector,
@@ -119,6 +131,7 @@ def search(config: Config, vector: list[float], limit: int = 5) -> list[dict[str
         {"id": str(point.id), "score": float(point.score), **(point.payload or {})}
         for point in response.points
     ]
+    logger.info("Qdrant検索完了 collection=%s results=%d", collection, len(values))
     return sorted(values, key=lambda item: (-float(item["score"]), str(item["id"])))
 
 
@@ -137,8 +150,7 @@ def _client(config: Config) -> tuple[Any, Any]:
     """
 
     try:
-        module = importlib.import_module("qdrant_client")
-        models = importlib.import_module("qdrant_client.http.models")
+        from qdrant_client import QdrantClient, models  # noqa: PLC0415 - optional dependency
     except ImportError as error:
         raise QdrantUnavailableError(
             "qdrant-client is required for this operation"
@@ -146,7 +158,7 @@ def _client(config: Config) -> tuple[Any, Any]:
     if config.qdrant_uri is None or config.qdrant_collection is None:
         raise ValueError("Qdrant settings are required")
     return (
-        module.QdrantClient(
+        QdrantClient(
             url=config.qdrant_uri,
             api_key=config.qdrant_api_key,
             timeout=int(config.http_request_timeout_seconds),

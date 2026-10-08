@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from typing import TextIO
 
 _COLORS = {
@@ -13,6 +14,26 @@ _COLORS = {
     logging.CRITICAL: "\x1b[1;31m",
 }
 _RESET = "\x1b[0m"
+
+
+def configure_adapter_logging(level: str) -> None:
+    """Adapterのログだけを指定levelで標準エラー出力へ送る。
+
+    Args:
+        level (str): 標準loggingのlevel名。
+    """
+
+    logger = logging.getLogger("translate.adapters")
+    logger.setLevel(level)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            ColoredLevelFormatter(
+                sys.stderr, "%(asctime)s %(levelname)s %(name)s: %(message)s"
+            )
+        )
+        logger.addHandler(handler)
+    logger.propagate = False
 
 
 class ColoredLevelFormatter(logging.Formatter):

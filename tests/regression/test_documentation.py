@@ -21,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
 CONTROL_COMMENTS = ("noqa", "type: ignore", "ty: ignore", "pragma:", "ruff:")
 ENV_NAMES = {
+    "LOG_LEVEL",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
     "OPENAI_STRUCTURE_MODEL",

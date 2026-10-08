@@ -455,6 +455,7 @@ def _execute(
     )
     try:
         result = client.structured(
+            task="REVIEW",
             model=config.openai_review_model or "",
             response_type=ReviewResponse,
             system=(

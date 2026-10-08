@@ -8,9 +8,11 @@ import pytest
 from typer.testing import CliRunner
 from uuid_utils import uuid7
 
+from translate.adapters.llm import LLMOutputExceededError, LLMOutputTokenExceededError
 from translate.artifact_store import (
     begin_llm_call,
     complete_llm_call,
+    fail_llm_call,
     load_reusable_llm_response,
 )
 from translate.cli import app
@@ -48,6 +50,28 @@ def test_cli_invalid_backend_returns_input_error(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "backend must be" in result.stderr
+
+
+def test_cli_shows_llm_output_limit_and_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """出力上限で失敗したとき原因と対策をCLIへ表示する。"""
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"test")
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        """LLM出力上限エラーをPipeline境界から再現する。"""
+
+        message = "出力トークン上限に到達。対策: 出力予算を増やす。"
+        raise LLMOutputExceededError(message)
+
+    monkeypatch.setattr("translate.cli.translate_pdf", fail)
+    result = CliRunner().invoke(app, ["translate", str(source)])
+
+    assert result.exit_code == 1
+    assert "LLMOutputExceededError" in result.stderr
+    assert "対策: 出力予算を増やす" in result.stderr
 
 
 def test_llm_call_response_is_reused_only_with_matching_fingerprint(
@@ -90,6 +114,27 @@ def test_llm_call_response_is_reused_only_with_matching_fingerprint(
     assert reused is not None
     assert reused[1] == response
     assert rejected is None
+
+
+def test_llm_call_artifact_keeps_safe_remedy(tmp_path: Path) -> None:
+    """失敗ArtifactへLLM例外の分類と対策を保存する。"""
+
+    artifact = begin_llm_call(
+        tmp_path,
+        call_id="call-1",
+        task="TRANSLATE",
+        fingerprint="fingerprint",
+        target_ids=["span-1"],
+    )
+    error = LLMOutputTokenExceededError(
+        "出力トークン上限です。対策: TRANSLATE_OUTPUT_TOKENSを増やしてください。"
+    )
+
+    failed = fail_llm_call(tmp_path, artifact, error, attempts=1)
+
+    assert failed.error is not None
+    assert failed.error.cause_type == "LLMOutputTokenExceededError"
+    assert "対策: TRANSLATE_OUTPUT_TOKENS" in failed.error.message
 
 
 def test_registration_chunk_limit_and_overlap() -> None:
