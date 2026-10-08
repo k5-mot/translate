@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from translate import ui
 from translate.artifact_store import sha256_file, write_model
 from translate.models.artifacts import (
@@ -17,6 +19,7 @@ from translate.models.artifacts import (
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.models.review import Finding, ReviewTarget, Revision, TextEdit
 from translate.models.upgrade import UpgradePlan, VersionChange
+from translate.tasks.preprocess.structure import StructurePatch, StructureResponse
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 from translate.ui import (
     _diff_text,
@@ -24,6 +27,7 @@ from translate.ui import (
     _preview_image_path,
     _review_context,
     _review_rows,
+    _structure_comparison,
     _translation_comparison,
     _upgrade_context,
 )
@@ -290,6 +294,81 @@ def test_translation_comparison_uses_one_verified_call(tmp_path: Path) -> None:
     values = _translation_comparison(tmp_path)
 
     assert values == ("[span-unit-1]\nEnglish", "[span-unit-1]\n日本語")
+
+
+@pytest.mark.parametrize(
+    "document_path",
+    ["preprocess/load/document.json", "preprocess/source-v2/load/document.json"],
+)
+def test_structure_comparison_shows_active_block_text(
+    tmp_path: Path, document_path: str
+) -> None:
+    """STRUCTUREの処理中Callに含まれるBlockと未確定状態を表示する。"""
+
+    write_model(
+        tmp_path / document_path,
+        _document([("unit-1", "Processing text"), ("unit-2", "Other text")]),
+    )
+    now = datetime.now(UTC)
+    write_model(
+        tmp_path / "preprocess/structure/calls/call-1/call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="STRUCTURE",
+            status="processing",
+            fingerprint="structure",
+            target_ids=["block-0"],
+            attempts=1,
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+
+    assert _structure_comparison(tmp_path) == (
+        (
+            "[block-0]\n種別: paragraph\n見出しレベル: -\n注意種別: -"
+            "\nキャプション元: -\n本文: Processing text"
+        ),
+        "処理中 (確定結果なし)",
+    )
+
+
+def test_structure_comparison_shows_verified_patch_diff(tmp_path: Path) -> None:
+    """検証済みSTRUCTURE応答の構造変更を同じBlockの前後に表示する。"""
+
+    write_model(
+        tmp_path / "preprocess/load/document.json", _document([("unit-1", "Title")])
+    )
+    call_dir = tmp_path / "preprocess/structure/calls/call-1"
+    write_model(
+        call_dir / "response.json",
+        StructureResponse(
+            patches=[StructurePatch(block_id="block-0", kind="heading", level=2)]
+        ),
+    )
+    now = datetime.now(UTC)
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="STRUCTURE",
+            status="succeeded",
+            fingerprint="structure",
+            target_ids=["block-0"],
+            attempts=1,
+            response_sha256=sha256_file(call_dir / "response.json"),
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+
+    before, after = _structure_comparison(tmp_path) or ("", "")
+
+    assert "種別: paragraph" in before
+    assert "種別: heading" in after
+    assert "見出しレベル: 2" in after
+    assert "-種別: paragraph" in _diff_text(before, after, "前", "後")
+    assert "+種別: heading" in _diff_text(before, after, "前", "後")
 
 
 def test_fix_comparison_shows_only_applied_revision_targets(tmp_path: Path) -> None:

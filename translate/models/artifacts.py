@@ -326,6 +326,13 @@ class DoclingManifest(ArtifactModel):
     parts: list[DoclingPart]
 
 
+class DoclingProgress(ArtifactModel):
+    """実行中DOCLINGの分割PDF完了件数。"""
+
+    completed: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
 class UnpackedPart(ArtifactModel):
     """安全に展開されたDocling JSONとasset。"""
 

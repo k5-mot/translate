@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
-from threading import Event
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from streamlit.testing.v1 import AppTest
 from uuid_utils import uuid7
 
-from translate.artifact_store import describe_artifact, sha256_file, write_model
+from translate import ui
+from translate.artifact_store import (
+    describe_artifact,
+    load_model,
+    sha256_file,
+    write_model,
+)
 from translate.common.config import Config
 from translate.models.artifacts import (
     InputFile,
@@ -27,6 +34,7 @@ from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
     _delete_history_entry,
+    _force_stop,
     _history_entries,
     _live_call_counts,
     _preview,
@@ -165,19 +173,80 @@ def test_resume_reupload_requires_saved_name_and_hash(
 def test_worker_registry_rejects_duplicate_active_id() -> None:
     """未完了の同じ処理IDをworkerへ二重登録しない。"""
 
-    gate = Event()
     registry = WorkerRegistry()
+    try:
+        assert registry.submit("processing-id", partial(time.sleep, 30))
+        assert not registry.submit("processing-id", partial(time.sleep, 30))
+    finally:
+        registry.stop("processing-id")
 
-    def wait_for_gate() -> None:
-        """testが解放するまでworkerを実行中に保つ。"""
 
-        gate.wait(timeout=5)
+def test_force_stop_terminates_worker_and_marks_record_cancelled(
+    tmp_path: Path,
+) -> None:
+    """選択した子processだけを止め、履歴を再開可能なcancelledにする。"""
+
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"pdf")
+    processing_id = str(uuid7())
+    record = _record(processing_id, source, datetime.now(UTC))
+    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    write_model(record_path, record)
+    entry = HistoryEntry(
+        kind="translate",
+        record_path=record_path,
+        updated_at=record.updated_at,
+        record=record,
+    )
+    registry = WorkerRegistry()
+    assert registry.submit(processing_id, partial(time.sleep, 30))
+    deadline = time.monotonic() + 10
+    while not registry._processes and time.monotonic() < deadline:  # noqa: SLF001
+        time.sleep(0.02)
 
     try:
-        assert registry.submit("processing-id", wait_for_gate)
-        assert not registry.submit("processing-id", wait_for_gate)
+        assert registry._processes  # noqa: SLF001
+        assert _force_stop(entry, registry)
+        future = registry.future(processing_id)
+        assert future is not None
+        future.result(timeout=5)
+        assert load_model(record_path, TranslationRecord).status == "cancelled"
     finally:
-        gate.set()
+        registry.stop(processing_id)
+
+
+def test_processing_history_shows_loading_icon_and_stop_button(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """処理中の履歴にLoadingアイコンと停止操作を表示する。"""
+
+    monkeypatch.chdir(tmp_path)
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"pdf")
+    processing_id = str(uuid7())
+    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    write_model(record_path, _record(processing_id, source, datetime.now(UTC)))
+    registry = WorkerRegistry()
+    monkeypatch.setattr(ui, "worker_registry", lambda: registry)
+    assert registry.submit(processing_id, partial(time.sleep, 30))
+    app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py"))
+    app.query_params["processing"] = processing_id
+
+    try:
+        app.run(timeout=10)
+        history = next(
+            button
+            for button in app.sidebar.button
+            if button.key == f"history-{processing_id}"
+        )
+        assert "progress_activity" in str(history.proto)
+        stop = next(
+            button for button in app.button if button.key == f"stop-{processing_id}"
+        )
+        stop.click().run(timeout=10)
+        assert load_model(record_path, TranslationRecord).status == "cancelled"
+    finally:
+        registry.stop(processing_id)
 
 
 def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
