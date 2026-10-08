@@ -7,7 +7,10 @@ from typing import Annotated
 
 import typer
 
+from translate.adapters.embedding import EmbeddingError
+from translate.adapters.llm import LLMError
 from translate.common.config import ConfigError, load_config
+from translate.common.logger import configure_adapter_logging
 from translate.pipeline import InputError
 from translate.pipeline.register import register_paths
 from translate.pipeline.review import review_pdfs
@@ -19,6 +22,17 @@ app = typer.Typer(
     help="英語文書の日本語翻訳、比較レビュー、参考資料登録、版更新を行います。",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def configure_logging() -> None:
+    """CLIから実行するAdapterのログlevelを設定する。"""
+
+    try:
+        configure_adapter_logging(load_config().log_level)
+    except ConfigError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(2) from error
 
 
 @app.command("upgrade")
@@ -56,6 +70,11 @@ def upgrade_command(
     except (ConfigError, InputError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(2) from error
+    except (LLMError, EmbeddingError) as error:
+        typer.echo(
+            f"Upgrade処理に失敗しました: {type(error).__name__}: {error}", err=True
+        )
+        raise typer.Exit(1) from error
     except Exception as error:
         typer.echo(f"Upgrade処理に失敗しました: {type(error).__name__}", err=True)
         raise typer.Exit(1) from error
@@ -92,6 +111,9 @@ def translate_command(
     except (ConfigError, InputError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(2) from error
+    except (LLMError, EmbeddingError) as error:
+        typer.echo(f"翻訳処理に失敗しました: {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
     except Exception as error:
         typer.echo(f"翻訳処理に失敗しました: {type(error).__name__}", err=True)
         raise typer.Exit(1) from error
@@ -124,6 +146,11 @@ def review_command(
     except (ConfigError, InputError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(2) from error
+    except (LLMError, EmbeddingError) as error:
+        typer.echo(
+            f"レビュー処理に失敗しました: {type(error).__name__}: {error}", err=True
+        )
+        raise typer.Exit(1) from error
     except Exception as error:
         typer.echo(f"レビュー処理に失敗しました: {type(error).__name__}", err=True)
         raise typer.Exit(1) from error
@@ -160,6 +187,9 @@ def register_command(
     except (ConfigError, InputError) as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(2) from error
+    except EmbeddingError as error:
+        typer.echo(f"登録処理に失敗しました: {type(error).__name__}: {error}", err=True)
+        raise typer.Exit(1) from error
     except Exception as error:
         typer.echo(f"登録処理に失敗しました: {type(error).__name__}", err=True)
         raise typer.Exit(1) from error

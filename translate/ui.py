@@ -5,8 +5,11 @@ from __future__ import annotations
 import difflib
 import hashlib
 import html
+import multiprocessing
+import os
 import re
 import shutil
+import subprocess
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import partial
@@ -20,28 +23,36 @@ import streamlit as st
 from pydantic import BaseModel, ConfigDict
 from uuid_utils import uuid7
 
+from translate.adapters.embedding import EmbeddingError
+from translate.adapters.llm import LLMError
 from translate.artifact_store import (
     ArtifactError,
     ProcessingInUseError,
     atomic_write_bytes,
+    cancel_processing,
     load_model,
     replace_path,
     sha256_file,
+    write_model,
 )
 from translate.common.config import ConfigError, load_config
+from translate.common.logger import configure_adapter_logging
 from translate.models.artifacts import (
     AlignmentResult,
     ArtifactFile,
     CheckResult,
+    DoclingProgress,
     FixResult,
     LLMCallArtifact,
     RegistrationRecord,
     ReviewRecord,
     ReviewResult,
+    SplitManifest,
     TaskName,
     TranslationRecord,
 )
 from translate.models.document import (
+    Block,
     Document,
     TextLayer,
     TextUnit,
@@ -55,12 +66,14 @@ from translate.pipeline.register import register_paths
 from translate.pipeline.review import review_pdfs
 from translate.pipeline.translate import translate_pdf
 from translate.pipeline.upgrade import upgrade_pdfs
-from translate.tasks.preprocess.structure import StructureResponse
+from translate.tasks.preprocess.structure import StructurePatch, StructureResponse
 from translate.tasks.review.check import targets_from_document
 from translate.tasks.translation.translate import TranslationResponse
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from multiprocessing.connection import Connection
+    from multiprocessing.process import BaseProcess
 
     from streamlit.runtime.uploaded_file_manager import UploadedFile
 
@@ -168,13 +181,15 @@ class HistoryEntry(BaseModel):
 
 
 class WorkerRegistry:
-    """Streamlit process内で単一workerと処理IDのFutureを管理する。"""
+    """単一workerから処理ごとの停止可能な子processを管理する。"""
 
     def __init__(self) -> None:
         """ローカルLLMを並列呼出ししない単一workerを作る。"""
 
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ui")
         self._futures: dict[str, Future[object]] = {}
+        self._processes: dict[str, BaseProcess] = {}
+        self._stopping: set[str] = set()
         self._lock = Lock()
 
     def submit(self, processing_id: str, operation: Callable[[], object]) -> bool:
@@ -182,7 +197,7 @@ class WorkerRegistry:
 
         Args:
             processing_id (str): 新規処理またはResume対象の処理ID。
-            operation (Callable[[], object]): Background Threadで実行する処理。
+            operation (Callable[[], object]): 子processで実行する処理。
 
         Returns:
             bool: 同じ処理IDが未完了でない場合だけworkerへ登録する。
@@ -192,8 +207,76 @@ class WorkerRegistry:
             existing = self._futures.get(processing_id)
             if existing is not None and not existing.done():
                 return False
-            self._futures[processing_id] = self._executor.submit(operation)
+            self._stopping.discard(processing_id)
+            self._futures[processing_id] = self._executor.submit(
+                self._run, processing_id, operation
+            )
             return True
+
+    def _run(self, processing_id: str, operation: Callable[[], object]) -> None:
+        """子processの完了を待ち、UIへ安全な失敗理由を返す。"""
+
+        context = multiprocessing.get_context("spawn")
+        receiver, sender = context.Pipe(duplex=False)
+        try:
+            with self._lock:
+                if processing_id in self._stopping:
+                    return
+                process = context.Process(target=_run_worker, args=(operation, sender))
+                process.start()
+                self._processes[processing_id] = process
+            sender.close()
+            process.join()
+            with self._lock:
+                self._processes.pop(processing_id, None)
+                stopped = processing_id in self._stopping
+            if stopped:
+                return
+            if receiver.poll():
+                name, message = receiver.recv()
+                raise WorkerError(f"{name}: {message}" if message else name)
+            if process.exitcode != 0:
+                raise WorkerError(
+                    f"workerが終了しました (exit code {process.exitcode})"
+                )
+        finally:
+            sender.close()
+            receiver.close()
+
+    def stop(self, processing_id: str) -> bool:
+        """対象の待機Futureまたは実行中の子processを停止する。"""
+
+        with self._lock:
+            future = self._futures.get(processing_id)
+            if future is None or future.done():
+                return False
+            if future.cancel():
+                self._stopping.add(processing_id)
+                return True
+            process = self._processes.get(processing_id)
+            if process is None:
+                self._stopping.add(processing_id)
+                return True
+            if not process.is_alive():
+                return False
+            self._stopping.add(processing_id)
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    check=False,
+                    timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                process.terminate()
+        else:
+            process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        return not process.is_alive()
 
     def future(self, processing_id: str) -> Future[object] | None:
         """処理IDに対応するFutureをthread-safeに取得する。
@@ -220,6 +303,30 @@ class WorkerRegistry:
 
         future = self.future(processing_id)
         return future is not None and not future.done()
+
+
+class WorkerError(RuntimeError):
+    """子processから返された利用者向けの失敗。"""
+
+
+def _run_worker(operation: Callable[[], object], sender: Connection) -> None:
+    """子processでPipelineを実行し、許可した例外だけ本文を返す。"""
+
+    try:
+        configure_adapter_logging(load_config().log_level)
+        operation()
+    except (
+        LLMError,
+        EmbeddingError,
+        ConfigError,
+        InputError,
+        ProcessingInUseError,
+    ) as error:
+        sender.send((type(error).__name__, str(error)))
+    except Exception as error:  # noqa: BLE001 - 予期外失敗は型名だけ親processへ返す。
+        sender.send((type(error).__name__, ""))
+    finally:
+        sender.close()
 
 
 @st.cache_resource(show_spinner=False)
@@ -961,6 +1068,9 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
                 _entry_label(entry),
                 key=f"history-{processing_id}",
                 type="primary" if processing_id == selected_id else "tertiary",
+                icon=":material/progress_activity:"
+                if entry.record is not None and entry.record.status == "processing"
+                else None,
                 width="stretch",
             ):
                 _select_processing(processing_id)
@@ -1006,7 +1116,9 @@ def _render_future_error(future: Future[object]) -> None:
 
     try:
         future.result()
-    except (ConfigError, InputError, ProcessingInUseError) as error:
+    except (LLMError, EmbeddingError) as error:
+        st.error(f"{type(error).__name__}: {error}")
+    except (ConfigError, InputError, ProcessingInUseError, WorkerError) as error:
         st.error(str(error))
     except Exception as error:  # noqa: BLE001 - 予期外失敗は型名だけを表示する。
         st.error(f"処理に失敗しました: {type(error).__name__}")
@@ -1317,6 +1429,56 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
     )
 
 
+def _structure_block_text(block: Block, patch: StructurePatch | None = None) -> str:
+    """Blockの本文と構造を、提案された変更を含めて比較用に整形する。"""
+
+    return "\n".join(
+        (
+            f"種別: {(patch.kind if patch and patch.kind is not None else block.kind)}",
+            f"見出しレベル: {(patch.level if patch and patch.level is not None else block.level) or '-'}",
+            f"注意種別: {(patch.alert_kind if patch and patch.alert_kind is not None else block.alert_kind) or '-'}",
+            f"キャプション元: {(patch.caption_source_id if patch else None) or '-'}",
+            f"本文: {_preview(block.content.text('source')) if block.content else '空'}",
+        )
+    )
+
+
+def _structure_comparison(root: Path) -> tuple[str, str] | None:
+    """直近の同一STRUCTURE Callから補正前と構造提案を返す。"""
+
+    confirmed = _latest_verified_call(root, TaskName.STRUCTURE)
+    active = _latest_call(root, TaskName.STRUCTURE, "processing")
+    call = confirmed or active
+    document = _load_first_document(
+        root,
+        [
+            "preprocess/source-v2/load/document.json",
+            "preprocess/load/document.json",
+        ],
+    )
+    if call is None or document is None:
+        return None
+    blocks = {block.id: block for page in document.pages for block in page.blocks}
+    target_ids = [target_id for target_id in call.target_ids if target_id in blocks][:3]
+    if not target_ids:
+        return None
+    before = "\n\n".join(
+        f"[{target_id}]\n{_structure_block_text(blocks[target_id])}"
+        for target_id in target_ids
+    )
+    if confirmed is None:
+        return before, "処理中 (確定結果なし)"
+    response = _verified_response(root, TaskName.STRUCTURE, confirmed)
+    if not isinstance(response, StructureResponse):
+        return None
+    patches = {patch.block_id: patch for patch in response.patches}
+    after = "\n\n".join(
+        f"[{target_id}]\n{_structure_block_text(blocks[target_id], patches.get(target_id))}"
+        for target_id in target_ids
+    )
+    return before, after
+
+
 def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
     """Review対象をIDで取得する。
 
@@ -1496,6 +1658,7 @@ def _render_latest_comparison(root: Path) -> None:
     fixed = _fix_comparison(root)
     reviewed = _review_comparison(root)
     translated = _translation_comparison(root)
+    structured = _structure_comparison(root)
     if fixed is not None:
         st.subheader("FIXの処理前・処理後")
         _render_text_areas(("修正前", "修正後"), fixed, "fix-comparison")
@@ -1520,6 +1683,12 @@ def _render_latest_comparison(root: Path) -> None:
             "translate-comparison",
         )
         _render_diff(translated[0], translated[1], "翻訳前", "翻訳後")
+    elif structured is not None:
+        st.subheader("STRUCTUREの処理前・処理後")
+        _render_text_areas(
+            ("構造判定前", "構造判定後 (提案)"), structured, "structure-comparison"
+        )
+        _render_diff(structured[0], structured[1], "構造判定前", "構造判定後 (提案)")
 
 
 def _review_context(root: Path) -> tuple[str, str] | None:
@@ -1746,6 +1915,33 @@ def _render_llm_progress(
         st.caption("LLM進捗はありません。")
 
 
+def _docling_progress(root: Path, started_at: datetime) -> tuple[int, int]:
+    """今回のDOCLING実行で完了した分割PDF数と総数を返す。"""
+
+    completed = 0
+    total = 0
+    for path in (root / "converter").glob("**/split/manifest.json"):
+        try:
+            manifest = load_model(path, SplitManifest)
+        except ArtifactError:
+            continue
+        count = len(manifest.parts)
+        total += count
+        progress_path = path.parent.parent / "docling-progress.json"
+        try:
+            if progress_path.stat().st_mtime < started_at.timestamp():
+                continue
+        except OSError:
+            continue
+        try:
+            progress = load_model(progress_path, DoclingProgress)
+        except ArtifactError:
+            continue
+        if progress.total == count and progress.completed <= count:
+            completed += progress.completed
+    return completed, total
+
+
 def _valid_check_artifact(root: Path, relative_path: str) -> bool:
     """CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。
 
@@ -1829,6 +2025,12 @@ def _render_task_progress(
     detail = f"{completed} / {total} Task — {task_label} — {task_status}"
     st.progress(completed / total if total else 0.0, text=detail)
     active_task = active_state.task if active_state is not None else None
+    if active_task == TaskName.DOCLING and active_state is not None:
+        pdfs_done, pdfs_total = _docling_progress(root, active_state.started_at)
+        st.progress(
+            pdfs_done / pdfs_total if pdfs_total else 0.0,
+            text=f"DOCLING: {pdfs_done} / {pdfs_total} PDF",
+        )
     with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
         _render_llm_progress(root, record, active_task)
     _render_latest_comparison(root)
@@ -2474,6 +2676,16 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
     if record is None:
         return
     processing_id = entry.processing_id or "-"
+    if record.status == "processing" and st.button(
+        "強制ストップ",
+        key=f"stop-{processing_id}",
+        icon=":material/stop_circle:",
+        disabled=not registry.active(processing_id),
+        help="このUIが起動した処理だけ停止できます。",
+    ):
+        if _force_stop(entry, registry):
+            st.rerun()
+        st.error("処理を停止できませんでした。履歴を更新して状態を確認してください。")
     if record.error is not None:
         st.error(
             f"{record.error.message} "
@@ -2493,6 +2705,32 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
             _render_registration_result(entry, record)
     _render_resume(entry, registry)
     _render_history_delete(entry, registry)
+
+
+def _force_stop(entry: HistoryEntry, registry: WorkerRegistry) -> bool:
+    """UI所有workerを停止し、残った処理記録をcancelledへ確定する。"""
+
+    processing_id = entry.processing_id
+    record = entry.record
+    if (
+        processing_id is None
+        or record is None
+        or record.status != "processing"
+        or not registry.stop(processing_id)
+    ):
+        return False
+    try:
+        current = load_model(entry.record_path, type(record))
+    except ArtifactError:
+        return True
+    if current.status == "processing":
+        if isinstance(current, RegistrationRecord):
+            current.status = "cancelled"
+            current.updated_at = datetime.now(UTC)
+            write_model(entry.record_path, current)
+        else:
+            cancel_processing(current, entry.record_path)
+    return True
 
 
 def _render_history_delete(entry: HistoryEntry, registry: WorkerRegistry) -> None:

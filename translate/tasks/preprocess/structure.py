@@ -369,6 +369,7 @@ def _execute(
     )
     try:
         result = client.structured(
+            task="STRUCTURE",
             model=config.openai_structure_model or "",
             response_type=StructureResponse,
             system=(

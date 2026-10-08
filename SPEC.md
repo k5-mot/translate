@@ -186,7 +186,7 @@ translate/
 | `artifact_store.py` | `outputs` のpath生成、排他lock、fingerprint、Task成果物およびLLM Call進捗の原子的な保存と再読込みを隠蔽する |
 | `glossary.py` | 用語集CSVをparseし、LLM Callの英語原文に一致する行だけを抽出する |
 | `common/config.py` | 環境変数を読み取り、Pydantic設定モデルとして検証する |
-| `common/logger.py` | 標準Libraryのloggingが出力するlevel名へ色を付ける |
+| `common/logger.py` | Adapterのログ出力を設定し、level名へ色を付ける |
 | `models/document.py` | `Document`、`Page`、`Block`、`TextUnit`、`TextSpan`、画像および表モデルを定義する |
 | `models/review.py` | `ReviewTarget`、`Finding`、`Revision`、`TextEdit`および修正結果を定義する |
 | `models/artifacts.py` | 最上位JSON、Task状態、ManifestおよびTask固有Resultを定義する |
@@ -201,7 +201,7 @@ translate/
 
 `common/config.py` は `.env` とprocess環境変数を読み、検証済みの設定モデルを返す。外部clientの生成、Artifactの読書きおよびPipelineの選択は行わない。
 
-`common/logger.py` は標準Libraryの `logging` が出力するlevel名へANSI色を付けることだけを責務とする。色は `DEBUG` をcyan、`INFO` をgreen、`WARNING` をyellow、`ERROR` をred、`CRITICAL` をbold redとする。出力先がTTYでない場合は色を付けない。level選択、出力先、message形式、metadata、filter、file出力および環境変数は標準Libraryまたは呼出元に任せ、`common/logger.py` では設定しない。
+`common/logger.py` は標準Libraryの `logging` が出力するlevel名へANSI色を付け、AdapterのLoggerを標準エラー出力へ設定する。色は `DEBUG` をcyan、`INFO` をgreen、`WARNING` をyellow、`ERROR` をred、`CRITICAL` をbold redとする。出力先がTTYでない場合は色を付けない。CLIとStreamlitの処理processは `.env` またはprocess環境変数の `LOG_LEVEL`（既定 `INFO`）を適用する。Adapter以外のLoggerのlevelは変更しない。Adapterは本文、認証情報、Vector、応答payloadを記録せず、開始、完了、再試行、失敗の種別と件数を記録する。
 
 rootの `main.py` はTranslate、ReviewおよびRegisterの入力欄、固定された進捗例、成果物path例を表示するだけのStreamlitモックとする。Pipeline、外部endpoint、Artifact保存およびResumeは呼び出さない。実処理との接続はTODOとする。
 
@@ -636,7 +636,7 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 
 ### 🧠 生成LLM
 
-生成LLMは単一のOpenAI互換endpointを使用し、`httpx` で `POST /chat/completions` を直接呼び出す。
+生成LLMは単一のOpenAI互換endpointを使用し、OpenAI Python clientで `POST /chat/completions` を呼び出す。
 
 必要な環境変数は次のとおりとする。
 
@@ -646,13 +646,13 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。
+生成LLMのChat Completions要求にはOpenAI Python clientを使用する。`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
 ### 🧮 Embedding
 
-Embeddingは生成LLMと同じ `OPENAI_BASE_URL` の `POST /embeddings` を `httpx` で呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。
+Embeddingは生成LLMと同じ `OPENAI_BASE_URL` の `POST /embeddings` をOpenAI Python clientで呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。SDK内の再試行は無効にし、接続・timeout・HTTPエラーを原因と対策付きで表示する。
 
 - 1batchは16件に固定する。
 - 応答vectorの件数、次元および全要素が有限値であることを検査する。
@@ -810,7 +810,7 @@ Registerは `.pdf`、`.docx`、`.pptx`、`.md`、`.markdown` および `.txt` �
 
 ## 📦 依存関係
 
-新実装はTask成果物で処理状態を管理し、SQLiteおよびLangGraphを使用しない。LLMは `httpx` でOpenAI互換endpointを呼び出し、Pydanticで応答を検査する。Embeddingも `httpx` で呼び出し、Qdrantは公式clientを直接使用する。
+新実装はTask成果物で処理状態を管理し、SQLiteおよびLangGraphを使用しない。LLMとEmbeddingはOpenAI Python clientでOpenAI互換endpointを呼び出し、LLM応答をPydanticで検査する。Qdrantは公式clientを直接使用する。
 
 新実装への移行完了後、次の直接依存を削除する。
 
@@ -824,11 +824,11 @@ Registerは `.pdf`、`.docx`、`.pptx`、`.md`、`.markdown` および `.txt` �
 - `langsmith`
 - `typing-extensions`
 
-基本依存には `httpx`、`pydantic`、`pillow`、`pypdfium2`、`portalocker`、`python-dotenv`、`typer` および `uuid-utils` を残す。`qdrant-client` はRAGおよびRegisterを利用する場合のoptional dependencyとする。Streamlitはrootの `main.py` を表示する `ui` optional dependencyとし、Langfuseは初期実装のdependencyへ含めない。
+基本依存には `httpx`、`openai`、`pydantic`、`pydantic-settings`、`pillow`、`pypdfium2`、`portalocker`、`python-dotenv`、`typer` および `uuid-utils` を残す。`qdrant-client` はRAGおよびRegisterを利用する場合のoptional dependencyとする。Streamlitはrootの `main.py` を表示する `ui` optional dependencyとし、Langfuseは初期実装のdependencyへ含めない。
 
 optional dependencyを利用する機能は必要になった時点で遅延importし、未導入のoptional dependencyが通常のTranslateを停止させてはならない。
 
-環境変数は `os.environ` から読み取り、Pydanticの設定モデルで検証する。環境変数の読取りだけを目的として `pydantic-settings` を追加してはならない。
+環境変数と `.env` は `pydantic-settings` で読み取り、process環境変数を優先する。設定値はPydanticの `Config` で検証する。`Config` を直接生成した場合は、環境変数を暗黙に読み込まない。
 
 ## 🧠 LLM利用
 
@@ -1071,6 +1071,8 @@ Doclingが異なる開始位置のセルへ重複する結合範囲を返した�
 5. 最小単位でも成功しない場合はそのTaskを失敗とする。
 6. 成功したLLM CallはArtifactとして直ちに保存し、Task完了前に停止しても再開時に再利用する。
 7. LLMによる追加の検証処理は行わない。
+
+LLM失敗は出力token上限、応答byte上限、入力/context上限、timeout、接続失敗、認証・権限、rate limit、providerのHTTPエラー、応答検証エラーに分類する。CLI、UIおよび失敗Artifactには、秘密情報やproviderの応答本文を含めず、分類名・原因・設定名を用いた対策を表示する。出力token上限は `finish_reason=length` から判定し、応答本文が空でも他のエラーへ変換しない。
 
 ## 📝 Markdown方言
 
@@ -1332,3 +1334,7 @@ FIXは候補の意味を再評価せず、LLMを呼び出さない。比較Revie
 - StreamlitモックUIと実Pipelineの接続
 - Langfuseによる観測
 - 並列化、cache調整およびbatch調整を含む性能最適化
+
+## 🔖 参考文献
+
+- [Pydantic Settings: Settings Management](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)

@@ -14,7 +14,12 @@ from translate.artifact_store import (
     write_json,
     write_model,
 )
-from translate.models.artifacts import DoclingManifest, DoclingPart, SplitManifest
+from translate.models.artifacts import (
+    DoclingManifest,
+    DoclingPart,
+    DoclingProgress,
+    SplitManifest,
+)
 
 if TYPE_CHECKING:
     from translate.common.config import Config
@@ -43,6 +48,9 @@ def convert(
 
     client = DoclingClient(config)
     parts: list[DoclingPart] = []
+    progress_path = task_directory.parent / "docling-progress.json"
+    total = len(manifest.parts)
+    write_model(progress_path, DoclingProgress(completed=0, total=total))
     with temporary_task_directory(task_directory) as temporary:
         for split_part in manifest.parts:
             source = processing_directory / Path(
@@ -70,6 +78,9 @@ def convert(
                     ),
                     poll_attempts=polls,
                 )
+            )
+            write_model(
+                progress_path, DoclingProgress(completed=len(parts), total=total)
             )
         result = DoclingManifest(parts=parts)
         write_model(temporary / "manifest.json", result)

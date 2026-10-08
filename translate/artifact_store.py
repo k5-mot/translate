@@ -17,6 +17,8 @@ from uuid import uuid4
 import portalocker
 from pydantic import BaseModel
 
+from translate.adapters.embedding import EmbeddingError
+from translate.adapters.llm import LLMError
 from translate.models.artifacts import (
     ArtifactFile,
     LLMCallArtifact,
@@ -314,7 +316,9 @@ def fail_llm_call(
             "updated_at": datetime.now(UTC),
             "error": ProcessingError(
                 code="llm_call_failed",
-                message="LLM call did not produce a valid response.",
+                message=str(error)
+                if isinstance(error, LLMError)
+                else "LLM call did not produce a valid response.",
                 cause_type=type(error).__name__,
                 retryable=True,
             ),
@@ -579,7 +583,9 @@ def fail_task(
     existing = next((item for item in record.tasks if item.task == task), None)
     processing_error = ProcessingError(
         code=code,
-        message=f"{task.value} did not complete.",
+        message=str(error)
+        if isinstance(error, (LLMError, EmbeddingError))
+        else f"{task.value} did not complete.",
         cause_type=type(error).__name__,
         retryable=True,
     )

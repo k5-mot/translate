@@ -72,6 +72,34 @@ def _page(item: dict[str, Any]) -> int | None:
     return None
 
 
+def index_only_pages(document: dict[str, Any]) -> set[int]:
+    """目次見出しがあり、長い本文段落を含まないページだけを返す。"""
+
+    markers = {
+        page
+        for item in document.get("texts", [])
+        if isinstance(item, dict)
+        and (
+            item.get("label") == "document_index"
+            or (
+                item.get("label") in {"title", "section_header", "heading", "header"}
+                and INDEX_RE.fullmatch(str(item.get("text", "")).strip())
+            )
+        )
+        if (page := _page(item)) is not None
+    }
+    # ponytail: 120字未満の本文が目次見出しと同居すると除外され得る。必要なら配置情報で判別する。
+    prose = {
+        page
+        for item in document.get("texts", [])
+        if isinstance(item, dict)
+        and item.get("label") == "text"
+        and len(str(item.get("text", "")).strip()) >= 120
+        if (page := _page(item)) is not None
+    }
+    return markers - prose
+
+
 def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None:
     """除外対象への子参照を文書treeから取り除き、解決できる残りの参照先にも再帰適用する。
 
@@ -124,16 +152,7 @@ def normalize(source: Path, output_dir: Path) -> Path:
         *(_refs(item.get("children", [])) for item in document.get("pictures", [])),
         set(),
     )
-    index_pages = {
-        page
-        for item in document.get("texts", [])
-        if isinstance(item, dict)
-        and (
-            item.get("label") == "document_index"
-            or INDEX_RE.fullmatch(str(item.get("text", "")).strip())
-        )
-        if (page := _page(item)) is not None
-    }
+    index_pages = index_only_pages(document)
     for collection in ("texts", "tables", "pictures"):
         for index, item in enumerate(document.get(collection, [])):
             if not isinstance(item, dict):
@@ -145,6 +164,13 @@ def normalize(source: Path, output_dir: Path) -> Path:
                 reason = str(item.get("label"))
             elif _page(item) in index_pages:
                 reason = "document_index_page"
+            elif (
+                collection == "texts"
+                and item.get("label")
+                in {"title", "section_header", "heading", "header"}
+                and INDEX_RE.fullmatch(text.strip())
+            ):
+                reason = "document_index_title"
             elif ref in picture_owned:
                 reason = "picture_owned_text"
             elif collection == "texts" and not text.strip():

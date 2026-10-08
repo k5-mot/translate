@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,8 @@ from translate.artifact_store import atomic_write_bytes
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def page_count(source: Path) -> int:
@@ -31,6 +34,7 @@ def page_count(source: Path) -> int:
         count = len(document)
     if count < 1:
         raise ValueError("PDF has no pages")
+    logger.debug("PDFページ数 pages=%d", count)
     return count
 
 
@@ -51,6 +55,7 @@ def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list
 
     if pages_per_part < 1:
         raise ValueError("pages_per_part must be positive")
+    logger.info("PDF分割開始 pages_per_part=%d", pages_per_part)
     output_directory.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
     with pdfium.PdfDocument(source) as source_pdf:
@@ -65,6 +70,7 @@ def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list
                 part.import_pages(source_pdf, pages=indexes)
                 part.save(path)
             paths.append(path)
+    logger.info("PDF分割完了 parts=%d", len(paths))
     return paths
 
 
@@ -86,6 +92,7 @@ def render_page(
         ValueError: `f'PDF page is out of range: {page_number}'`と判定した場合。
     """
 
+    logger.debug("PDF画像化開始 page=%d dpi=%d", page_number, dpi)
     with pdfium.PdfDocument(source) as pdf:
         if not 1 <= page_number <= len(pdf):
             raise ValueError(f"PDF page is out of range: {page_number}")
@@ -107,6 +114,7 @@ def render_page(
             page.close()
     with Image.open(output) as verification:
         verification.verify()
+    logger.debug("PDF画像化完了 page=%d width=%d height=%d", page_number, *size)
     return size
 
 
@@ -132,4 +140,5 @@ def extract_pages_text(path: Path) -> list[str]:
                     text_page.close()
             finally:
                 page.close()
+    logger.debug("PDF text抽出完了 pages=%d", len(values))
     return values

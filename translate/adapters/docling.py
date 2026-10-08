@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from typing import TYPE_CHECKING, Any
@@ -18,6 +19,7 @@ _CONTENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+logger = logging.getLogger(__name__)
 
 
 class DoclingClient:
@@ -65,6 +67,7 @@ class DoclingClient:
         if suffix not in _CONTENT_TYPES:
             raise ValueError(f"unsupported Docling document: {source.name}")
         deadline = time.monotonic() + self.config.external_task_deadline_seconds
+        logger.info("Docling開始 file=%s", source.name)
         with source.open("rb") as stream:
             response = self._request(
                 "POST",
@@ -79,6 +82,7 @@ class DoclingClient:
         task_id = submitted.get("task_id") or submitted.get("id")
         if not isinstance(task_id, str) or not task_id:
             raise RuntimeError("Docling response has no task_id")
+        logger.debug("Docling送信完了")
         polls = 0
         while time.monotonic() < deadline:
             polls += 1
@@ -93,16 +97,40 @@ class DoclingClient:
             status = str(
                 payload.get("task_status") or payload.get("status", "")
             ).casefold()
+            logger.debug(
+                "Docling poll=%d status=%s",
+                polls,
+                status
+                if status
+                in {
+                    "success",
+                    "succeeded",
+                    "completed",
+                    "failure",
+                    "failed",
+                    "error",
+                    "partial",
+                }
+                else "pending",
+            )
             if status in {"success", "succeeded", "completed"}:
                 result = self._request(
                     "GET",
                     f"{self.base_url}/v1/result/{task_id}",
                     deadline,
                 )
+                logger.info(
+                    "Docling完了 file=%s polls=%d bytes=%d",
+                    source.name,
+                    polls,
+                    len(result.content),
+                )
                 return result.content, task_id, polls
             if status in {"failure", "failed", "error", "partial"}:
+                logger.warning("Docling失敗 status=%s polls=%d", status, polls)
                 raise RuntimeError(f"Docling task did not complete: {task_id}")
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+        logger.warning("Docling失敗 type=TimeoutError polls=%d", polls)
         raise TimeoutError(f"Docling task timed out: {task_id}")
 
     def _request(
@@ -130,6 +158,7 @@ class DoclingClient:
 
         last_error: Exception | None = None
         for attempt in range(1, self.config.http_retry_attempts + 1):
+            logger.debug("Docling HTTP要求 method=%s attempt=%d", method, attempt)
             stream = kwargs.get("files", {}).get("files", (None, None))[1]
             if hasattr(stream, "seek"):
                 stream.seek(0)
@@ -151,8 +180,20 @@ class DoclingClient:
                 )
                 retryable = status is None or status in {408, 429} or status >= 500
                 if not retryable or attempt >= self.config.http_retry_attempts:
+                    logger.warning(
+                        "Docling HTTP失敗 method=%s attempt=%d status=%s",
+                        method,
+                        attempt,
+                        status,
+                    )
                     raise
                 delay = min(2 ** (attempt - 1), max(0.0, deadline - time.monotonic()))
+                logger.warning(
+                    "Docling HTTP再試行 method=%s attempt=%d status=%s",
+                    method,
+                    attempt,
+                    status,
+                )
                 if delay <= 0:
                     break
                 time.sleep(random.uniform(0, delay))  # noqa: S311

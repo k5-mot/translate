@@ -22,6 +22,7 @@ from translate.models.document import (
     TextSpan,
     TextUnit,
 )
+from translate.tasks.preprocess.normalize import INDEX_RE, index_only_pages
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -29,11 +30,6 @@ if TYPE_CHECKING:
 
 COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
 SKIPPED_LABELS = {"page_header", "page_footer", "document_index"}
-INDEX_TITLE_RE = re.compile(
-    r"^(?:table of contents|contents|list of figures|list of tables|"
-    r"目次|図目次|表目次)$",
-    re.IGNORECASE,
-)
 TEXT_KINDS = {
     "title": "heading",
     "section_header": "heading",
@@ -350,31 +346,6 @@ def _owned_caption_refs(document: dict[str, Any]) -> set[str]:
                 if isinstance(value, dict) and isinstance(value.get("$ref"), str)
             )
     return refs
-
-
-def _index_pages(document: dict[str, Any]) -> set[int]:
-    """元文書の目次類として本文から除くページを特定する。
-
-    Args:
-        document: Docling document。
-
-    Returns:
-        document index labelまたは既知の目次見出しを持つページ番号集合。
-    """
-
-    return {
-        _page_number(item)
-        for collection in COLLECTIONS
-        for item in document.get(collection, [])
-        if isinstance(item, dict)
-        and (
-            item.get("label") == "document_index"
-            or (
-                item.get("label") in {"title", "section_header", "heading", "header"}
-                and INDEX_TITLE_RE.fullmatch(str(item.get("text") or "").strip())
-            )
-        )
-    }
 
 
 def _picture_content_refs(document: dict[str, Any]) -> set[str]:
@@ -1177,7 +1148,7 @@ def load_document(document: dict[str, Any]) -> Document:
     pages = _normalized_pages(document)
     seen: set[str] = set()
     caption_refs = _owned_caption_refs(document)
-    index_pages = _index_pages(document)
+    index_pages = index_only_pages(document)
     picture_content_refs = _picture_content_refs(document)
     # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
     ordered_items = list(_walk_refs(document, document.get("body", {})))
@@ -1205,6 +1176,13 @@ def load_document(document: dict[str, Any]) -> Document:
             continue
         seen.add(ref)
         if ref in caption_refs or ref in picture_content_refs:
+            continue
+        if item.get("label") in {
+            "title",
+            "section_header",
+            "heading",
+            "header",
+        } and INDEX_RE.fullmatch(str(item.get("text", "")).strip()):
             continue
         number = _page_number(item)
         if number not in pages:

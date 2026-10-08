@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -21,6 +21,8 @@ class Config(BaseModel):
     """PipelineとAdapterが共有する検証済み設定。"""
 
     model_config = ConfigDict(extra="ignore")
+
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
     openai_base_url: str | None = None
     openai_api_key: str | None = None
@@ -193,51 +195,10 @@ class Config(BaseModel):
             raise ConfigError(f"{label} settings are incomplete")
 
 
-_ENV_FIELDS = {
-    "OPENAI_BASE_URL": "openai_base_url",
-    "OPENAI_API_KEY": "openai_api_key",
-    "OPENAI_STRUCTURE_MODEL": "openai_structure_model",
-    "OPENAI_TRANSLATION_MODEL": "openai_translation_model",
-    "OPENAI_REVIEW_MODEL": "openai_review_model",
-    "OPENAI_EMBEDDING_MODEL": "openai_embedding_model",
-    "DOCLING_SERVER_URL": "docling_server_url",
-    "DOCLING_API_KEY": "docling_api_key",
-    "DOCLING_OCR_PRESET": "docling_ocr_preset",
-    "DOCLING_OCR_LANG": "docling_ocr_lang",
-    "DOCLING_FORCE_OCR": "docling_force_ocr",
-    "PDF_SPLIT_PAGES": "pdf_split_pages",
-    "LIBRETRANSLATE_URL": "libretranslate_url",
-    "LIBRETRANSLATE_API_KEY": "libretranslate_api_key",
-    "QDRANT_URI": "qdrant_uri",
-    "QDRANT_API_KEY": "qdrant_api_key",
-    "QDRANT_COLLECTION": "qdrant_collection",
-    "HTTP_RETRY_ATTEMPTS": "http_retry_attempts",
-    "HTTP_REQUEST_TIMEOUT_SECONDS": "http_request_timeout_seconds",
-    "EXTERNAL_TASK_DEADLINE_SECONDS": "external_task_deadline_seconds",
-    "LLM_CONTEXT_TOKENS": "llm_context_tokens",
-    "LLM_IMAGE_TOKENS": "llm_image_tokens",
-    "LLM_SAFETY_TOKENS": "llm_safety_tokens",
-    "STRUCTURE_INPUT_TOKENS": "structure_input_tokens",
-    "STRUCTURE_OUTPUT_TOKENS": "structure_output_tokens",
-    "STRUCTURE_MAX_BLOCKS": "structure_max_blocks",
-    "TRANSLATE_INPUT_TOKENS": "translate_input_tokens",
-    "TRANSLATE_OUTPUT_TOKENS": "translate_output_tokens",
-    "TRANSLATE_MAX_UNITS": "translate_max_units",
-    "REVIEW_INPUT_TOKENS": "review_input_tokens",
-    "REVIEW_OUTPUT_TOKENS": "review_output_tokens",
-    "REVIEW_MAX_TARGETS": "review_max_targets",
-    "LLM_RETRY_ATTEMPTS": "llm_retry_attempts",
-    "LLM_SPLIT_MAX_DEPTH": "llm_split_max_depth",
-    "LLM_REQUEST_TIMEOUT_SECONDS": "llm_request_timeout_seconds",
-    "LLM_TASK_DEADLINE_SECONDS": "llm_task_deadline_seconds",
-    "LLM_STRUCTURED_OUTPUT_MODE": "llm_structured_output_mode",
-    "LLM_SCHEMA_MAX_BYTES": "llm_schema_max_bytes",
-    "LLM_SCHEMA_MAX_DEPTH": "llm_schema_max_depth",
-    "LLM_RESPONSE_MAX_BYTES": "llm_response_max_bytes",
-    "REVIEW_MAX_FINDINGS": "review_max_findings",
-    "REVIEW_MAX_REVISIONS": "review_max_revisions",
-    "REVIEW_MAX_EDITS_PER_REVISION": "review_max_edits_per_revision",
-}
+class _EnvironmentConfig(BaseSettings, Config):
+    """Configのfieldを.envとprocess環境変数から取得する。"""
+
+    model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
 
 
 def load_config(
@@ -258,14 +219,19 @@ def load_config(
     """
 
     base = directory or Path.cwd()
-    dotenv = dotenv_values(base / ".env")
-    process = os.environ if environ is None else environ
-    values: dict[str, object] = {}
-    for environment_name, field_name in _ENV_FIELDS.items():
-        value = process.get(environment_name, dotenv.get(environment_name))
-        if value not in {None, ""}:
-            values[field_name] = value
     try:
-        return Config.model_validate(values)
+        if environ is None:
+            return Config.model_validate(
+                _EnvironmentConfig(_env_file=base / ".env").model_dump()
+            )
+        dotenv = dotenv_values(base / ".env")
+        return Config.model_validate(
+            {
+                name: value
+                for name in Config.model_fields
+                if (value := environ.get(name.upper(), dotenv.get(name.upper())))
+                not in {None, ""}
+            }
+        )
     except ValidationError as error:
         raise ConfigError(str(error)) from error
