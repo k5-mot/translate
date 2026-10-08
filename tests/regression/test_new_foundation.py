@@ -273,8 +273,8 @@ def test_document_json_uses_schema_version_one() -> None:
     assert TextUnit(id="unit", spans=[]).text() == ""
 
 
-def test_llm_payload_uses_provider_default_reasoning() -> None:
-    """推論制御を送らずproviderの既定動作に委ねる。"""
+def test_llm_payload_uses_non_thinking_sampling() -> None:
+    """LLM要求に現在の非推論sampling設定を指定する。"""
 
     client = LLMClient(Config(openai_base_url="http://llm"))
 
@@ -289,9 +289,21 @@ def test_llm_payload_uses_provider_default_reasoning() -> None:
     )
 
     assert "reasoning_effort" not in payload
-    assert "chat_template_kwargs" not in payload
     assert "thinking_budget_tokens" not in payload
-    assert payload["extra_body"] == {"repetition_penalty": 1.01}
+    assert payload["temperature"] == 0.0
+    assert payload["top_p"] == 0.8
+    assert payload["extra_body"] == {
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
+        "repetition_penalty": 1.01,
+        "enable_thinking": False,
+        "preserve_thinking": False,
+        "chat_template_kwargs": {
+            "enable_thinking": False,
+            "preserve_thinking": False,
+        },
+    }
 
 
 def test_llm_rejects_oversized_complete_prompt_before_http() -> None:

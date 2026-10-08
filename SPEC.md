@@ -646,7 +646,7 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-生成LLMのChat Completions要求にはOpenAI Python clientを使用する。`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`repetition_penalty=1.01`、streamingなし、tool callなしとする。他のprovider固有parameter、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
+生成LLMのChat Completions要求にはOpenAI Python clientを使用する。`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
