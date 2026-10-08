@@ -30,6 +30,7 @@ from translate.tasks.preprocess.load import (
     _normalized_cells,
     load_document,
 )
+from translate.tasks.preprocess.normalize import normalize
 from translate.tasks.preprocess.structure import (
     MAX_VISION_PIXELS,
     StructurePatch,
@@ -260,6 +261,51 @@ def test_load_converts_minimal_docling_document() -> None:
     assert unit is not None
     assert unit.id == "#/texts/0/content"
     assert unit.spans[0].source == "Hello"
+
+
+def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> None:
+    """目次見出しと本文が同じページにあるPDFの本文を保持する。"""
+
+    paragraph = "本文と図の説明が同じページに続きます。" * 12
+    texts = [
+        (1, "section_header", "Table of Contents"),
+        (1, "text", "Chapter 1 ........ 1"),
+        (2, "section_header", "List of Figures"),
+        (2, "text", paragraph),
+    ]
+    value = {
+        "schema_name": "DoclingDocument",
+        "name": "mixed-index",
+        "pages": {
+            str(number): {"size": {"width": 100, "height": 200}} for number in (1, 2)
+        },
+        "texts": [
+            {
+                "self_ref": f"#/texts/{index}",
+                "label": label,
+                "text": text,
+                "prov": [{"page_no": page}],
+            }
+            for index, (page, label, text) in enumerate(texts)
+        ],
+        "tables": [],
+        "pictures": [],
+        "key_value_items": [],
+        "form_items": [],
+        "groups": [],
+        "body": {
+            "children": [{"$ref": f"#/texts/{index}"} for index in range(len(texts))]
+        },
+    }
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+    normalized = normalize(source, tmp_path / "normalized")
+    document = load_document(json.loads(normalized.read_text(encoding="utf-8")))
+
+    assert document.pages[0].blocks == []
+    assert len(document.pages[1].blocks) == 1
+    assert document.pages[1].blocks[0].content.text("source") == paragraph
 
 
 def test_load_keeps_cells_when_docling_spans_overlap() -> None:
