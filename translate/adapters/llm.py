@@ -324,6 +324,7 @@ class LLMClient:
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},
             ],
+            ### default
             "temperature": 0.0,
             "top_p": 0.80,
             "extra_body": {
@@ -338,6 +339,37 @@ class LLMClient:
                     "preserve_thinking": False,
                 },
             },
+            ### thinking
+            # "reasoning_effort": "none",
+            # "temperature": 1.0,
+            # "top_p": 0.95,
+            # "extra_body": {
+            #     "top_k": 20,
+            #     "min_p": 0.0,
+            #     "presence_penalty": 0.0,
+            #     "repetition_penalty": 1.01,
+            #     "enable_thinking": True,
+            #     "preserve_thinking": True,
+            #     "chat_template_kwargs": {
+            #         "enable_thinking": True,
+            #         "preserve_thinking": True,
+            #     },
+            # },
+            ### instruct
+            # "temperature": 0.7,
+            # "top_p": 0.80,
+            # "extra_body": {
+            #     "top_k": 20,
+            #     "min_p": 0.0,
+            #     "presence_penalty": 1.5,
+            #     "repetition_penalty": 1.00,
+            #     "enable_thinking": False,
+            #     "preserve_thinking": False,
+            #     "chat_template_kwargs": {
+            #         "enable_thinking": False,
+            #         "preserve_thinking": False,
+            #     },
+            # },
         }
         if mode == "json_object":
             payload["response_format"] = {"type": "json_object"}
