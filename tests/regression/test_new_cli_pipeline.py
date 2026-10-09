@@ -115,6 +115,25 @@ def test_llm_call_response_is_reused_only_with_matching_fingerprint(
     assert reused[1] == response
     assert rejected is None
 
+    complete_llm_call(
+        tmp_path,
+        artifact,
+        response,
+        attempts=1,
+        input_tokens=10,
+        output_tokens=5,
+        status="partial",
+    )
+    assert (
+        load_reusable_llm_response(
+            tmp_path,
+            call_id="call-1",
+            fingerprint="fingerprint",
+            response_type=TranslationResponse,
+        )
+        is None
+    )
+
 
 def test_llm_call_artifact_keeps_safe_remedy(tmp_path: Path) -> None:
     """失敗ArtifactへLLM例外の分類と対策を保存する。"""

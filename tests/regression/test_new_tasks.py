@@ -5,11 +5,17 @@ from __future__ import annotations
 import json
 import zipfile
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image as PILImage
 
-from translate.adapters.llm import LLMInputExceededError, StructuredResult
+from translate.adapters.llm import (
+    LLMClient,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    StructuredResult,
+)
 from translate.common.config import Config
 from translate.glossary import relevant_glossary
 from translate.models.artifacts import CheckResult, ReviewResult
@@ -50,6 +56,11 @@ from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
 from translate.tasks.review.review import _chunks as review_chunks
 from translate.tasks.review.review import _execute as execute_review
+from translate.tasks.translation.translate import (
+    TranslationItem,
+    TranslationResponse,
+)
+from translate.tasks.translation.translate import _execute as execute_translation
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -68,6 +79,89 @@ def _unit(identifier: str, source: str, translated: str | None = None) -> TextUn
             )
         ],
     )
+
+
+def test_translation_splits_missing_ids_after_retry(tmp_path: Path) -> None:
+    """一括応答で欠けた訳を再送・分割し、全対象の訳を集める。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    responses = [
+        [("a", "訳A"), ("b", "訳B")],
+        [],
+        [("c", "訳C")],
+        [("d", "訳D")],
+    ]
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id=key, text=value) for key, value in items
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+            for items in responses
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = execute_translation(
+        client=client,
+        config=config,
+        spans=[TextSpan(id=key, source=key) for key in "abcd"],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert structured.call_count == 4
+    assert {
+        item.span_id: item.text
+        for _, response in calls
+        for item in response.translations
+    } == {"a": "訳A", "b": "訳B", "c": "訳C", "d": "訳D"}
+
+
+def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
+    """最小単位の再送後も訳が欠けたら空訳を確定せず失敗する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    structured = MagicMock(
+        return_value=StructuredResult(
+            response=TranslationResponse(translations=[]),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    with pytest.raises(LLMInvalidResponseError, match="span-a"):
+        execute_translation(
+            client=client,
+            config=config,
+            spans=[TextSpan(id="span-a", source="A")],
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            lineage=["chunk-0000"],
+            depth=0,
+            allow_missing_retry=True,
+            diagnostics=[],
+            previous_context={},
+        )
+
+    assert structured.call_count == 2
 
 
 def test_check_only_reports_empty_and_extreme_lengths() -> None:

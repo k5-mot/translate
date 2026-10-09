@@ -13,6 +13,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMError,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputExceededError,
 )
 from translate.adapters.qdrant import search as search_qdrant
@@ -279,7 +280,7 @@ def _execute(
         glossary (str): 対象文書へ適用するCSV形式の用語集。
         lineage (list[str]): 親から子へ連なるLLM Call ID列。
         depth (int): 分割LLM Callの現在の深さ。
-        allow_missing_retry (bool): 分割Retryで未返却項目を許容するかどうか。
+        allow_missing_retry (bool): 欠落IDをまとめて再送する初回Callかどうか。
         diagnostics (list[str]): 検証中に追記する診断Message列。
         previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
 
@@ -354,7 +355,7 @@ def _execute(
             ),
             contract=(
                 'Return {"translations":[{"span_id":string,"text":string}]}. '
-                f"At most {len(spans)} items."
+                f"Return exactly {len(spans)} nonempty items, one for each span_id."
             ),
             native_schema=_schema(len(spans)),
             input_tokens=config.translate_input_tokens,
@@ -381,13 +382,20 @@ def _execute(
     response = result.response
     valid_ids = {item.span_id for item in response.translations if item.text.strip()}
     missing = [span for span in spans if span.id not in valid_ids]
-    child_ids: list[str] = []
+    groups: list[list[TextSpan]] = []
     if missing and allow_missing_retry:
-        child_ids = [
-            llm_call_id(
-                "TRANSLATE", [span.id for span in missing], [*lineage, "missing"]
-            )
-        ]
+        groups = [missing]
+    elif missing and len(missing) > 1 and depth < config.llm_split_max_depth:
+        middle = len(missing) // 2
+        groups = [missing[:middle], missing[middle:]]
+    child_lineages = [
+        [*lineage, "missing"] if allow_missing_retry else [*lineage, f"missing-{index}"]
+        for index in range(len(groups))
+    ]
+    child_ids = [
+        llm_call_id("TRANSLATE", [span.id for span in group], child_lineage)
+        for group, child_lineage in zip(groups, child_lineages, strict=True)
+    ]
     status: Literal["succeeded", "partial"] = "partial" if missing else "succeeded"
     complete_llm_call(
         call_directory,
@@ -400,28 +408,27 @@ def _execute(
         child_call_ids=child_ids,
     )
     values = [(call_id, response)]
-    if missing and allow_missing_retry:
+    if missing and not groups:
+        raise LLMInvalidResponseError(
+            f"翻訳対象 {missing[0].id} の訳文が返りません。対策: "
+            "modelとLLM_STRUCTURED_OUTPUT_MODEを確認して再開してください。"
+        )
+    for group, child_lineage in zip(groups, child_lineages, strict=True):
         values.extend(
             _execute(
                 client=client,
                 config=config,
-                spans=missing,
+                spans=group,
                 task_directory=task_directory,
                 rules=rules,
                 glossary=glossary,
-                lineage=[*lineage, "missing"],
-                depth=depth,
+                lineage=child_lineage,
+                depth=depth if allow_missing_retry else depth + 1,
                 allow_missing_retry=False,
                 diagnostics=diagnostics,
                 previous_context=previous_context,
             )
         )
-    elif missing:
-        present = {item.span_id for item in response.translations}
-        for span in missing:
-            if span.id not in present:
-                response.translations.append(TranslationItem(span_id=span.id, text=""))
-            diagnostics.append(f"{call_id} empty_translation {span.id}")
     return values
 
 

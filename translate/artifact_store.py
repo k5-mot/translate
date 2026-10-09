@@ -383,7 +383,7 @@ def load_reusable_llm_response[ResponseT: BaseModel](
         if (
             artifact.call_id != call_id
             or artifact.fingerprint != fingerprint
-            or artifact.status not in {"succeeded", "partial"}
+            or artifact.status != "succeeded"
             or artifact.response_sha256 != sha256_file(response_path)
         ):
             return None
