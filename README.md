@@ -24,7 +24,7 @@ uv sync --dev
 Copy-Item .env.sample .env
 ```
 
-`.env`には、単一のOpenAI互換endpoint、Task別model、Docling Serveなど、
+`.env`には、OpenAI互換endpoint、Task別model、Docling Serveなど、
 利用する外部serviceの接続情報を設定してください。process環境変数は`.env`より
 優先されます。Qdrant関連設定を一式省略すると、TranslateとReviewのRAG検索は
 無効になります。

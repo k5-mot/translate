@@ -636,23 +636,25 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 
 ### 🧠 生成LLM
 
-生成LLMは単一のOpenAI互換endpointを使用し、OpenAI Python clientで `POST /chat/completions` を呼び出す。
+生成LLMはOpenAI Python clientで `POST /chat/completions` を呼び出す。既定ではEmbeddingと同じ `OPENAI_BASE_URL` を使い、必要な場合だけ `OPENAI_LLM_BASE_URL` で生成専用endpointを指定できる。
 
 必要な環境変数は次のとおりとする。
 
 - `OPENAI_BASE_URL`
 - `OPENAI_API_KEY`: 任意。空の場合はAuthorization headerを送信しない
+- `OPENAI_LLM_BASE_URL`: 任意。指定すると生成LLMだけ接続先を変更する
+- `OPENAI_LLM_API_KEY`: 任意。生成専用endpointの認証に使う。`OPENAI_LLM_BASE_URL` 指定時に `OPENAI_API_KEY` は継承しない
 - `OPENAI_STRUCTURE_MODEL`
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-生成LLMのChat Completions要求にはOpenAI Python clientを使用する。`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
+生成LLMのChat Completions要求には選択したendpointのAPI keyだけを送信する。要求は `reasoning_effort="none"`、`temperature=0.7`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、実行時のendpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
 ### 🧮 Embedding
 
-Embeddingは生成LLMと同じ `OPENAI_BASE_URL` の `POST /embeddings` をOpenAI Python clientで呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。SDK内の再試行は無効にし、接続・timeout・HTTPエラーを原因と対策付きで表示する。
+Embeddingは `OPENAI_BASE_URL` の `POST /embeddings` をOpenAI Python clientで呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。SDK内の再試行は無効にし、接続・timeout・HTTPエラーを原因と対策付きで表示する。
 
 - 1batchは16件に固定する。
 - 応答vectorの件数、次元および全要素が有限値であることを検査する。
@@ -949,7 +951,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 
 LLM応答モデルはTaskごとに `StructureResponse`、`TranslationResponse` および `ReviewResponse` を定義する。これらは永続化モデルから分離し、必要な差分だけを表す。
 
-生成LLMには単一のOpenAI互換endpointだけを使用する。複数endpointの切替、振り分け、failoverおよびendpoint別設定はスコープ外とする。
+生成LLMは一つのOpenAI互換endpointを使用する。Embeddingと別のendpointを設定できるが、model別の振り分け、実行時の切替およびfailoverはスコープ外とする。
 
 ### 💾 LLM Call進捗とResume
 
