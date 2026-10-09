@@ -310,6 +310,7 @@ def _execute(
             "model": config.openai_translation_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "provider_default",
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
             "input_tokens": config.translate_input_tokens,
             "output_tokens": config.translate_output_tokens,

@@ -290,7 +290,7 @@ def test_llm_payload_uses_non_thinking_sampling() -> None:
 
     assert "reasoning_effort" not in payload
     assert "thinking_budget_tokens" not in payload
-    assert payload["temperature"] == 0.0
+    assert payload["temperature"] == 0.7
     assert payload["top_p"] == 0.8
     assert payload["extra_body"] == {
         "top_k": 20,

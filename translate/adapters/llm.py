@@ -325,7 +325,7 @@ class LLMClient:
                 {"role": "user", "content": user_content},
             ],
             ### default
-            "temperature": 0.0,
+            "temperature": 0.7,
             "top_p": 0.80,
             "extra_body": {
                 "top_k": 20,

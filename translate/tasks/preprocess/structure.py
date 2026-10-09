@@ -346,6 +346,7 @@ def _execute(
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
             "thinking": "provider_default",
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
             "input_tokens": config.structure_input_tokens,
             "output_tokens": config.structure_output_tokens,

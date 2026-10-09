@@ -328,6 +328,7 @@ def _review_locked(
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
             "thinking": "provider_default",
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
             "call_index": 2,
         }
