@@ -558,7 +558,7 @@ REPORTは `review.md` に次のsectionを順番に出力する。
 3. CHECKおよびREVIEWのFinding
 4. REVIEWの修正候補について、対象ID、現在訳および提案訳
 
-Findingと修正候補がない場合も、該当sectionへ「なし」と明記する。raw promptおよびraw LLM応答はREPORTへ含めない。
+Findingと修正候補がない場合も、該当sectionへ「なし」と明記する。対応する `ReviewTarget` が0件の場合は、翻訳品質の比較を実施していないことを件数sectionへ明記する。raw promptおよびraw LLM応答はREPORTへ含めない。
 
 ### 🧹 LINTとCOVER
 

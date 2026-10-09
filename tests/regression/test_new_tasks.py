@@ -18,7 +18,7 @@ from translate.adapters.llm import (
 )
 from translate.common.config import Config
 from translate.glossary import relevant_glossary
-from translate.models.artifacts import CheckResult, ReviewResult
+from translate.models.artifacts import AlignmentResult, CheckResult, ReviewResult
 from translate.models.document import (
     Block,
     Document,
@@ -28,7 +28,13 @@ from translate.models.document import (
     TextSpan,
     TextUnit,
 )
-from translate.models.review import ReviewResponse, ReviewTarget, Revision, TextEdit
+from translate.models.review import (
+    AlignmentGroup,
+    ReviewResponse,
+    ReviewTarget,
+    Revision,
+    TextEdit,
+)
 from translate.tasks.converter.unpack import _validate_entries
 from translate.tasks.preprocess.load import (
     _assign_cell_images,
@@ -51,6 +57,7 @@ from translate.tasks.preprocess.structure import (
 )
 from translate.tasks.publisher.lint import lint
 from translate.tasks.publisher.markdown import convert_block
+from translate.tasks.publisher.report import create_report
 from translate.tasks.review.align import align
 from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
@@ -232,6 +239,32 @@ def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
         "applied",
         "conflicting_edit",
     ]
+
+
+def test_report_explains_zero_aligned_targets(tmp_path: Path) -> None:
+    """対応0件の報告を、翻訳品質の指摘なしと誤認させない。"""
+
+    output = tmp_path / "review.md"
+    create_report(
+        AlignmentResult(
+            groups=[
+                AlignmentGroup(
+                    id="alignment-000001",
+                    source_ids=["source"],
+                    kind="source_only",
+                    method="unmatched",
+                )
+            ],
+            targets=[],
+        ),
+        CheckResult(findings=[]),
+        ReviewResult(findings=[], revisions=[]),
+        output,
+    )
+
+    report = output.read_text(encoding="utf-8")
+    assert "翻訳品質の比較は実施していません。" in report
+    assert "source_only (unmatched)" in report
 
 
 def test_align_uses_unique_figure_anchor_and_leaves_role_mismatch_unmatched() -> None:
