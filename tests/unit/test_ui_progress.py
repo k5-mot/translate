@@ -3,7 +3,7 @@
 import io
 import zipfile
 from concurrent.futures import Future
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -128,7 +128,8 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
             DoclingProgress(completed=completed, total=count),
         )
 
-    assert _docling_progress(tmp_path, datetime.now(UTC)) == (0, 5)
+    future_start = datetime.now(UTC) + timedelta(seconds=1)
+    assert _docling_progress(tmp_path, future_start) == (0, 5)
     assert _docling_progress(tmp_path, datetime.fromtimestamp(0, UTC)) == (3, 5)
 
 
