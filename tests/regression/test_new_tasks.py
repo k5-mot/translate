@@ -312,10 +312,13 @@ def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
     ]
 
 
-def test_fix_rejects_revision_that_discards_most_of_long_translation() -> None:
-    """長い既存訳を短い断片へ置換する候補を文書へ適用しない。"""
+@pytest.mark.parametrize("repeat", [5, 12])
+def test_fix_rejects_revision_that_discards_most_of_translation(
+    repeat: int,
+) -> None:
+    """既存訳の大半を短い断片へ置換する候補を文書へ適用しない。"""
 
-    original = "これは既存の翻訳文です。" * 12
+    original = "これは既存の翻訳文です。" * repeat
     document = Document(
         pages=[
             Page(

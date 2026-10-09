@@ -85,7 +85,7 @@ def _rejection_reason(  # noqa: PLR0911
             for span in unit.spans
             if span.id == edit.span_id
         )
-        if len(current) >= 80 and len(edit.text.strip()) * 2 < len(current):
+        if len(current) >= 20 and len(edit.text.strip()) * 2 < len(current):
             return "excessive_shortening"
     if any(span_id in changed_spans for span_id in edit_ids):
         return "conflicting_edit"

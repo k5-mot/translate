@@ -529,7 +529,7 @@ SPLIT → DOCLING → UNPACK → MERGE
 - `ReviewResult.revisions` が空の場合はFIXを省略する。
 - REVIEWが失敗した場合はpublisherへ進まない。
 - FIXはRevision単位で原子的に適用する。Revision内の一つでもEditが不正な場合、そのRevision全体を適用しない。
-- FIXは80文字以上の既存訳を半分未満へ縮めるEditを拒否し、部分訳による長文の上書きを防ぐ。
+- FIXは20文字以上の既存訳を半分未満へ縮めるEditを拒否し、部分訳による本文の上書きを防ぐ。
 - 一つのRevisionの失敗は、他の有効なRevisionの適用を妨げない。
 - FIX後またはFIX省略後に、同じ決定的規則で最終CHECKを実行して `final-findings.json` を保存する。残存する `empty_translation` はPipeline全体を `empty_translation` として失敗させ、LINT以降を開始しない。`extreme_short` と `extreme_long` だけでは公開を停止しない。
 - LINTはDocumentを変更せず、翻訳品質も判定しない。
@@ -1318,7 +1318,7 @@ FIXは `ReviewResult.revisions` の順序でRevisionを処理し、次の規則�
 - 未知の `span_id`、または対象 `TextUnit` に属さない `span_id` はRevision全体を `unknown_span` で拒否する。
 - 同じRevision内で同じ `span_id` が複数回現れる場合はRevision全体を `duplicate_edit` で拒否する。
 - `text.strip()` が空になるEditを含む場合はRevision全体を `empty_text` で拒否する。
-- 既存訳が80文字以上で、提案訳が既存訳の半分未満となるEditを含む場合はRevision全体を `excessive_shortening` で拒否する。
+- 既存訳が20文字以上で、提案訳が既存訳の半分未満となるEditを含む場合はRevision全体を `excessive_shortening` で拒否する。
 - 先に適用したRevisionと同じ `span_id` を変更するEditを一つでも含む場合は、後のRevision全体を `conflicting_edit` で拒否する。先に適用したRevisionを巻き戻さない。
 - すべてのEditが有効なRevisionだけを原子的に適用し、`TextEdit.text` を対応する `TextSpan.revised` へそのまま設定する。
 
