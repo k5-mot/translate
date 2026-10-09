@@ -78,6 +78,15 @@ def _rejection_reason(  # noqa: PLR0911
         return "duplicate_edit"
     if any(not edit.text.strip() for edit in revision.edits):
         return "empty_text"
+    # 長文の既存訳を一部の言い換えだけで全文置換しない。
+    for edit in revision.edits:
+        current = next(
+            span.text("translated").strip()
+            for span in unit.spans
+            if span.id == edit.span_id
+        )
+        if len(current) >= 80 and len(edit.text.strip()) * 2 < len(current):
+            return "excessive_shortening"
     if any(span_id in changed_spans for span_id in edit_ids):
         return "conflicting_edit"
     return None

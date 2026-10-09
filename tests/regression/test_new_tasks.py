@@ -312,6 +312,44 @@ def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
     ]
 
 
+def test_fix_rejects_revision_that_discards_most_of_long_translation() -> None:
+    """長い既存訳を短い断片へ置換する候補を文書へ適用しない。"""
+
+    original = "これは既存の翻訳文です。" * 12
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", "source", original),
+                    )
+                ],
+            )
+        ]
+    )
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="short",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text="一文だけ。")],
+            )
+        ],
+    )
+
+    result = apply_revisions(document, review)
+
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised is None
+    assert span.translated == original
+    assert result.outcomes[0].reason_code == "excessive_shortening"
+
+
 def test_report_explains_zero_aligned_targets(tmp_path: Path) -> None:
     """対応0件の報告を、翻訳品質の指摘なしと誤認させない。"""
 

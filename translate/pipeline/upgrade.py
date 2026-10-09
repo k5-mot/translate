@@ -724,6 +724,7 @@ def _review_changes(
     fix_fp = canonical_hash(
         {
             "task": "FIX",
+            "revision_guard": 2,
             "document": canonical_hash(document),
             "review": canonical_hash(reviewed),
         }
