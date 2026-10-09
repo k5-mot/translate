@@ -2692,7 +2692,7 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
             f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
         )
     future = registry.future(processing_id)
-    if future is not None and future.done():
+    if future is not None and future.done() and record.error is None:
         _render_future_error(future)
     if record.status == "succeeded":
         if isinstance(record, TranslationRecord):
