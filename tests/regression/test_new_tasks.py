@@ -56,6 +56,8 @@ from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
 from translate.tasks.review.review import _chunks as review_chunks
 from translate.tasks.review.review import _execute as execute_review
+from translate.tasks.review.review import _user_payload as review_user_payload
+from translate.tasks.review.review import review as run_review
 from translate.tasks.translation.translate import (
     TranslationItem,
     TranslationResponse,
@@ -803,6 +805,69 @@ def test_review_chunks_keep_one_large_translated_span_intact() -> None:
     assert len(parts) > 1
     assert "".join(part.source for part in parts) == target.source
     assert [item.id for part in parts for item in part.spans] == [span.id]
+
+
+def test_review_reserves_json_envelope_for_split_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """分割対象が本文予算を使い切ってもJSON外枠を含む要求が収まる。"""
+
+    class Client:
+        def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
+            """実要求のuser payloadが入力予算内か検査する。"""
+
+            user = values["user"]
+            assert isinstance(user, str)
+            assert len(user.encode("utf-8")) <= 3361
+            return StructuredResult(ReviewResponse(), 1, 100, 10)
+
+    monkeypatch.setattr("translate.tasks.review.review.LLMClient", lambda _: Client())
+    span = TextSpan(id="span", source="x" * 4000, translated="訳" * 800)
+    target = ReviewTarget(
+        id="target",
+        source=span.source,
+        translation=span.text(),
+        target_ids=["unit"],
+        spans=[span],
+    )
+    result = run_review(
+        [target],
+        CheckResult(findings=[]),
+        tmp_path / "review",
+        tmp_path,
+        Config(
+            openai_base_url="http://llm",
+            openai_review_model="model",
+            review_input_tokens=8192,
+        ),
+        "r" * 2783,
+        "",
+    )
+
+    assert result == ReviewResult(findings=[], revisions=[])
+    assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
+
+
+def test_review_drops_optional_context_to_fit_target() -> None:
+    """対象を削らず、RAG・用語集・既知指摘を必要時だけ省く。"""
+
+    target = ReviewTarget(
+        id="target",
+        source="source",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="source", translated="訳")],
+    )
+    base = review_user_payload([target], [], "", [], 8192)
+    payload = review_user_payload(
+        [target],
+        [{"message": "finding" * 100}],
+        "term,訳語\n" * 100,
+        [{"text": "reference" * 100}],
+        len(base.encode("utf-8")),
+    )
+
+    assert json.loads(payload) == json.loads(base)
 
 
 def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:

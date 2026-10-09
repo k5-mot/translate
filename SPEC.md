@@ -772,6 +772,8 @@ collectionが存在しない場合は、最初のEmbedding vectorの次元とCos
 
 RAG検索は上位5件に固定し、score閾値は設けない。生成LLMの入力上限へ収まらない場合は順位の低い結果から除外する。実際に採用した検索結果のPoint IDと `content_sha256` をLLM Call fingerprintへ含める。
 
+REVIEWは対象を分割する際、JSON外枠の容量も入力予算へ含める。対象が収まらない場合はRAG結果、用語集、LLMへ渡す既知のCHECK指摘の順に省く。CHECKの成果物自体は保持し、対象の原文と訳文は省略しない。
+
 RAGはTRANSLATEとREVIEWだけで使用し、STRUCTUREでは使用しない。各LLM Callが対象とする英語原文を対象ID順にLFで連結し、Embeddingした値を検索queryとする。英語原文が空の場合は検索しない。検索結果はscore降順でpromptへ追加し、同scoreではPoint ID順とする。
 
 Qdrantが設定済みで検索または登録に失敗した場合、障害を無視してRAGなしで継続してはならない。

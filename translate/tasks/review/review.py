@@ -83,12 +83,14 @@ def review(
     _write_diagnostics(diagnostics_path, diagnostics)
     client = LLMClient(config)
     responses: list[tuple[str, ReviewResponse, list[ReviewTarget]]] = []
-    # Schema、message形式および抽出済み用語集へ2,048 bytesを予約する。
+    # System、Schemaおよびmessage形式へ2,048 bytesを予約する。
     overhead = len(rules.encode("utf-8")) + 2048
+    payload_budget = config.review_input_tokens - overhead
+    envelope_bytes = len(
+        _user_payload([], [], "", [], payload_budget).encode("utf-8")
+    ) - _target_bytes([])
     for index, chunk in enumerate(
-        _chunks(
-            targets, config.review_max_targets, config.review_input_tokens - overhead
-        )
+        _chunks(targets, config.review_max_targets, payload_budget - envelope_bytes)
     ):
         responses.extend(
             _execute(
@@ -642,7 +644,7 @@ def _user_payload(
     rag: list[dict[str, object]],
     maximum_bytes: int,
 ) -> str:
-    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+    """任意の参照情報を必要に応じて除外し、入力上限内のJSON payloadを作る。
 
     Args:
         targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
@@ -659,21 +661,28 @@ def _user_payload(
     """
 
     selected = list(rag)
+    selected_glossary = glossary
+    selected_findings = list(findings)
     while True:
         value = json.dumps(
             {
-                "glossary": glossary,
+                "glossary": selected_glossary,
                 "references": selected,
-                "check_findings": findings,
+                "check_findings": selected_findings,
                 "targets": [_target_payload(target) for target in targets],
             },
             ensure_ascii=False,
         )
         if len(value.encode("utf-8")) <= maximum_bytes:
             return value
-        if not selected:
+        if selected:
+            selected.pop()
+        elif selected_glossary:
+            selected_glossary = ""
+        elif selected_findings:
+            selected_findings = []
+        else:
             raise LLMInputExceededError("review prompt exceeds input limit")
-        selected.pop()
 
 
 def _previous_attempts(directory: Path) -> int:
