@@ -647,6 +647,50 @@ def test_structure_rejects_kind_without_required_block_content() -> None:
     assert diagnostics == ["call invalid_kind table code"]
 
 
+def test_structure_preserves_existing_image_caption() -> None:
+    """既存Captionと本文を、誤ったcaption移動patchで失わない。"""
+
+    figure = Block(
+        id="figure",
+        order=0,
+        kind="figure",
+        image=Image(
+            id="image",
+            asset_path="image.png",
+            caption=_unit("existing-caption", "Original caption"),
+        ),
+    )
+    paragraph = Block(
+        id="paragraph",
+        order=1,
+        kind="paragraph",
+        content=_unit("paragraph-content", "Unrelated body text"),
+    )
+    page = Page(number=1, blocks=[figure, paragraph])
+    diagnostics: list[str] = []
+
+    _apply_page(
+        page,
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=[
+                        StructurePatch(block_id="figure", caption_source_id="paragraph")
+                    ]
+                ),
+            )
+        ],
+        diagnostics,
+    )
+
+    assert figure.image is not None
+    assert figure.image.caption is not None
+    assert figure.image.caption.id == "existing-caption"
+    assert [block.id for block in page.blocks] == ["figure", "paragraph"]
+    assert diagnostics == ["call caption_already_present figure"]
+
+
 def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     """ページ境界のlevel=1誤補正をDocling初期levelへ戻す。"""
 

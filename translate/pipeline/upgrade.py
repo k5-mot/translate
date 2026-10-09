@@ -211,6 +211,7 @@ def _upgrade_locked(
             "temperature": 0.7,
             "repetition_penalty": 1.01,
             "call_index": 3,
+            "caption_guard": True,
         }
     )
     reused_structure = reusable_task(record, TaskName.STRUCTURE, structure_fp, root)

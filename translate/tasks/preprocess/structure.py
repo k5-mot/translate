@@ -487,6 +487,14 @@ def _apply_page(
                         f"{call_id} invalid_caption_source {patch.caption_source_id}"
                     )
                     continue
+                existing_caption = (
+                    block.image.caption
+                    if block.kind == "figure" and block.image is not None
+                    else block.caption
+                )
+                if existing_caption is not None:
+                    diagnostics.append(f"{call_id} caption_already_present {block.id}")
+                    continue
                 if block.kind == "figure" and block.image is not None:
                     block.image.caption = source.content
                 else:
