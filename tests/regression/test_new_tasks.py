@@ -70,6 +70,7 @@ from translate.tasks.translation.translate import (
     TranslationResponse,
 )
 from translate.tasks.translation.translate import _execute as execute_translation
+from translate.tasks.translation.translate import _schema as translation_schema
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -171,6 +172,76 @@ def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
         )
 
     assert structured.call_count == 2
+
+
+def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> None:
+    """分割済みCallの欠落一件を単独で再送して訳文を回収する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id="a", text="訳A"),
+                        TranslationItem(span_id="b", text=""),
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(translations=[]),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[TranslationItem(span_id="b", text="訳B")]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = execute_translation(
+        client=client,
+        config=config,
+        spans=[TextSpan(id=key, source=key) for key in "ab"],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000", "missing"],
+        depth=1,
+        allow_missing_retry=False,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert structured.call_count == 3
+    assert {
+        item.span_id: item.text
+        for _, response in calls
+        for item in response.translations
+        if item.text
+    } == {"a": "訳A", "b": "訳B"}
+
+
+def test_translation_native_schema_requires_nonempty_items() -> None:
+    """Native Schemaが対象件数と空でない訳文を制約する。"""
+
+    schema = translation_schema(2)
+    translations = schema["properties"]["translations"]  # type: ignore[index]
+    items = translations["items"]  # type: ignore[index]
+
+    assert translations["minItems"] == translations["maxItems"] == 2
+    assert items["properties"]["text"]["minLength"] == 1  # type: ignore[index]
 
 
 def test_check_only_reports_empty_and_extreme_lengths() -> None:

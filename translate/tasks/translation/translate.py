@@ -386,9 +386,12 @@ def _execute(
     groups: list[list[TextSpan]] = []
     if missing and allow_missing_retry:
         groups = [missing]
-    elif missing and len(missing) > 1 and depth < config.llm_split_max_depth:
-        middle = len(missing) // 2
-        groups = [missing[:middle], missing[middle:]]
+    elif missing and len(spans) > 1 and depth < config.llm_split_max_depth:
+        if len(missing) == 1:
+            groups = [missing]
+        else:
+            middle = len(missing) // 2
+            groups = [missing[:middle], missing[middle:]]
     child_lineages = [
         [*lineage, "missing"] if allow_missing_retry else [*lineage, f"missing-{index}"]
         for index in range(len(groups))
@@ -425,7 +428,7 @@ def _execute(
                 glossary=glossary,
                 lineage=child_lineage,
                 depth=depth if allow_missing_retry else depth + 1,
-                allow_missing_retry=False,
+                allow_missing_retry=len(group) == 1 and len(spans) > 1,
                 diagnostics=diagnostics,
                 previous_context=previous_context,
             )
@@ -518,12 +521,13 @@ def _schema(maximum_items: int) -> dict[str, object]:
         "properties": {
             "translations": {
                 "type": "array",
+                "minItems": maximum_items,
                 "maxItems": maximum_items,
                 "items": {
                     "type": "object",
                     "properties": {
                         "span_id": {"type": "string"},
-                        "text": {"type": "string"},
+                        "text": {"type": "string", "minLength": 1},
                     },
                     "required": ["span_id", "text"],
                     "additionalProperties": False,
