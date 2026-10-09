@@ -126,6 +126,11 @@ def translate(
         if span.kind not in {"code", "line_break"}
     }
     for call_id, response in responses:
+        target_ids = set(
+            load_model(
+                task_directory / "calls" / call_id / "call.json", LLMCallArtifact
+            ).target_ids
+        )
         seen: set[str] = set()
         for item in response.translations:
             if item.span_id in seen:
@@ -135,6 +140,9 @@ def translate(
             span = span_index.get(item.span_id)
             if span is None:
                 diagnostics.append(f"{call_id} unknown_span {item.span_id}")
+                continue
+            if item.span_id not in target_ids:
+                diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
                 continue
             span.translated = item.text
     _write_diagnostics(diagnostics_path, diagnostics)

@@ -27,6 +27,7 @@ from translate.models.document import (
     TableCell,
     TextSpan,
     TextUnit,
+    iter_text_units,
 )
 from translate.models.review import (
     AlignmentGroup,
@@ -71,6 +72,7 @@ from translate.tasks.translation.translate import (
 )
 from translate.tasks.translation.translate import _execute as execute_translation
 from translate.tasks.translation.translate import _schema as translation_schema
+from translate.tasks.translation.translate import translate as run_translation
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -242,6 +244,77 @@ def test_translation_native_schema_requires_nonempty_items() -> None:
 
     assert translations["minItems"] == translations["maxItems"] == 2
     assert items["properties"]["text"]["minLength"] == 1  # type: ignore[index]
+
+
+def test_translation_ignores_ids_from_other_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """別Callの有効なSpan IDが応答に混入しても既存訳を上書きしない。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block-a", order=0, kind="paragraph", content=_unit("a", "A")
+                    ),
+                    Block(
+                        id="block-b", order=1, kind="paragraph", content=_unit("b", "B")
+                    ),
+                ],
+            )
+        ]
+    )
+    responses = [
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="a/span-0001", text="正しいA"),
+                TranslationItem(span_id="b/span-0001", text="誤訳B"),
+            ]
+        ),
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="b/span-0001", text="正しいB"),
+                TranslationItem(span_id="a/span-0001", text="誤訳A"),
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        LLMClient,
+        "structured",
+        MagicMock(
+            side_effect=[
+                StructuredResult(
+                    response=response,
+                    attempts=1,
+                    input_tokens=10,
+                    output_tokens=10,
+                )
+                for response in responses
+            ]
+        ),
+    )
+
+    result = run_translation(
+        document,
+        tmp_path / "translation",
+        tmp_path,
+        Config(
+            openai_base_url="http://llm",
+            openai_translation_model="model",
+            translate_max_units=1,
+        ),
+        "",
+        "",
+    )
+
+    assert [unit.spans[0].translated for _, unit in iter_text_units(result)] == [
+        "正しいA",
+        "正しいB",
+    ]
+    diagnostics = json.loads((tmp_path / "task-translate.json").read_text())
+    assert sum("unexpected_span" in item for item in diagnostics["diagnostics"]) == 2
 
 
 def test_check_only_reports_empty_and_extreme_lengths() -> None:

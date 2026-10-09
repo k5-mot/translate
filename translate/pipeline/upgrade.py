@@ -588,7 +588,7 @@ def _translate_changes(
             ),
             "temperature": 0.7 if record.backend == "llm" else None,
             "repetition_penalty": 1.01 if record.backend == "llm" else None,
-            "call_index": 2 if record.backend == "llm" else None,
+            "call_index": 3 if record.backend == "llm" else None,
         }
     )
     if not report.translation_target_ids:

@@ -1051,6 +1051,7 @@ Doclingが異なる開始位置のセルへ重複する結合範囲を返した�
 ### 🌐 TRANSLATE
 
 - 応答は `span_id` と翻訳後の `text` だけを含む。
+- 各LLM Callの `target_ids` に含まれない `span_id` の訳文は、文書へ適用せず診断情報へ記録する。他のCallの対象IDでも上書きしない。
 - `code` と `line_break` はLLMへ送信しない。
 - 応答に存在しないIDと、`text.strip()` が空になるIDを未完了対象として扱い、有効な応答を `partial` として保存して対象IDだけを1回再送する。
 - 部分再送後も空の翻訳はDocumentへ保持し、CHECK、REVIEWおよびFIXの対象とする。同じIDだけを無制限に再送してはならない。
