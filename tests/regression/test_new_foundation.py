@@ -325,25 +325,25 @@ def test_llm_rejects_oversized_complete_prompt_before_http() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "message", ["maximum context length exceeded", "Context size has been exceeded."]
+)
 def test_llm_classifies_provider_context_error_for_task_splitting(
     monkeypatch: pytest.MonkeyPatch,
+    message: str,
 ) -> None:
     """endpointのcontext超過HTTP 400を通常のLLM失敗と区別する。"""
 
     response = httpx2.Response(
         400,
-        json={"error": {"message": "maximum context length exceeded"}},
+        json={"error": {"message": message}},
         request=httpx2.Request("POST", "http://llm/chat/completions"),
     )
     client = LLMClient(Config(openai_base_url="http://llm"))
     monkeypatch.setattr(
         client.client.chat.completions,
         "create",
-        MagicMock(
-            side_effect=BadRequestError(
-                "maximum context length exceeded", response=response, body=None
-            )
-        ),
+        MagicMock(side_effect=BadRequestError(message, response=response, body=None)),
     )
 
     with pytest.raises(LLMInputExceededError, match="providerのcontext"):

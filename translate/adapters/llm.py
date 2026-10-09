@@ -478,6 +478,7 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         marker in message
         for marker in (
             "context length",
+            "context size has been exceeded",
             "context_length_exceeded",
             "maximum context",
             "prompt is too long",
