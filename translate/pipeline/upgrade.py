@@ -842,6 +842,7 @@ def _publish(
     markdown_fp = canonical_hash(
         {
             "task": "MARKDOWN",
+            "table_layout": 2,
             "document": canonical_hash(document),
             "cover": canonical_hash(cover),
             "assets": _tree_hash(merge_dir / "assets"),

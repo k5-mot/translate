@@ -816,6 +816,36 @@ def test_markdown_alert_uses_bundled_word_style_name() -> None:
     )
 
 
+def test_markdown_table_removes_dot_leaders_and_preserves_missing_value() -> None:
+    """表の装飾点線を除き、欠損値のダッシュを水平線へ変えない。"""
+
+    block = Block(
+        id="table",
+        order=0,
+        kind="table",
+        cells=[
+            TableCell(
+                id="label",
+                row=0,
+                column=0,
+                content=_unit("label/content", "Revenue ........"),
+            ),
+            TableCell(
+                id="value",
+                row=0,
+                column=1,
+                content=_unit("value/content", "—"),
+            ),
+        ],
+    )
+
+    value = convert_block(block, 30.0)
+
+    assert "Revenue" in value
+    assert "........" not in value
+    assert "\\-" in value
+
+
 def test_load_converts_minimal_docling_document() -> None:
     """LOADがDocling bodyを共通Documentと安定Spanへ変換する。"""
 
