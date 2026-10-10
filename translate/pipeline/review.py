@@ -331,7 +331,7 @@ def _review_locked(
             "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
             "temperature": 0.7,
             "repetition_penalty": 1.01,
-            "call_index": 3,
+            "call_index": 4,
         }
     )
     reused = reusable_task(record, TaskName.REVIEW, review_fp, root)

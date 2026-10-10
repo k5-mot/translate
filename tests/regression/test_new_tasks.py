@@ -1181,16 +1181,16 @@ def test_review_reserves_json_envelope_for_split_target(
 def test_review_discards_identical_model_items(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """同じ指摘と修正候補の反復を報告・適用候補へ重ねない。"""
+    """同一候補を除き、入力中の別名だけを安全にTextUnit IDへ直す。"""
 
     finding = ReviewFinding(
         category="accuracy",
         severity="error",
-        target_ids=["unit"],
+        target_ids=["target"],
         message="誤訳",
     )
     revision = ReviewRevision(
-        target_id="unit",
+        target_id="span",
         edits=[ReviewTextEdit(span_id="span", text="正しい訳")],
     )
 
@@ -1210,8 +1210,15 @@ def test_review_discards_identical_model_items(
                         revision,
                         revision.model_copy(
                             update={
-                                "edits": [ReviewTextEdit(span_id="span", text="別の訳")]
+                                "target_id": "target",
+                                "edits": [
+                                    ReviewTextEdit(span_id="span", text="別の訳")
+                                ],
                             }
+                        ),
+                        ReviewRevision(
+                            target_id="other-target",
+                            edits=[ReviewTextEdit(span_id="span", text="誤った対象")],
                         ),
                     ],
                 ),
@@ -1228,8 +1235,15 @@ def test_review_discards_identical_model_items(
         target_ids=["unit"],
         spans=[TextSpan(id="span", source="source", translated="訳")],
     )
+    other = ReviewTarget(
+        id="other-target",
+        source="other",
+        translation="別訳",
+        target_ids=["other-unit"],
+        spans=[TextSpan(id="other-span", source="other", translated="別訳")],
+    )
     result = run_review(
-        [target],
+        [target, other],
         CheckResult(findings=[]),
         tmp_path / "review",
         tmp_path,
@@ -1239,9 +1253,16 @@ def test_review_discards_identical_model_items(
     )
 
     assert [item.message for item in result.findings] == ["誤訳", "用語違い"]
+    assert [item.target_ids for item in result.findings] == [["unit"], ["unit"]]
     assert [item.edits[0].text for item in result.revisions] == [
         "正しい訳",
         "別の訳",
+        "誤った対象",
+    ]
+    assert [item.target_id for item in result.revisions] == [
+        "unit",
+        "unit",
+        "other-target",
     ]
 
 
