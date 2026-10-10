@@ -215,6 +215,9 @@ try {
     Invoke-Validation
 }
 catch {
+    if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
+        exit 130
+    }
     $failure = [ordered]@{
         stage = $currentStage
         error = $_.Exception.Message
