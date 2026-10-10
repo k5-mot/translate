@@ -303,6 +303,79 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
 
 
+def test_translation_retries_dot_leader_heading_without_losing_leader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """目次の点線をLLMへ渡さず、英語の丸写しを再翻訳して点線を戻す。"""
+
+    prefix = "Energy Resources"
+    leader = " " + "." * 64
+    source = prefix + leader
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="unit/span-0001", text=prefix)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    fallback = MagicMock()
+    fallback.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[
+                TranslationItem(span_id="unit/span-0001", text="エネルギー資源")
+            ]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+
+    def fake_client(config: Config) -> MagicMock:
+        """再翻訳時だけprompt方式のClientを返す。"""
+
+        return fallback if config.llm_structured_output_mode == "prompt" else initial
+
+    monkeypatch.setattr("translate.tasks.translation.translate.LLMClient", fake_client)
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", source),
+                    )
+                ],
+            )
+        ]
+    )
+    result = run_translation(
+        document,
+        tmp_path / "translation",
+        tmp_path,
+        Config(openai_base_url="http://llm", openai_translation_model="model"),
+        "",
+        "",
+    )
+
+    assert result.pages[0].blocks[0].content.spans[0].source == source
+    assert result.pages[0].blocks[0].content.spans[0].translated == (
+        "エネルギー資源" + leader
+    )
+    assert (
+        json.loads(initial.structured.call_args.kwargs["user"])["items"][0]["source"]
+        == prefix
+    )
+    assert (
+        json.loads(fallback.structured.call_args.kwargs["user"])["items"][0]["source"]
+        == prefix
+    )
+
+
 def test_translation_native_schema_requires_nonempty_items() -> None:
     """Native Schemaが対象件数と空でない訳文を制約する。"""
 

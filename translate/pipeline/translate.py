@@ -358,7 +358,7 @@ def _translate_locked(
             ),
             "temperature": 0.7 if backend == "llm" else None,
             "repetition_penalty": 1.01 if backend == "llm" else None,
-            "call_index": 4 if backend == "llm" else None,
+            "call_index": 5 if backend == "llm" else None,
         }
     )
     reused_translation = reusable_task(record, translation_task, translation_fp, root)

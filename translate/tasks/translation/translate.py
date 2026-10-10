@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -144,7 +145,7 @@ def translate(
             if item.span_id not in target_ids:
                 diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
                 continue
-            span.translated = item.text
+            span.translated = _restore_leader(span.source, item.text)
     _write_diagnostics(diagnostics_path, diagnostics)
     write_model(
         task_directory / "call-index.json",
@@ -266,9 +267,15 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
 def _plausible_translation(source: str, translation: str) -> bool:
     """CHECKと同じ長さ閾値で空訳・極端な長さ差・長文の丸写しを拒否する。"""
 
-    original = " ".join(source.split())
-    target = " ".join(translation.split())
+    original, leader = _leader_parts(" ".join(source.split()))
+    target, _ = _leader_parts(" ".join(translation.split()))
     if not target:
+        return False
+    if (
+        leader
+        and re.search(r"[A-Za-z]", original)
+        and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", target)
+    ):
         return False
     if len(original) >= 80 and len(target) < len(original) * 0.15:
         return False
@@ -281,6 +288,35 @@ def _plausible_translation(source: str, translation: str) -> bool:
     return not (
         len(original) > 0 and len(target) >= 100 and len(target) > len(original) * 5
     )
+
+
+def _leader_parts(value: str) -> tuple[str, str]:
+    """末尾の目次用点線を本文と装飾部分に分ける。
+
+    Args:
+        value (str): 原文または訳文のText。
+
+    Returns:
+        tuple[str, str]: 点線前の本文と、空白を含む点線部分。
+    """
+
+    match = re.fullmatch(r"(.*?\S)(\s+[.…。]{8,}\s*)", value, flags=re.DOTALL)
+    return (match.group(1), match.group(2)) if match else (value, "")
+
+
+def _restore_leader(source: str, translation: str) -> str:
+    """翻訳した項目名へ原文の目次用点線を戻す。
+
+    Args:
+        source (str): 点線を含む可能性がある原文。
+        translation (str): LLMから得た項目名の訳文。
+
+    Returns:
+        str: 元の点線を末尾へ戻した訳文。
+    """
+
+    _, leader = _leader_parts(source)
+    return re.sub(r"[ .…。]+$", "", translation) + leader if leader else translation
 
 
 def _execute(
@@ -319,7 +355,7 @@ def _execute(
     target_ids = [span.id for span in spans]
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
-    source = "\n".join(span.source for span in spans)
+    source = "\n".join(_leader_parts(span.source)[0] for span in spans)
     payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
     selected_glossary = relevant_glossary(
         glossary,
@@ -330,7 +366,7 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": 3,
+            "schema": 4 if any(_leader_parts(span.source)[1] for span in spans) else 3,
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),
@@ -666,7 +702,7 @@ def _translation_item(
         dict[str, str]: 一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。
     """
 
-    item = {"span_id": span.id, "source": span.source}
+    item = {"span_id": span.id, "source": _leader_parts(span.source)[0]}
     previous = previous_context.get(span.id)
     if previous is not None:
         item["previous_source"] = previous[0]
