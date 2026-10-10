@@ -49,7 +49,7 @@ $prompt | Set-Content -LiteralPath $promptPath -Encoding utf8
 $eventsPath = Join-Path $logRoot 'real_acceptance_codex_events.jsonl'
 $progressPath = Join-Path $logRoot 'real_acceptance_codex_progress.log'
 $messagePath = Join-Path $logRoot 'real_acceptance_codex_message.txt'
-& codex exec --json --approve-for-me --ephemeral --cd $root --output-last-message $messagePath $prompt 1> $eventsPath 2> $progressPath
+& codex exec --json --sandbox danger-full-access --config approval_policy=never --ephemeral --cd $root --output-last-message $messagePath $prompt 1> $eventsPath 2> $progressPath
 if ($LASTEXITCODE -ne 0) { throw "Codex exited with $LASTEXITCODE; see $progressPath" }
 if ((& git rev-parse HEAD).Trim() -eq $headBefore) { throw "Codex did not commit a repair; see $messagePath" }
 if (@(git status --porcelain).Count -gt 0) { throw 'Codex left uncommitted changes' }
