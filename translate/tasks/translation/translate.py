@@ -300,7 +300,7 @@ def _leader_parts(value: str) -> tuple[str, str]:
         tuple[str, str]: 点線前の本文と、空白を含む点線部分。
     """
 
-    match = re.fullmatch(r"(.*?\S)(\s+[.…。]{8,}\s*)", value, flags=re.DOTALL)
+    match = re.fullmatch(r"(.*?\S)(\s+[.…。]{6,}\s*)", value, flags=re.DOTALL)
     return (match.group(1), match.group(2)) if match else (value, "")
 
 

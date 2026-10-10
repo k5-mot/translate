@@ -303,13 +303,14 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
 
 
+@pytest.mark.parametrize("leader_length", [7, 64])
 def test_translation_retries_dot_leader_heading_without_losing_leader(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leader_length: int
 ) -> None:
     """目次の点線をLLMへ渡さず、英語の丸写しを再翻訳して点線を戻す。"""
 
     prefix = "Energy Resources"
-    leader = " " + "." * 64
+    leader = " " + "." * leader_length
     source = prefix + leader
     initial = MagicMock()
     initial.structured.return_value = StructuredResult(
