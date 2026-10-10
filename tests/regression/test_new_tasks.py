@@ -31,8 +31,11 @@ from translate.models.document import (
 )
 from translate.models.review import (
     AlignmentGroup,
+    ReviewFinding,
     ReviewResponse,
+    ReviewRevision,
     ReviewTarget,
+    ReviewTextEdit,
     Revision,
     TextEdit,
 )
@@ -1173,6 +1176,73 @@ def test_review_reserves_json_envelope_for_split_target(
 
     assert result == ReviewResult(findings=[], revisions=[])
     assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
+
+
+def test_review_discards_identical_model_items(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """同じ指摘と修正候補の反復を報告・適用候補へ重ねない。"""
+
+    finding = ReviewFinding(
+        category="accuracy",
+        severity="error",
+        target_ids=["unit"],
+        message="誤訳",
+    )
+    revision = ReviewRevision(
+        target_id="unit",
+        edits=[ReviewTextEdit(span_id="span", text="正しい訳")],
+    )
+
+    class Client:
+        def structured(self, **_values: object) -> StructuredResult[ReviewResponse]:
+            """重複と異なる指摘・修正候補を返す。"""
+
+            return StructuredResult(
+                ReviewResponse(
+                    findings=[
+                        finding,
+                        finding,
+                        finding.model_copy(update={"message": "用語違い"}),
+                    ],
+                    revisions=[
+                        revision,
+                        revision,
+                        revision.model_copy(
+                            update={
+                                "edits": [ReviewTextEdit(span_id="span", text="別の訳")]
+                            }
+                        ),
+                    ],
+                ),
+                1,
+                100,
+                10,
+            )
+
+    monkeypatch.setattr("translate.tasks.review.review.LLMClient", lambda _: Client())
+    target = ReviewTarget(
+        id="target",
+        source="source",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="source", translated="訳")],
+    )
+    result = run_review(
+        [target],
+        CheckResult(findings=[]),
+        tmp_path / "review",
+        tmp_path,
+        Config(openai_base_url="http://llm", openai_review_model="model"),
+        "",
+        "",
+    )
+
+    assert [item.message for item in result.findings] == ["誤訳", "用語違い"]
+    assert [item.edits[0].text for item in result.revisions] == [
+        "正しい訳",
+        "別の訳",
+    ]
 
 
 def test_review_drops_optional_context_to_fit_target() -> None:

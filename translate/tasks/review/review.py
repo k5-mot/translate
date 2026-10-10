@@ -109,12 +109,18 @@ def review(
     revisions: list[Revision] = []
     chunks_directory = task_directory / "chunks"
     for call_id, response, chunk in responses:
+        seen_findings: set[str] = set()
+        seen_revisions: set[str] = set()
         write_model(chunks_directory / f"{call_id}.json", response)
         target_ids = {target_id for target in chunk for target_id in target.target_ids}
         span_ids = {span.id for target in chunk for span in target.spans}
         for index, item in enumerate(
             response.findings[: config.review_max_findings], start=1
         ):
+            key = item.model_dump_json()
+            if key in seen_findings:
+                continue
+            seen_findings.add(key)
             unknown = [
                 target_id
                 for target_id in item.target_ids
@@ -138,6 +144,10 @@ def review(
         for index, item in enumerate(
             response.revisions[: config.review_max_revisions], start=1
         ):
+            key = item.model_dump_json()
+            if key in seen_revisions:
+                continue
+            seen_revisions.add(key)
             if item.target_id not in target_ids:
                 diagnostics.append(f"{call_id} unknown_target {item.target_id}")
             edits = item.edits[: config.review_max_edits_per_revision]
