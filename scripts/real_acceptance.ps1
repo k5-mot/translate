@@ -92,7 +92,7 @@ function Run-Cli {
         $recordStem = if ($Operation -eq 'register') { "acceptance-$stem" } elseif ($Operation -eq 'review') { 'document.ja' } else { $stem }
         $recordName = if ($Operation -eq 'register') { 'registration' } elseif ($Operation -eq 'translate') { 'translation' } else { $Operation }
         $record = Get-Record $recordStem $id $recordName
-        if ($record -and $record.status -in @('failed', 'cancelled')) {
+        if ($record -and $record.status -in @('failed', 'cancelled', 'processing')) {
             [void](Invoke-Logged (@('uv', 'run', 'translate-ja', $Operation) + $Arguments + @('--resume', $id)))
         }
         return $id
@@ -208,6 +208,7 @@ if ($SelfCheck) {
     }
     exit 0
 }
+$lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 Ensure-UiServer
 try {
     Invoke-Validation
