@@ -238,7 +238,7 @@ def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> 
     } == {"a": "訳A", "b": "訳B"}
 
 
-@pytest.mark.parametrize("invalid", ["omitted", "echo", "long"])
+@pytest.mark.parametrize("invalid", ["omitted", "echo", "near_echo", "heading", "long"])
 def test_translation_retries_implausible_text_in_prompt_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,10 +247,21 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     """省略・丸写し・異常に長い訳を単独のprompt方式で再翻訳する。"""
 
     source = (
-        "The command and control system collects and transports information "
-        "to support the joint force commander. "
-    ) * 2
-    bad = {"omitted": "(省略)", "echo": source, "long": "余計な内容" * 300}[invalid]
+        "THE BIG PICTURE"
+        if invalid == "heading"
+        else (
+            "The command and control system collects and transports information "
+            "to support the joint force commander. "
+        )
+        * 2
+    )
+    bad = {
+        "omitted": "(省略)",
+        "echo": source,
+        "near_echo": source[1:],
+        "heading": source,
+        "long": "余計な内容" * 300,
+    }[invalid]
     good = (
         "指揮統制システムは統合部隊司令官を支援するため、"
         "情報を収集し、必要な場所へ確実に伝達する。"
@@ -301,6 +312,57 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     assert modes == ["prompt"]
     assert initial.structured.call_count == fallback.structured.call_count == 1
     assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
+
+
+def test_translation_rechecks_cached_english_echo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """保存済み応答も現行の品質判定に通らなければ再翻訳する。"""
+
+    source = "THE BIG PICTURE"
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=source)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    corrected = MagicMock()
+    corrected.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text="全体像")]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    kwargs = {
+        "config": config,
+        "spans": [TextSpan(id="span-a", source=source)],
+        "task_directory": tmp_path,
+        "rules": "",
+        "glossary": "",
+        "lineage": ["chunk-0000"],
+        "depth": 0,
+        "allow_missing_retry": True,
+        "diagnostics": [],
+        "previous_context": {},
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "translate.tasks.translation.translate._plausible_translation",
+            MagicMock(return_value=True),
+        )
+        execute_translation(client=initial, **kwargs)
+
+    calls = execute_translation(client=corrected, **kwargs)
+    assert initial.structured.call_count == corrected.structured.call_count == 1
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text="全体像")
+    ]
 
 
 @pytest.mark.parametrize("leader_length", [7, 64])

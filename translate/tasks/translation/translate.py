@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -279,10 +280,13 @@ def _plausible_translation(source: str, translation: str) -> bool:
         return False
     if len(original) >= 80 and len(target) < len(original) * 0.15:
         return False
+    # OCRで欠けた一文字も丸写しとして拾い、短い断片と数値は除外する。
     if (
-        len(original) >= 80
-        and len(original.split()) >= 8
-        and original.casefold() == target.casefold()
+        len(original) >= 12
+        and len(original.split()) >= 2
+        and re.search(r"[A-Za-z]", original)
+        and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", target)
+        and SequenceMatcher(None, original.casefold(), target.casefold()).ratio() >= 0.9
     ):
         return False
     return not (
@@ -395,7 +399,12 @@ def _execute(
     )
     if reusable is not None:
         response = reusable[1]
-        return [(call_id, response)]
+        cached = {item.span_id: item.text for item in response.translations}
+        if len(cached) == len(spans) and all(
+            _plausible_translation(span.source, cached.get(span.id, ""))
+            for span in spans
+        ):
+            return [(call_id, response)]
     previous = _previous_attempts(call_directory)
     artifact = begin_llm_call(
         call_directory,
