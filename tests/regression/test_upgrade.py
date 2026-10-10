@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.tasks.review.align import align
 from translate.tasks.review.diff import diff
@@ -121,6 +123,32 @@ def test_modified_unit_is_translated_with_previous_context(tmp_path: Path) -> No
             "previous_translation": "以前の文",
         }
     ]
+
+
+def test_reuse_rejects_translation_target_removed_by_structure(tmp_path: Path) -> None:
+    """構造化後に存在しない対象IDを黙って翻訳対象に残さない。"""
+
+    source_v1 = _document(("body", "old", "Alpha"))
+    source_v2 = _document(
+        ("body", "retained", "Alpha"),
+        ("body", "removed", "Structure removes this"),
+    )
+    translation_v1 = _document(("body", "ja", "アルファ"))
+    plan = diff(
+        source_v1,
+        source_v2,
+        translation_v1,
+        align(source_v1, translation_v1),
+        tmp_path / "diff",
+    )
+
+    with pytest.raises(ValueError, match="invalid translation target mapping"):
+        reuse(
+            _document(("body", "retained", "Alpha")),
+            translation_v1,
+            plan,
+            tmp_path / "reuse",
+        )
 
 
 def test_incompatible_span_shape_is_not_reused(tmp_path: Path) -> None:

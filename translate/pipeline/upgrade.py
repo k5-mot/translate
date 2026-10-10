@@ -262,7 +262,7 @@ def _upgrade_locked(
         {
             "task": "DIFF",
             "source_v1": canonical_hash(source_v1),
-            "source_v2": canonical_hash(source_v2),
+            "source_v2": canonical_hash(structured_v2),
             "alignment": canonical_hash(alignment),
             "schema": 1,
         }
@@ -274,7 +274,7 @@ def _upgrade_locked(
         TaskName.DIFF,
         diff_fp,
         [diff_dir],
-        partial(diff, source_v1, source_v2, translation_v1, alignment, diff_dir),
+        partial(diff, source_v1, structured_v2, translation_v1, alignment, diff_dir),
     )
     plan = load_model(diff_dir / "plan.json", UpgradePlan)
 
@@ -299,7 +299,7 @@ def _upgrade_locked(
     )
     document = load_model(reuse_dir / "document.json", Document)
     reuse_report = load_model(reuse_dir / "report.json", ReuseReport)
-    context = previous_context(plan, source_v1, source_v2, translation_v1)
+    context = previous_context(plan, source_v1, structured_v2, translation_v1)
     document = _translate_changes(
         document,
         reuse_report,

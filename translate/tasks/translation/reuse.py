@@ -30,8 +30,7 @@ def reuse(
         tuple[Document, ReuseReport]: Planでreuseと確定した日本語Spanをv2 Documentへ設定する。
 
     Raises:
-        ValueError: `f'invalid reuse mapping: {change.id}'`、`f'incompatible reuse mapping:
-            {change.id}'`のいずれかと判定した場合。
+        ValueError: Planの対象IDがDocumentにないか、reuse対象の対応が不正な場合。
     """
 
     updated = source_v2.model_copy(deep=True)
@@ -41,6 +40,8 @@ def reuse(
     translation_ids: list[str] = []
     for change in plan.changes:
         if change.action == "translate":
+            if not set(change.source_v2_ids) <= target_units.keys():
+                raise ValueError(f"invalid translation target mapping: {change.id}")
             translation_ids.extend(change.source_v2_ids)
             continue
         if change.action != "reuse":
