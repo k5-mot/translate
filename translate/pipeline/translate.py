@@ -423,7 +423,7 @@ def _translate_locked(
             "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
             "temperature": 0.7,
             "repetition_penalty": 1.01,
-            "call_index": 2,
+            "call_index": 3,
         }
     )
     reused_review = reusable_task(record, TaskName.REVIEW, review_fp, root)
