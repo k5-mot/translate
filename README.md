@@ -142,6 +142,7 @@ Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge�
 `.tmp/real_acceptance_command.log`に保存します。失敗時は
 `.tmp/real_acceptance_failure.json`を作成してCodex CLIで修正・コミットし、
 品質検査後に検証スクリプトをバックグラウンドで再起動します。
+接続先の一時停止による`LLMConnectionError`では、コードを変更せず再検証します。
 同じ工程で4回目の失敗になった場合は自動修正を停止します。
 全件成功後、PR #5のCIを確認してマージコミットで`main`へ統合・pushします。
 

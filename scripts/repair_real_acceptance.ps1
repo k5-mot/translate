@@ -51,7 +51,10 @@ $progressPath = Join-Path $logRoot 'real_acceptance_codex_progress.log'
 $messagePath = Join-Path $logRoot 'real_acceptance_codex_message.txt'
 & codex exec --json --sandbox danger-full-access --config approval_policy=never --ephemeral --cd $root --output-last-message $messagePath $prompt 1> $eventsPath 2> $progressPath
 if ($LASTEXITCODE -ne 0) { throw "Codex exited with $LASTEXITCODE; see $progressPath" }
-if ((& git rev-parse HEAD).Trim() -eq $headBefore) { throw "Codex did not commit a repair; see $messagePath" }
+$unchanged = (& git rev-parse HEAD).Trim() -eq $headBefore
+if ($unchanged -and $failure.error -notmatch 'LLMConnectionError') {
+    throw "Codex did not commit a repair; see $messagePath"
+}
 if (@(git status --porcelain).Count -gt 0) { throw 'Codex left uncommitted changes' }
 
 foreach ($check in @(
