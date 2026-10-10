@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from translate.models.artifacts import FixResult, ReviewResult, RevisionOutcome
@@ -78,15 +79,29 @@ def _rejection_reason(  # noqa: PLR0911
         return "duplicate_edit"
     if any(not edit.text.strip() for edit in revision.edits):
         return "empty_text"
-    # 長文の既存訳を一部の言い換えだけで全文置換しない。
+    # 既存訳の大幅な縮小・説明文への膨張と、数値・日本語本文の消失を防ぐ。
     for edit in revision.edits:
-        current = next(
-            span.text("translated").strip()
-            for span in unit.spans
-            if span.id == edit.span_id
-        )
-        if len(current) >= 20 and len(edit.text.strip()) * 2 < len(current):
+        span = next(span for span in unit.spans if span.id == edit.span_id)
+        current = span.text("translated").strip()
+        proposed = edit.text.strip()
+        if len(current) >= 80 and len(proposed) * 4 < len(current) * 3:
             return "excessive_shortening"
+        if len(current) >= 20 and len(proposed) * 2 < len(current):
+            return "excessive_shortening"
+        if len(current) >= 40 and len(proposed) * 2 > len(current) * 3:
+            return "excessive_expansion"
+        if (
+            re.search(r"[\u3040-\u30ff\u3400-\u9fff]", current)
+            and re.search(r"[A-Za-z]", span.source)
+            and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", proposed)
+        ):
+            return "lost_japanese_translation"
+        if (
+            re.fullmatch(r"[\d,.$%+\-()\s]+", span.source.strip())
+            and re.search(r"\d", span.source)
+            and proposed != span.source.strip()
+        ):
+            return "numeric_value_changed"
     if any(span_id in changed_spans for span_id in edit_ids):
         return "conflicting_edit"
     return None

@@ -634,6 +634,68 @@ def test_fix_rejects_revision_that_discards_most_of_translation(
     assert result.outcomes[0].reason_code == "excessive_shortening"
 
 
+@pytest.mark.parametrize(
+    ("source", "translated", "proposed", "reason"),
+    [
+        (
+            "Accelerating Assistance to Energy Employees",
+            "エネルギー関係者に対する支援を加速",
+            "$43 million",
+            "lost_japanese_translation",
+        ),
+        (
+            "maintain the safety of nuclear weapons stockpile",
+            "核兵器備蓄の安全性を維持する。" * 5,
+            "原文の訳語について説明すべきである。" * 9,
+            "excessive_expansion",
+        ),
+        (
+            "A long paragraph about the program",
+            "日本語の本文です。" * 30,
+            "日本語の本文です。" * 18,
+            "excessive_shortening",
+        ),
+        ("7,434", "7,434", "7,436", "numeric_value_changed"),
+    ],
+)
+def test_fix_rejects_revision_that_corrupts_translation(
+    source: str, translated: str, proposed: str, reason: str
+) -> None:
+    """Review候補が日本語・本文量・表の数値を壊す場合は元の訳を保持する。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", source, translated),
+                    )
+                ],
+            )
+        ]
+    )
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="bad",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text=proposed)],
+            )
+        ],
+    )
+
+    result = apply_revisions(document, review)
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised is None
+    assert span.translated == translated
+    assert result.outcomes[0].reason_code == reason
+
+
 def test_report_explains_zero_aligned_targets(tmp_path: Path) -> None:
     """対応0件の報告を、翻訳品質の指摘なしと誤認させない。"""
 
