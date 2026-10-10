@@ -24,7 +24,7 @@ uv sync --dev
 Copy-Item .env.sample .env
 ```
 
-`.env`には、単一のOpenAI互換endpoint、Task別model、Docling Serveなど、
+`.env`には、OpenAI互換endpoint、Task別model、Docling Serveなど、
 利用する外部serviceの接続情報を設定してください。process環境変数は`.env`より
 優先されます。Qdrant関連設定を一式省略すると、TranslateとReviewのRAG検索は
 無効になります。
@@ -124,6 +124,27 @@ CLIではRegister、Translate、WordによるDOCXからPDFへの変換、Review�
 Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge、pushは実行しません。
 既存の未コミット変更は診断Bundleへ記録し、修正対象と分離して保持します。
 修正結果は`.diagnostics/`のBundleに保存されます。
+
+### 🧪 実PDFの連続検証
+
+`scripts/real_acceptance.ps1`は`sample3 → sample2 → sample5 → sample4`の順に、
+各PDFを実際のStreamlit画面とCLIで`register → translate → review → upgrade`します。
+各工程はUI、CLIの順です。`sample2`は依頼時の`ssample2`に対応する実ファイル名です。
+画面は`127.0.0.1:8502`を使い、未起動なら自動起動します。
+翻訳DOCXはMicrosoft WordでPDFに変換してReviewとUpgradeへ渡します。
+
+```powershell
+# 実ファイル、ブラウザー、Wordの検証を開始する。
+.\scripts\real_acceptance.ps1
+```
+
+進行状況は`.tmp/real_acceptance_state.json`、直近のコマンド出力は
+`.tmp/real_acceptance_command.log`に保存します。失敗時は
+`.tmp/real_acceptance_failure.json`を作成してCodex CLIで修正・コミットし、
+品質検査後に検証スクリプトをバックグラウンドで再起動します。
+接続先の一時停止による`LLMConnectionError`では、コードを変更せず再検証します。
+同じ工程で4回目の失敗になった場合は自動修正を停止します。
+全件成功後、PR #5のCIを確認してマージコミットで`main`へ統合・pushします。
 
 ## 🧭 設計資料
 

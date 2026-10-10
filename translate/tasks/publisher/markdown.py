@@ -253,6 +253,10 @@ def _pandoc_plain(unit: TextUnit | None) -> dict[str, object]:
     """
 
     text = unit.text() if unit is not None else ""
+    text = re.sub(r"\s+[.…。]{6,}\s*$", "", text)
+    # Pandocは単独のem dashを---へ変換し、次の変換で水平線として解釈する。
+    if text == "—":
+        text = "-"
     return {"t": "Plain", "c": [{"t": "Str", "c": text}] if text else []}
 
 

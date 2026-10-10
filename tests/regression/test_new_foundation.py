@@ -217,6 +217,31 @@ def test_partial_qdrant_settings_are_rejected() -> None:
         config.qdrant_enabled()
 
 
+def test_generation_endpoint_does_not_replace_embedding_endpoint() -> None:
+    """生成専用URLだけでTranslateとReviewを許可し、Registerには既定URLを要求する。"""
+
+    config = Config(
+        openai_llm_base_url="http://generation",
+        openai_structure_model="model",
+        openai_translation_model="model",
+        openai_review_model="model",
+        docling_server_url="http://docling",
+    )
+
+    config.require_translate("llm")
+    config.require_review()
+    with pytest.raises(ConfigError, match="Register settings are incomplete"):
+        config.require_register()
+    with pytest.raises(ConfigError, match="RAG requires OPENAI_BASE_URL"):
+        config.model_copy(
+            update={
+                "openai_embedding_model": "embedding",
+                "qdrant_uri": "http://qdrant",
+                "qdrant_collection": "reference",
+            }
+        ).qdrant_enabled()
+
+
 def test_qdrant_registration_uses_bounded_upload_batches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -288,9 +313,9 @@ def test_llm_payload_uses_non_thinking_sampling() -> None:
         image=None,
     )
 
-    assert "reasoning_effort" not in payload
+    assert payload["reasoning_effort"] == "none"
     assert "thinking_budget_tokens" not in payload
-    assert payload["temperature"] == 0.0
+    assert payload["temperature"] == 0.7
     assert payload["top_p"] == 0.8
     assert payload["extra_body"] == {
         "top_k": 20,
@@ -325,25 +350,25 @@ def test_llm_rejects_oversized_complete_prompt_before_http() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "message", ["maximum context length exceeded", "Context size has been exceeded."]
+)
 def test_llm_classifies_provider_context_error_for_task_splitting(
     monkeypatch: pytest.MonkeyPatch,
+    message: str,
 ) -> None:
     """endpointのcontext超過HTTP 400を通常のLLM失敗と区別する。"""
 
     response = httpx2.Response(
         400,
-        json={"error": {"message": "maximum context length exceeded"}},
+        json={"error": {"message": message}},
         request=httpx2.Request("POST", "http://llm/chat/completions"),
     )
     client = LLMClient(Config(openai_base_url="http://llm"))
     monkeypatch.setattr(
         client.client.chat.completions,
         "create",
-        MagicMock(
-            side_effect=BadRequestError(
-                "maximum context length exceeded", response=response, body=None
-            )
-        ),
+        MagicMock(side_effect=BadRequestError(message, response=response, body=None)),
     )
 
     with pytest.raises(LLMInputExceededError, match="providerのcontext"):
@@ -361,13 +386,20 @@ def test_llm_classifies_provider_context_error_for_task_splitting(
 
 
 @pytest.mark.parametrize(
-    ("api_key", "expected_auth"),
-    [(None, None), ("test-key", "Bearer test-key")],
+    ("api_key", "llm_endpoint", "expected_auth", "expected_host"),
+    [
+        (None, (None, None), None, "llm"),
+        ("test-key", (None, None), "Bearer test-key", "llm"),
+        ("proxy-key", ("http://direct", None), None, "direct"),
+        ("proxy-key", ("http://direct", "direct-key"), "Bearer direct-key", "direct"),
+    ],
 )
 def test_llm_sdk_sends_compatible_payload_and_auth(
     monkeypatch: pytest.MonkeyPatch,
     api_key: str | None,
+    llm_endpoint: tuple[str | None, str | None],
     expected_auth: str | None,
+    expected_host: str,
 ) -> None:
     """SDK経由の互換要求で認証headerを設定どおり送る。"""
 
@@ -377,6 +409,7 @@ def test_llm_sdk_sends_compatible_payload_and_auth(
         """送信headerと本文を記録し、正常なChatCompletionを返す。"""
 
         seen["authorization"] = request.headers.get("Authorization")
+        seen["host"] = request.url.host
         seen["payload"] = json.loads(request.content)
         return httpx2.Response(
             200,
@@ -413,7 +446,14 @@ def test_llm_sdk_sends_compatible_payload_and_auth(
         )
 
     monkeypatch.setattr("translate.adapters.llm.OpenAI", make_client)
-    client = LLMClient(Config(openai_base_url="http://llm", openai_api_key=api_key))
+    client = LLMClient(
+        Config(
+            openai_base_url="http://llm",
+            openai_api_key=api_key,
+            openai_llm_base_url=llm_endpoint[0],
+            openai_llm_api_key=llm_endpoint[1],
+        )
+    )
     result = client.structured(
         task="TRANSLATE",
         model="model",
@@ -428,10 +468,12 @@ def test_llm_sdk_sends_compatible_payload_and_auth(
     assert result.output_tokens == 4
     assert seen["max_retries"] == 0
     assert seen["authorization"] == expected_auth
+    assert seen["host"] == expected_host
     payload = seen["payload"]
     assert isinstance(payload, dict)
     assert payload["repetition_penalty"] == 1.01
     assert payload["max_tokens"] == 128
+    assert payload["reasoning_effort"] == "none"
 
 
 def test_llm_reports_output_token_limit_with_setting(

@@ -43,6 +43,13 @@ def create_report(
         ]
         or ["なし"]
     )
+    if not alignment.targets:
+        lines.extend(
+            [
+                "",
+                "原文と訳文を対応付けられなかったため、翻訳品質の比較は実施していません。",
+            ]
+        )
     lines.extend(["", "## Alignment", ""])
     lines.extend(
         f"- {group.id}: {group.kind} ({group.method}) source={', '.join(group.source_ids) or '-'} translation={', '.join(group.translation_ids) or '-'}"

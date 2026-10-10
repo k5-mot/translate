@@ -529,6 +529,7 @@ SPLIT → DOCLING → UNPACK → MERGE
 - `ReviewResult.revisions` が空の場合はFIXを省略する。
 - REVIEWが失敗した場合はpublisherへ進まない。
 - FIXはRevision単位で原子的に適用する。Revision内の一つでもEditが不正な場合、そのRevision全体を適用しない。
+- FIXは20文字以上の既存訳を半分未満へ縮めるEditを拒否し、部分訳による本文の上書きを防ぐ。
 - 一つのRevisionの失敗は、他の有効なRevisionの適用を妨げない。
 - FIX後またはFIX省略後に、同じ決定的規則で最終CHECKを実行して `final-findings.json` を保存する。残存する `empty_translation` はPipeline全体を `empty_translation` として失敗させ、LINT以降を開始しない。`extreme_short` と `extreme_long` だけでは公開を停止しない。
 - LINTはDocumentを変更せず、翻訳品質も判定しない。
@@ -558,7 +559,7 @@ REPORTは `review.md` に次のsectionを順番に出力する。
 3. CHECKおよびREVIEWのFinding
 4. REVIEWの修正候補について、対象ID、現在訳および提案訳
 
-Findingと修正候補がない場合も、該当sectionへ「なし」と明記する。raw promptおよびraw LLM応答はREPORTへ含めない。
+Findingと修正候補がない場合も、該当sectionへ「なし」と明記する。対応する `ReviewTarget` が0件の場合は、翻訳品質の比較を実施していないことを件数sectionへ明記する。raw promptおよびraw LLM応答はREPORTへ含めない。
 
 ### 🧹 LINTとCOVER
 
@@ -636,23 +637,25 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 
 ### 🧠 生成LLM
 
-生成LLMは単一のOpenAI互換endpointを使用し、OpenAI Python clientで `POST /chat/completions` を呼び出す。
+生成LLMはOpenAI Python clientで `POST /chat/completions` を呼び出す。既定ではEmbeddingと同じ `OPENAI_BASE_URL` を使い、必要な場合だけ `OPENAI_LLM_BASE_URL` で生成専用endpointを指定できる。
 
 必要な環境変数は次のとおりとする。
 
 - `OPENAI_BASE_URL`
 - `OPENAI_API_KEY`: 任意。空の場合はAuthorization headerを送信しない
+- `OPENAI_LLM_BASE_URL`: 任意。指定すると生成LLMだけ接続先を変更する
+- `OPENAI_LLM_API_KEY`: 任意。生成専用endpointの認証に使う。`OPENAI_LLM_BASE_URL` 指定時に `OPENAI_API_KEY` は継承しない
 - `OPENAI_STRUCTURE_MODEL`
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-生成LLMのChat Completions要求にはOpenAI Python clientを使用する。`OPENAI_API_KEY` が設定されている場合は `Authorization: Bearer <key>` を送信する。要求は `temperature=0`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、endpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
+生成LLMのChat Completions要求には選択したendpointのAPI keyだけを送信する。要求は `reasoning_effort="none"`、`temperature=0.7`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、実行時のendpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
 ### 🧮 Embedding
 
-Embeddingは生成LLMと同じ `OPENAI_BASE_URL` の `POST /embeddings` をOpenAI Python clientで呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。SDK内の再試行は無効にし、接続・timeout・HTTPエラーを原因と対策付きで表示する。
+Embeddingは `OPENAI_BASE_URL` の `POST /embeddings` をOpenAI Python clientで呼び出し、`OPENAI_EMBEDDING_MODEL` を使用する。SDK内の再試行は無効にし、接続・timeout・HTTPエラーを原因と対策付きで表示する。
 
 - 1batchは16件に固定する。
 - 応答vectorの件数、次元および全要素が有限値であることを検査する。
@@ -771,6 +774,8 @@ collectionが存在しない場合は、最初のEmbedding vectorの次元とCos
 - `embedding_model`
 
 RAG検索は上位5件に固定し、score閾値は設けない。生成LLMの入力上限へ収まらない場合は順位の低い結果から除外する。実際に採用した検索結果のPoint IDと `content_sha256` をLLM Call fingerprintへ含める。
+
+REVIEWは対象を分割する際、JSON外枠の容量も入力予算へ含める。対象が収まらない場合はRAG結果、用語集、LLMへ渡す既知のCHECK指摘の順に省く。CHECKの成果物自体は保持し、対象の原文と訳文は省略しない。
 
 RAGはTRANSLATEとREVIEWだけで使用し、STRUCTUREでは使用しない。各LLM Callが対象とする英語原文を対象ID順にLFで連結し、Embeddingした値を検索queryとする。英語原文が空の場合は検索しない。検索結果はscore降順でpromptへ追加し、同scoreではPoint ID順とする。
 
@@ -947,7 +952,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 
 LLM応答モデルはTaskごとに `StructureResponse`、`TranslationResponse` および `ReviewResponse` を定義する。これらは永続化モデルから分離し、必要な差分だけを表す。
 
-生成LLMには単一のOpenAI互換endpointだけを使用する。複数endpointの切替、振り分け、failoverおよびendpoint別設定はスコープ外とする。
+生成LLMは一つのOpenAI互換endpointを使用する。Embeddingと別のendpointを設定できるが、model別の振り分け、実行時の切替およびfailoverはスコープ外とする。
 
 ### 💾 LLM Call進捗とResume
 
@@ -1037,6 +1042,7 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 
 `level`、`alert_kind` および `caption_source_id` は該当する変更がない場合に省略できる。Pydantic検証後、既存Blockと整合するpatchだけを適用する。
 `caption` は `BlockKind` ではない。LLMが `kind="caption"` を返した場合は応答全体を失敗させず、そのpatchの `kind` だけを未指定として扱う。Captionの関連付けには `caption_source_id` を使用する。
+対象の図表に既存Captionがある場合は、`caption_source_id` による移動を適用せず、既存Captionと移動元本文を保持して診断情報へ記録する。
 
 Doclingが異なる開始位置のセルへ重複する結合範囲を返した場合、LOADは競合したセルだけを1行1列へ縮退し、各セルの開始位置と本文を保持する。正常な結合セルは変更しない。
 表と画像が一部だけ重なり、親参照またはセル参照による所属根拠がない場合、LOADは画像を表へ移さず独立した図として保持する。明示的な所属根拠と座標が矛盾する場合は処理を失敗させる。
@@ -1045,6 +1051,7 @@ Doclingが異なる開始位置のセルへ重複する結合範囲を返した�
 ### 🌐 TRANSLATE
 
 - 応答は `span_id` と翻訳後の `text` だけを含む。
+- 各LLM Callの `target_ids` に含まれない `span_id` の訳文は、文書へ適用せず診断情報へ記録する。他のCallの対象IDでも上書きしない。
 - `code` と `line_break` はLLMへ送信しない。
 - 応答に存在しないIDと、`text.strip()` が空になるIDを未完了対象として扱い、有効な応答を `partial` として保存して対象IDだけを1回再送する。
 - 部分再送後も空の翻訳はDocumentへ保持し、CHECK、REVIEWおよびFIXの対象とする。同じIDだけを無制限に再送してはならない。
@@ -1067,8 +1074,8 @@ Doclingが異なる開始位置のセルへ重複する結合範囲を返した�
 1. 接続失敗、timeoutおよびrate limitは、安全上限内の指数backoffで再試行する。
 2. Schema不正は検証エラーを渡して1回だけ再試行する。
 3. 送信前検査、HTTP 400/413のcontext超過、または出力超過は同じ要求を繰り返さず、対象を分割する。
-4. TRANSLATEの欠落IDと空訳IDは対象分だけ1回再送する。
-5. 最小単位でも成功しない場合はそのTaskを失敗とする。
+4. TRANSLATEの欠落IDと空訳IDは対象分だけ1回再送し、なお欠落する場合は対象を半分ずつ分割する。部分応答のみのCallは再開時に再送する。
+5. 最小単位でも成功しない場合は空訳を確定せず、そのTaskを失敗とする。
 6. 成功したLLM CallはArtifactとして直ちに保存し、Task完了前に停止しても再開時に再利用する。
 7. LLMによる追加の検証処理は行わない。
 
@@ -1312,6 +1319,7 @@ FIXは `ReviewResult.revisions` の順序でRevisionを処理し、次の規則�
 - 未知の `span_id`、または対象 `TextUnit` に属さない `span_id` はRevision全体を `unknown_span` で拒否する。
 - 同じRevision内で同じ `span_id` が複数回現れる場合はRevision全体を `duplicate_edit` で拒否する。
 - `text.strip()` が空になるEditを含む場合はRevision全体を `empty_text` で拒否する。
+- 既存訳が20文字以上で、提案訳が既存訳の半分未満となるEditを含む場合はRevision全体を `excessive_shortening` で拒否する。
 - 先に適用したRevisionと同じ `span_id` を変更するEditを一つでも含む場合は、後のRevision全体を `conflicting_edit` で拒否する。先に適用したRevisionを巻き戻さない。
 - すべてのEditが有効なRevisionだけを原子的に適用し、`TextEdit.text` を対応する `TextSpan.revised` へそのまま設定する。
 

@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 import zipfile
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image as PILImage
 
-from translate.adapters.llm import LLMInputExceededError, StructuredResult
+from translate.adapters.llm import (
+    LLMClient,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    StructuredResult,
+)
 from translate.common.config import Config
 from translate.glossary import relevant_glossary
-from translate.models.artifacts import CheckResult, ReviewResult
+from translate.models.artifacts import AlignmentResult, CheckResult, ReviewResult
 from translate.models.document import (
     Block,
     Document,
@@ -21,8 +27,18 @@ from translate.models.document import (
     TableCell,
     TextSpan,
     TextUnit,
+    iter_text_units,
 )
-from translate.models.review import ReviewResponse, ReviewTarget, Revision, TextEdit
+from translate.models.review import (
+    AlignmentGroup,
+    ReviewFinding,
+    ReviewResponse,
+    ReviewRevision,
+    ReviewTarget,
+    ReviewTextEdit,
+    Revision,
+    TextEdit,
+)
 from translate.tasks.converter.unpack import _validate_entries
 from translate.tasks.preprocess.load import (
     _assign_cell_images,
@@ -45,11 +61,22 @@ from translate.tasks.preprocess.structure import (
 )
 from translate.tasks.publisher.lint import lint
 from translate.tasks.publisher.markdown import convert_block
+from translate.tasks.publisher.report import create_report
 from translate.tasks.review.align import align
 from translate.tasks.review.check import check, targets_from_document
 from translate.tasks.review.fix import apply_revisions
 from translate.tasks.review.review import _chunks as review_chunks
 from translate.tasks.review.review import _execute as execute_review
+from translate.tasks.review.review import _user_payload as review_user_payload
+from translate.tasks.review.review import review as run_review
+from translate.tasks.translation.translate import (
+    TranslationItem,
+    TranslationResponse,
+    _plausible_translation,
+)
+from translate.tasks.translation.translate import _execute as execute_translation
+from translate.tasks.translation.translate import _schema as translation_schema
+from translate.tasks.translation.translate import translate as run_translation
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -68,6 +95,458 @@ def _unit(identifier: str, source: str, translated: str | None = None) -> TextUn
             )
         ],
     )
+
+
+def test_translation_splits_missing_ids_after_retry(tmp_path: Path) -> None:
+    """一括応答で欠けた訳を再送・分割し、全対象の訳を集める。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    responses = [
+        [("a", "訳A"), ("b", "訳B")],
+        [],
+        [("c", "訳C")],
+        [("d", "訳D")],
+    ]
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id=key, text=value) for key, value in items
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+            for items in responses
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = execute_translation(
+        client=client,
+        config=config,
+        spans=[TextSpan(id=key, source=key) for key in "abcd"],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert structured.call_count == 4
+    assert {
+        item.span_id: item.text
+        for _, response in calls
+        for item in response.translations
+    } == {"a": "訳A", "b": "訳B", "c": "訳C", "d": "訳D"}
+
+
+def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
+    """最小単位の再送後も訳が欠けたら空訳を確定せず失敗する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    structured = MagicMock(
+        return_value=StructuredResult(
+            response=TranslationResponse(translations=[]),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    with pytest.raises(LLMInvalidResponseError, match="span-a"):
+        execute_translation(
+            client=client,
+            config=config,
+            spans=[TextSpan(id="span-a", source="A")],
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            lineage=["chunk-0000"],
+            depth=0,
+            allow_missing_retry=True,
+            diagnostics=[],
+            previous_context={},
+        )
+
+    assert structured.call_count == 2
+
+
+def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> None:
+    """分割済みCallの欠落一件を単独で再送して訳文を回収する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id="a", text="訳A"),
+                        TranslationItem(span_id="b", text=""),
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(translations=[]),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[TranslationItem(span_id="b", text="訳B")]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = execute_translation(
+        client=client,
+        config=config,
+        spans=[TextSpan(id=key, source=key) for key in "ab"],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000", "missing"],
+        depth=1,
+        allow_missing_retry=False,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert structured.call_count == 3
+    assert {
+        item.span_id: item.text
+        for _, response in calls
+        for item in response.translations
+        if item.text
+    } == {"a": "訳A", "b": "訳B"}
+
+
+@pytest.mark.parametrize(
+    ("source", "english_only"),
+    [
+        ("ity disruptions.", "electricity disruptions."),
+        (
+            (
+                "Providing Incentives for Renewable Energy "
+                "and Hybrid and Fuel Cell Vehicles"
+            ),
+            "Renewable Energy and Hybrid and Fuel Cell Vehicles Incentives",
+        ),
+        ("Naval Reactors", "-Naval Reactors\uff08 naval reactor\uff09"),
+    ],
+)
+def test_translation_rejects_english_only_paraphrase(
+    source: str, english_only: str
+) -> None:
+    """英語で言い換えただけの応答を日本語訳として採用しない。"""
+
+    assert not _plausible_translation(source, english_only)
+    assert _plausible_translation(source, "日本語の訳文")
+
+
+@pytest.mark.parametrize("invalid", ["omitted", "echo", "near_echo", "heading", "long"])
+def test_translation_retries_implausible_text_in_prompt_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid: str,
+) -> None:
+    """省略・丸写し・異常に長い訳を単独のprompt方式で再翻訳する。"""
+
+    source = (
+        "THE BIG PICTURE"
+        if invalid == "heading"
+        else (
+            "The command and control system collects and transports information "
+            "to support the joint force commander. "
+        )
+        * 2
+    )
+    bad = {
+        "omitted": "(省略)",
+        "echo": source,
+        "near_echo": source[1:],
+        "heading": source,
+        "long": "余計な内容" * 300,
+    }[invalid]
+    good = (
+        "指揮統制システムは統合部隊司令官を支援するため、"
+        "情報を収集し、必要な場所へ確実に伝達する。"
+    )
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=bad)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    fallback = MagicMock()
+    fallback.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=good)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    modes: list[str] = []
+
+    def fallback_client(config: Config) -> MagicMock:
+        """Fallbackがprompt方式だけで作られることを記録する。"""
+
+        modes.append(config.llm_structured_output_mode)
+        return fallback
+
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient", fallback_client
+    )
+    calls = execute_translation(
+        client=initial,
+        config=Config(openai_base_url="http://llm", openai_translation_model="model"),
+        spans=[TextSpan(id="span-a", source=source)],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert modes == ["prompt"]
+    assert initial.structured.call_count == fallback.structured.call_count == 1
+    assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
+
+
+def test_translation_rechecks_cached_english_echo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """保存済み応答も現行の品質判定に通らなければ再翻訳する。"""
+
+    source = "THE BIG PICTURE"
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=source)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    corrected = MagicMock()
+    corrected.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text="全体像")]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    kwargs = {
+        "config": config,
+        "spans": [TextSpan(id="span-a", source=source)],
+        "task_directory": tmp_path,
+        "rules": "",
+        "glossary": "",
+        "lineage": ["chunk-0000"],
+        "depth": 0,
+        "allow_missing_retry": True,
+        "diagnostics": [],
+        "previous_context": {},
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            "translate.tasks.translation.translate._plausible_translation",
+            MagicMock(return_value=True),
+        )
+        execute_translation(client=initial, **kwargs)
+
+    calls = execute_translation(client=corrected, **kwargs)
+    assert initial.structured.call_count == corrected.structured.call_count == 1
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text="全体像")
+    ]
+
+
+@pytest.mark.parametrize("leader_length", [7, 64])
+def test_translation_retries_dot_leader_heading_without_losing_leader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leader_length: int
+) -> None:
+    """目次の点線をLLMへ渡さず、英語の丸写しを再翻訳して点線を戻す。"""
+
+    prefix = "Energy Resources"
+    leader = " " + "." * leader_length
+    source = prefix + leader
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="unit/span-0001", text=prefix)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    fallback = MagicMock()
+    fallback.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[
+                TranslationItem(span_id="unit/span-0001", text="エネルギー資源")
+            ]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+
+    def fake_client(config: Config) -> MagicMock:
+        """再翻訳時だけprompt方式のClientを返す。"""
+
+        return fallback if config.llm_structured_output_mode == "prompt" else initial
+
+    monkeypatch.setattr("translate.tasks.translation.translate.LLMClient", fake_client)
+    rag = MagicMock(side_effect=AssertionError("点線付き見出しにRAGは不要"))
+    monkeypatch.setattr("translate.tasks.translation.translate._rag_context", rag)
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", source),
+                    )
+                ],
+            )
+        ]
+    )
+    result = run_translation(
+        document,
+        tmp_path / "translation",
+        tmp_path,
+        Config(openai_base_url="http://llm", openai_translation_model="model"),
+        "",
+        "Energy Resources,エネルギー資源",
+    )
+
+    assert result.pages[0].blocks[0].content.spans[0].source == source
+    assert result.pages[0].blocks[0].content.spans[0].translated == (
+        "エネルギー資源" + leader
+    )
+    assert (
+        json.loads(initial.structured.call_args.kwargs["user"])["items"][0]["source"]
+        == prefix
+    )
+    assert (
+        json.loads(fallback.structured.call_args.kwargs["user"])["items"][0]["source"]
+        == prefix
+    )
+    assert json.loads(initial.structured.call_args.kwargs["user"])["glossary"] == ""
+    rag.assert_not_called()
+
+
+def test_translation_native_schema_requires_nonempty_items() -> None:
+    """Native Schemaが対象件数と空でない訳文を制約する。"""
+
+    schema = translation_schema(2)
+    translations = schema["properties"]["translations"]  # type: ignore[index]
+    items = translations["items"]  # type: ignore[index]
+
+    assert translations["minItems"] == translations["maxItems"] == 2
+    assert items["properties"]["text"]["minLength"] == 1  # type: ignore[index]
+
+
+def test_translation_ignores_ids_from_other_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """別Callの有効なSpan IDが応答に混入しても既存訳を上書きしない。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block-a", order=0, kind="paragraph", content=_unit("a", "A")
+                    ),
+                    Block(
+                        id="block-b", order=1, kind="paragraph", content=_unit("b", "B")
+                    ),
+                ],
+            )
+        ]
+    )
+    responses = [
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="a/span-0001", text="正しいA"),
+                TranslationItem(span_id="b/span-0001", text="誤訳B"),
+            ]
+        ),
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="b/span-0001", text="正しいB"),
+                TranslationItem(span_id="a/span-0001", text="誤訳A"),
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        LLMClient,
+        "structured",
+        MagicMock(
+            side_effect=[
+                StructuredResult(
+                    response=response,
+                    attempts=1,
+                    input_tokens=10,
+                    output_tokens=10,
+                )
+                for response in responses
+            ]
+        ),
+    )
+
+    result = run_translation(
+        document,
+        tmp_path / "translation",
+        tmp_path,
+        Config(
+            openai_base_url="http://llm",
+            openai_translation_model="model",
+            translate_max_units=1,
+        ),
+        "",
+        "",
+    )
+
+    assert [unit.spans[0].translated for _, unit in iter_text_units(result)] == [
+        "正しいA",
+        "正しいB",
+    ]
+    diagnostics = json.loads((tmp_path / "task-translate.json").read_text())
+    assert sum("unexpected_span" in item for item in diagnostics["diagnostics"]) == 2
 
 
 def test_check_only_reports_empty_and_extreme_lengths() -> None:
@@ -136,6 +615,135 @@ def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
         "applied",
         "conflicting_edit",
     ]
+
+
+@pytest.mark.parametrize("repeat", [5, 12])
+def test_fix_rejects_revision_that_discards_most_of_translation(
+    repeat: int,
+) -> None:
+    """既存訳の大半を短い断片へ置換する候補を文書へ適用しない。"""
+
+    original = "これは既存の翻訳文です。" * repeat
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", "source", original),
+                    )
+                ],
+            )
+        ]
+    )
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="short",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text="一文だけ。")],
+            )
+        ],
+    )
+
+    result = apply_revisions(document, review)
+
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised is None
+    assert span.translated == original
+    assert result.outcomes[0].reason_code == "excessive_shortening"
+
+
+@pytest.mark.parametrize(
+    ("source", "translated", "proposed", "reason"),
+    [
+        (
+            "Accelerating Assistance to Energy Employees",
+            "エネルギー関係者に対する支援を加速",
+            "$43 million",
+            "lost_japanese_translation",
+        ),
+        (
+            "maintain the safety of nuclear weapons stockpile",
+            "核兵器備蓄の安全性を維持する。" * 5,
+            "原文の訳語について説明すべきである。" * 9,
+            "excessive_expansion",
+        ),
+        (
+            "A long paragraph about the program",
+            "日本語の本文です。" * 30,
+            "日本語の本文です。" * 18,
+            "excessive_shortening",
+        ),
+        ("7,434", "7,434", "7,436", "numeric_value_changed"),
+    ],
+)
+def test_fix_rejects_revision_that_corrupts_translation(
+    source: str, translated: str, proposed: str, reason: str
+) -> None:
+    """Review候補が日本語・本文量・表の数値を壊す場合は元の訳を保持する。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", source, translated),
+                    )
+                ],
+            )
+        ]
+    )
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="bad",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text=proposed)],
+            )
+        ],
+    )
+
+    result = apply_revisions(document, review)
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised is None
+    assert span.translated == translated
+    assert result.outcomes[0].reason_code == reason
+
+
+def test_report_explains_zero_aligned_targets(tmp_path: Path) -> None:
+    """対応0件の報告を、翻訳品質の指摘なしと誤認させない。"""
+
+    output = tmp_path / "review.md"
+    create_report(
+        AlignmentResult(
+            groups=[
+                AlignmentGroup(
+                    id="alignment-000001",
+                    source_ids=["source"],
+                    kind="source_only",
+                    method="unmatched",
+                )
+            ],
+            targets=[],
+        ),
+        CheckResult(findings=[]),
+        ReviewResult(findings=[], revisions=[]),
+        output,
+    )
+
+    report = output.read_text(encoding="utf-8")
+    assert "翻訳品質の比較は実施していません。" in report
+    assert "source_only (unmatched)" in report
 
 
 def test_align_uses_unique_figure_anchor_and_leaves_role_mismatch_unmatched() -> None:
@@ -230,6 +838,36 @@ def test_markdown_alert_uses_bundled_word_style_name() -> None:
     assert value == (
         '::: {custom-style="Note / 注記"}\n**NOTE:** Reference details\\.\n:::'
     )
+
+
+def test_markdown_table_removes_dot_leaders_and_preserves_missing_value() -> None:
+    """表の装飾点線を除き、欠損値のダッシュを水平線へ変えない。"""
+
+    block = Block(
+        id="table",
+        order=0,
+        kind="table",
+        cells=[
+            TableCell(
+                id="label",
+                row=0,
+                column=0,
+                content=_unit("label/content", "Revenue ........"),
+            ),
+            TableCell(
+                id="value",
+                row=0,
+                column=1,
+                content=_unit("value/content", "—"),
+            ),
+        ],
+    )
+
+    value = convert_block(block, 30.0)
+
+    assert "Revenue" in value
+    assert "........" not in value
+    assert "\\-" in value
 
 
 def test_load_converts_minimal_docling_document() -> None:
@@ -518,6 +1156,50 @@ def test_structure_rejects_kind_without_required_block_content() -> None:
     assert diagnostics == ["call invalid_kind table code"]
 
 
+def test_structure_preserves_existing_image_caption() -> None:
+    """既存Captionと本文を、誤ったcaption移動patchで失わない。"""
+
+    figure = Block(
+        id="figure",
+        order=0,
+        kind="figure",
+        image=Image(
+            id="image",
+            asset_path="image.png",
+            caption=_unit("existing-caption", "Original caption"),
+        ),
+    )
+    paragraph = Block(
+        id="paragraph",
+        order=1,
+        kind="paragraph",
+        content=_unit("paragraph-content", "Unrelated body text"),
+    )
+    page = Page(number=1, blocks=[figure, paragraph])
+    diagnostics: list[str] = []
+
+    _apply_page(
+        page,
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=[
+                        StructurePatch(block_id="figure", caption_source_id="paragraph")
+                    ]
+                ),
+            )
+        ],
+        diagnostics,
+    )
+
+    assert figure.image is not None
+    assert figure.image.caption is not None
+    assert figure.image.caption.id == "existing-caption"
+    assert [block.id for block in page.blocks] == ["figure", "paragraph"]
+    assert diagnostics == ["call caption_already_present figure"]
+
+
 def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     """ページ境界のlevel=1誤補正をDocling初期levelへ戻す。"""
 
@@ -709,6 +1391,157 @@ def test_review_chunks_keep_one_large_translated_span_intact() -> None:
     assert len(parts) > 1
     assert "".join(part.source for part in parts) == target.source
     assert [item.id for part in parts for item in part.spans] == [span.id]
+
+
+def test_review_reserves_json_envelope_for_split_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """分割対象が本文予算を使い切ってもJSON外枠を含む要求が収まる。"""
+
+    class Client:
+        def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
+            """実要求のuser payloadが入力予算内か検査する。"""
+
+            user = values["user"]
+            assert isinstance(user, str)
+            assert len(user.encode("utf-8")) <= 3361
+            return StructuredResult(ReviewResponse(), 1, 100, 10)
+
+    monkeypatch.setattr("translate.tasks.review.review.LLMClient", lambda _: Client())
+    span = TextSpan(id="span", source="x" * 4000, translated="訳" * 800)
+    target = ReviewTarget(
+        id="target",
+        source=span.source,
+        translation=span.text(),
+        target_ids=["unit"],
+        spans=[span],
+    )
+    result = run_review(
+        [target],
+        CheckResult(findings=[]),
+        tmp_path / "review",
+        tmp_path,
+        Config(
+            openai_base_url="http://llm",
+            openai_review_model="model",
+            review_input_tokens=8192,
+        ),
+        "r" * 2783,
+        "",
+    )
+
+    assert result == ReviewResult(findings=[], revisions=[])
+    assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
+
+
+def test_review_discards_identical_model_items(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """同一候補を除き、入力中の別名だけを安全にTextUnit IDへ直す。"""
+
+    finding = ReviewFinding(
+        category="accuracy",
+        severity="error",
+        target_ids=["target"],
+        message="誤訳",
+    )
+    revision = ReviewRevision(
+        target_id="span",
+        edits=[ReviewTextEdit(span_id="span", text="正しい訳")],
+    )
+
+    class Client:
+        def structured(self, **_values: object) -> StructuredResult[ReviewResponse]:
+            """重複と異なる指摘・修正候補を返す。"""
+
+            return StructuredResult(
+                ReviewResponse(
+                    findings=[
+                        finding,
+                        finding,
+                        finding.model_copy(update={"message": "用語違い"}),
+                    ],
+                    revisions=[
+                        revision,
+                        revision,
+                        revision.model_copy(
+                            update={
+                                "target_id": "target",
+                                "edits": [
+                                    ReviewTextEdit(span_id="span", text="別の訳")
+                                ],
+                            }
+                        ),
+                        ReviewRevision(
+                            target_id="other-target",
+                            edits=[ReviewTextEdit(span_id="span", text="誤った対象")],
+                        ),
+                    ],
+                ),
+                1,
+                100,
+                10,
+            )
+
+    monkeypatch.setattr("translate.tasks.review.review.LLMClient", lambda _: Client())
+    target = ReviewTarget(
+        id="target",
+        source="source",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="source", translated="訳")],
+    )
+    other = ReviewTarget(
+        id="other-target",
+        source="other",
+        translation="別訳",
+        target_ids=["other-unit"],
+        spans=[TextSpan(id="other-span", source="other", translated="別訳")],
+    )
+    result = run_review(
+        [target, other],
+        CheckResult(findings=[]),
+        tmp_path / "review",
+        tmp_path,
+        Config(openai_base_url="http://llm", openai_review_model="model"),
+        "",
+        "",
+    )
+
+    assert [item.message for item in result.findings] == ["誤訳", "用語違い"]
+    assert [item.target_ids for item in result.findings] == [["unit"], ["unit"]]
+    assert [item.edits[0].text for item in result.revisions] == [
+        "正しい訳",
+        "別の訳",
+        "誤った対象",
+    ]
+    assert [item.target_id for item in result.revisions] == [
+        "unit",
+        "unit",
+        "other-target",
+    ]
+
+
+def test_review_drops_optional_context_to_fit_target() -> None:
+    """対象を削らず、RAG・用語集・既知指摘を必要時だけ省く。"""
+
+    target = ReviewTarget(
+        id="target",
+        source="source",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="source", translated="訳")],
+    )
+    base = review_user_payload([target], [], "", [], 8192)
+    payload = review_user_payload(
+        [target],
+        [{"message": "finding" * 100}],
+        "term,訳語\n" * 100,
+        [{"text": "reference" * 100}],
+        len(base.encode("utf-8")),
+    )
+
+    assert json.loads(payload) == json.loads(base)
 
 
 def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
