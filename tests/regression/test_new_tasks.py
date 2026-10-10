@@ -72,6 +72,7 @@ from translate.tasks.review.review import review as run_review
 from translate.tasks.translation.translate import (
     TranslationItem,
     TranslationResponse,
+    _plausible_translation,
 )
 from translate.tasks.translation.translate import _execute as execute_translation
 from translate.tasks.translation.translate import _schema as translation_schema
@@ -236,6 +237,29 @@ def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> 
         for item in response.translations
         if item.text
     } == {"a": "訳A", "b": "訳B"}
+
+
+@pytest.mark.parametrize(
+    ("source", "english_only"),
+    [
+        ("ity disruptions.", "electricity disruptions."),
+        (
+            (
+                "Providing Incentives for Renewable Energy "
+                "and Hybrid and Fuel Cell Vehicles"
+            ),
+            "Renewable Energy and Hybrid and Fuel Cell Vehicles Incentives",
+        ),
+        ("Naval Reactors", "-Naval Reactors\uff08 naval reactor\uff09"),
+    ],
+)
+def test_translation_rejects_english_only_paraphrase(
+    source: str, english_only: str
+) -> None:
+    """英語で言い換えただけの応答を日本語訳として採用しない。"""
+
+    assert not _plausible_translation(source, english_only)
+    assert _plausible_translation(source, "日本語の訳文")
 
 
 @pytest.mark.parametrize("invalid", ["omitted", "echo", "near_echo", "heading", "long"])

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -266,7 +265,7 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
 
 
 def _plausible_translation(source: str, translation: str) -> bool:
-    """CHECKと同じ長さ閾値で空訳・極端な長さ差・長文の丸写しを拒否する。"""
+    """空訳・極端な長さ差・英語のままの訳文を拒否する。"""
 
     original, leader = _leader_parts(" ".join(source.split()))
     target, _ = _leader_parts(" ".join(translation.split()))
@@ -280,13 +279,12 @@ def _plausible_translation(source: str, translation: str) -> bool:
         return False
     if len(original) >= 80 and len(target) < len(original) * 0.15:
         return False
-    # OCRで欠けた一文字も丸写しとして拾い、短い断片と数値は除外する。
+    # 言い換えた英語も訳文ではない。短い略語と数値は除外する。
     if (
         len(original) >= 12
         and len(original.split()) >= 2
         and re.search(r"[A-Za-z]", original)
         and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", target)
-        and SequenceMatcher(None, original.casefold(), target.casefold()).ratio() >= 0.9
     ):
         return False
     return not (
