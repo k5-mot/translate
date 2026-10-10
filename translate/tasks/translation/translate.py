@@ -356,17 +356,22 @@ def _execute(
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
     source = "\n".join(_leader_parts(span.source)[0] for span in spans)
+    leader_only = all(_leader_parts(span.source)[1] for span in spans)
     payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
-    selected_glossary = relevant_glossary(
-        glossary,
-        source,
-        maximum_bytes=max(0, payload_budget // 3),
+    selected_glossary = (
+        ""
+        if leader_only
+        else relevant_glossary(
+            glossary,
+            source,
+            maximum_bytes=max(0, payload_budget // 3),
+        )
     )
-    rag = _rag_context(config, source)
+    rag = [] if leader_only else _rag_context(config, source)
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": 4 if any(_leader_parts(span.source)[1] for span in spans) else 3,
+            "schema": 5 if any(_leader_parts(span.source)[1] for span in spans) else 3,
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),

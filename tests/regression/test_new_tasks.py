@@ -338,6 +338,8 @@ def test_translation_retries_dot_leader_heading_without_losing_leader(
         return fallback if config.llm_structured_output_mode == "prompt" else initial
 
     monkeypatch.setattr("translate.tasks.translation.translate.LLMClient", fake_client)
+    rag = MagicMock(side_effect=AssertionError("点線付き見出しにRAGは不要"))
+    monkeypatch.setattr("translate.tasks.translation.translate._rag_context", rag)
     document = Document(
         pages=[
             Page(
@@ -359,7 +361,7 @@ def test_translation_retries_dot_leader_heading_without_losing_leader(
         tmp_path,
         Config(openai_base_url="http://llm", openai_translation_model="model"),
         "",
-        "",
+        "Energy Resources,エネルギー資源",
     )
 
     assert result.pages[0].blocks[0].content.spans[0].source == source
@@ -374,6 +376,8 @@ def test_translation_retries_dot_leader_heading_without_losing_leader(
         json.loads(fallback.structured.call_args.kwargs["user"])["items"][0]["source"]
         == prefix
     )
+    assert json.loads(initial.structured.call_args.kwargs["user"])["glossary"] == ""
+    rag.assert_not_called()
 
 
 def test_translation_native_schema_requires_nonempty_items() -> None:
