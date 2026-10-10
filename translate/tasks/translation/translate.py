@@ -263,6 +263,26 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 1024
 
 
+def _plausible_translation(source: str, translation: str) -> bool:
+    """CHECKと同じ長さ閾値で空訳・極端な長さ差・長文の丸写しを拒否する。"""
+
+    original = " ".join(source.split())
+    target = " ".join(translation.split())
+    if not target:
+        return False
+    if len(original) >= 80 and len(target) < len(original) * 0.15:
+        return False
+    if (
+        len(original) >= 80
+        and len(original.split()) >= 8
+        and original.casefold() == target.casefold()
+    ):
+        return False
+    return not (
+        len(original) > 0 and len(target) >= 100 and len(target) > len(original) * 5
+    )
+
+
 def _execute(
     *,
     client: LLMClient,
@@ -310,7 +330,7 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": 2,
+            "schema": 3,
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),
@@ -389,10 +409,25 @@ def _execute(
         fail_llm_call(call_directory, artifact, error, attempts=1)
         raise
     response = result.response
-    valid_ids = {item.span_id for item in response.translations if item.text.strip()}
-    missing = [span for span in spans if span.id not in valid_ids]
+    translations: dict[str, str] = {}
+    duplicates: set[str] = set()
+    for item in response.translations:
+        if item.span_id in translations:
+            duplicates.add(item.span_id)
+        translations[item.span_id] = item.text
+    missing = [
+        span
+        for span in spans
+        if span.id in duplicates
+        or not _plausible_translation(span.source, translations.get(span.id, ""))
+    ]
+    suspect = [span for span in missing if translations.get(span.id, "").strip()]
+    diagnostics.extend(f"{call_id} untrusted_translation {span.id}" for span in suspect)
+    prompt_fallback = bool(suspect) and config.llm_structured_output_mode != "prompt"
     groups: list[list[TextSpan]] = []
-    if missing and allow_missing_retry:
+    if prompt_fallback:
+        groups = [[span] for span in missing]
+    elif missing and allow_missing_retry:
         groups = [missing]
     elif missing and len(spans) > 1 and depth < config.llm_split_max_depth:
         if len(missing) == 1:
@@ -400,10 +435,17 @@ def _execute(
         else:
             middle = len(missing) // 2
             groups = [missing[:middle], missing[middle:]]
-    child_lineages = [
-        [*lineage, "missing"] if allow_missing_retry else [*lineage, f"missing-{index}"]
-        for index in range(len(groups))
-    ]
+    if prompt_fallback:
+        child_lineages = [
+            [*lineage, f"quality-{index}"] for index in range(len(groups))
+        ]
+    else:
+        child_lineages = [
+            [*lineage, "missing"]
+            if allow_missing_retry
+            else [*lineage, f"missing-{index}"]
+            for index in range(len(groups))
+        ]
     child_ids = [
         llm_call_id("TRANSLATE", [span.id for span in group], child_lineage)
         for group, child_lineage in zip(groups, child_lineages, strict=True)
@@ -422,14 +464,20 @@ def _execute(
     values = [(call_id, response)]
     if missing and not groups:
         raise LLMInvalidResponseError(
-            f"翻訳対象 {missing[0].id} の訳文が返りません。対策: "
-            "modelとLLM_STRUCTURED_OUTPUT_MODEを確認して再開してください。"
+            f"翻訳対象 {missing[0].id} の完全な訳文が得られません。対策: "
+            "翻訳modelとLLM_STRUCTURED_OUTPUT_MODEを確認して再開してください。"
         )
+    retry_config = (
+        config.model_copy(update={"llm_structured_output_mode": "prompt"})
+        if prompt_fallback
+        else config
+    )
+    retry_client = LLMClient(retry_config) if prompt_fallback else client
     for group, child_lineage in zip(groups, child_lineages, strict=True):
         values.extend(
             _execute(
-                client=client,
-                config=config,
+                client=retry_client,
+                config=retry_config,
                 spans=group,
                 task_directory=task_directory,
                 rules=rules,
