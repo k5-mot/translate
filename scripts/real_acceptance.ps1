@@ -52,10 +52,11 @@ function Wait-Record {
 
 function Invoke-Logged {
     param([string[]]$Command)
-    $output = & $Command[0] $Command[1..($Command.Count - 1)] 2>&1
-    $exitCode = $LASTEXITCODE
     $log = Join-Path $root '.tmp/real_acceptance_command.log'
-    $output | Set-Content -LiteralPath $log -Encoding utf8
+    $output = & $Command[0] $Command[1..($Command.Count - 1)] 2>&1 |
+        Tee-Object -FilePath $log |
+        ForEach-Object { Write-Host $_; $_ }
+    $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "Command failed (exit=$exitCode): $($Command -join ' ') log=$log tail=$((@($output) | Select-Object -Last 5) -join ' | ')"
     }
