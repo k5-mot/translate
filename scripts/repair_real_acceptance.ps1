@@ -7,15 +7,7 @@ $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
 $failure = Get-Content -LiteralPath $FailureFile -Raw | ConvertFrom-Json
 $logRoot = Join-Path $root '.tmp'
-$attemptPath = Join-Path $logRoot 'real_acceptance_repair_attempts.json'
-$attempts = if (Test-Path -LiteralPath $attemptPath) {
-    Get-Content -LiteralPath $attemptPath -Raw | ConvertFrom-Json -AsHashtable
-} else { @{} }
 $stage = [string]$failure.stage
-$attempts[$stage] = [int]$attempts[$stage] + 1
-$attempts | ConvertTo-Json | Set-Content -LiteralPath $attemptPath -Encoding utf8
-# shortcut: 1工程3回を超える自動修正は停止し、原因調査後に再開する。
-if ($attempts[$stage] -gt 3) { throw "Repair limit reached for $stage" }
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) { throw 'Codex CLI is unavailable' }
 $branch = (& git branch --show-current).Trim()
 if ($branch -ne 'feature/real-pdf-acceptance-20261009') { throw "Unexpected branch: $branch" }
@@ -49,6 +41,7 @@ $prompt | Set-Content -LiteralPath $promptPath -Encoding utf8
 $eventsPath = Join-Path $logRoot 'real_acceptance_codex_events.jsonl'
 $progressPath = Join-Path $logRoot 'real_acceptance_codex_progress.log'
 $messagePath = Join-Path $logRoot 'real_acceptance_codex_message.txt'
+Write-Output "Codex修正開始: $stage (進捗: $progressPath)"
 & codex exec --json --sandbox danger-full-access --config approval_policy=never --ephemeral --cd $root --output-last-message $messagePath $prompt 1> $eventsPath 2> $progressPath
 if ($LASTEXITCODE -ne 0) { throw "Codex exited with $LASTEXITCODE; see $progressPath" }
 $unchanged = (& git rev-parse HEAD).Trim() -eq $headBefore
@@ -67,7 +60,4 @@ foreach ($check in @(
     if ($LASTEXITCODE -ne 0) { throw "Quality check failed: $($check -join ' ')" }
 }
 
-$shell = (Get-Process -Id $PID).Path
-$runner = Join-Path $PSScriptRoot 'real_acceptance.ps1'
-Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-File', $runner) -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logRoot 'real_acceptance_background.log') -RedirectStandardError (Join-Path $logRoot 'real_acceptance_background.err.log') | Out-Null
-Write-Output "Codex review completed and acceptance restarted for $stage"
+Write-Output "Codex review completed for $stage"

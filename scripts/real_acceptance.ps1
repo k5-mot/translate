@@ -210,30 +210,40 @@ if ($SelfCheck) {
     exit 0
 }
 # shortcut: 旧ロックは対話PowerShellが保持中。全端末を閉じた後に旧名へ戻せる。
-$lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance-v2.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-try {
-Ensure-UiServer
-try {
-    Invoke-Validation
-}
-catch {
-    if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
-        exit 130
+$repairAttempts = @{}
+while ($true) {
+    $currentStage = 'startup'
+    $failure = $null
+    $lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance-v2.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        Ensure-UiServer
+        Invoke-Validation
     }
-    $failure = [ordered]@{
-        stage = $currentStage
-        error = $_.Exception.Message
-        branch = (& git branch --show-current).Trim()
-        head = (& git rev-parse HEAD).Trim()
-        occurred_at = (Get-Date).ToUniversalTime().ToString('o')
+    catch {
+        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
+            exit 130
+        }
+        $failure = [ordered]@{
+            stage = $currentStage
+            error = $_.Exception.Message
+            branch = (& git branch --show-current).Trim()
+            head = (& git rev-parse HEAD).Trim()
+            occurred_at = (Get-Date).ToUniversalTime().ToString('o')
+        }
     }
+    finally {
+        $lock.Dispose()
+    }
+    if ($null -eq $failure) { break }
     $failurePath = Join-Path $root '.tmp/real_acceptance_failure.json'
     $failure | ConvertTo-Json | Set-Content -LiteralPath $failurePath -Encoding utf8
-    $repair = Join-Path $PSScriptRoot 'repair_real_acceptance.ps1'
-    $shell = (Get-Process -Id $PID).Path
-    Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-File', $repair, '-FailureFile', $failurePath) -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root '.tmp/real_acceptance_repair.log') -RedirectStandardError (Join-Path $root '.tmp/real_acceptance_repair.err.log') | Out-Null
-    Write-Error "Validation failed at $currentStage; Codex repair started. $($_.Exception.Message)"
-    exit 1
+    $repairAttempts[$currentStage] = [int]$repairAttempts[$currentStage] + 1
+    if ($repairAttempts[$currentStage] -gt 3) {
+        throw "Repair limit reached for $currentStage. Details: $failurePath"
+    }
+    Write-Warning "Validation failed at $currentStage ($($repairAttempts[$currentStage])/3): $($failure.error)"
+    & (Join-Path $PSScriptRoot 'repair_real_acceptance.ps1') -FailureFile $failurePath
+    Write-Output "Codex修正完了。$currentStage から検証を再開します。"
 }
 
 Write-Output 'ALL_REAL_ACCEPTANCE_PASSED'
@@ -262,7 +272,3 @@ if (-not $state['merged']) {
     Save-State
 }
 Write-Output 'ALL_REAL_ACCEPTANCE_PASSED_AND_MERGED'
-}
-finally {
-    $lock.Dispose()
-}

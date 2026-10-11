@@ -141,10 +141,10 @@ Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge�
 進行状況は`.tmp/real_acceptance_state.json`、直近のコマンド出力は
 `.tmp/real_acceptance_command.log`に保存します。失敗時は
 `.tmp/real_acceptance_failure.json`を作成してCodex CLIで修正・コミットし、
-品質検査後に検証スクリプトをバックグラウンドで再起動します。
+品質検査後に同じ端末で失敗した工程から検証を再開します。
 接続先の一時停止による`LLMConnectionError`または`EmbeddingError`では、
 コードを変更せず再検証します。
-同じ工程で4回目の失敗になった場合は自動修正を停止します。
+同じ実行中に同じ工程で4回目の失敗になった場合は、理由を表示して自動修正を停止します。
 全件成功後、PR #5のCIを確認してマージコミットで`main`へ統合・pushします。
 
 ## 🧭 設計資料
