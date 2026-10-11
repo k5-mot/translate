@@ -46,10 +46,10 @@ def main() -> None:
         page = browser.new_page()
         page.goto(f"{args.url}/?processing={args.resume}" if args.resume else args.url)
         if args.resume:
-            page.get_by_role(
-                "checkbox",
-                name="完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-            ).check(timeout=20_000)
+            page.get_by_text(
+                "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+                exact=True,
+            ).click(timeout=20_000)
             page.get_by_role("button", name="Resume", exact=True).click()
             page.locator("#translate-session-title").get_by_text(args.resume).wait_for(
                 timeout=15_000
