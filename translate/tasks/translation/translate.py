@@ -359,6 +359,10 @@ def _execute(
     call_directory = task_directory / "calls" / call_id
     source = "\n".join(_leader_parts(span.source)[0] for span in spans)
     leader_only = all(_leader_parts(span.source)[1] for span in spans)
+    quality_attempts = sum(part.startswith("quality-") for part in lineage)
+    schema_version = 5 if any(_leader_parts(span.source)[1] for span in spans) else 3
+    if quality_attempts:
+        schema_version += 1
     payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
     selected_glossary = (
         ""
@@ -373,7 +377,7 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": 5 if any(_leader_parts(span.source)[1] for span in spans) else 3,
+            "schema": schema_version,
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
             "rules": canonical_hash(rules),
@@ -421,7 +425,15 @@ def _execute(
                 "Translate each English source into natural Japanese. Preserve IDs and "
                 "return JSON only. When previous_source and previous_translation are "
                 "present, use them only as context for translating the current source."
-                "\n\n" + rules
+                "\n\n"
+                + rules
+                + (
+                    "\n\nThe previous answer failed translation quality checks. "
+                    "Translate every items[].source fully into Japanese. "
+                    "Do not copy or paraphrase the English source in English."
+                    if quality_attempts
+                    else ""
+                )
             ),
             user=_user_payload(
                 spans,
@@ -497,7 +509,7 @@ def _execute(
     quality_retry = (
         bool(suspect)
         and config.llm_structured_output_mode != "prompt"
-        and not any(part.startswith("quality-") for part in lineage)
+        and quality_attempts + 1 < config.llm_retry_attempts
     )
     groups: list[list[TextSpan]] = []
     if quality_retry:

@@ -452,6 +452,64 @@ def test_translation_retries_json_schema_quality_with_native_schema(
     )
 
 
+@pytest.mark.parametrize(
+    "last_translation", ["戦争は二人の指揮官の意志が対立する過程である。", None]
+)
+def test_translation_retries_english_echo_with_finite_limit(
+    tmp_path: Path, last_translation: str | None
+) -> None:
+    """英文のままでも品質再送を二回に制限し、訳せた場合だけ採用する。"""
+
+    source = "War is a process that pits the opposing wills of two commanders."
+    client = MagicMock()
+    client.structured.side_effect = [
+        StructuredResult(
+            response=TranslationResponse(
+                translations=[TranslationItem(span_id="span-a", text=text)]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+        for text in [
+            source,
+            source,
+            last_translation or source,
+        ]
+    ]
+
+    def run() -> list[tuple[str, TranslationResponse]]:
+        """同じSpanの品質再試行を実行する。"""
+
+        return execute_translation(
+            client=client,
+            config=Config(
+                openai_base_url="http://llm",
+                openai_translation_model="model",
+                llm_structured_output_mode="json_schema",
+            ),
+            spans=[TextSpan(id="span-a", source=source)],
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            lineage=["chunk-0000"],
+            depth=0,
+            allow_missing_retry=True,
+            diagnostics=[],
+            previous_context={},
+        )
+
+    if last_translation is not None:
+        calls = run()
+        assert calls[-1][1].translations[0].text.startswith("戦争")
+    else:
+        with pytest.raises(LLMInvalidResponseError, match="span-a"):
+            run()
+
+    assert client.structured.call_count == 3
+    assert "Japanese" in client.structured.call_args_list[1].kwargs["system"]
+
+
 def test_translation_rechecks_cached_english_echo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
