@@ -180,6 +180,60 @@ def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
     assert structured.call_count == 2
 
 
+def test_translation_retries_invalid_native_response_in_prompt_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Native応答が壊れた短いSpanをprompt方式で再送し訳文を回収する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    initial = MagicMock()
+    initial.structured.side_effect = LLMInvalidResponseError("invalid JSON")
+    fallback = MagicMock()
+    fallback.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[
+                TranslationItem(span_id="span-a", text="目的と構成要素の概要")
+            ]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+
+    def fallback_client(retry_config: Config) -> MagicMock:
+        """再送時にprompt方式が選ばれることを確認する。"""
+
+        assert retry_config.llm_structured_output_mode == "prompt"
+        return fallback
+
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient", fallback_client
+    )
+    calls = execute_translation(
+        client=initial,
+        config=config,
+        spans=[TextSpan(id="span-a", source="Outlines Objectives and Components ·")],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert initial.structured.call_count == fallback.structured.call_count == 1
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text="目的と構成要素の概要")
+    ]
+    statuses = {
+        json.loads(path.read_text(encoding="utf-8"))["status"]
+        for path in tmp_path.glob("calls/*/call.json")
+    }
+    assert statuses == {"split", "succeeded"}
+
+
 def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> None:
     """分割済みCallの欠落一件を単独で再送して訳文を回収する。"""
 

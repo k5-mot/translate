@@ -453,6 +453,29 @@ def _execute(
             diagnostics=diagnostics,
             previous_context=previous_context,
         )
+    except LLMInvalidResponseError as error:
+        if config.llm_structured_output_mode == "prompt":
+            fail_llm_call(call_directory, artifact, error, attempts=1)
+            raise
+        child_lineage = [*lineage, "invalid"]
+        child_id = llm_call_id("TRANSLATE", target_ids, child_lineage)
+        mark_split_llm_call(call_directory, artifact, [child_id])
+        retry_config = config.model_copy(
+            update={"llm_structured_output_mode": "prompt"}
+        )
+        return _execute(
+            client=LLMClient(retry_config),
+            config=retry_config,
+            spans=spans,
+            task_directory=task_directory,
+            rules=rules,
+            glossary=glossary,
+            lineage=child_lineage,
+            depth=depth,
+            allow_missing_retry=allow_missing_retry,
+            diagnostics=diagnostics,
+            previous_context=previous_context,
+        )
     except LLMError as error:
         fail_llm_call(call_directory, artifact, error, attempts=1)
         raise
