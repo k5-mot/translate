@@ -392,6 +392,66 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
 
 
+def test_translation_retries_json_schema_quality_with_native_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Native応答が英語のままなら単独再送でもJSON Schemaを維持する。"""
+
+    source = "War is a process that pits the opposing wills of two commanders."
+    client = MagicMock()
+    client.structured.side_effect = [
+        StructuredResult(
+            response=TranslationResponse(
+                translations=[TranslationItem(span_id="span-a", text=source)]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        ),
+        StructuredResult(
+            response=TranslationResponse(
+                translations=[
+                    TranslationItem(
+                        span_id="span-a",
+                        text="戦争は指揮官同士の意志を争わせる過程である。",
+                    )
+                ]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        ),
+    ]
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient",
+        MagicMock(side_effect=AssertionError("native mode must be preserved")),
+    )
+
+    calls = execute_translation(
+        client=client,
+        config=Config(
+            openai_base_url="http://llm",
+            openai_translation_model="model",
+            llm_structured_output_mode="json_schema",
+        ),
+        spans=[TextSpan(id="span-a", source=source)],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert client.structured.call_count == 2
+    assert (
+        calls[-1][1].translations[0].text
+        == "戦争は指揮官同士の意志を争わせる過程である。"
+    )
+
+
 def test_translation_rechecks_cached_english_echo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

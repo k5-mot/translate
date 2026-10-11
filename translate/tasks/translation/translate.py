@@ -494,9 +494,13 @@ def _execute(
     ]
     suspect = [span for span in missing if translations.get(span.id, "").strip()]
     diagnostics.extend(f"{call_id} untrusted_translation {span.id}" for span in suspect)
-    prompt_fallback = bool(suspect) and config.llm_structured_output_mode != "prompt"
+    quality_retry = (
+        bool(suspect)
+        and config.llm_structured_output_mode != "prompt"
+        and not any(part.startswith("quality-") for part in lineage)
+    )
     groups: list[list[TextSpan]] = []
-    if prompt_fallback:
+    if quality_retry:
         groups = [[span] for span in missing]
     elif missing and allow_missing_retry:
         groups = [missing]
@@ -506,7 +510,7 @@ def _execute(
         else:
             middle = len(missing) // 2
             groups = [missing[:middle], missing[middle:]]
-    if prompt_fallback:
+    if quality_retry:
         child_lineages = [
             [*lineage, f"quality-{index}"] for index in range(len(groups))
         ]
@@ -540,10 +544,10 @@ def _execute(
         )
     retry_config = (
         config.model_copy(update={"llm_structured_output_mode": "prompt"})
-        if prompt_fallback
+        if quality_retry and config.llm_structured_output_mode != "json_schema"
         else config
     )
-    retry_client = LLMClient(retry_config) if prompt_fallback else client
+    retry_client = LLMClient(retry_config) if retry_config is not config else client
     for group, child_lineage in zip(groups, child_lineages, strict=True):
         values.extend(
             _execute(
@@ -555,7 +559,9 @@ def _execute(
                 glossary=glossary,
                 lineage=child_lineage,
                 depth=depth if allow_missing_retry else depth + 1,
-                allow_missing_retry=len(group) == 1 and len(spans) > 1,
+                allow_missing_retry=(
+                    not quality_retry and len(group) == 1 and len(spans) > 1
+                ),
                 diagnostics=diagnostics,
                 previous_context=previous_context,
             )
