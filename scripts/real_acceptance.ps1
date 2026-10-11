@@ -209,7 +209,9 @@ if ($SelfCheck) {
     }
     exit 0
 }
-$lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+# shortcut: 旧ロックは対話PowerShellが保持中。全端末を閉じた後に旧名へ戻せる。
+$lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance-v2.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+try {
 Ensure-UiServer
 try {
     Invoke-Validation
@@ -260,3 +262,7 @@ if (-not $state['merged']) {
     Save-State
 }
 Write-Output 'ALL_REAL_ACCEPTANCE_PASSED_AND_MERGED'
+}
+finally {
+    $lock.Dispose()
+}
