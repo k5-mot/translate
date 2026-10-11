@@ -15,7 +15,9 @@ from playwright.sync_api import Page, sync_playwright
 def resume(page: Page, operation: str, processing_id: str) -> None:
     """Resumeのクリック後、既存の失敗記録が更新されるまで待つ。"""
 
-    record_name = "registration" if operation == "register" else operation
+    record_name = {"register": "registration", "translate": "translation"}.get(
+        operation, operation
+    )
     record_paths = list(Path("outputs").glob(f"*/{processing_id}/{record_name}.json"))
     if len(record_paths) != 1:
         message = f"Resume対象の記録を一意に特定できません: {processing_id}"
