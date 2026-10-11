@@ -15,7 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 from pydantic import BaseModel, ConfigDict
 
 from translate.adapters.docling import DoclingClient
-from translate.adapters.embedding import embed
+from translate.adapters.embedding import EmbeddingError, embed
 from translate.adapters.pdf import split_pdf
 from translate.adapters.qdrant import upsert_revision
 from translate.artifact_store import (
@@ -151,7 +151,11 @@ def register_paths(
             record.status = "failed"
             record.error = ProcessingError(
                 code="registration_failed",
-                message="Reference registration did not complete.",
+                message=(
+                    str(error)
+                    if isinstance(error, EmbeddingError)
+                    else "Reference registration did not complete."
+                ),
                 cause_type=type(error).__name__,
                 retryable=True,
             )
@@ -510,6 +514,11 @@ def _record(
             raise InputError(
                 "resume inputs or settings do not match the saved registration"
             )
+        if resuming and record.status != "succeeded":
+            record.status = "processing"
+            record.error = None
+            record.updated_at = datetime.now(UTC)
+            write_model(path, record)
         return record
     if resuming:
         raise InputError("registration to resume does not exist")

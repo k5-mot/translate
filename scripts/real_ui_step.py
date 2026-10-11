@@ -3,11 +3,40 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import Page, sync_playwright
+
+
+def resume(page: Page, operation: str, processing_id: str) -> None:
+    """Resumeのクリック後、既存の失敗記録が更新されるまで待つ。"""
+
+    record_name = "registration" if operation == "register" else operation
+    record_paths = list(Path("outputs").glob(f"*/{processing_id}/{record_name}.json"))
+    if len(record_paths) != 1:
+        message = f"Resume対象の記録を一意に特定できません: {processing_id}"
+        raise RuntimeError(message)
+    record_path = record_paths[0]
+    previous_update = json.loads(record_path.read_text(encoding="utf-8"))["updated_at"]
+    page.get_by_text(
+        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+        exact=True,
+    ).click(timeout=20_000)
+    page.get_by_role("button", name="Resume", exact=True).click()
+    deadline = time.monotonic() + 30
+    while (
+        json.loads(record_path.read_text(encoding="utf-8"))["updated_at"]
+        == previous_update
+    ):
+        if time.monotonic() >= deadline:
+            alerts = page.locator('[data-testid="stAlert"]').all_text_contents()
+            message = f"Resumeが開始されませんでした: {alerts}"
+            raise RuntimeError(message)
+        page.wait_for_timeout(250)
 
 
 def main() -> None:
@@ -46,14 +75,7 @@ def main() -> None:
         page = browser.new_page()
         page.goto(f"{args.url}/?processing={args.resume}" if args.resume else args.url)
         if args.resume:
-            page.get_by_text(
-                "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-                exact=True,
-            ).click(timeout=20_000)
-            page.get_by_role("button", name="Resume", exact=True).click()
-            page.locator("#translate-session-title").get_by_text(args.resume).wait_for(
-                timeout=15_000
-            )
+            resume(page, args.operation, args.resume)
             sys.stdout.write(f"processing_id={args.resume}\n")
             sys.stdout.flush()
             return
