@@ -180,6 +180,49 @@ def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
     assert structured.call_count == 2
 
 
+def test_translation_accepts_span_id_without_fragment_marker(tmp_path: Path) -> None:
+    """LLMが先頭の#だけ落としたIDの訳を元のSpanへ適用する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    structured = MagicMock(
+        return_value=StructuredResult(
+            response=TranslationResponse(
+                translations=[
+                    TranslationItem(
+                        span_id="/texts/48/content/span-0001", text="伝送媒体;"
+                    )
+                ]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = execute_translation(
+        client=client,
+        config=config,
+        spans=[
+            TextSpan(id="#/texts/48/content/span-0001", source="Transmission Media;")
+        ],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert structured.call_count == 1
+    assert calls[0][1].translations == [
+        TranslationItem(span_id="#/texts/48/content/span-0001", text="伝送媒体;")
+    ]
+
+
 def test_translation_retries_invalid_native_response_in_prompt_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

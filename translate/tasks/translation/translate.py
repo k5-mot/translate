@@ -495,6 +495,9 @@ def _execute(
     translations: dict[str, str] = {}
     duplicates: set[str] = set()
     for item in response.translations:
+        # LLMがJSON Pointerの先頭#だけ落とした場合は、要求済みIDに限って復元する。
+        if item.span_id.startswith("/") and f"#{item.span_id}" in target_ids:
+            item.span_id = f"#{item.span_id}"
         if item.span_id in translations:
             duplicates.add(item.span_id)
         translations[item.span_id] = item.text
