@@ -46,7 +46,8 @@ Write-Output "Codex修正開始: $stage (進捗: $progressPath)"
 if ($LASTEXITCODE -ne 0) { throw "Codex exited with $LASTEXITCODE; see $progressPath" }
 $unchanged = (& git rev-parse HEAD).Trim() -eq $headBefore
 if ($unchanged -and $failure.error -notmatch 'LLMConnectionError|EmbeddingError') {
-    throw "Codex did not commit a repair; see $messagePath"
+    $diagnosis = (Get-Content -LiteralPath $messagePath -Raw).Trim()
+    throw "Codex found no safe code repair for $stage. Diagnosis: $diagnosis"
 }
 if (@(git status --porcelain).Count -gt 0) { throw 'Codex left uncommitted changes' }
 
