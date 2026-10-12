@@ -567,6 +567,68 @@ def test_translation_retries_english_echo_with_finite_limit(
     assert "Japanese" in client.structured.call_args_list[1].kwargs["system"]
 
 
+def test_translation_splits_repeated_english_echo_by_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """長い単独Spanが英語のままなら文ごとに翻訳して元のIDへ戻す。"""
+
+    source = (
+        "Coast Guard Communications Organizations. "
+        "Although the Coast Guard i s attached t o t h e Department of "
+        "Transportation, it has participated, as an arm of the US Navy, "
+        "in every national conflict. "
+        "It routinely participates in various DOD"
+    )
+    parts = [
+        "沿岸警備隊の通信組織。",
+        "沿岸警備隊は運輸省の管轄だが、米海軍の一部としてあらゆる国家的紛争に参加してきた。",
+        "また、日常的にさまざまな国防総省の",
+    ]
+    client = MagicMock()
+
+    def structured(**kwargs: object) -> StructuredResult[TranslationResponse]:
+        """段落では英語を反復し、文単位だけ日本語訳を返す。"""
+
+        item = json.loads(str(kwargs["user"]))["items"][0]
+        text = (
+            parts[int(item["span_id"].rsplit("sentence-", 1)[1])]
+            if "sentence-" in item["span_id"]
+            else source
+        )
+        return StructuredResult(
+            response=TranslationResponse(
+                translations=[TranslationItem(span_id=item["span_id"], text=text)]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+
+    client.structured.side_effect = structured
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient",
+        MagicMock(return_value=client),
+    )
+    calls = execute_translation(
+        client=client,
+        config=Config(openai_base_url="http://llm", openai_translation_model="model"),
+        spans=[TextSpan(id="span-a", source=source)],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text=" ".join(parts))
+    ]
+    assert client.structured.call_count == 6
+
+
 def test_translation_rechecks_cached_english_echo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

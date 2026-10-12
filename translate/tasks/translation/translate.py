@@ -549,6 +549,64 @@ def _execute(
     )
     values = [(call_id, response)]
     if missing and not groups:
+        # shortcut: 文境界だけで分けるため略語も分割し得る。必要なら文解析へ置き換える。
+        sentences = (
+            re.split(r"(?<=[.!?])\s+(?=[A-Z][a-z])", spans[0].source)
+            if len(spans) == 1
+            and suspect
+            and quality_attempts
+            and not any(part.startswith("sentence-") for part in lineage)
+            else []
+        )
+        if len(sentences) > 1:
+            translated_sentences: list[str] = []
+            sentence_call_ids: list[str] = []
+            for index, sentence in enumerate(sentences):
+                piece = spans[0].model_copy(
+                    update={"id": f"{spans[0].id}/sentence-{index}", "source": sentence}
+                )
+                sentence_lineage = [f"sentence-{call_id}-{index}"]
+                sentence_call_ids.append(
+                    llm_call_id("TRANSLATE", [piece.id], sentence_lineage)
+                )
+                sentence_responses = _execute(
+                    client=client,
+                    config=config,
+                    spans=[piece],
+                    task_directory=task_directory,
+                    rules=rules,
+                    glossary=glossary,
+                    lineage=sentence_lineage,
+                    depth=depth + 1,
+                    allow_missing_retry=False,
+                    diagnostics=diagnostics,
+                    previous_context=previous_context,
+                )
+                translated_sentences.append(
+                    next(
+                        item.text
+                        for item in sentence_responses[-1][1].translations
+                        if item.span_id == piece.id
+                    )
+                )
+            assembled = TranslationResponse(
+                translations=[
+                    TranslationItem(
+                        span_id=spans[0].id, text=" ".join(translated_sentences)
+                    )
+                ]
+            )
+            if _plausible_translation(spans[0].source, assembled.translations[0].text):
+                complete_llm_call(
+                    call_directory,
+                    artifact,
+                    assembled,
+                    attempts=result.attempts,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    child_call_ids=sentence_call_ids,
+                )
+                return [(call_id, assembled)]
         raise LLMInvalidResponseError(
             f"翻訳対象 {missing[0].id} の完全な訳文が得られません。対策: "
             "翻訳modelとLLM_STRUCTURED_OUTPUT_MODEを確認して再開してください。"
