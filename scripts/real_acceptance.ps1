@@ -211,6 +211,7 @@ if ($SelfCheck) {
 }
 # shortcut: 旧ロックは対話PowerShellが保持中。全端末を閉じた後に旧名へ戻せる。
 $repairAttempts = @{}
+$connectionAttempts = @{}
 while ($true) {
     $currentStage = 'startup'
     $failure = $null
@@ -237,6 +238,20 @@ while ($true) {
     if ($null -eq $failure) { break }
     $failurePath = Join-Path $root '.tmp/real_acceptance_failure.json'
     $failure | ConvertTo-Json | Set-Content -LiteralPath $failurePath -Encoding utf8
+    $transientEmbedding = $failure.error -match '"cause_type":"EmbeddingError"' -and
+        $failure.error -match '"retryable":true' -and
+        $failure.error -match 'Embedding要求が時間切れ|Embedding endpointへ接続できません|Embedding endpointがHTTP (?:408|429|5\d\d)'
+    if ($transientEmbedding) {
+        # endpoint障害はコード修正では回復しないため、修正回数と分けて有限回だけ待つ。
+        $connectionAttempts[$currentStage] = [int]$connectionAttempts[$currentStage] + 1
+        if ($connectionAttempts[$currentStage] -gt 3) {
+            throw "Embedding endpoint did not recover for $currentStage after 3 retries: $($failure.error)"
+        }
+        $delaySeconds = 30 * $connectionAttempts[$currentStage]
+        Write-Warning "Embedding endpoint failure at $currentStage; retry $($connectionAttempts[$currentStage])/3 in $delaySeconds seconds: $($failure.error)"
+        Start-Sleep -Seconds $delaySeconds
+        continue
+    }
     $repairAttempts[$currentStage] = [int]$repairAttempts[$currentStage] + 1
     if ($repairAttempts[$currentStage] -gt 3) {
         throw "Repair limit reached for $currentStage. Details: $failurePath"
