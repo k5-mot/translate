@@ -156,7 +156,6 @@ class LLMClient:
 
         _validate_contract(native_schema, contract, self.config)
         deadline = time.monotonic() + self.config.llm_task_deadline_seconds
-        validation_retried = False
         feedback = ""
         last_error: LLMError | None = None
         last_cause: Exception | None = None
@@ -220,9 +219,8 @@ class LLMClient:
                     "LLM応答がJSON形式または契約に適合しません。対策: "
                     "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
                 )
-                if validation_retried or attempt >= self.config.llm_retry_attempts:
+                if attempt >= self.config.llm_retry_attempts:
                     break
-                validation_retried = True
                 feedback = (
                     "\n\nThe previous response was invalid JSON or violated the contract. "
                     "Return one complete JSON object matching the contract exactly."

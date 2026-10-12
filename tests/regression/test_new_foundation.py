@@ -505,6 +505,48 @@ def test_llm_reports_output_token_limit_with_setting(
         )
 
 
+def test_llm_uses_configured_retries_for_invalid_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """短い翻訳でJSON不正が続いても設定回数内の正常応答を採用する。"""
+
+    client = LLMClient(
+        Config(
+            openai_base_url="http://llm",
+            llm_structured_output_mode="prompt",
+            llm_retry_attempts=3,
+        )
+    )
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.usage = None
+    completion.choices[0].message.content = (
+        '{"translations":[{"span_id":"#/texts/967/content/span-0001",'
+        '"text":"意図的に空白"}]}'
+    )
+    invalid = MagicMock()
+    invalid.choices = [MagicMock(finish_reason="stop")]
+    invalid.usage = None
+    invalid.choices[0].message.content = "not JSON"
+    create = MagicMock(side_effect=[invalid, invalid, completion])
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+
+    result = client.structured(
+        task="TRANSLATE",
+        model="model",
+        response_type=TranslationResponse,
+        system="system",
+        user="user",
+        contract="contract",
+        native_schema=TranslationResponse.model_json_schema(),
+        output_tokens=128,
+    )
+
+    assert result.attempts == create.call_count == 3
+    assert result.response.translations[0].text == "意図的に空白"
+
+
 @pytest.mark.parametrize(
     ("status", "expected_type"),
     [
