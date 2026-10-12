@@ -555,7 +555,7 @@ def _execute(
         )
     retry_config = (
         config.model_copy(update={"llm_structured_output_mode": "prompt"})
-        if quality_retry and config.llm_structured_output_mode != "json_schema"
+        if quality_retry and config.llm_structured_output_mode != "prompt"
         else config
     )
     retry_client = LLMClient(retry_config) if retry_config is not config else client

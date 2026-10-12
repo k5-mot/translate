@@ -435,43 +435,52 @@ def test_translation_retries_implausible_text_in_prompt_mode(
     assert calls[-1][1].translations == [TranslationItem(span_id="span-a", text=good)]
 
 
-def test_translation_retries_json_schema_quality_with_native_schema(
+def test_translation_retries_json_schema_quality_with_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Native応答が英語のままなら単独再送でもJSON Schemaを維持する。"""
+    """Native応答が文献名を丸写ししたらprompt方式で再翻訳する。"""
 
-    source = "War is a process that pits the opposing wills of two commanders."
-    client = MagicMock()
-    client.structured.side_effect = [
-        StructuredResult(
-            response=TranslationResponse(
-                translations=[TranslationItem(span_id="span-a", text=source)]
-            ),
-            attempts=1,
-            input_tokens=10,
-            output_tokens=10,
+    source = (
+        "DOD Instruction 4630.8, 'Procedures for Compatibility, "
+        "Interoperability, and Integration of Command, Control, "
+        "Communications, and Intelligence (C3I) Systems.'"
+    )
+    translated = (
+        "DOD Instruction 4630.8「指揮・統制・通信・情報システムの"
+        "互換性、相互運用性および統合の手順」"
+    )
+    initial = MagicMock()
+    initial.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=source)]
         ),
-        StructuredResult(
-            response=TranslationResponse(
-                translations=[
-                    TranslationItem(
-                        span_id="span-a",
-                        text="戦争は指揮官同士の意志を争わせる過程である。",
-                    )
-                ]
-            ),
-            attempts=1,
-            input_tokens=10,
-            output_tokens=10,
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    fallback = MagicMock()
+    fallback.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=translated)]
         ),
-    ]
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+
+    def fallback_client(config: Config) -> MagicMock:
+        """品質再試行がprompt方式で始まることを検証する。"""
+
+        assert config.llm_structured_output_mode == "prompt"
+        return fallback
+
     monkeypatch.setattr(
         "translate.tasks.translation.translate.LLMClient",
-        MagicMock(side_effect=AssertionError("native mode must be preserved")),
+        fallback_client,
     )
 
     calls = execute_translation(
-        client=client,
+        client=initial,
         config=Config(
             openai_base_url="http://llm",
             openai_translation_model="model",
@@ -488,11 +497,8 @@ def test_translation_retries_json_schema_quality_with_native_schema(
         previous_context={},
     )
 
-    assert client.structured.call_count == 2
-    assert (
-        calls[-1][1].translations[0].text
-        == "戦争は指揮官同士の意志を争わせる過程である。"
-    )
+    assert initial.structured.call_count == fallback.structured.call_count == 1
+    assert calls[-1][1].translations[0].text == translated
 
 
 @pytest.mark.parametrize(
