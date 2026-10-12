@@ -498,10 +498,14 @@ def test_translation_retries_json_schema_quality_with_native_schema(
 @pytest.mark.parametrize(
     "last_translation", ["戦争は二人の指揮官の意志が対立する過程である。", None]
 )
+@pytest.mark.parametrize("mode", ["json_schema", "json_object"])
 def test_translation_retries_english_echo_with_finite_limit(
-    tmp_path: Path, last_translation: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    last_translation: str | None,
+    mode: str,
 ) -> None:
-    """英文のままでも品質再送を二回に制限し、訳せた場合だけ採用する。"""
+    """構造化出力方式が変わっても品質再送を設定回数まで行う。"""
 
     source = "War is a process that pits the opposing wills of two commanders."
     client = MagicMock()
@@ -520,6 +524,10 @@ def test_translation_retries_english_echo_with_finite_limit(
             last_translation or source,
         ]
     ]
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient",
+        MagicMock(return_value=client),
+    )
 
     def run() -> list[tuple[str, TranslationResponse]]:
         """同じSpanの品質再試行を実行する。"""
@@ -529,7 +537,7 @@ def test_translation_retries_english_echo_with_finite_limit(
             config=Config(
                 openai_base_url="http://llm",
                 openai_translation_model="model",
-                llm_structured_output_mode="json_schema",
+                llm_structured_output_mode=mode,
             ),
             spans=[TextSpan(id="span-a", source=source)],
             task_directory=tmp_path,
