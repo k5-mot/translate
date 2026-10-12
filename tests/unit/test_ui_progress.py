@@ -3,7 +3,7 @@
 import io
 import zipfile
 from concurrent.futures import Future
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,6 +17,7 @@ from translate.models.artifacts import (
     CheckResult,
     DoclingProgress,
     InputFile,
+    ProcessingError,
     SplitManifest,
     SplitPart,
     TaskName,
@@ -24,7 +25,15 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.tasks.converter.docling import convert
-from translate.ui import _docling_progress, _render_future_error, _task_progress
+from translate.ui import (
+    HistoryEntry,
+    WorkerError,
+    WorkerRegistry,
+    _docling_progress,
+    _render_future_error,
+    _render_record_actions,
+    _task_progress,
+)
 
 
 def _record() -> TranslationRecord:
@@ -98,6 +107,43 @@ def test_ui_shows_llm_error_type_and_remedy(monkeypatch: pytest.MonkeyPatch) -> 
     assert "対策: TRANSLATE_OUTPUT_TOKENS" in messages[0]
 
 
+def test_record_error_does_not_repeat_worker_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """記録にある具体的な対策を、汎用WorkerErrorで重複表示しない。"""
+
+    record = _record().model_copy(
+        update={
+            "status": "failed",
+            "error": ProcessingError(
+                code="task_failed",
+                message="出力上限です。対策: TRANSLATE_OUTPUT_TOKENSを増やす。",
+                cause_type="LLMOutputTokenExceededError",
+                retryable=True,
+            ),
+        }
+    )
+    entry = HistoryEntry(
+        kind="translate",
+        record_path=tmp_path / "translation.json",
+        updated_at=record.updated_at,
+        record=record,
+    )
+    future: Future[object] = Future()
+    future.set_exception(WorkerError("LLMOutputTokenExceededError"))
+    registry = WorkerRegistry()
+    monkeypatch.setattr(registry, "future", lambda _: future)
+    monkeypatch.setattr("translate.ui._render_resume", lambda *_: None)
+    monkeypatch.setattr("translate.ui._render_history_delete", lambda *_: None)
+    messages: list[str] = []
+    monkeypatch.setattr("translate.ui.st.error", messages.append)
+
+    _render_record_actions(entry, registry)
+
+    assert len(messages) == 1
+    assert "対策: TRANSLATE_OUTPUT_TOKENS" in messages[0]
+
+
 def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
     """複数入力の分割PDF数を合算し、今回の完了件数だけ表示する。"""
 
@@ -128,7 +174,8 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
             DoclingProgress(completed=completed, total=count),
         )
 
-    assert _docling_progress(tmp_path, datetime.now(UTC)) == (0, 5)
+    future_start = datetime.now(UTC) + timedelta(seconds=1)
+    assert _docling_progress(tmp_path, future_start) == (0, 5)
     assert _docling_progress(tmp_path, datetime.fromtimestamp(0, UTC)) == (3, 5)
 
 

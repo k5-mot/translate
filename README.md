@@ -24,7 +24,7 @@ uv sync --dev
 Copy-Item .env.sample .env
 ```
 
-`.env`には、単一のOpenAI互換endpoint、Task別model、Docling Serveなど、
+`.env`には、OpenAI互換endpoint、Task別model、Docling Serveなど、
 利用する外部serviceの接続情報を設定してください。process環境変数は`.env`より
 優先されます。Qdrant関連設定を一式省略すると、TranslateとReviewのRAG検索は
 無効になります。
@@ -124,6 +124,31 @@ CLIではRegister、Translate、WordによるDOCXからPDFへの変換、Review�
 Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge、pushは実行しません。
 既存の未コミット変更は診断Bundleへ記録し、修正対象と分離して保持します。
 修正結果は`.diagnostics/`のBundleに保存されます。
+
+### 🧪 実PDFの連続検証
+
+`scripts/real_acceptance.ps1`は`sample3 → sample2 → sample5 → sample4`の順に、
+各PDFを実際のStreamlit画面とCLIで`register → translate → review → upgrade`します。
+各工程はUI、CLIの順です。`sample2`は依頼時の`ssample2`に対応する実ファイル名です。
+画面は`127.0.0.1:8502`を使い、未起動なら自動起動します。
+翻訳DOCXはMicrosoft WordでPDFに変換してReviewとUpgradeへ渡します。
+
+```powershell
+# 実ファイル、ブラウザー、Wordの検証を開始する。
+.\scripts\real_acceptance.ps1
+```
+
+進行状況は`.tmp/real_acceptance_state.json`、直近のコマンド出力は
+`.tmp/real_acceptance_command.log`に保存します。失敗時は
+`.tmp/real_acceptance_failure.json`を作成します。
+コードの修正が必要な場合はCodex CLIで修正・コミットし、
+品質検査後に同じ端末で失敗した工程から検証を再開します。
+安全なコード修正が見つからなかった場合は、Codexの診断を表示して停止します。
+Embedding endpointのタイムアウト、接続失敗、HTTP 408/429/5xxでは、
+Codexを起動せず30秒、60秒、90秒待って同じ工程を再検証します。
+4回目も失敗した場合は接続先のエラーを表示して停止します。
+コード修正は同じ実行中に同じ工程で3回まで試し、4回目の失敗で停止します。
+全件成功後、PR #5のCIを確認してマージコミットで`main`へ統合・pushします。
 
 ## 🧭 設計資料
 

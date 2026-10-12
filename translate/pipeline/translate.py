@@ -310,9 +310,12 @@ def _translate_locked(
             "rules": canonical_hash(structure_rules),
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
-            "thinking": "provider_default",
+            "reasoning_effort": "none",
+            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
-            "call_index": 3,
+            "call_index": 4,
+            "caption_guard": True,
         }
     )
     reused_structure = reusable_task(record, TaskName.STRUCTURE, structure_fp, root)
@@ -347,9 +350,15 @@ def _translate_locked(
             "model": config.openai_translation_model
             if backend == "llm"
             else config.libretranslate_url,
-            "thinking": "provider_default" if backend == "llm" else None,
+            "reasoning_effort": "none" if backend == "llm" else None,
+            "llm_endpoint": (
+                config.openai_llm_base_url or config.openai_base_url
+                if backend == "llm"
+                else None
+            ),
+            "temperature": 0.7 if backend == "llm" else None,
             "repetition_penalty": 1.01 if backend == "llm" else None,
-            "call_index": 2 if backend == "llm" else None,
+            "call_index": 9 if backend == "llm" else None,
         }
     )
     reused_translation = reusable_task(record, translation_task, translation_fp, root)
@@ -410,9 +419,11 @@ def _translate_locked(
             "rules": canonical_hash(review_rules),
             "glossary": canonical_hash(glossary),
             "model": config.openai_review_model,
-            "thinking": "provider_default",
+            "reasoning_effort": "none",
+            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
-            "call_index": 2,
+            "call_index": 3,
         }
     )
     reused_review = reusable_task(record, TaskName.REVIEW, review_fp, root)
@@ -441,6 +452,7 @@ def _translate_locked(
     fix_fp = canonical_hash(
         {
             "task": "FIX",
+            "revision_guard": 4,
             "document": canonical_hash(document),
             "review": canonical_hash(reviewed),
         }
@@ -528,6 +540,7 @@ def _translate_locked(
     markdown_fp = canonical_hash(
         {
             "task": "MARKDOWN",
+            "table_layout": 2,
             "document": canonical_hash(document),
             "cover": canonical_hash(cover),
             "assets": _tree_hash(merge_dir / "assets"),

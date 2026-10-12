@@ -83,12 +83,14 @@ def review(
     _write_diagnostics(diagnostics_path, diagnostics)
     client = LLMClient(config)
     responses: list[tuple[str, ReviewResponse, list[ReviewTarget]]] = []
-    # Schema、message形式および抽出済み用語集へ2,048 bytesを予約する。
+    # System、Schemaおよびmessage形式へ2,048 bytesを予約する。
     overhead = len(rules.encode("utf-8")) + 2048
+    payload_budget = config.review_input_tokens - overhead
+    envelope_bytes = len(
+        _user_payload([], [], "", [], payload_budget).encode("utf-8")
+    ) - _target_bytes([])
     for index, chunk in enumerate(
-        _chunks(
-            targets, config.review_max_targets, config.review_input_tokens - overhead
-        )
+        _chunks(targets, config.review_max_targets, payload_budget - envelope_bytes)
     ):
         responses.extend(
             _execute(
@@ -107,16 +109,41 @@ def review(
     revisions: list[Revision] = []
     chunks_directory = task_directory / "chunks"
     for call_id, response, chunk in responses:
+        seen_findings: set[str] = set()
+        seen_revisions: set[str] = set()
         write_model(chunks_directory / f"{call_id}.json", response)
         target_ids = {target_id for target in chunk for target_id in target.target_ids}
         span_ids = {span.id for target in chunk for span in target.spans}
+        aliases: dict[str, str] = {}
+        spans_by_target: dict[str, set[str]] = {}
+        for target in chunk:
+            if len(target.target_ids) != 1:
+                continue
+            unit_id = target.target_ids[0]
+            aliases[target.id] = unit_id
+            owned_spans = spans_by_target.setdefault(unit_id, set())
+            for span in target.spans:
+                aliases[span.id] = unit_id
+                owned_spans.add(span.id)
         for index, item in enumerate(
             response.findings[: config.review_max_findings], start=1
         ):
+            normalized_ids = list(
+                dict.fromkeys(
+                    target_id
+                    if target_id in target_ids
+                    else aliases.get(target_id, target_id)
+                    for target_id in item.target_ids
+                )
+            )
+            key = item.model_copy(
+                update={"target_ids": normalized_ids}
+            ).model_dump_json()
+            if key in seen_findings:
+                continue
+            seen_findings.add(key)
             unknown = [
-                target_id
-                for target_id in item.target_ids
-                if target_id not in target_ids
+                target_id for target_id in normalized_ids if target_id not in target_ids
             ]
             diagnostics.extend(
                 f"{call_id} unknown_target {target_id}" for target_id in unknown
@@ -127,7 +154,7 @@ def review(
                     origin="review",
                     category=item.category,
                     severity=item.severity,
-                    target_ids=item.target_ids,
+                    target_ids=normalized_ids,
                     message=item.message,
                 )
             )
@@ -136,9 +163,23 @@ def review(
         for index, item in enumerate(
             response.revisions[: config.review_max_revisions], start=1
         ):
-            if item.target_id not in target_ids:
-                diagnostics.append(f"{call_id} unknown_target {item.target_id}")
             edits = item.edits[: config.review_max_edits_per_revision]
+            target_id = item.target_id
+            alias = aliases.get(target_id) if target_id not in target_ids else None
+            if (
+                alias is not None
+                and edits
+                and all(edit.span_id in spans_by_target[alias] for edit in edits)
+            ):
+                target_id = alias
+            key = item.model_copy(
+                update={"target_id": target_id, "edits": edits}
+            ).model_dump_json()
+            if key in seen_revisions:
+                continue
+            seen_revisions.add(key)
+            if target_id not in target_ids:
+                diagnostics.append(f"{call_id} unknown_target {target_id}")
             diagnostics.extend(
                 f"{call_id} unknown_span {edit.span_id}"
                 for edit in edits
@@ -149,7 +190,7 @@ def review(
             revisions.append(
                 Revision(
                     id=f"review/{call_id}/revision-{index:04d}",
-                    target_id=item.target_id,
+                    target_id=target_id,
                     edits=[
                         TextEdit(span_id=edit.span_id, text=edit.text) for edit in edits
                     ],
@@ -431,7 +472,9 @@ def _execute(
             "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
             "model": config.openai_review_model,
             "mode": config.llm_structured_output_mode,
-            "thinking": "provider_default",
+            "reasoning_effort": "none",
+            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
             "input_tokens": config.review_input_tokens,
             "output_tokens": config.review_output_tokens,
@@ -641,7 +684,7 @@ def _user_payload(
     rag: list[dict[str, object]],
     maximum_bytes: int,
 ) -> str:
-    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+    """任意の参照情報を必要に応じて除外し、入力上限内のJSON payloadを作る。
 
     Args:
         targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
@@ -658,21 +701,28 @@ def _user_payload(
     """
 
     selected = list(rag)
+    selected_glossary = glossary
+    selected_findings = list(findings)
     while True:
         value = json.dumps(
             {
-                "glossary": glossary,
+                "glossary": selected_glossary,
                 "references": selected,
-                "check_findings": findings,
+                "check_findings": selected_findings,
                 "targets": [_target_payload(target) for target in targets],
             },
             ensure_ascii=False,
         )
         if len(value.encode("utf-8")) <= maximum_bytes:
             return value
-        if not selected:
+        if selected:
+            selected.pop()
+        elif selected_glossary:
+            selected_glossary = ""
+        elif selected_findings:
+            selected_findings = []
+        else:
             raise LLMInputExceededError("review prompt exceeds input limit")
-        selected.pop()
 
 
 def _previous_attempts(directory: Path) -> int:

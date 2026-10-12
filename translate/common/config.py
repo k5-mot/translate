@@ -26,6 +26,8 @@ class Config(BaseModel):
 
     openai_base_url: str | None = None
     openai_api_key: str | None = None
+    openai_llm_base_url: str | None = None
+    openai_llm_api_key: str | None = None
     openai_structure_model: str | None = None
     openai_translation_model: str | None = None
     openai_review_model: str | None = None
@@ -124,7 +126,7 @@ class Config(BaseModel):
         if backend == "llm":
             self._require(
                 "LLM translate",
-                self.openai_base_url,
+                self.openai_llm_base_url or self.openai_base_url,
                 self.openai_structure_model,
                 self.openai_translation_model,
                 self.openai_review_model,
@@ -133,7 +135,7 @@ class Config(BaseModel):
             self._require("LibreTranslate", self.libretranslate_url)
             self._require(
                 "LLM structure/review",
-                self.openai_base_url,
+                self.openai_llm_base_url or self.openai_base_url,
                 self.openai_structure_model,
                 self.openai_review_model,
             )
@@ -142,7 +144,11 @@ class Config(BaseModel):
         """比較Reviewに必要なDoclingとLLM設定を検査する。"""
 
         self._require_docling()
-        self._require("LLM review", self.openai_base_url, self.openai_review_model)
+        self._require(
+            "LLM review",
+            self.openai_llm_base_url or self.openai_base_url,
+            self.openai_review_model,
+        )
 
     def require_register(self) -> None:
         """Registerに必要なEmbeddingとQdrant設定を検査する。"""
@@ -172,6 +178,8 @@ class Config(BaseModel):
         )
         if any(values) and not all(values):
             raise ConfigError("Qdrant RAG settings must be complete")
+        if all(values) and not self.openai_base_url:
+            raise ConfigError("RAG requires OPENAI_BASE_URL for embeddings")
         return all(values)
 
     def _require_docling(self) -> None:

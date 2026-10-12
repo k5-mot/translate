@@ -8,11 +8,13 @@ from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from unittest.mock import MagicMock
 
 import pytest
 from streamlit.testing.v1 import AppTest
 from uuid_utils import uuid7
 
+from scripts.real_ui_step import resume
 from translate import ui
 from translate.artifact_store import (
     describe_artifact,
@@ -444,6 +446,26 @@ def test_processing_id_does_not_overwrite_existing_record(tmp_path: Path) -> Non
             processing_id=processing_id,
             outputs=tmp_path / "outputs",
         )
+
+
+def test_real_ui_translate_resume_uses_translation_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TranslateのResumeが保存済みtranslation記録を参照する。"""
+
+    monkeypatch.chdir(tmp_path)
+    processing_id = str(uuid7())
+    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text('{"updated_at": "before"}', encoding="utf-8")
+    page = MagicMock()
+    page.get_by_role.return_value.click.side_effect = lambda: record_path.write_text(
+        '{"updated_at": "after"}', encoding="utf-8"
+    )
+
+    resume(page, "translate", processing_id)
+
+    page.get_by_role.assert_called_once_with("button", name="Resume", exact=True)
 
 
 @pytest.mark.browser

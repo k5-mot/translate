@@ -8,16 +8,20 @@ import pytest
 from typer.testing import CliRunner
 from uuid_utils import uuid7
 
+from translate.adapters.embedding import EmbeddingError
 from translate.adapters.llm import LLMOutputExceededError, LLMOutputTokenExceededError
 from translate.artifact_store import (
     begin_llm_call,
     complete_llm_call,
     fail_llm_call,
+    load_model,
     load_reusable_llm_response,
 )
 from translate.cli import app
+from translate.common.config import Config
+from translate.models.artifacts import RegistrationRecord
 from translate.pipeline import InputError, resolve_processing_id
-from translate.pipeline.register import _chunks, _validate_source_id
+from translate.pipeline.register import _chunks, _validate_source_id, register_paths
 from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 
 if TYPE_CHECKING:
@@ -50,6 +54,56 @@ def test_cli_invalid_backend_returns_input_error(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "backend must be" in result.stderr
+
+
+def test_register_resume_clears_stale_failure_and_records_embedding_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Register再開中はprocessingを示し、再失敗時は具体的な対策を残す。"""
+
+    source = tmp_path / "reference.txt"
+    source.write_text("reference", encoding="utf-8")
+    config = Config(
+        openai_base_url="http://embedding/v1",
+        openai_embedding_model="embedding",
+        qdrant_uri="http://qdrant",
+        qdrant_collection="translation",
+    )
+    outputs = tmp_path / "outputs"
+    processing_id = str(uuid7())
+
+    def first_failure(*_args: object) -> None:
+        """最初の登録をEmbedding失敗として記録する。"""
+
+        message = "最初の接続失敗。対策: 接続先を確認してください。"
+        raise EmbeddingError(message)
+
+    monkeypatch.setattr("translate.pipeline.register._register_sources", first_failure)
+    with pytest.raises(EmbeddingError):
+        register_paths([source], config, outputs=outputs, processing_id=processing_id)
+    record_path = outputs / "reference" / processing_id / "registration.json"
+    failed = load_model(record_path, RegistrationRecord)
+    assert failed.status == "failed"
+
+    def resumed_failure(*_args: object) -> None:
+        """再開中の記録と失敗理由の置換を確認する。"""
+
+        active = load_model(record_path, RegistrationRecord)
+        assert active.status == "processing"
+        assert active.error is None
+        assert active.updated_at > failed.updated_at
+        message = "要求が時間切れです。対策: 負荷を確認してください。"
+        raise EmbeddingError(message)
+
+    monkeypatch.setattr(
+        "translate.pipeline.register._register_sources", resumed_failure
+    )
+    with pytest.raises(EmbeddingError):
+        register_paths([source], config, outputs=outputs, resume_id=processing_id)
+    retried = load_model(record_path, RegistrationRecord)
+    assert retried.status == "failed"
+    assert retried.error is not None
+    assert retried.error.message == "要求が時間切れです。対策: 負荷を確認してください。"
 
 
 def test_cli_shows_llm_output_limit_and_remedy(
@@ -114,6 +168,25 @@ def test_llm_call_response_is_reused_only_with_matching_fingerprint(
     assert reused is not None
     assert reused[1] == response
     assert rejected is None
+
+    complete_llm_call(
+        tmp_path,
+        artifact,
+        response,
+        attempts=1,
+        input_tokens=10,
+        output_tokens=5,
+        status="partial",
+    )
+    assert (
+        load_reusable_llm_response(
+            tmp_path,
+            call_id="call-1",
+            fingerprint="fingerprint",
+            response_type=TranslationResponse,
+        )
+        is None
+    )
 
 
 def test_llm_call_artifact_keeps_safe_remedy(tmp_path: Path) -> None:

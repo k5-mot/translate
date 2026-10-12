@@ -345,7 +345,9 @@ def _execute(
             "heading_history": heading_history,
             "model": config.openai_structure_model,
             "mode": config.llm_structured_output_mode,
-            "thinking": "provider_default",
+            "reasoning_effort": "none",
+            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
+            "temperature": 0.7,
             "repetition_penalty": 1.01,
             "input_tokens": config.structure_input_tokens,
             "output_tokens": config.structure_output_tokens,
@@ -484,6 +486,14 @@ def _apply_page(
                     diagnostics.append(
                         f"{call_id} invalid_caption_source {patch.caption_source_id}"
                     )
+                    continue
+                existing_caption = (
+                    block.image.caption
+                    if block.kind == "figure" and block.image is not None
+                    else block.caption
+                )
+                if existing_caption is not None:
+                    diagnostics.append(f"{call_id} caption_already_present {block.id}")
                     continue
                 if block.kind == "figure" and block.image is not None:
                     block.image.caption = source.content

@@ -91,7 +91,7 @@ class LLMClient:
     """生成LLMの接続、再試行、JSON parseおよびPydantic検証を隠蔽する。"""
 
     def __init__(self, config: Config) -> None:
-        """単一endpoint設定を保持し、送信はstructuredまで遅延する。
+        """生成LLM用endpoint設定を保持し、送信はstructuredまで遅延する。
 
         Args:
             config (Config): 接続先、上限値および処理Optionを保持する設定。
@@ -100,13 +100,19 @@ class LLMClient:
             ValueError: `OpenAI-compatible base URL is required`と判定した場合。
         """
 
-        if config.openai_base_url is None:
+        base_url = config.openai_llm_base_url or config.openai_base_url
+        if base_url is None:
             raise ValueError("OpenAI-compatible base URL is required")
         self.config = config
+        self._api_key = (
+            config.openai_llm_api_key
+            if config.openai_llm_base_url
+            else config.openai_api_key
+        )
         # SDKは認証値を要求するが、ローカルの無認証endpointへは送らない。
         self.client = OpenAI(
-            api_key=config.openai_api_key or "local-no-auth",
-            base_url=config.openai_base_url,
+            api_key=self._api_key or "local-no-auth",
+            base_url=base_url,
             timeout=config.llm_request_timeout_seconds,
             max_retries=0,
         )
@@ -232,7 +238,7 @@ class LLMClient:
             except APIConnectionError as error:
                 last_cause = error
                 last_error = LLMConnectionError(
-                    "LLM endpointへ接続できません。対策: OPENAI_BASE_URLと"
+                    "LLM endpointへ接続できません。対策: OPENAI_LLM_BASE_URLまたはOPENAI_BASE_URLと"
                     "endpointの稼働・ネットワークを確認してください。"
                 )
                 if attempt >= self.config.llm_retry_attempts:
@@ -325,7 +331,8 @@ class LLMClient:
                 {"role": "user", "content": user_content},
             ],
             ### default
-            "temperature": 0.0,
+            "reasoning_effort": "none",
+            "temperature": 0.7,
             "top_p": 0.80,
             "extra_body": {
                 "top_k": 20,
@@ -382,7 +389,7 @@ class LLMClient:
                     "schema": native_schema,
                 },
             }
-        if not self.config.openai_api_key:
+        if not self._api_key:
             payload["extra_headers"] = {"Authorization": Omit()}
         return payload
 
@@ -478,6 +485,7 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         marker in message
         for marker in (
             "context length",
+            "context size has been exceeded",
             "context_length_exceeded",
             "maximum context",
             "prompt is too long",
@@ -509,7 +517,7 @@ def _provider_error(error: APIStatusError) -> LLMError:
     if status in {401, 403}:
         return LLMAuthenticationError(
             f"LLM認証・権限エラー (HTTP {status})。対策: "
-            "OPENAI_API_KEYとendpointの権限を確認してください。"
+            "OPENAI_LLM_API_KEYまたはOPENAI_API_KEYとendpointの権限を確認してください。"
         )
     if status == 429:
         return LLMRateLimitError(

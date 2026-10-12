@@ -13,6 +13,7 @@ import subprocess
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import partial
+from multiprocessing.connection import wait
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Literal
@@ -272,11 +273,11 @@ class WorkerRegistry:
                 process.terminate()
         else:
             process.terminate()
-        process.join(timeout=5)
-        if process.is_alive():
+        stopped = wait([process.sentinel], timeout=5)
+        if not stopped:
             process.kill()
-            process.join(timeout=5)
-        return not process.is_alive()
+            stopped = wait([process.sentinel], timeout=5)
+        return bool(stopped)
 
     def future(self, processing_id: str) -> Future[object] | None:
         """処理IDに対応するFutureをthread-safeに取得する。
@@ -2692,7 +2693,7 @@ def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> Non
             f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
         )
     future = registry.future(processing_id)
-    if future is not None and future.done():
+    if future is not None and future.done() and record.error is None:
         _render_future_error(future)
     if record.status == "succeeded":
         if isinstance(record, TranslationRecord):

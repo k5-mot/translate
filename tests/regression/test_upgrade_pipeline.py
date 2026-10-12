@@ -20,7 +20,7 @@ from translate.models.artifacts import (
     UnpackManifest,
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.upgrade import UpgradeRecord
+from translate.models.upgrade import UpgradePlan, UpgradeRecord
 from translate.pipeline import upgrade
 
 if TYPE_CHECKING:
@@ -69,6 +69,17 @@ def test_upgrade_pipeline_reuses_translation_and_resumes(  # noqa: C901, PLR0915
         source_v2.name: _document("source-v2", "Stable text"),
         translation_v1.name: _document("translation-v1", "安定した文章"),
     }
+    documents[source_v2.name].pages[0].blocks.append(
+        Block(
+            id="block-removed",
+            order=1,
+            kind="paragraph",
+            content=TextUnit(
+                id="removed",
+                spans=[TextSpan(id="span-removed", source="Structure removes this")],
+            ),
+        )
+    )
 
     def fake_split(
         source: Path, directory: Path, _root: Path, _pages: int
@@ -134,11 +145,13 @@ def test_upgrade_pipeline_reuses_translation_and_resumes(  # noqa: C901, PLR0915
         _config: Config,
         _rules: str,
     ) -> Document:
-        """LLM接続なしで英文v2構造をそのまま保存する。"""
+        """LLM接続なしで英文v2の不要単位を除いた構造を保存する。"""
 
         calls["structure"] += 1
-        write_model(directory / "document.json", document)
-        return document
+        structured = document.model_copy(deep=True)
+        structured.pages[0].blocks.pop()
+        write_model(directory / "document.json", structured)
+        return structured
 
     def fake_lint(_document: Document, _assets: Path) -> LintResult:
         """公開構造を有効とする固定LINT結果を返す。"""
@@ -230,6 +243,12 @@ def test_upgrade_pipeline_reuses_translation_and_resumes(  # noqa: C901, PLR0915
     )
 
     record = load_model(outcome.processing_directory / "upgrade.json", UpgradeRecord)
+    plan = load_model(
+        outcome.processing_directory / "upgrade/diff/plan.json", UpgradePlan
+    )
+    assert {
+        identifier for change in plan.changes for identifier in change.source_v2_ids
+    } == {"source-v2"}
     assert outcome.docx.read_bytes() == b"docx"
     assert resumed.docx == outcome.docx
     assert calls == before_resume
