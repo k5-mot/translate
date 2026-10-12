@@ -509,7 +509,11 @@ def _execute(
     ]
     suspect = [span for span in missing if translations.get(span.id, "").strip()]
     diagnostics.extend(f"{call_id} untrusted_translation {span.id}" for span in suspect)
-    quality_retry = bool(suspect) and quality_attempts + 1 < config.llm_retry_attempts
+    quality_retry = (
+        bool(missing)
+        and (bool(suspect) or quality_attempts > 0)
+        and quality_attempts + 1 < config.llm_retry_attempts
+    )
     groups: list[list[TextSpan]] = []
     if quality_retry:
         groups = [[span] for span in missing]

@@ -567,6 +567,49 @@ def test_translation_retries_english_echo_with_finite_limit(
     assert "Japanese" in client.structured.call_args_list[1].kwargs["system"]
 
 
+def test_translation_retries_empty_quality_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """品質再試行で空訳が返っても残りの試行で訳文を回収する。"""
+
+    source = "Intentionally Blank"
+    client = MagicMock()
+    client.structured.side_effect = [
+        StructuredResult(
+            response=TranslationResponse(
+                translations=[TranslationItem(span_id="span-a", text=text)]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+        for text in [source, "", "意図的に空白"]
+    ]
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient",
+        MagicMock(return_value=client),
+    )
+
+    calls = execute_translation(
+        client=client,
+        config=Config(openai_base_url="http://llm", openai_translation_model="model"),
+        spans=[TextSpan(id="span-a", source=source)],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert client.structured.call_count == 3
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text="意図的に空白")
+    ]
+
+
 def test_translation_splits_repeated_english_echo_by_sentence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
