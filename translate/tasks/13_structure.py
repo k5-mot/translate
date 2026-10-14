@@ -600,19 +600,27 @@ def _normalize_heading_levels(
 
 
 def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
-    """提案kindが既存Blockの保持する必須fieldだけで成立するか返す。
+    """番号付き見出しを維持し、提案kindの必須fieldが成立するか返す。
 
     Args:
         block (Block): 変換または検証対象のDocument Block。
         patch (StructurePatch): Blockへ適用予定のSTRUCTURE変更。
 
     Returns:
-        bool: 提案kindが既存Blockの保持する必須fieldだけで成立するか返す。
+        bool: 番号付き見出しを失わず、変更後の必須fieldを満たす場合にTrue。
     """
 
     kind = patch.kind
     if kind is None:
         return True
+    # 章節番号付きの見出しを段落化すると、Wordの採番と目次から章が欠落する。
+    if (
+        block.kind == "heading"
+        and kind != "heading"
+        and block.content is not None
+        and _NUMBERED_HEADING.match(block.content.text("source"))
+    ):
+        return False
     content_required = kind in {
         "paragraph",
         "heading",

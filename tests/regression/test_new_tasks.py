@@ -1239,6 +1239,42 @@ def test_structure_uses_section_depth_for_numbered_heading_level(
 
 
 @pytest.mark.parametrize(
+    ("title", "proposed_kind", "expected_kind"),
+    [
+        ("8 Equation", "paragraph", "heading"),
+        ("10 Notes", "alert", "heading"),
+        ("2026 Results", "paragraph", "paragraph"),
+    ],
+)
+def test_structure_preserves_numbered_heading_kind(
+    title: str, proposed_kind: str, expected_kind: str
+) -> None:
+    """章節番号付き見出しの段落化を拒否し、年号付き文字列の種別補正は妨げない。"""
+    heading = Block(
+        id="heading",
+        order=0,
+        kind="heading",
+        level=2,
+        content=_unit("heading/content", title),
+    )
+    page = Page(number=2, blocks=[heading])
+    patch = StructurePatch.model_validate(
+        {
+            "block_id": "heading",
+            "kind": proposed_kind,
+            "alert_kind": "note" if proposed_kind == "alert" else None,
+        }
+    )
+
+    _apply_page(page, [("call", StructureResponse(patches=[patch]))], [])
+    _normalize_heading_levels(Document(pages=[page]), {"heading": 2}, [])
+
+    assert heading.kind == expected_kind
+    if expected_kind == "heading":
+        assert heading.level == 1
+
+
+@pytest.mark.parametrize(
     "title", ["CHAPTER II", "1 Document Control", "7 TOC Levels", "10 Notes"]
 )
 def test_structure_allows_explicit_chapter_reset_to_level_one(title: str) -> None:
