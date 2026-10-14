@@ -358,6 +358,7 @@ def run_agent(
                 "pending_ids": {role: ids[:8] for role, ids in pending.items()},
                 "unchecked_count": len(unchecked),
                 "unchecked_targets": unchecked[:32],
+                "reviewed_targets": result.reviewed_target_ids[-8:],
                 "conflicts": sorted(conflicts),
             }
             if idle_steps >= 12 or time.monotonic() >= deadline:
@@ -391,8 +392,16 @@ def run_agent(
             if group_steps[group_key] > 12:
                 raise TimeoutError("Review target group exceeded 12 Agent steps")
             if action.operation in {"overview", "read", "search"}:
+                visible = (
+                    {
+                        role: {key: units[role][key] for key in ids}
+                        for role, ids in pending.items()
+                    }
+                    if action.operation == "overview"
+                    else units
+                )
                 observation = observe_documents(
-                    action, units, max(512, config.review_input_tokens // 3)
+                    action, visible, max(512, config.review_input_tokens // 3)
                 )
             else:
                 try:

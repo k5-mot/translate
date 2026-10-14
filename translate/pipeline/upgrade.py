@@ -297,8 +297,16 @@ def run_agent(
             if group_steps[group_key] > 12:
                 raise TimeoutError("Upgrade target group exceeded 12 Agent steps")
             if action.operation in {"overview", "read", "search"}:
+                visible = (
+                    {
+                        role: {key: values[key] for key in pending.get(role, values)}
+                        for role, values in units.items()
+                    }
+                    if action.operation == "overview"
+                    else units
+                )
                 observation = observe_documents(
-                    action, units, max(512, config.review_input_tokens // 3)
+                    action, visible, max(512, config.review_input_tokens // 3)
                 )
             else:
                 try:

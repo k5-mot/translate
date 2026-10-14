@@ -64,18 +64,33 @@ def config() -> Config:
 
 
 @pytest.mark.parametrize(
-    "invalid",
+    ("invalid", "expected_operation", "attempts"),
     [
-        AgentAction(operation="evaluate", target_ids=["source-id"]),
-        AgentAction(operation="read", references={"source": ["invented-id"]}),
-        AgentAction(operation="overview", references={"source": ["source-id"]}),
+        (AgentAction(operation="evaluate", target_ids=["source-id"]), "match", 2),
+        (AgentAction(operation="recheck"), "match", 2),
+        (
+            AgentAction(operation="read", references={"source": ["invented-id"]}),
+            "match",
+            2,
+        ),
+        (
+            AgentAction(operation="overview", references={"ignored": ["unused-id"]}),
+            "overview",
+            1,
+        ),
     ],
 )
-def test_agent_corrects_evaluation_before_matching(
-    config: Config, monkeypatch: pytest.MonkeyPatch, invalid: AgentAction
+def test_agent_validates_only_used_action_arguments(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid: AgentAction,
+    expected_operation: str,
+    attempts: int,
 ) -> None:
-    """対応付け前の評価指示をSDK応答境界で訂正し、存在する対象の対応付けを選ぶ。"""
-    client = LLMClient(config)
+    """操作に必要な対象だけを検証・訂正し、閲覧に使わない引数は破棄する。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
     responses = []
     for action in (
         invalid,
@@ -109,14 +124,28 @@ def test_agent_corrects_evaluation_before_matching(
             {},
             agent_units(
                 {
-                    "source": document(**{"source-id": "Original"}),
+                    "source": document(
+                        **{"source-id": "Original", "unseen-id": "Not displayed"}
+                    ),
                     "translation": document(**{"translation-id": "訳文"}),
                 }
             ),
         )
-        assert action.operation == "match"
-        assert create.call_count == 2
-        assert "Previous response validation failed" in str(create.call_args_list[1])
+        assert action.operation == expected_operation
+        assert create.call_count == attempts
+        if attempts == 2:
+            assert "Previous response validation failed" in str(
+                create.call_args_list[1]
+            )
+        else:
+            assert action.references == {}
+        properties = create.call_args.kwargs["response_format"]["json_schema"][
+            "schema"
+        ]["properties"]
+        assert properties["role"]["enum"] == ["", "source", "translation"]
+        assert properties["references"]["properties"]["source"]["items"]["enum"] == [
+            "source-id"
+        ]
     finally:
         client.client.close()
 
@@ -248,11 +277,21 @@ def test_review_observes_conflict_and_rechecks_then_resumes(
 
     def after_conflict(kwargs: dict[str, object]) -> AgentAction:
         """競合の観察結果から再確認を選ぶ。"""
-        observation = json.loads(kwargs["user"])["observation"]
+        payload = json.loads(kwargs["user"])
+        observation = payload["observation"]
+        assert payload["state"]["reviewed_targets"] == ["review/alignment-000001"]
         assert observation["action"]["operation"] == "evaluate"
         assert observation["result"]["conflicts"] == ["review/alignment-000001"]
         return AgentAction(
             operation="recheck", target_ids=observation["result"]["conflicts"]
+        )
+
+    def after_overview(kwargs: dict[str, object]) -> AgentAction:
+        """対応済みの要素が概要へ再登場せず、未評価対象を選べることを確認する。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["observation"]["result"]["items"] == []
+        return AgentAction(
+            operation="evaluate", target_ids=payload["state"]["unchecked_targets"]
         )
 
     answers = [
@@ -260,7 +299,8 @@ def test_review_observes_conflict_and_rechecks_then_resumes(
         AgentAction(operation="search", role="translation", query="三つ"),
         AgentAction(operation="match", references=refs),
         matched(),
-        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+        AgentAction(operation="overview"),
+        after_overview,
         evaluation("二つ。", "四つ。"),
         after_conflict,
         evaluation("二つ。"),
@@ -393,6 +433,14 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
             "reviewed_source_v2_ids": ["new", "same2", "added"],
         }
     )
+
+    def after_overview(kwargs: dict[str, object]) -> AgentAction:
+        """確認済み英文を概要から除き、旧訳の参照は維持する。"""
+        items = json.loads(kwargs["user"])["observation"]["result"]["items"]
+        assert {item["role"] for item in items} == {"translation_v1"}
+        assert {item["id"] for item in items} == {"ja", "keep", "remove"}
+        return AgentAction(operation="finish")
+
     answers = [
         AgentAction(
             operation="evaluate",
@@ -402,7 +450,8 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
             },
         ),
         response,
-        AgentAction(operation="finish"),
+        AgentAction(operation="overview"),
+        after_overview,
     ]
     calls = scripted(monkeypatch, answers)
     result = upgrade_agent(documents, tmp_path, config)
