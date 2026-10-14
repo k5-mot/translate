@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -84,6 +85,11 @@ def inspect_result(page: Page, operation: str, processing_id: str) -> None:
         page.get_by_role("button", name=labels[operation], exact=True)
     ).to_be_visible(timeout=30_000)
     expect(page.locator('[data-testid="stException"]')).to_have_count(0)
+    expect(
+        page.locator('[data-testid="stAlert"]').filter(
+            has_text=re.compile(r"処理に失敗|workerが終了|\b\w*Error\b")
+        )
+    ).to_have_count(0)
 
 
 def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序どおり記述する。

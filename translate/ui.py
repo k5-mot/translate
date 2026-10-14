@@ -286,7 +286,8 @@ class WorkerRegistry:
                 return
             if receiver.poll():
                 name, message = receiver.recv()
-                raise WorkerError(f"{name}: {message}" if message else name)
+                if name:
+                    raise WorkerError(f"{name}: {message}" if message else name)
             if process.exitcode != 0:
                 raise WorkerError(
                     f"workerが終了しました (exit code {process.exitcode})"
@@ -377,6 +378,9 @@ def _run_worker(operation: Callable[[], object], sender: Connection) -> None:
         sender.send((type(error).__name__, str(error)))
     except Exception as error:  # noqa: BLE001 - 予期外失敗は型名だけ親processへ返す。
         sender.send((type(error).__name__, ""))
+    else:
+        # Windowsではpeerの切断だけでもpollがTrueとなるため、成功も明示する。
+        sender.send(("", ""))
     finally:
         sender.close()
 

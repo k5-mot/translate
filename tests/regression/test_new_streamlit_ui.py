@@ -186,6 +186,24 @@ def test_worker_registry_rejects_duplicate_active_id() -> None:
         registry.stop("processing-id")
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_worker_reports_success_and_failure_over_real_pipe(*, fails: bool) -> None:
+    """実spawn子processの正常終了と例外を、Pipe切断エラーに変えず受け取る。"""
+    registry = WorkerRegistry()
+    try:
+        operation = partial(int, "invalid") if fails else partial(time.sleep, 0)
+        assert registry.submit("pipe-result", operation)
+        future = registry.future("pipe-result")
+        assert future is not None
+        if fails:
+            with pytest.raises(ui.WorkerError, match="ValueError"):
+                future.result(timeout=15)
+        else:
+            assert future.result(timeout=15) is None
+    finally:
+        registry.stop("pipe-result")
+
+
 def test_force_stop_terminates_worker_and_marks_record_cancelled(
     tmp_path: Path,
 ) -> None:
