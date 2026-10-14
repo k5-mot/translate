@@ -359,6 +359,58 @@ def test_translation_rejects_english_only_paraphrase(
     assert _plausible_translation(source, "日本語の訳文")
 
 
+@pytest.mark.parametrize(
+    ("source", "english", "japanese"),
+    [
+        ("Army:", "Army:", "陸軍:"),
+        ("Air Force:", "Air Force:", "空軍:"),
+        ("Navy:", "Navy:", "海軍:"),
+        ("Marine Corps:", " marine corps", "海兵隊:"),
+        ("Coast Guard:", "Coast Guard:", "沿岸警備隊:"),
+    ],
+)
+def test_translation_normalizes_service_labels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    english: str,
+    japanese: str,
+) -> None:
+    """軍種の短い見出しが英語のまま返っても日本語訳を保存する。"""
+
+    client = MagicMock()
+    client.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=english)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    monkeypatch.setattr(
+        "translate.tasks.translation.translate.LLMClient",
+        MagicMock(return_value=client),
+    )
+
+    calls = execute_translation(
+        client=client,
+        config=Config(openai_base_url="http://llm", openai_translation_model="model"),
+        spans=[TextSpan(id="span-a", source=source)],
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        lineage=["chunk-0000"],
+        depth=0,
+        allow_missing_retry=True,
+        diagnostics=[],
+        previous_context={},
+    )
+
+    assert calls[-1][1].translations == [
+        TranslationItem(span_id="span-a", text=japanese)
+    ]
+
+
 @pytest.mark.parametrize("invalid", ["omitted", "echo", "near_echo", "heading", "long"])
 def test_translation_retries_implausible_text_in_prompt_mode(
     tmp_path: Path,

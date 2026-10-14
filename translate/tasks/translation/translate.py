@@ -40,6 +40,15 @@ if TYPE_CHECKING:
 
 TranslationContext = dict[str, tuple[str, str]]
 
+# 短い軍種見出しはLLMが固有名詞として英語のまま返しやすいため、完全一致時だけ補正する。
+_SERVICE_LABELS = {
+    "Army:": "陸軍:",
+    "Air Force:": "空軍:",
+    "Navy:": "海軍:",
+    "Marine Corps:": "海兵隊:",
+    "Coast Guard:": "沿岸警備隊:",
+}
+
 
 class TranslationModel(BaseModel):
     """未知fieldを無視するTRANSLATE応答モデルの設定。"""
@@ -292,6 +301,28 @@ def _plausible_translation(source: str, translation: str) -> bool:
     )
 
 
+def _normalize_service_labels(
+    spans: list[TextSpan], response: TranslationResponse
+) -> None:
+    """軍種見出しをLLMが英語のまま返した場合だけ確定訳へ置き換える。
+
+    Args:
+        spans (list[TextSpan]): 要求した翻訳対象Span列。
+        response (TranslationResponse): 補正するLLM応答。
+    """
+
+    sources = {span.id: span.source for span in spans}
+    for item in response.translations:
+        source = sources.get(item.span_id, "")
+        japanese = _SERVICE_LABELS.get(source)
+        if (
+            japanese
+            and item.text.strip().casefold().removesuffix(":")
+            == source.removesuffix(":").casefold()
+        ):
+            item.text = japanese
+
+
 def _leader_parts(value: str) -> tuple[str, str]:
     """末尾の目次用点線を本文と装飾部分に分ける。
 
@@ -401,6 +432,7 @@ def _execute(
     )
     if reusable is not None:
         response = reusable[1]
+        _normalize_service_labels(spans, response)
         cached = {item.span_id: item.text for item in response.translations}
         if len(cached) == len(spans) and all(
             _plausible_translation(span.source, cached.get(span.id, ""))
@@ -492,6 +524,7 @@ def _execute(
         fail_llm_call(call_directory, artifact, error, attempts=1)
         raise
     response = result.response
+    _normalize_service_labels(spans, response)
     translations: dict[str, str] = {}
     duplicates: set[str] = set()
     for item in response.translations:
