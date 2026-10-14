@@ -1,21 +1,22 @@
 """成果物path、fingerprint、原子的保存および排他制御。"""
 
-from __future__ import annotations
-
 import hashlib
 import json
 import os
 import shutil
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self
+from types import TracebackType
+from typing import Any, Self
 from uuid import uuid4
 
 import portalocker
 from pydantic import BaseModel
+from pydantic_core import to_jsonable_python
 
 from translate.adapters.embedding import EmbeddingError
 from translate.adapters.llm import LLMError
@@ -30,10 +31,6 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.models.upgrade import UpgradeRecord
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from types import TracebackType
 
 
 class ArtifactError(RuntimeError):
@@ -100,7 +97,7 @@ def canonical_hash(value: BaseModel | Any) -> str:
         str: Pydantic JSON modeまたはJSON互換値のcanonical SHA-256を返す。
     """
 
-    data = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    data = to_jsonable_python(value)
     encoded = json.dumps(
         data,
         ensure_ascii=False,
@@ -111,7 +108,7 @@ def canonical_hash(value: BaseModel | Any) -> str:
 
 
 def atomic_write_bytes(path: Path, value: bytes) -> None:
-    """同一directoryの一時fileを同期してから置換保存する。
+    """同一directoryの一時fileを閉じてから置換保存する。
 
     Args:
         path (Path): Byte列を保存するFileのPath。
@@ -127,8 +124,6 @@ def atomic_write_bytes(path: Path, value: bytes) -> None:
     try:
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(value)
-            stream.flush()
-            os.fsync(stream.fileno())
         replace_path(temporary, path)
     except BaseException:
         temporary.unlink(missing_ok=True)
@@ -146,28 +141,37 @@ def atomic_write_text(path: Path, value: str) -> None:
     atomic_write_bytes(path, value.encode("utf-8"))
 
 
-def write_model(path: Path, value: BaseModel) -> None:
-    """Pydantic modelをUTF-8、LF、末尾改行付きJSONで原子的に保存する。
+def write_model(path: Path, value: BaseModel, *, atomic: bool = True) -> None:
+    """Pydantic modelをUTF-8、LF、末尾改行付きJSONとして保存する。
 
     Args:
-        path (Path): JSON Modelを保存するFileのPath。
-        value (BaseModel): JSON modeで直列化するPydantic Model。
+        path: 保存先のFile。
+        value: JSONへ直列化するModel。
+        atomic: 読者へ公開済みの記録ならTrue。一時Task内ではFalse。
+
+    Raises:
+        OSError: 保存先へ書き込めない場合。
     """
-
-    text = json.dumps(value.model_dump(mode="json"), ensure_ascii=False, indent=2)
-    atomic_write_text(path, f"{text}\n")
+    write_json(path, value.model_dump(mode="json"), atomic=atomic)
 
 
-def write_json(path: Path, value: Any) -> None:
-    """JSON互換値をUTF-8、LF、末尾改行付きで原子的に保存する。
+def write_json(path: Path, value: Any, *, atomic: bool = True) -> None:
+    """JSONを保存し、公開中の記録だけ一時fileによる置換を使う。
 
     Args:
-        path (Path): JSONを保存するFileのPath。
-        value (Any): JSONへ直列化する値。
-    """
+        path: 保存先のFile。
+        value: JSONへ直列化する値。
+        atomic: 中断時に読者へ途中状態を公開しない場合はTrue。
 
-    text = json.dumps(value, ensure_ascii=False, indent=2)
-    atomic_write_text(path, f"{text}\n")
+    Raises:
+        OSError: 保存先へ書き込めない場合。
+    """
+    text = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    if atomic:
+        atomic_write_text(path, text)
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def load_model[ModelT: BaseModel](path: Path, model_type: type[ModelT]) -> ModelT:
@@ -191,19 +195,36 @@ def load_model[ModelT: BaseModel](path: Path, model_type: type[ModelT]) -> Model
         raise ArtifactError(message) from error
 
 
-def llm_call_id(task: str, target_ids: list[str], lineage: list[str]) -> str:
-    """Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。
+def llm_call_id(
+    task: str,
+    target_ids: list[str],
+    lineage: list[str],
+    *,
+    operation: str | None = None,
+    round_number: int = 0,
+) -> str:
+    """操作と再確認の回数を含む決定的なCall IDを作る。
 
     Args:
         task (str): 状態またはCallを記録するTask名。
         target_ids (list[str]): LLM Call対象の安定識別ID列。
         lineage (list[str]): 親から子へ連なるLLM Call ID列。
+        operation: Agentの操作名。省略時はTask名の小文字。
+        round_number: 再確認の連番。通信Retryでは増加させない。
 
     Returns:
         str: Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。
     """
 
-    value = canonical_hash({"task": task, "target_ids": target_ids, "lineage": lineage})
+    value = canonical_hash(
+        {
+            "task": task,
+            "operation": operation or task.lower(),
+            "round": round_number,
+            "target_ids": target_ids,
+            "lineage": lineage,
+        }
+    )
     return f"call-{value}"
 
 
@@ -215,6 +236,8 @@ def begin_llm_call(
     fingerprint: str,
     target_ids: list[str],
     previous_attempts: int = 0,
+    operation: str | None = None,
+    round_number: int = 0,
 ) -> LLMCallArtifact:
     """送信前のCall状態を原子的に保存する。
 
@@ -222,9 +245,11 @@ def begin_llm_call(
         directory (Path): LLM Call Artifactの保存Directory。
         call_id (str): 一意に識別するLLM Call ID。
         task (LLMTaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
         target_ids (list[str]): LLM Call対象の安定識別ID列。
         previous_attempts (int): Resume前までに消費した試行回数。
+        operation: 実行する操作名。省略時はTask名の小文字。
+        round_number: Agentによる再確認の連番。
 
     Returns:
         LLMCallArtifact: 送信前のCall状態を原子的に保存する。
@@ -234,6 +259,8 @@ def begin_llm_call(
     artifact = LLMCallArtifact(
         call_id=call_id,
         task=task,
+        operation=operation or task.lower(),
+        round=round_number,
         status="processing",
         fingerprint=fingerprint,
         target_ids=target_ids,
@@ -303,7 +330,7 @@ def fail_llm_call(
         directory (Path): LLM Call Artifactの保存Directory。
         artifact (LLMCallArtifact): 状態または応答を更新するLLM Call Artifact。
         error (BaseException): 記録または分類する例外。
-        attempts (int): LLM Callで消費した試行回数。
+        attempts (int): LLMError以外の失敗で消費した試行回数。LLMErrorでは実試行回数を使う。
 
     Returns:
         LLMCallArtifact: LLM Call失敗を本文なしのProcessingErrorとして保存する。
@@ -312,7 +339,8 @@ def fail_llm_call(
     updated = artifact.model_copy(
         update={
             "status": "failed",
-            "attempts": artifact.attempts + attempts,
+            "attempts": artifact.attempts
+            + (error.attempts if isinstance(error, LLMError) else attempts),
             "updated_at": datetime.now(UTC),
             "error": ProcessingError(
                 code="llm_call_failed",
@@ -367,7 +395,7 @@ def load_reusable_llm_response[ResponseT: BaseModel](
     Args:
         directory (Path): LLM Call Artifactの保存Directory。
         call_id (str): 一意に識別するLLM Call ID。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
         response_type (type[ResponseT]): 応答を検証するPydantic Model Type。
 
     Returns:
@@ -481,7 +509,7 @@ def reusable_task(
     Args:
         record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
         task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
         processing_directory (Path): 対象処理の成果物Directory。
 
     Returns:
@@ -510,7 +538,7 @@ def start_task(
         record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
         record_path (Path): 処理Record JSONのPath。
         task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
     """
 
     state = TaskState(
@@ -541,7 +569,7 @@ def finish_task(
         record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
         record_path (Path): 処理Record JSONのPath。
         task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
         artifacts (list[ArtifactFile]): 完了Taskへ関連付ける成果物一覧。
         skipped (bool): Taskを省略して完了したかどうか。
     """
@@ -575,7 +603,7 @@ def fail_task(
         record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
         record_path (Path): 処理Record JSONのPath。
         task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
         error (BaseException): 記録または分類する例外。
         code (str): 診断または停止理由を識別するCode。
     """

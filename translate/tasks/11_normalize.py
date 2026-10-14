@@ -1,16 +1,12 @@
 """NORMALIZE: 不要要素除外と決定的text cleanupを行う。"""
 
-from __future__ import annotations
-
 import copy
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
-from translate.artifact_store import temporary_task_directory, write_json
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from translate.adapters.artifact_store import temporary_task_directory, write_json
 
 SKIPPED = {"page_header", "page_footer", "document_index"}
 INDEX_RE = re.compile(
@@ -185,7 +181,7 @@ def normalize(source: Path, output_dir: Path) -> Path:
                     changed.append(ref)
     _filter_tree(document, document.get("body", {}), set(removed_reasons))
     with temporary_task_directory(output_dir) as temporary:
-        write_json(temporary / "document.json", document)
+        write_json(temporary / "document.json", document, atomic=False)
         write_json(
             temporary / "report.json",
             {
@@ -195,5 +191,6 @@ def normalize(source: Path, output_dir: Path) -> Path:
                 ],
                 "cleaned": changed,
             },
+            atomic=False,
         )
     return output_dir / "document.json"

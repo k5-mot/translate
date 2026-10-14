@@ -1,26 +1,20 @@
-"""環境変数を検証済み設定へ変換する。"""
-
-from __future__ import annotations
+"""環境変数と用途別の設定を検証する。"""
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Self
+from typing import Literal
 
-from dotenv import dotenv_values
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 
 class ConfigError(ValueError):
-    """環境変数が仕様上の範囲または組合せを満たさないことを表す。"""
+    """設定の値または組合せが操作の要件を満たさない。"""
 
 
-class Config(BaseModel):
-    """PipelineとAdapterが共有する検証済み設定。"""
+class Config(BaseSettings):
+    """環境変数を直接読む、PipelineとAdapterの共通設定。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
 
@@ -39,9 +33,6 @@ class Config(BaseModel):
     docling_ocr_lang: str = "eng"
     docling_force_ocr: bool = False
     pdf_split_pages: int = Field(default=10, gt=0, le=100)
-
-    libretranslate_url: str | None = None
-    libretranslate_api_key: str | None = None
 
     qdrant_uri: str | None = None
     qdrant_api_key: str | None = None
@@ -78,168 +69,82 @@ class Config(BaseModel):
     review_max_revisions: int = Field(default=32, gt=0, le=32)
     review_max_edits_per_revision: int = Field(default=16, gt=0, le=16)
 
-    @model_validator(mode="after")
-    def validate_token_budgets(self) -> Self:
-        """Task別の入出力と予約tokenがcontext上限内であることを検査する。
 
-        Returns:
-            Self: Task別の入出力と予約tokenがcontext上限内であることを検査する。
-
-        Raises:
-            ValueError: Task別のtoken予算が`LLM_CONTEXT_TOKENS`を超えた場合。
-        """
-
-        budgets = (
-            (
-                "STRUCTURE",
-                self.structure_input_tokens,
-                self.structure_output_tokens,
-                self.llm_image_tokens,
-            ),
-            ("TRANSLATE", self.translate_input_tokens, self.translate_output_tokens, 0),
-            ("REVIEW", self.review_input_tokens, self.review_output_tokens, 0),
-        )
-        for task, input_tokens, output_tokens, image_tokens in budgets:
-            total = input_tokens + output_tokens + image_tokens + self.llm_safety_tokens
-            if total > self.llm_context_tokens:
-                components = (
-                    f"{task}_INPUT_TOKENS={input_tokens} + "
-                    f"{task}_OUTPUT_TOKENS={output_tokens}"
-                )
-                if image_tokens:
-                    components += f" + LLM_IMAGE_TOKENS={image_tokens}"
-                components += f" + LLM_SAFETY_TOKENS={self.llm_safety_tokens}"
-                raise ValueError(
-                    f"{task} token budget: {components} = {total} > "
-                    f"LLM_CONTEXT_TOKENS={self.llm_context_tokens}"
-                )
-        return self
-
-    def require_translate(self, backend: Literal["llm", "libretranslate"]) -> None:
-        """Translateに必要なendpoint設定が揃っていることを検査する。
-
-        Args:
-            backend (Literal['llm', 'libretranslate']): 翻訳に使用するBackend名。
-        """
-
-        self._require_docling()
-        if backend == "llm":
-            self._require(
-                "LLM translate",
-                self.openai_llm_base_url or self.openai_base_url,
-                self.openai_structure_model,
-                self.openai_translation_model,
-                self.openai_review_model,
-            )
-        else:
-            self._require("LibreTranslate", self.libretranslate_url)
-            self._require(
-                "LLM structure/review",
-                self.openai_llm_base_url or self.openai_base_url,
-                self.openai_structure_model,
-                self.openai_review_model,
-            )
-
-    def require_review(self) -> None:
-        """比較Reviewに必要なDoclingとLLM設定を検査する。"""
-
-        self._require_docling()
-        self._require(
-            "LLM review",
-            self.openai_llm_base_url or self.openai_base_url,
-            self.openai_review_model,
-        )
-
-    def require_register(self) -> None:
-        """Registerに必要なEmbeddingとQdrant設定を検査する。"""
-
-        self._require(
-            "Register",
-            self.openai_base_url,
-            self.openai_embedding_model,
-            self.qdrant_uri,
-            self.qdrant_collection,
-        )
-
-    def qdrant_enabled(self) -> bool:
-        """任意のRAG設定が完全に有効かを返し、部分設定は拒否する。
-
-        Returns:
-            bool: 任意のRAG設定が完全に有効かを返し、部分設定は拒否する。
-
-        Raises:
-            ConfigError: `Qdrant RAG settings must be complete`と判定した場合。
-        """
-
-        values = (
-            self.openai_embedding_model,
-            self.qdrant_uri,
-            self.qdrant_collection,
-        )
-        if any(values) and not all(values):
-            raise ConfigError("Qdrant RAG settings must be complete")
-        if all(values) and not self.openai_base_url:
-            raise ConfigError("RAG requires OPENAI_BASE_URL for embeddings")
-        return all(values)
-
-    def _require_docling(self) -> None:
-        """PDF処理に必要なDocling endpointを検査する。"""
-
-        self._require("Docling", self.docling_server_url)
-
-    @staticmethod
-    def _require(label: str, *values: str | None) -> None:
-        """一つでも空の必須設定があれば用途名付きで拒否する。
-
-        Args:
-            label (str): 不足設定をErrorへ示す表示名。
-            *values (str | None): 一括処理する入力Text列。
-
-        Raises:
-            ConfigError: `f'{label} settings are incomplete'`と判定した場合。
-        """
-
-        if not all(value and value.strip() for value in values):
-            raise ConfigError(f"{label} settings are incomplete")
-
-
-class _EnvironmentConfig(BaseSettings, Config):
-    """Configのfieldを.envとprocess環境変数から取得する。"""
-
-    model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
-
-
-def load_config(
-    directory: Path | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> Config:
-    """現在directoryの.envへprocess環境変数を上書きし、設定を検証する。
+def validate_config(config: Config, operation: str | None = None) -> None:
+    """予算、任意RAG、操作に必要な環境変数を一か所で検証する。
 
     Args:
-        directory (Path | None): LLM Call Artifactの保存Directory。
-        environ (Mapping[str, str] | None): Process環境変数の代替Mapping。
-
-    Returns:
-        Config: 現在directoryの.envへprocess環境変数を上書きし、設定を検証する。
+        config: 型と数値範囲の検証を終えた設定。
+        operation: translate、review、upgrade、register。Noneは共通検証のみ。
 
     Raises:
-        ConfigError: 現在directoryの.envへprocess環境変数を上書きし、設定を検証する処理を完了できない場合。
+        ConfigError: 予算超過、部分的なRAG設定、必須項目の不足がある場合。
     """
-
-    base = directory or Path.cwd()
-    try:
-        if environ is None:
-            return Config.model_validate(
-                _EnvironmentConfig(_env_file=base / ".env").model_dump()
-            )
-        dotenv = dotenv_values(base / ".env")
-        return Config.model_validate(
-            {
-                name: value
-                for name in Config.model_fields
-                if (value := environ.get(name.upper(), dotenv.get(name.upper())))
-                not in {None, ""}
-            }
+    for task in ("structure", "translate", "review"):
+        total = (
+            getattr(config, f"{task}_input_tokens")
+            + getattr(config, f"{task}_output_tokens")
+            + config.llm_safety_tokens
+            + (config.llm_image_tokens if task == "structure" else 0)
         )
+        if total > config.llm_context_tokens:
+            raise ConfigError(
+                f"{task.upper()} token budget {total} exceeds "
+                f"LLM_CONTEXT_TOKENS={config.llm_context_tokens}"
+            )
+    rag = (config.openai_embedding_model, config.qdrant_uri, config.qdrant_collection)
+    if any(rag) and not all(rag):
+        raise ConfigError("Qdrant RAG settings must be complete")
+    required: list[str] = []
+    if all(rag):
+        required.append("openai_base_url")
+    if operation:
+        if operation not in {"translate", "review", "upgrade", "register"}:
+            raise ConfigError(f"Unknown operation: {operation}")
+        required.append("docling_server_url")
+        if operation == "register":
+            required.extend(
+                (
+                    "openai_base_url",
+                    "openai_embedding_model",
+                    "qdrant_uri",
+                    "qdrant_collection",
+                )
+            )
+        else:
+            if not (config.openai_llm_base_url or config.openai_base_url):
+                raise ConfigError("OPENAI_LLM_BASE_URL or OPENAI_BASE_URL is required")
+            required.append("openai_review_model")
+            if operation == "translate":
+                required.extend(("openai_structure_model", "openai_translation_model"))
+    missing = [
+        name.upper() for name in required if not (getattr(config, name) or "").strip()
+    ]
+    if missing:
+        raise ConfigError("Required settings: " + ", ".join(missing))
+
+
+def load_config(directory: Path | None = None, operation: str | None = None) -> Config:
+    """作業directoryの.envを読み、process環境変数を優先して検証する。
+
+    Args:
+        directory: .envを探す場所。省略時は現在の作業directory。
+        operation: 用途別の必須項目も検証する場合の操作名。
+
+    Returns:
+        数値範囲、token予算、用途の組合せを検証済みの設定。
+
+    Raises:
+        ConfigError: 環境変数の型、範囲、組合せが不正な場合。
+    """
+    try:
+        config = Config(_env_file=(directory or Path.cwd()) / ".env")
     except ValidationError as error:
-        raise ConfigError(str(error)) from error
+        # ValidationErrorの入力値には認証情報が含まれ得るため表示しない。
+        details = "; ".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['type']}"
+            for item in error.errors(include_input=False)
+        )
+        raise ConfigError(details) from None
+    validate_config(config, operation)
+    return config

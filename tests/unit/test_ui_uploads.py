@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-from translate.artifact_store import atomic_write_bytes
+from translate.adapters.artifact_store import atomic_write_bytes
 from translate.ui import _stage_uploads
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ def test_stage_uploads_retries_transient_windows_access_denied(
         return original(path, target)
 
     monkeypatch.setattr(Path, "replace", replace)
-    monkeypatch.setattr("translate.artifact_store.time.sleep", _skip_sleep)
+    monkeypatch.setattr("translate.adapters.artifact_store.time.sleep", _skip_sleep)
     upload = cast("UploadedFile", _Upload())
 
     staged = _stage_uploads(
@@ -97,7 +97,7 @@ def test_atomic_write_retries_transient_windows_access_denied(
         return original(path, destination)
 
     monkeypatch.setattr(Path, "replace", replace)
-    monkeypatch.setattr("translate.artifact_store.time.sleep", _skip_sleep)
+    monkeypatch.setattr("translate.adapters.artifact_store.time.sleep", _skip_sleep)
 
     atomic_write_bytes(target, b"new")
 

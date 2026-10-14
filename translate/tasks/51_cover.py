@@ -1,15 +1,10 @@
 """原本PDFの1ページ目を表紙画像にするCOVER Task。"""
 
-from __future__ import annotations
+from pathlib import Path
 
-from typing import TYPE_CHECKING
-
+from translate.adapters.artifact_store import describe_artifact, write_model
 from translate.adapters.pdf import render_page
-from translate.artifact_store import describe_artifact, write_model
 from translate.models.artifacts import CoverResult
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def create_cover(

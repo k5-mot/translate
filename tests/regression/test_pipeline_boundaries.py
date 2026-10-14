@@ -1,59 +1,32 @@
-"""新しいCLIとPipeline再開境界を検証する。"""
+"""Pipelineの入力・再開境界を検証する。"""
 
 from __future__ import annotations
 
+from importlib import import_module
 from typing import TYPE_CHECKING
 
 import pytest
-from typer.testing import CliRunner
 from uuid_utils import uuid7
 
-from translate.adapters.embedding import EmbeddingError
-from translate.adapters.llm import LLMOutputExceededError, LLMOutputTokenExceededError
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     begin_llm_call,
     complete_llm_call,
     fail_llm_call,
     load_model,
     load_reusable_llm_response,
 )
-from translate.cli import app
+from translate.adapters.embedding import EmbeddingError
+from translate.adapters.llm import LLMOutputTokenExceededError
 from translate.common.config import Config
 from translate.models.artifacts import RegistrationRecord
 from translate.pipeline import InputError, resolve_processing_id
 from translate.pipeline.register import _chunks, _validate_source_id, register_paths
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
+
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def test_cli_help_lists_only_public_commands() -> None:
-    """CLIがTranslate、Review、Register、Upgradeを公開することを確認する。"""
-
-    result = CliRunner().invoke(app, ["--help"])
-
-    assert result.exit_code == 0
-    assert "translate" in result.stdout
-    assert "review" in result.stdout
-    assert "register" in result.stdout
-    assert "upgrade" in result.stdout
-    assert "publish" not in result.stdout
-
-
-def test_cli_invalid_backend_returns_input_error(tmp_path: Path) -> None:
-    """不正backendが外部接続前に終了code 2となることを確認する。"""
-
-    source = tmp_path / "source.pdf"
-    source.write_bytes(b"not-read-before-backend-validation")
-
-    result = CliRunner().invoke(
-        app,
-        ["translate", str(source), "--backend", "unsupported"],
-    )
-
-    assert result.exit_code == 2
-    assert "backend must be" in result.stderr
 
 
 def test_register_resume_clears_stale_failure_and_records_embedding_cause(
@@ -61,9 +34,10 @@ def test_register_resume_clears_stale_failure_and_records_embedding_cause(
 ) -> None:
     """Register再開中はprocessingを示し、再失敗時は具体的な対策を残す。"""
 
-    source = tmp_path / "reference.txt"
+    source = tmp_path / "reference.pdf"
     source.write_text("reference", encoding="utf-8")
     config = Config(
+        docling_server_url="http://docling",
         openai_base_url="http://embedding/v1",
         openai_embedding_model="embedding",
         qdrant_uri="http://qdrant",
@@ -104,28 +78,6 @@ def test_register_resume_clears_stale_failure_and_records_embedding_cause(
     assert retried.status == "failed"
     assert retried.error is not None
     assert retried.error.message == "要求が時間切れです。対策: 負荷を確認してください。"
-
-
-def test_cli_shows_llm_output_limit_and_remedy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """出力上限で失敗したとき原因と対策をCLIへ表示する。"""
-
-    source = tmp_path / "source.pdf"
-    source.write_bytes(b"test")
-
-    def fail(*_args: object, **_kwargs: object) -> None:
-        """LLM出力上限エラーをPipeline境界から再現する。"""
-
-        message = "出力トークン上限に到達。対策: 出力予算を増やす。"
-        raise LLMOutputExceededError(message)
-
-    monkeypatch.setattr("translate.cli.translate_pdf", fail)
-    result = CliRunner().invoke(app, ["translate", str(source)])
-
-    assert result.exit_code == 1
-    assert "LLMOutputExceededError" in result.stderr
-    assert "対策: 出力予算を増やす" in result.stderr
 
 
 def test_llm_call_response_is_reused_only_with_matching_fingerprint(
@@ -213,12 +165,16 @@ def test_llm_call_artifact_keeps_safe_remedy(tmp_path: Path) -> None:
 def test_registration_chunk_limit_and_overlap() -> None:
     """登録chunkが1000文字以内で隣接部分を最大100文字重複させる。"""
 
-    value = "A" * 1200
+    value = "A sentence. " * 120
 
     chunks = _chunks(value)
 
     assert all(len(chunk) <= 1000 for chunk in chunks)
-    assert chunks[0][-100:] == chunks[1][:100]
+    assert len(chunks) > 1
+    assert all(chunk.endswith(".") for chunk in chunks)
+    assert chunks[0].endswith(chunks[1][:95].strip())
+    with pytest.raises(InputError, match="sentence exceeds"):
+        _chunks("A" * 1200)
 
 
 @pytest.mark.parametrize("value", ["CON", "com1.txt", "..", "nested/path", "tail."])

@@ -5,11 +5,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
-$samples = @('sample3', 'sample2', 'sample5', 'sample4')
-$statePath = Join-Path $root '.tmp/real_acceptance_state.json'
-$state = if (Test-Path -LiteralPath $statePath) {
-    Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
-} else { @{} }
+$samples = @('sample', 'sample2', 'sample3')
+$runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+$statePath = Join-Path $root ".tmp/acceptance/$runId/state.json"
+$state = @{ head = (& git rev-parse HEAD).Trim(); status = 'processing' }
 $currentStage = 'startup'
 
 function Save-State {
@@ -29,12 +28,11 @@ function Get-Record {
 function Wait-Record {
     param([string]$Stem, [string]$Id, [string]$RecordName)
     $path = Join-Path $root "outputs/$Stem/$Id/$RecordName.json"
-    $deadline = (Get-Date).AddHours(48)
-    while ((Get-Date) -lt $deadline) {
+    while ($true) {
         $record = Get-Record $Stem $Id $RecordName
         if ($record) {
             if ($record.status -eq 'succeeded') {
-                if ($RecordName -in @('translation', 'upgrade')) {
+                if ($RecordName -eq 'translation') {
                     & uv run python scripts/audit_document.py (Join-Path $root "outputs/$Stem/$Id") $RecordName
                     if ($LASTEXITCODE -ne 0) { throw "AUDIT FAIL $Stem $RecordName $Id" }
                 }
@@ -47,12 +45,11 @@ function Wait-Record {
         }
         Start-Sleep -Seconds 15
     }
-    throw "TIMEOUT $Stem $RecordName $Id record=$path"
 }
 
 function Invoke-Logged {
     param([string[]]$Command)
-    $log = Join-Path $root '.tmp/real_acceptance_command.log'
+    $log = Join-Path (Split-Path -Parent $statePath) 'command.log'
     $output = & $Command[0] $Command[1..($Command.Count - 1)] 2>&1 |
         Tee-Object -FilePath $log |
         ForEach-Object { Write-Host $_; $_ }
@@ -65,17 +62,6 @@ function Invoke-Logged {
 
 function Run-Ui {
     param([string]$Operation, [string[]]$Files, [string]$Key)
-    if ($state.ContainsKey($Key)) {
-        $id = $state[$Key]
-        $stem = $Key.Split('/')[0]
-        $recordStem = if ($Operation -eq 'review') { 'document.ja' } else { $stem }
-        $recordName = if ($Operation -eq 'register') { 'registration' } elseif ($Operation -eq 'translate') { 'translation' } else { $Operation }
-        $record = Get-Record $recordStem $id $recordName
-        if ($record -and $record.status -in @('failed', 'cancelled')) {
-            [void](Invoke-Logged @('uv', 'run', 'python', 'scripts/real_ui_step.py', $Operation, '--resume', $id))
-        }
-        return $id
-    }
     $output = Invoke-Logged (@('uv', 'run', 'python', 'scripts/real_ui_step.py', $Operation) + $Files)
     $line = @($output | Where-Object { $_ -match '^processing_id=' }) | Select-Object -Last 1
     if (-not $line) { throw "UI $Operation did not return an ID: $output" }
@@ -85,35 +71,9 @@ function Run-Ui {
     return $id
 }
 
-function Run-Cli {
-    param([string]$Operation, [string[]]$Arguments, [string]$Key)
-    if ($state.ContainsKey($Key)) {
-        $id = $state[$Key]
-        $stem = $Key.Split('/')[0]
-        $recordStem = if ($Operation -eq 'register') { "acceptance-$stem" } elseif ($Operation -eq 'review') { 'document.ja' } else { $stem }
-        $recordName = if ($Operation -eq 'register') { 'registration' } elseif ($Operation -eq 'translate') { 'translation' } else { $Operation }
-        $record = Get-Record $recordStem $id $recordName
-        if ($record -and $record.status -in @('failed', 'cancelled', 'processing')) {
-            [void](Invoke-Logged (@('uv', 'run', 'translate-ja', $Operation) + $Arguments + @('--resume', $id)))
-        }
-        return $id
-    }
-    $output = Invoke-Logged (@('uv', 'run', 'translate-ja', $Operation) + $Arguments)
-    $line = @($output | Where-Object { $_ -match "^${Operation}_id: " }) | Select-Object -Last 1
-    if (-not $line) {
-        $label = if ($Operation -eq 'translate') { 'translation' } elseif ($Operation -eq 'register') { 'registration' } else { $Operation }
-        $line = @($output | Where-Object { $_ -match "^${label}_id: " }) | Select-Object -Last 1
-    }
-    if (-not $line) { throw "CLI $Operation did not return an ID: $output" }
-    $id = $line -replace '^\w+_id: ', ''
-    $state[$Key] = $id
-    Save-State
-    return $id
-}
-
 function Convert-Docx {
     param([string]$Stem, [string]$Id)
-    $docx = Join-Path $root "outputs/$Stem/$Id/publisher/docx/document.ja.docx"
+    $docx = Join-Path $root "outputs/$Stem/$Id/publisher/ooxml/document.ja.docx"
     $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
     $word = $null
@@ -121,6 +81,7 @@ function Convert-Docx {
     try {
         $word = New-Object -ComObject Word.Application
         $word.Visible = $false
+        $word.DisplayAlerts = 0
         $document = $word.Documents.Open($docx, $false, $true)
         $document.ExportAsFixedFormat($pdf, 17)
     }
@@ -158,132 +119,54 @@ function Ensure-UiServer {
 }
 
 function Invoke-Validation {
-foreach ($stem in $samples) {
-    if ($state["$stem/done"]) { continue }
-    $source = (Resolve-Path "inputs/$stem.pdf").Path
-    $sourceV2 = (Resolve-Path ".tmp/versions/$stem.pdf").Path
-    Write-Output "START $stem"
-    $script:currentStage = "$stem/ui/register"
-    $uiRegistration = Run-Ui 'register' @($source) "$stem/ui/register"
-    Wait-Record $stem $uiRegistration 'registration'
-    $script:currentStage = "$stem/cli/register"
-    $cliRegistration = Run-Cli 'register' @($source, '--source-id', "acceptance-$stem") "$stem/cli/register"
-    Wait-Record "acceptance-$stem" $cliRegistration 'registration'
-    $script:currentStage = "$stem/ui/translate"
-    $uiTranslation = Run-Ui 'translate' @($source) "$stem/ui/translate"
-    Wait-Record $stem $uiTranslation 'translation'
-    $script:currentStage = "$stem/cli/translate"
-    $cliTranslation = Run-Cli 'translate' @($source, '--backend', 'llm') "$stem/cli/translate"
-    Wait-Record $stem $cliTranslation 'translation'
-    $uiPdf = Convert-Docx $stem $uiTranslation
-    $cliPdf = Convert-Docx $stem $cliTranslation
-
-    $script:currentStage = "$stem/ui/review"
-    $uiReview = Run-Ui 'review' @($source, $uiPdf) "$stem/ui/review"
-    Wait-Record 'document.ja' $uiReview 'review'
-    $script:currentStage = "$stem/cli/review"
-    $cliReview = Run-Cli 'review' @($source, $cliPdf) "$stem/cli/review"
-    Wait-Record 'document.ja' $cliReview 'review'
-
-    $script:currentStage = "$stem/ui/upgrade"
-    $uiUpgrade = Run-Ui 'upgrade' @($source, $sourceV2, $uiPdf) "$stem/ui/upgrade"
-    Wait-Record $stem $uiUpgrade 'upgrade'
-    $script:currentStage = "$stem/cli/upgrade"
-    $cliUpgrade = Run-Cli 'upgrade' @($source, $sourceV2, $cliPdf, '--backend', 'llm') "$stem/cli/upgrade"
-    Wait-Record $stem $cliUpgrade 'upgrade'
-    Write-Output "DONE $stem"
-    $state["$stem/done"] = $true
-    Save-State
-}
+    # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
+    foreach ($stem in $samples) {
+        $source = (Resolve-Path -LiteralPath "inputs/$stem.pdf").Path
+        $sourceV2 = (Resolve-Path -LiteralPath ".tmp/versions/$stem.pdf").Path
+        foreach ($operation in @('register', 'translate', 'review', 'upgrade')) {
+            $script:currentStage = "$stem/$operation"
+            $files = switch ($operation) {
+                'register' { @($source) }
+                'translate' { @($source) }
+                'review' { @($source, $japanesePdf) }
+                'upgrade' { @($source, $sourceV2, $japanesePdf) }
+            }
+            $identifier = Run-Ui $operation $files "$stem/$operation"
+            $recordStem = if ($operation -eq 'review') { 'document.ja' } else { $stem }
+            $recordName = switch ($operation) { 'register' { 'registration' }; 'translate' { 'translation' }; default { $operation } }
+            Wait-Record $recordStem $identifier $recordName
+            $image = Join-Path (Split-Path -Parent $statePath) "$stem-$operation.png"
+            & uv run python scripts/real_ui_step.py $operation --inspect $identifier --screenshot $image
+            if ($LASTEXITCODE -ne 0) { throw "UI result verification failed: $currentStage" }
+            if ($operation -eq 'translate') { $japanesePdf = Convert-Docx $stem $identifier }
+        }
+        $state["$stem/done"] = $true
+        Save-State
+    }
 }
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
 if ($SelfCheck) {
     foreach ($stem in $samples) {
-        foreach ($operation in @('register', 'translate', 'review', 'upgrade')) {
-            foreach ($mode in @('ui', 'cli')) { Write-Output "$stem/$mode/$operation" }
-        }
-        foreach ($path in @("inputs/$stem.pdf", ".tmp/versions/$stem.pdf")) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing input: $path" }
-        }
+        if (-not (Test-Path -LiteralPath "inputs/$stem.pdf" -PathType Leaf)) { throw "Missing inputs/$stem.pdf" }
+        foreach ($operation in @('register', 'translate', 'review', 'upgrade')) { Write-Output "$stem/$operation" }
     }
     exit 0
 }
-# shortcut: 旧ロックは対話PowerShellが保持中。全端末を閉じた後に旧名へ戻せる。
-$repairAttempts = @{}
-$connectionAttempts = @{}
-while ($true) {
-    $currentStage = 'startup'
-    $failure = $null
-    $lock = [IO.File]::Open((Join-Path $root '.tmp/real_acceptance-v2.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-    try {
-        Ensure-UiServer
-        Invoke-Validation
-    }
-    catch {
-        if ($_.Exception -is [System.Management.Automation.PipelineStoppedException]) {
-            exit 130
-        }
-        $failure = [ordered]@{
-            stage = $currentStage
-            error = $_.Exception.Message
-            branch = (& git branch --show-current).Trim()
-            head = (& git rev-parse HEAD).Trim()
-            occurred_at = (Get-Date).ToUniversalTime().ToString('o')
-        }
-    }
-    finally {
-        $lock.Dispose()
-    }
-    if ($null -eq $failure) { break }
-    $failurePath = Join-Path $root '.tmp/real_acceptance_failure.json'
-    $failure | ConvertTo-Json | Set-Content -LiteralPath $failurePath -Encoding utf8
-    $transientEmbedding = $failure.error -match '"cause_type":"EmbeddingError"' -and
-        $failure.error -match '"retryable":true' -and
-        $failure.error -match 'Embedding要求が時間切れ|Embedding endpointへ接続できません|Embedding endpointがHTTP (?:408|429|5\d\d)'
-    if ($transientEmbedding) {
-        # endpoint障害はコード修正では回復しないため、修正回数と分けて有限回だけ待つ。
-        $connectionAttempts[$currentStage] = [int]$connectionAttempts[$currentStage] + 1
-        if ($connectionAttempts[$currentStage] -gt 3) {
-            throw "Embedding endpoint did not recover for $currentStage after 3 retries: $($failure.error)"
-        }
-        $delaySeconds = 30 * $connectionAttempts[$currentStage]
-        Write-Warning "Embedding endpoint failure at $currentStage; retry $($connectionAttempts[$currentStage])/3 in $delaySeconds seconds: $($failure.error)"
-        Start-Sleep -Seconds $delaySeconds
-        continue
-    }
-    $repairAttempts[$currentStage] = [int]$repairAttempts[$currentStage] + 1
-    if ($repairAttempts[$currentStage] -gt 3) {
-        throw "Repair limit reached for $currentStage. Details: $failurePath"
-    }
-    Write-Warning "Validation failed at $currentStage ($($repairAttempts[$currentStage])/3): $($failure.error)"
-    & (Join-Path $PSScriptRoot 'repair_real_acceptance.ps1') -FailureFile $failurePath
-    Write-Output "Codex修正完了。$currentStage から検証を再開します。"
-}
-
-Write-Output 'ALL_REAL_ACCEPTANCE_PASSED'
-
-if (-not $state['merged']) {
-    $branch = (& git branch --show-current).Trim()
-    if ($branch -ne 'feature/real-pdf-acceptance-20261009') { throw "Unexpected branch: $branch" }
-    if (@(git status --porcelain).Count -gt 0) { throw 'Working tree is not clean' }
-    & git pull --rebase origin main
-    if ($LASTEXITCODE -ne 0) { throw 'Rebase on main failed' }
-    & git push origin $branch
-    if ($LASTEXITCODE -ne 0) { throw 'Feature push failed' }
-    & gh pr checks 5 --watch
-    if ($LASTEXITCODE -ne 0) { throw 'PR CI failed' }
-    & gh pr ready 5
-    if ($LASTEXITCODE -ne 0) { throw 'Could not mark PR ready' }
-    & gh pr merge 5 --merge
-    if ($LASTEXITCODE -ne 0) { throw 'PR merge failed' }
-    & git switch main
-    if ($LASTEXITCODE -ne 0) { throw 'Could not switch to main' }
-    & git pull --ff-only origin main
-    if ($LASTEXITCODE -ne 0) { throw 'Could not update local main' }
-    & git push origin main
-    if ($LASTEXITCODE -ne 0) { throw 'Main push failed' }
-    $state['merged'] = $true
+if (@(git status --porcelain).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
+Save-State
+try {
+    Ensure-UiServer
+    & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
+    if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
+    Invoke-Validation
+    $state['status'] = 'succeeded'
     Save-State
+    Write-Output "ALL_REAL_ACCEPTANCE_PASSED $statePath"
+} catch {
+    $state['status'] = 'failed'
+    $state['stage'] = $currentStage
+    $state['error'] = $_.Exception.Message
+    Save-State
+    throw
 }
-Write-Output 'ALL_REAL_ACCEPTANCE_PASSED_AND_MERGED'

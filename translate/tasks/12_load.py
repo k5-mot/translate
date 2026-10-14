@@ -1,15 +1,16 @@
 """LOAD: Docling Schema JSONをInternal Documentへ変換する。"""
 
-from __future__ import annotations
-
 import json
 import math
 import re
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from importlib import import_module
+from pathlib import Path
+from typing import Any, cast
 
-from translate.artifact_store import temporary_task_directory, write_model
+from translate.adapters.artifact_store import temporary_task_directory, write_model
 from translate.models.document import (
     Block,
     BlockKind,
@@ -22,11 +23,9 @@ from translate.models.document import (
     TextSpan,
     TextUnit,
 )
-from translate.tasks.preprocess.normalize import INDEX_RE, index_only_pages
 
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-    from pathlib import Path
+INDEX_RE = import_module("translate.tasks.11_normalize").INDEX_RE
+index_only_pages = import_module("translate.tasks.11_normalize").index_only_pages
 
 COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
 SKIPPED_LABELS = {"page_header", "page_footer", "document_index"}
@@ -46,7 +45,6 @@ TEXT_KINDS = {
     "program_listing": "code",
     "formula": "formula",
 }
-MAX_TEXT_SPAN_BYTES = 1024
 
 
 def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any]:
@@ -196,7 +194,7 @@ def _inline(
     href: str | None = None,
     marks: list[TextMark] | None = None,
 ) -> list[TextSpan]:
-    """Docling文字列を有限byteのInline列へ変換する。
+    """Docling文字列を文境界でInline列へ変換し、原文と書式を保持する。
 
     Args:
         ref: 安定IDのprefix。
@@ -219,34 +217,33 @@ def _inline(
             href=href,
             marks=marks or [],
         )
-        for index, part in enumerate(_split_utf8(text, MAX_TEXT_SPAN_BYTES), 1)
+        for index, part in enumerate(_sentences(text) if kind == "text" else [text], 1)
     ]
 
 
-def _split_utf8(value: str, maximum_bytes: int) -> list[str]:
-    """Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。
+def _sentences(value: str) -> list[str]:
+    """終止記号と段落の境界で分け、区切りの空白も元の順で保持する。
 
     Args:
-        value (str): UTF-8 Byte上限で分割するText。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
+        value: 書式とlinkが同一の原文。
 
     Returns:
-        list[str]: Unicode文字を壊さず、連結すると原文へ戻るbyte上限内の断片を返す。
+        連結すると入力と一致する文の列。長い一文は切断しない。
     """
-
+    # 小数点・頭字語の途中を避け、英語の終止記号は空白の直前に限定する。
+    boundaries = list(
+        re.finditer(
+            r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", value
+        )
+    )
     parts: list[str] = []
-    current: list[str] = []
-    current_bytes = 0
-    for character in value:
-        character_bytes = len(character.encode("utf-8"))
-        if current and current_bytes + character_bytes > maximum_bytes:
-            parts.append("".join(current))
-            current = []
-            current_bytes = 0
-        current.append(character)
-        current_bytes += character_bytes
-    if current:
-        parts.append("".join(current))
+    start = 0
+    for boundary in boundaries:
+        if boundary.end() > start:
+            parts.append(value[start : boundary.end()])
+            start = boundary.end()
+    if start < len(value):
+        parts.append(value[start:])
     return parts
 
 
@@ -411,6 +408,8 @@ class _CellSource:
     """LOAD呼出中だけ、論理セルとDoclingの別表現・参照根拠を対応させる。"""
 
     cell: TableCell
+    rowspan: int = 1
+    colspan: int = 1
     variants: list[dict[str, Any]] = field(default_factory=list)
     refs: set[str] = field(default_factory=set)
 
@@ -577,8 +576,6 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
             id=f"{ref}/cell-r{start_row:04d}-c{start_col:04d}",
             row=start_row,
             column=start_col,
-            rowspan=rowspan,
-            colspan=colspan,
             header=bool(raw.get("column_header") or raw.get("row_header")),
             content=TextUnit(
                 id=f"{ref}/cell-r{start_row:04d}-c{start_col:04d}/content",
@@ -586,12 +583,12 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
             ),
         )
         if key in cells:
-            previous = cells[key].cell
+            previous = cells[key]
             if (
                 previous.rowspan,
                 previous.colspan,
-                previous.header,
-                previous.content.text("source"),
+                previous.cell.header,
+                previous.cell.content.text("source"),
             ) != (rowspan, colspan, cell.header, cell.content.text("source")):
                 raise ValueError("conflicting table cell representations")
             previous_raw = cells[key].variants[0]
@@ -601,7 +598,7 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
             ):
                 raise ValueError("conflicting table cell header roles")
         else:
-            cells[key] = _CellSource(cell)
+            cells[key] = _CellSource(cell, rowspan=rowspan, colspan=colspan)
         if "/data/grid/" in path and not (
             start_row <= row < start_row + rowspan
             and start_col <= column < start_col + colspan
@@ -619,9 +616,26 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
     }
     # Doclingが矛盾する結合範囲を返しても、各セルの本文と開始位置は保持する。
     for key in conflicting:
-        cells[key].cell.rowspan = 1
-        cells[key].cell.colspan = 1
-    return list(cells.values())
+        cells[key].rowspan = 1
+        cells[key].colspan = 1
+    # 保存するDocumentは通常grid。結合範囲の本文は起点だけに置き、残りは空セルにする。
+    row_count = data.get("num_rows") or max((row + 1 for row, _ in occupied), default=0)
+    column_count = data.get("num_cols") or max(
+        (column + 1 for _, column in occupied), default=0
+    )
+    for row in range(row_count):
+        for column in range(column_count):
+            if (row, column) not in cells:
+                identifier = f"{ref}/cell-r{row:04d}-c{column:04d}"
+                cells[(row, column)] = _CellSource(
+                    TableCell(
+                        id=identifier,
+                        row=row,
+                        column=column,
+                        content=TextUnit(id=f"{identifier}/content", spans=[]),
+                    )
+                )
+    return [cells[key] for key in sorted(cells)]
 
 
 def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
@@ -792,18 +806,18 @@ def _geometric_cell(
             any(raw.get("column_header") for raw in source.variants)
             and cell_box[0] < center_x < cell_box[2]
         ):
-            columns.update(range(cell.column, cell.column + cell.colspan))
+            columns.update(range(cell.column, cell.column + source.colspan))
         if (
             any(raw.get("row_header") for raw in source.variants)
             and cell_box[1] < center_y < cell_box[3]
         ):
-            rows.update(range(cell.row, cell.row + cell.rowspan))
+            rows.update(range(cell.row, cell.row + source.rowspan))
     intersections = {
         index
         for index, source in enumerate(cells)
         if any(
-            source.cell.row <= row < source.cell.row + source.cell.rowspan
-            and source.cell.column <= column < source.cell.column + source.cell.colspan
+            source.cell.row <= row < source.cell.row + source.rowspan
+            and source.cell.column <= column < source.cell.column + source.colspan
             for row in rows
             for column in columns
         )
@@ -1217,5 +1231,5 @@ def load(source: Path, output_dir: Path) -> Document:
 
     document = load_document(json.loads(source.read_text(encoding="utf-8")))
     with temporary_task_directory(output_dir) as temporary:
-        write_model(temporary / "document.json", document)
+        write_model(temporary / "document.json", document, atomic=False)
     return document

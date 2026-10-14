@@ -1,20 +1,15 @@
 """入力PDFをDocling送信用partへ分割するSPLIT Task。"""
 
-from __future__ import annotations
+from pathlib import Path
 
-from typing import TYPE_CHECKING
-
-from translate.adapters.pdf import page_count, split_pdf
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     describe_staged_artifact,
     sha256_file,
     temporary_task_directory,
     write_model,
 )
+from translate.adapters.pdf import page_count, split_pdf
 from translate.models.artifacts import SplitManifest, SplitPart
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def split(
@@ -58,5 +53,5 @@ def split(
             total_pages=total_pages,
             parts=parts,
         )
-        write_model(temporary / "manifest.json", manifest)
+        write_model(temporary / "manifest.json", manifest, atomic=False)
     return manifest

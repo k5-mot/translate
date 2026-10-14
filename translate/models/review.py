@@ -1,12 +1,10 @@
 """対応付け、検査、レビューおよび修正候補のモデル。"""
 
-from __future__ import annotations
-
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from translate.models.document import TextSpan  # noqa: TC001 - Pydantic runtime type.
+from translate.models.document import Document, TextSpan, iter_text_units
 
 
 class ReviewModel(BaseModel):
@@ -15,18 +13,36 @@ class ReviewModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
-class AlignmentGroup(ReviewModel):
-    """独立した原文と訳文の決定的な対応関係。"""
+class AlignmentCandidate(ReviewModel):
+    """Agentが提案する原文と訳文の対応。"""
 
-    id: str
     source_ids: list[str] = Field(default_factory=list)
     translation_ids: list[str] = Field(default_factory=list)
     kind: Literal["matched", "source_only", "translation_only"]
-    method: Literal["unique_anchor", "ordered_role", "unmatched"]
+    reason: str | None = None
+
+
+class AlignmentGroup(AlignmentCandidate):
+    """参照検証後にapplicationがIDを付与した対応関係。"""
+
+    id: str
+
+
+class AgentAction(ReviewModel):
+    """Agentが次に行う許可済み操作と、文書内の対象指定。"""
+
+    operation: Literal[
+        "overview", "read", "search", "match", "evaluate", "recheck", "finish"
+    ]
+    references: dict[str, list[str]] = Field(default_factory=dict)
+    target_ids: list[str] = Field(default_factory=list)
+    role: str = ""
+    query: str = ""
+    offset: int = Field(default=0, ge=0)
 
 
 class ReviewTarget(ReviewModel):
-    """CHECKとREVIEWへ渡す共通の比較単位。"""
+    """REVIEWへ渡す原文・訳文と修正可能なSpan。"""
 
     id: str
     source: str
@@ -36,10 +52,9 @@ class ReviewTarget(ReviewModel):
 
 
 class Finding(ReviewModel):
-    """決定的検査またはLLMレビューが指摘した一つの問題。"""
+    """LLMレビューが根拠とともに指摘した一つの問題。"""
 
     id: str
-    origin: Literal["check", "review"]
     category: str
     severity: Literal["info", "warning", "error"]
     target_ids: list[str] = Field(default_factory=list)
@@ -87,5 +102,30 @@ class ReviewRevision(ReviewModel):
 class ReviewResponse(ReviewModel):
     """REVIEWのLLMから受け取る浅いstructured output。"""
 
+    groups: list[AlignmentCandidate] = Field(default_factory=list)
+    reviewed_target_ids: list[str] = Field(default_factory=list)
     findings: list[ReviewFinding] = Field(default_factory=list)
     revisions: list[ReviewRevision] = Field(default_factory=list)
+
+
+def targets_from_document(document: Document) -> list[ReviewTarget]:
+    """Translate後のDocument内IDからREVIEWの対象を作る。
+
+    Args:
+        document (Document): 変換または検証対象のDocument。
+
+    Returns:
+        list[ReviewTarget]: Translate後のDocument内IDからREVIEWの対象を作る。
+    """
+
+    return [
+        ReviewTarget(
+            id=f"translate/{unit.id}",
+            source=unit.text("source"),
+            translation=unit.text("revised"),
+            target_ids=[unit.id],
+            spans=unit.spans,
+        )
+        for _, unit in iter_text_units(document)
+        if unit.text("source").strip()
+    ]

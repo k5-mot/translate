@@ -1,15 +1,10 @@
 """最終Documentとassetの構造を検査するLINT Task。"""
 
-from __future__ import annotations
-
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
 
-from translate.artifact_store import canonical_hash
+from translate.adapters.artifact_store import canonical_hash
 from translate.models.artifacts import LintDiagnostic, LintResult
-
-if TYPE_CHECKING:
-    from translate.models.document import Block, Document, Image, TextUnit
+from translate.models.document import Block, Document, Image, TextUnit
 
 
 def lint(document: Document, asset_root: Path) -> LintResult:
@@ -99,11 +94,7 @@ def _validate_block(
         cell_path = f"{path}/cells/{cell_index}"
         _record_id(ids, cell.id, "TableCell", cell_path, diagnostics)
         _validate_unit(cell.content, f"{cell_path}/content", ids, diagnostics)
-        positions = {
-            (row, column)
-            for row in range(cell.row, cell.row + cell.rowspan)
-            for column in range(cell.column, cell.column + cell.colspan)
-        }
+        positions = {(cell.row, cell.column)}
         if occupied & positions:
             _add(
                 diagnostics,

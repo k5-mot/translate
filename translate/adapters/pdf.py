@@ -1,18 +1,13 @@
 """pypdfium2を使うPDF分割、text抽出およびpage画像化。"""
 
-from __future__ import annotations
-
 import logging
 from io import BytesIO
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pypdfium2 as pdfium
 from PIL import Image
 
-from translate.artifact_store import atomic_write_bytes
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from translate.adapters.artifact_store import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 

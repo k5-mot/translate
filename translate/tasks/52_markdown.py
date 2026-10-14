@@ -1,19 +1,13 @@
 """DocumentをPandoc Markdownへ変換するMARKDOWN Task。"""
 
-from __future__ import annotations
-
 import html
 import re
 import shutil
-from typing import TYPE_CHECKING
+from pathlib import Path
 
+from translate.adapters.artifact_store import atomic_write_text
 from translate.adapters.pandoc import table_to_markdown
-from translate.artifact_store import atomic_write_text
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
+from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _ALERT_STYLES = {
@@ -89,6 +83,18 @@ def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
 
     text = convert_text_unit(block.content) if block.content is not None else ""
     if block.kind == "heading":
+        if block.content is not None:
+            content = block.content.model_copy(deep=True)
+            prefix = re.match(
+                r"^\s*(?:[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+", content.text()
+            )
+            if prefix is not None:
+                remaining = prefix.end()
+                for span in content.spans:
+                    value = span.text()
+                    span.revised = value[remaining:]
+                    remaining = max(0, remaining - len(value))
+                text = convert_text_unit(content)
         return (
             f"{'#' * max(1, min(6, block.level or 1))} {text} {{#{_anchor(block.id)}}}"
         )
@@ -181,14 +187,12 @@ def _convert_table(block: Block, timeout: float) -> str:
 
     if not block.cells:
         return ""
-    columns = max(cell.column + cell.colspan for cell in block.cells)
-    row_count = max(cell.row + cell.rowspan for cell in block.cells)
+    columns = max(cell.column + 1 for cell in block.cells)
+    row_count = max(cell.row + 1 for cell in block.cells)
     rows = [_table_row(block.cells, row, columns) for row in range(row_count)]
     header_rows = 0
     for row in range(row_count):
-        covering = [
-            cell for cell in block.cells if cell.row <= row < cell.row + cell.rowspan
-        ]
+        covering = [cell for cell in block.cells if cell.row <= row < cell.row + 1]
         if not covering or not all(cell.header for cell in covering):
             break
         header_rows += 1
@@ -207,7 +211,7 @@ def _convert_table(block: Block, timeout: float) -> str:
 
 
 def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
-    """指定行の開始cellだけをPandoc Rowへ変換する。
+    """指定行の全cellを結合なしのPandoc Rowへ変換する。
 
     Args:
         cells (list[TableCell]): Markdownの一行へ配置するTable Cell列。
@@ -215,27 +219,19 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
         columns (int): 出力TableのColumn数。
 
     Returns:
-        list[object]: 指定行の開始cellだけをPandoc Rowへ変換する。
+        list[object]: 指定行の全cellを結合なしのPandoc Rowへ変換する。
     """
 
     starts = {cell.column: cell for cell in cells if cell.row == row}
-    occupied = {
-        column
-        for cell in cells
-        if cell.row <= row < cell.row + cell.rowspan
-        for column in range(cell.column, cell.column + cell.colspan)
-    }
     result: list[object] = []
     for column in range(columns):
         cell = starts.get(column)
-        if cell is None and column in occupied:
-            continue
         result.append(
             [
                 ["", [], []],
                 {"t": "AlignDefault"},
-                cell.rowspan if cell else 1,
-                cell.colspan if cell else 1,
+                1,
+                1,
                 [_pandoc_plain(cell.content)] if cell else [],
             ]
         )

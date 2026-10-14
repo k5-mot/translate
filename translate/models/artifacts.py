@@ -1,16 +1,14 @@
 """処理状態、ManifestおよびTask成果物の永続化モデル。"""
 
-from __future__ import annotations
-
-from datetime import datetime  # noqa: TC003 - Pydantic resolves this runtime type.
+from datetime import datetime
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from translate.models.document import Document  # noqa: TC001 - Pydantic runtime type.
-from translate.models.review import (  # noqa: TC001 - Pydantic runtime types.
+from translate.models.document import Document
+from translate.models.review import (
     AlignmentGroup,
     Finding,
     ReviewTarget,
@@ -19,7 +17,7 @@ from translate.models.review import (  # noqa: TC001 - Pydantic runtime types.
 
 ProcessingStatus = Literal["processing", "succeeded", "failed", "cancelled"]
 TaskStatus = Literal["processing", "succeeded", "failed", "cancelled", "skipped"]
-LLMTaskName = Literal["STRUCTURE", "TRANSLATE", "REVIEW"]
+LLMTaskName = Literal["STRUCTURE", "TRANSLATE", "REVIEW", "DIFF"]
 LLMCallStatus = Literal["processing", "succeeded", "partial", "split", "failed"]
 
 
@@ -35,18 +33,14 @@ class TaskName(StrEnum):
     LOAD = "LOAD"
     STRUCTURE = "STRUCTURE"
     TRANSLATE = "TRANSLATE"
-    TRANSLATE_LITE = "TRANSLATE_LITE"
-    ALIGN = "ALIGN"
     DIFF = "DIFF"
-    REUSE = "REUSE"
-    CHECK = "CHECK"
     REVIEW = "REVIEW"
     FIX = "FIX"
     LINT = "LINT"
     COVER = "COVER"
     MARKDOWN = "MARKDOWN"
-    DOCX = "DOCX"
-    REPORT = "REPORT"
+    PANDOC = "PANDOC"
+    OOXML = "OOXML"
 
 
 class ArtifactModel(BaseModel):
@@ -197,6 +191,8 @@ class LLMCallArtifact(ArtifactModel):
     response_schema_version: Literal[1] = 1
     call_id: str
     task: LLMTaskName
+    operation: str = ""
+    round: int = Field(default=0, ge=0)
     status: LLMCallStatus
     fingerprint: str
     target_ids: list[str]
@@ -222,7 +218,6 @@ class TranslationRecord(ArtifactModel):
     source: InputFile
     source_language: Literal["en"] = "en"
     target_language: Literal["ja"] = "ja"
-    backend: Literal["llm", "libretranslate"] = "llm"
     tasks: list[TaskState] = Field(default_factory=list)
     llm_progress: list[LLMProgress] = Field(default_factory=list)
     outputs: list[ArtifactFile] = Field(default_factory=list)
@@ -358,27 +353,15 @@ class TransformReport(ArtifactModel):
     diagnostics: list[str] = Field(default_factory=list)
 
 
-class AlignmentResult(ArtifactModel):
-    """ALIGNの対応群とレビュー対象。"""
-
-    schema_version: Literal[1] = 1
-    groups: list[AlignmentGroup]
-    targets: list[ReviewTarget]
-
-
-class CheckResult(ArtifactModel):
-    """CHECKが決定的に検出した指摘。"""
-
-    schema_version: Literal[1] = 1
-    findings: list[Finding]
-
-
 class ReviewResult(ArtifactModel):
-    """REVIEWが生成した指摘と修正候補。"""
+    """REVIEWの対応関係、確認範囲、指摘および修正提案。"""
 
     schema_version: Literal[1] = 1
-    findings: list[Finding]
-    revisions: list[Revision]
+    groups: list[AlignmentGroup] = Field(default_factory=list)
+    targets: list[ReviewTarget] = Field(default_factory=list)
+    reviewed_target_ids: list[str] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
+    revisions: list[Revision] = Field(default_factory=list)
 
 
 class RevisionOutcome(ArtifactModel):

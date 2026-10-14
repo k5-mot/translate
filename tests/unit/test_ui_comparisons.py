@@ -1,36 +1,45 @@
 """Streamlitの対応単位を揃えた比較表示を検証する。"""
 
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from translate import ui
-from translate.artifact_store import sha256_file, write_model
+from translate.adapters.artifact_store import load_model, sha256_file, write_model
 from translate.models.artifacts import (
-    AlignmentResult,
-    CheckResult,
     FixResult,
     LLMCallArtifact,
     ReviewResult,
     RevisionOutcome,
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.review import Finding, ReviewTarget, Revision, TextEdit
-from translate.models.upgrade import UpgradePlan, VersionChange
-from translate.tasks.preprocess.structure import StructurePatch, StructureResponse
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
+from translate.models.review import (
+    Finding,
+    ReviewResponse,
+    ReviewTarget,
+    Revision,
+    TextEdit,
+)
+from translate.models.upgrade import DiffResponse, UpgradePlan, VersionChange
 from translate.ui import (
     _diff_text,
     _fix_comparison,
     _preview_image_path,
+    _review_comparison,
     _review_context,
     _review_rows,
     _structure_comparison,
     _translation_comparison,
     _upgrade_context,
 )
+
+StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
+StructureResponse = import_module("translate.tasks.13_structure").StructureResponse
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 
 def test_diff_text_marks_removed_and_added_lines() -> None:
@@ -119,12 +128,16 @@ def test_review_context_keeps_source_and_translation_on_same_target(
     """Review二列は同じReviewTarget IDの原文と訳文を表示する。"""
 
     write_model(
-        tmp_path / "review/align/alignment.json",
-        AlignmentResult(
+        tmp_path / "review/review/review.json",
+        ReviewResult(
             groups=[],
             targets=[
-                ReviewTarget(id="target-1", source="English", translation="日本語"),
-                ReviewTarget(id="target-2", source="Second", translation="二番目"),
+                ReviewTarget(
+                    id="review/target-1", source="English", translation="日本語"
+                ),
+                ReviewTarget(
+                    id="review/target-2", source="Second", translation="二番目"
+                ),
             ],
         ),
     )
@@ -132,20 +145,20 @@ def test_review_context_keeps_source_and_translation_on_same_target(
     values = _review_context(tmp_path)
 
     assert values is not None
-    assert "[target-1]\nEnglish" in values[0]
-    assert "[target-1]\n日本語" in values[1]
+    assert "[review/target-1]\nEnglish" in values[0]
+    assert "[review/target-1]\n日本語" in values[1]
 
 
 def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) -> None:
     """Review一覧の行構造を検証する。"""
 
     write_model(
-        tmp_path / "review/align/alignment.json",
-        AlignmentResult(
+        tmp_path / "review/review/review.json",
+        ReviewResult(
             groups=[],
             targets=[
                 ReviewTarget(
-                    id="target-1",
+                    id="review/target-1",
                     source="English source",
                     translation="現在の訳",
                     target_ids=["unit-1"],
@@ -153,45 +166,35 @@ def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) ->
             ],
         ),
     )
-    write_model(
-        tmp_path / "review/check/findings.json",
-        CheckResult(
-            findings=[
-                Finding(
-                    id="check/target-1/extreme_short",
-                    origin="check",
-                    category="extreme_short",
-                    severity="warning",
-                    target_ids=["unit-1"],
-                    message="短すぎます。",
-                )
-            ]
-        ),
-    )
-    write_model(
-        tmp_path / "review/review/review.json",
-        ReviewResult(
-            findings=[],
-            revisions=[
-                Revision(
-                    id="revision-1",
-                    target_id="unit-1",
-                    edits=[TextEdit(span_id="span-1", text="提案訳")],
-                )
-            ],
-        ),
-    )
+    value = load_model(tmp_path / "review/review/review.json", ReviewResult)
+    value.findings = [
+        Finding(
+            id="finding-1",
+            category="accuracy",
+            severity="warning",
+            target_ids=["unit-1"],
+            message="数値が原文と異なります。",
+        )
+    ]
+    value.revisions = [
+        Revision(
+            id="revision-1",
+            target_id="unit-1",
+            edits=[TextEdit(span_id="span-1", text="提案訳")],
+        )
+    ]
+    write_model(tmp_path / "review/review/review.json", value)
 
     findings, revisions = _review_rows(tmp_path)
 
     assert findings == [
         {
-            "種別": "CHECK",
             "重要度": "警告",
-            "カテゴリ": "extreme_short",
+            "カテゴリ": "accuracy",
             "対象": "unit-1",
             "原文": "English source",
-            "内容": "短すぎます。",
+            "現在の訳": "現在の訳",
+            "内容": "数値が原文と異なります。",
         }
     ]
     assert revisions == [
@@ -229,22 +232,19 @@ def test_upgrade_context_uses_placeholders_without_guessing(tmp_path: Path) -> N
                     source_v1_ids=["v1-modified"],
                     source_v2_ids=["v2-modified"],
                     translation_v1_ids=["ja-modified"],
-                    action="translate",
-                    method="ordered_role",
+                    summary="変更",
                 ),
                 VersionChange(
                     id="added",
                     kind="added",
                     source_v2_ids=["v2-added"],
-                    action="translate",
-                    method="unmatched",
+                    summary="追加",
                 ),
                 VersionChange(
                     id="deleted",
                     kind="deleted",
                     source_v1_ids=["v1-deleted"],
-                    action="delete",
-                    method="unmatched",
+                    summary="削除",
                 ),
             ]
         ),
@@ -417,3 +417,108 @@ def test_fix_comparison_shows_only_applied_revision_targets(tmp_path: Path) -> N
     values = _fix_comparison(tmp_path)
 
     assert values == ("[unit-1]\n修正前", "[unit-1]\n修正後")
+
+
+def test_upgrade_displays_verified_call_before_final_plan(tmp_path: Path) -> None:
+    """DIFF途中の成功応答を三列へ表示し、改ざんされた応答は表示しない。"""
+    for role, key, text in (
+        ("source-v1", "old", "Old text"),
+        ("source-v2", "new", "New text"),
+        ("translation-v1", "ja", "旧訳"),
+    ):
+        write_model(
+            tmp_path / f"preprocess/{role}/load/document.json", _document([(key, text)])
+        )
+    call_dir = tmp_path / "upgrade/diff/calls/call-1"
+    write_model(
+        call_dir / "response.json",
+        DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "kind": "modified",
+                        "source_v1_ids": ["old"],
+                        "source_v2_ids": ["new"],
+                        "translation_v1_ids": ["ja"],
+                        "summary": "Changed",
+                    }
+                ],
+                "reviewed_source_v1_ids": ["old"],
+                "reviewed_source_v2_ids": ["new"],
+            }
+        ),
+    )
+    now = datetime.now(UTC)
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="DIFF",
+            operation="evaluate",
+            status="succeeded",
+            fingerprint="input",
+            target_ids=["source_v2:new"],
+            attempts=1,
+            response_sha256=sha256_file(call_dir / "response.json"),
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+    assert _upgrade_context(tmp_path) == (
+        "[call-1/0]\nOld text",
+        "[call-1/0]\n旧訳",
+        "[call-1/0]\nNew text",
+    )
+    (call_dir / "response.json").write_text("{}", encoding="utf-8")
+    assert _upgrade_context(tmp_path) is None
+
+
+def test_review_comparison_resolves_agent_ids_and_revision_units(
+    tmp_path: Path,
+) -> None:
+    """Agentのrole付き対象IDとTextUnitを参照する提案を同じCallから表示する。"""
+    write_model(
+        tmp_path / "review/review/review.json",
+        ReviewResult(
+            targets=[
+                ReviewTarget(
+                    id="review/alignment-000001",
+                    source="English",
+                    translation="現在訳",
+                    target_ids=["unit"],
+                ),
+            ]
+        ),
+    )
+    call_dir = tmp_path / "review/review/calls/call-1"
+    write_model(
+        call_dir / "response.json",
+        ReviewResponse.model_validate(
+            {
+                "reviewed_target_ids": ["review/alignment-000001"],
+                "revisions": [
+                    {
+                        "target_id": "unit",
+                        "edits": [{"span_id": "span-unit", "text": "修正案"}],
+                    }
+                ],
+            }
+        ),
+    )
+    now = datetime.now(UTC)
+    write_model(
+        call_dir / "call.json",
+        LLMCallArtifact(
+            call_id="call-1",
+            task="REVIEW",
+            operation="evaluate",
+            status="succeeded",
+            fingerprint="input",
+            target_ids=["review:review/alignment-000001"],
+            attempts=1,
+            response_sha256=sha256_file(call_dir / "response.json"),
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+    assert _review_comparison(tmp_path) == ("[unit]\n現在訳", "[unit]\n修正案")

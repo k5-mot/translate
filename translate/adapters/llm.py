@@ -1,7 +1,5 @@
 """単一OpenAI互換endpointへのstructured output要求。"""
 
-from __future__ import annotations
-
 import base64
 import json
 import logging
@@ -9,7 +7,8 @@ import mimetypes
 import random
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from pathlib import Path
+from typing import Any, cast
 
 from openai import (
     APIConnectionError,
@@ -20,14 +19,10 @@ from openai import (
     Omit,
     OpenAI,
 )
+from openai.types.chat import ChatCompletion
 from pydantic import BaseModel, ValidationError
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from openai.types.chat import ChatCompletion
-
-    from translate.common.config import Config
+from translate.common.config import Config
 
 MESSAGE_OVERHEAD_BYTES = 256
 logger = logging.getLogger(__name__)
@@ -35,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 class LLMError(RuntimeError):
     """LLM要求が完了せず、利用者向けの原因と対策を持つ。"""
+
+    attempts: int = 1
 
 
 class LLMOutputExceededError(LLMError):
@@ -104,6 +101,7 @@ class LLMClient:
         if base_url is None:
             raise ValueError("OpenAI-compatible base URL is required")
         self.config = config
+        self.deadline: float | None = None
         self._api_key = (
             config.openai_llm_api_key
             if config.openai_llm_base_url
@@ -155,8 +153,12 @@ class LLMClient:
         """
 
         _validate_contract(native_schema, contract, self.config)
-        deadline = time.monotonic() + self.config.llm_task_deadline_seconds
+        deadline = min(
+            time.monotonic() + self.config.llm_task_deadline_seconds,
+            self.deadline if self.deadline is not None else float("inf"),
+        )
         feedback = ""
+        invalid_responses = 0
         last_error: LLMError | None = None
         last_cause: Exception | None = None
         logger.info("LLM開始 task=%s model=%s", task, model)
@@ -181,7 +183,13 @@ class LLMClient:
                 image=image,
             )
             try:
-                response = self.client.chat.completions.create(**cast("Any", payload))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTimeoutError("LLM Task deadline exceeded")
+                response = self.client.chat.completions.create(
+                    **cast("Any", payload),
+                    timeout=min(self.config.llm_request_timeout_seconds, remaining),
+                )
                 content, finish_reason, used_input_tokens, used_output_tokens = (
                     _response(response)
                 )
@@ -206,6 +214,7 @@ class LLMClient:
                     output_tokens=used_output_tokens,
                 )
             except (LLMInputExceededError, LLMOutputExceededError) as error:
+                error.attempts = attempt
                 logger.warning("LLM失敗 task=%s type=%s", task, type(error).__name__)
                 raise
             except (
@@ -219,7 +228,8 @@ class LLMClient:
                     "LLM応答がJSON形式または契約に適合しません。対策: "
                     "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
                 )
-                if attempt >= self.config.llm_retry_attempts:
+                invalid_responses += 1
+                if invalid_responses >= 2 or attempt >= self.config.llm_retry_attempts:
                     break
                 feedback = (
                     "\n\nThe previous response was invalid JSON or violated the contract. "
@@ -279,6 +289,7 @@ class LLMClient:
                 "LLM_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
             )
         logger.warning("LLM失敗 task=%s type=%s", task, type(last_error).__name__)
+        last_error.attempts = attempt
         raise last_error from last_cause
 
     def _payload(

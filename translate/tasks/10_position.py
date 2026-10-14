@@ -1,18 +1,14 @@
 """POSITION: 座標に基づきDocling要素の読み順を補正する。"""
 
-from __future__ import annotations
-
 import copy
 import json
 import re
 import statistics
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
-from translate.artifact_store import temporary_task_directory, write_json
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from translate.adapters.artifact_store import temporary_task_directory, write_json
 
 
 def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
@@ -691,9 +687,10 @@ def position(source: Path, output_dir: Path) -> Path:
     )
     document = _compact_fragments(document, merged)
     with temporary_task_directory(output_dir) as temporary:
-        write_json(temporary / "document.json", document)
+        write_json(temporary / "document.json", document, atomic=False)
         write_json(
             temporary / "report.json",
             {"reordered": changed, "merged": merged, "warnings": warnings},
+            atomic=False,
         )
     return output_dir / "document.json"

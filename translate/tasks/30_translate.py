@@ -1,24 +1,14 @@
 """TextSpanを生成LLMで翻訳するTRANSLATE Task。"""
 
-from __future__ import annotations
-
 import json
-import re
+import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal
+from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from translate.adapters.embedding import embed
-from translate.adapters.llm import (
-    LLMClient,
-    LLMError,
-    LLMInputExceededError,
-    LLMInvalidResponseError,
-    LLMOutputExceededError,
-)
-from translate.adapters.qdrant import search as search_qdrant
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     begin_llm_call,
     canonical_hash,
     complete_llm_call,
@@ -29,25 +19,21 @@ from translate.artifact_store import (
     mark_split_llm_call,
     write_model,
 )
-from translate.glossary import relevant_glossary
+from translate.adapters.embedding import embed
+from translate.adapters.glossary import relevant_glossary
+from translate.adapters.llm import (
+    LLMClient,
+    LLMError,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    LLMOutputExceededError,
+)
+from translate.adapters.qdrant import search as search_qdrant
+from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, TextSpan, iter_text_units
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from translate.common.config import Config
-
 TranslationContext = dict[str, tuple[str, str]]
-
-# 短い軍種見出しはLLMが固有名詞として英語のまま返しやすいため、完全一致時だけ補正する。
-_SERVICE_LABELS = {
-    "Army:": "陸軍:",
-    "Air Force:": "空軍:",
-    "Navy:": "海軍:",
-    "Marine Corps:": "海兵隊:",
-    "Coast Guard:": "沿岸警備隊:",
-}
 
 
 class TranslationModel(BaseModel):
@@ -104,70 +90,74 @@ def translate(
     _write_diagnostics(diagnostics_path, diagnostics)
     updated = document.model_copy(deep=True)
     client = LLMClient(config)
-    context = previous_context or {}
-    overhead = len(rules.encode("utf-8")) + 2048
-    chunks = _chunks(
-        updated,
-        config.translate_max_units,
-        config.translate_input_tokens - overhead,
-        context,
-    )
-    responses: list[tuple[str, TranslationResponse]] = []
-    for index, spans in enumerate(chunks):
-        responses.extend(
-            _execute(
-                client=client,
-                config=config,
-                spans=spans,
-                task_directory=task_directory,
-                rules=rules,
-                glossary=glossary,
-                lineage=[f"chunk-{index:04d}"],
-                depth=0,
-                allow_missing_retry=True,
-                diagnostics=diagnostics,
-                previous_context=context,
+    client.deadline = time.monotonic() + config.llm_task_deadline_seconds
+    try:
+        context = previous_context or {}
+        overhead = len(rules.encode("utf-8")) + 2048
+        chunks = _chunks(
+            updated,
+            config.translate_max_units,
+            config.translate_input_tokens - overhead,
+            context,
+        )
+        responses: list[tuple[str, TranslationResponse]] = []
+        for index, spans in enumerate(chunks):
+            responses.extend(
+                _execute(
+                    client=client,
+                    config=config,
+                    spans=spans,
+                    task_directory=task_directory,
+                    rules=rules,
+                    glossary=glossary,
+                    lineage=[f"chunk-{index:04d}"],
+                    depth=0,
+                    allow_missing_retry=True,
+                    diagnostics=diagnostics,
+                    previous_context=context,
+                )
             )
+        span_index = {
+            span.id: span
+            for _, unit in iter_text_units(updated)
+            for span in unit.spans
+            if span.kind not in {"code", "line_break"}
+        }
+        for call_id, response in responses:
+            target_ids = set(
+                load_model(
+                    task_directory / "calls" / call_id / "call.json", LLMCallArtifact
+                ).target_ids
+            )
+            seen: set[str] = set()
+            for item in response.translations:
+                if item.span_id in seen:
+                    diagnostics.append(f"{call_id} duplicate_span {item.span_id}")
+                    continue
+                seen.add(item.span_id)
+                span = span_index.get(item.span_id)
+                if span is None:
+                    diagnostics.append(f"{call_id} unknown_span {item.span_id}")
+                    continue
+                if item.span_id not in target_ids:
+                    diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
+                    continue
+                span.translated = item.text
+        _write_diagnostics(diagnostics_path, diagnostics)
+        write_model(
+            task_directory / "call-index.json",
+            LLMCallIndex(
+                task="TRANSLATE",
+                call_ids=list(dict.fromkeys(call_id for call_id, _ in responses)),
+            ),
         )
-    span_index = {
-        span.id: span
-        for _, unit in iter_text_units(updated)
-        for span in unit.spans
-        if span.kind not in {"code", "line_break"}
-    }
-    for call_id, response in responses:
-        target_ids = set(
-            load_model(
-                task_directory / "calls" / call_id / "call.json", LLMCallArtifact
-            ).target_ids
-        )
-        seen: set[str] = set()
-        for item in response.translations:
-            if item.span_id in seen:
-                diagnostics.append(f"{call_id} duplicate_span {item.span_id}")
-                continue
-            seen.add(item.span_id)
-            span = span_index.get(item.span_id)
-            if span is None:
-                diagnostics.append(f"{call_id} unknown_span {item.span_id}")
-                continue
-            if item.span_id not in target_ids:
-                diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
-                continue
-            span.translated = _restore_leader(span.source, item.text)
-    _write_diagnostics(diagnostics_path, diagnostics)
-    write_model(
-        task_directory / "call-index.json",
-        LLMCallIndex(
-            task="TRANSLATE",
-            call_ids=list(dict.fromkeys(call_id for call_id, _ in responses)),
-        ),
-    )
-    write_model(task_directory / "document.json", updated)
-    chunks_directory = task_directory / "chunks"
-    for call_id, response in responses:
-        write_model(chunks_directory / f"{call_id}.json", response)
-    return updated
+        write_model(task_directory / "document.json", updated)
+        chunks_directory = task_directory / "chunks"
+        for call_id, response in responses:
+            write_model(chunks_directory / f"{call_id}.json", response)
+        return updated
+    finally:
+        client.client.close()
 
 
 def _chunks(
@@ -273,85 +263,6 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
     return len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) + 1024
 
 
-def _plausible_translation(source: str, translation: str) -> bool:
-    """空訳・極端な長さ差・英語のままの訳文を拒否する。"""
-
-    original, leader = _leader_parts(" ".join(source.split()))
-    target, _ = _leader_parts(" ".join(translation.split()))
-    if not target:
-        return False
-    if (
-        leader
-        and re.search(r"[A-Za-z]", original)
-        and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", target)
-    ):
-        return False
-    if len(original) >= 80 and len(target) < len(original) * 0.15:
-        return False
-    # 言い換えた英語も訳文ではない。短い略語と数値は除外する。
-    if (
-        len(original) >= 12
-        and len(original.split()) >= 2
-        and re.search(r"[A-Za-z]", original)
-        and not re.search(r"[\u3040-\u30ff\u3400-\u9fff]", target)
-    ):
-        return False
-    return not (
-        len(original) > 0 and len(target) >= 100 and len(target) > len(original) * 5
-    )
-
-
-def _normalize_service_labels(
-    spans: list[TextSpan], response: TranslationResponse
-) -> None:
-    """軍種見出しをLLMが英語のまま返した場合だけ確定訳へ置き換える。
-
-    Args:
-        spans (list[TextSpan]): 要求した翻訳対象Span列。
-        response (TranslationResponse): 補正するLLM応答。
-    """
-
-    sources = {span.id: span.source for span in spans}
-    for item in response.translations:
-        source = sources.get(item.span_id, "")
-        japanese = _SERVICE_LABELS.get(source)
-        if (
-            japanese
-            and item.text.strip().casefold().removesuffix(":")
-            == source.removesuffix(":").casefold()
-        ):
-            item.text = japanese
-
-
-def _leader_parts(value: str) -> tuple[str, str]:
-    """末尾の目次用点線を本文と装飾部分に分ける。
-
-    Args:
-        value (str): 原文または訳文のText。
-
-    Returns:
-        tuple[str, str]: 点線前の本文と、空白を含む点線部分。
-    """
-
-    match = re.fullmatch(r"(.*?\S)(\s+[.…。]{6,}\s*)", value, flags=re.DOTALL)
-    return (match.group(1), match.group(2)) if match else (value, "")
-
-
-def _restore_leader(source: str, translation: str) -> str:
-    """翻訳した項目名へ原文の目次用点線を戻す。
-
-    Args:
-        source (str): 点線を含む可能性がある原文。
-        translation (str): LLMから得た項目名の訳文。
-
-    Returns:
-        str: 元の点線を末尾へ戻した訳文。
-    """
-
-    _, leader = _leader_parts(source)
-    return re.sub(r"[ .…。]+$", "", translation) + leader if leader else translation
-
-
 def _execute(
     *,
     client: LLMClient,
@@ -388,40 +299,12 @@ def _execute(
     target_ids = [span.id for span in spans]
     call_id = llm_call_id("TRANSLATE", target_ids, lineage)
     call_directory = task_directory / "calls" / call_id
-    source = "\n".join(_leader_parts(span.source)[0] for span in spans)
-    leader_only = all(_leader_parts(span.source)[1] for span in spans)
-    quality_attempts = sum(part.startswith("quality-") for part in lineage)
-    schema_version = 5 if any(_leader_parts(span.source)[1] for span in spans) else 3
-    if quality_attempts:
-        schema_version += 1
-    payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
-    selected_glossary = (
-        ""
-        if leader_only
-        else relevant_glossary(
-            glossary,
-            source,
-            maximum_bytes=max(0, payload_budget // 3),
-        )
-    )
-    rag = [] if leader_only else _rag_context(config, source)
     fingerprint = canonical_hash(
         {
             "task": "TRANSLATE",
-            "schema": schema_version,
+            "operation": "translate",
             "targets": [(span.id, span.source) for span in spans],
             "previous": [(span.id, previous_context.get(span.id)) for span in spans],
-            "rules": canonical_hash(rules),
-            "glossary": canonical_hash(selected_glossary),
-            "rag": [(item.get("id"), item.get("content_sha256")) for item in rag],
-            "model": config.openai_translation_model,
-            "mode": config.llm_structured_output_mode,
-            "reasoning_effort": "none",
-            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
-            "temperature": 0.7,
-            "repetition_penalty": 1.01,
-            "input_tokens": config.translate_input_tokens,
-            "output_tokens": config.translate_output_tokens,
         }
     )
     reusable = load_reusable_llm_response(
@@ -432,13 +315,15 @@ def _execute(
     )
     if reusable is not None:
         response = reusable[1]
-        _normalize_service_labels(spans, response)
-        cached = {item.span_id: item.text for item in response.translations}
-        if len(cached) == len(spans) and all(
-            _plausible_translation(span.source, cached.get(span.id, ""))
-            for span in spans
-        ):
+        returned_ids = [item.span_id for item in response.translations]
+        if all(returned_ids.count(span.id) == 1 for span in spans):
             return [(call_id, response)]
+    source = "\n".join(span.source for span in spans)
+    payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
+    selected_glossary = relevant_glossary(
+        glossary, source, maximum_bytes=max(0, payload_budget // 3)
+    )
+    rag = _rag_context(config, source)
     previous = _previous_attempts(call_directory)
     artifact = begin_llm_call(
         call_directory,
@@ -457,15 +342,7 @@ def _execute(
                 "Translate each English source into natural Japanese. Preserve IDs and "
                 "return JSON only. When previous_source and previous_translation are "
                 "present, use them only as context for translating the current source."
-                "\n\n"
-                + rules
-                + (
-                    "\n\nThe previous answer failed translation quality checks. "
-                    "Translate every items[].source fully into Japanese. "
-                    "Do not copy or paraphrase the English source in English."
-                    if quality_attempts
-                    else ""
-                )
+                "\n\n" + rules
             ),
             user=_user_payload(
                 spans,
@@ -476,7 +353,7 @@ def _execute(
             ),
             contract=(
                 'Return {"translations":[{"span_id":string,"text":string}]}. '
-                f"Return exactly {len(spans)} nonempty items, one for each span_id."
+                f"Return exactly {len(spans)} items, one for each span_id."
             ),
             native_schema=_schema(len(spans)),
             input_tokens=config.translate_input_tokens,
@@ -497,34 +374,10 @@ def _execute(
             diagnostics=diagnostics,
             previous_context=previous_context,
         )
-    except LLMInvalidResponseError as error:
-        if config.llm_structured_output_mode == "prompt":
-            fail_llm_call(call_directory, artifact, error, attempts=1)
-            raise
-        child_lineage = [*lineage, "invalid"]
-        child_id = llm_call_id("TRANSLATE", target_ids, child_lineage)
-        mark_split_llm_call(call_directory, artifact, [child_id])
-        retry_config = config.model_copy(
-            update={"llm_structured_output_mode": "prompt"}
-        )
-        return _execute(
-            client=LLMClient(retry_config),
-            config=retry_config,
-            spans=spans,
-            task_directory=task_directory,
-            rules=rules,
-            glossary=glossary,
-            lineage=child_lineage,
-            depth=depth,
-            allow_missing_retry=allow_missing_retry,
-            diagnostics=diagnostics,
-            previous_context=previous_context,
-        )
     except LLMError as error:
         fail_llm_call(call_directory, artifact, error, attempts=1)
         raise
     response = result.response
-    _normalize_service_labels(spans, response)
     translations: dict[str, str] = {}
     duplicates: set[str] = set()
     for item in response.translations:
@@ -535,22 +388,10 @@ def _execute(
             duplicates.add(item.span_id)
         translations[item.span_id] = item.text
     missing = [
-        span
-        for span in spans
-        if span.id in duplicates
-        or not _plausible_translation(span.source, translations.get(span.id, ""))
+        span for span in spans if span.id in duplicates or span.id not in translations
     ]
-    suspect = [span for span in missing if translations.get(span.id, "").strip()]
-    diagnostics.extend(f"{call_id} untrusted_translation {span.id}" for span in suspect)
-    quality_retry = (
-        bool(missing)
-        and (bool(suspect) or quality_attempts > 0)
-        and quality_attempts + 1 < config.llm_retry_attempts
-    )
     groups: list[list[TextSpan]] = []
-    if quality_retry:
-        groups = [[span] for span in missing]
-    elif missing and allow_missing_retry:
+    if missing and allow_missing_retry:
         groups = [missing]
     elif missing and len(spans) > 1 and depth < config.llm_split_max_depth:
         if len(missing) == 1:
@@ -558,17 +399,10 @@ def _execute(
         else:
             middle = len(missing) // 2
             groups = [missing[:middle], missing[middle:]]
-    if quality_retry:
-        child_lineages = [
-            [*lineage, f"quality-{index}"] for index in range(len(groups))
-        ]
-    else:
-        child_lineages = [
-            [*lineage, "missing"]
-            if allow_missing_retry
-            else [*lineage, f"missing-{index}"]
-            for index in range(len(groups))
-        ]
+    child_lineages = [
+        [*lineage, "missing"] if allow_missing_retry else [*lineage, f"missing-{index}"]
+        for index in range(len(groups))
+    ]
     child_ids = [
         llm_call_id("TRANSLATE", [span.id for span in group], child_lineage)
         for group, child_lineage in zip(groups, child_lineages, strict=True)
@@ -586,88 +420,22 @@ def _execute(
     )
     values = [(call_id, response)]
     if missing and not groups:
-        # shortcut: 文境界だけで分けるため略語も分割し得る。必要なら文解析へ置き換える。
-        sentences = (
-            re.split(r"(?<=[.!?])\s+(?=[A-Z][a-z])", spans[0].source)
-            if len(spans) == 1
-            and suspect
-            and quality_attempts
-            and not any(part.startswith("sentence-") for part in lineage)
-            else []
-        )
-        if len(sentences) > 1:
-            translated_sentences: list[str] = []
-            sentence_call_ids: list[str] = []
-            for index, sentence in enumerate(sentences):
-                piece = spans[0].model_copy(
-                    update={"id": f"{spans[0].id}/sentence-{index}", "source": sentence}
-                )
-                sentence_lineage = [f"sentence-{call_id}-{index}"]
-                sentence_call_ids.append(
-                    llm_call_id("TRANSLATE", [piece.id], sentence_lineage)
-                )
-                sentence_responses = _execute(
-                    client=client,
-                    config=config,
-                    spans=[piece],
-                    task_directory=task_directory,
-                    rules=rules,
-                    glossary=glossary,
-                    lineage=sentence_lineage,
-                    depth=depth + 1,
-                    allow_missing_retry=False,
-                    diagnostics=diagnostics,
-                    previous_context=previous_context,
-                )
-                translated_sentences.append(
-                    next(
-                        item.text
-                        for item in sentence_responses[-1][1].translations
-                        if item.span_id == piece.id
-                    )
-                )
-            assembled = TranslationResponse(
-                translations=[
-                    TranslationItem(
-                        span_id=spans[0].id, text=" ".join(translated_sentences)
-                    )
-                ]
-            )
-            if _plausible_translation(spans[0].source, assembled.translations[0].text):
-                complete_llm_call(
-                    call_directory,
-                    artifact,
-                    assembled,
-                    attempts=result.attempts,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    child_call_ids=sentence_call_ids,
-                )
-                return [(call_id, assembled)]
         raise LLMInvalidResponseError(
             f"翻訳対象 {missing[0].id} の完全な訳文が得られません。対策: "
             "翻訳modelとLLM_STRUCTURED_OUTPUT_MODEを確認して再開してください。"
         )
-    retry_config = (
-        config.model_copy(update={"llm_structured_output_mode": "prompt"})
-        if quality_retry and config.llm_structured_output_mode != "prompt"
-        else config
-    )
-    retry_client = LLMClient(retry_config) if retry_config is not config else client
     for group, child_lineage in zip(groups, child_lineages, strict=True):
         values.extend(
             _execute(
-                client=retry_client,
-                config=retry_config,
+                client=client,
+                config=config,
                 spans=group,
                 task_directory=task_directory,
                 rules=rules,
                 glossary=glossary,
                 lineage=child_lineage,
                 depth=depth if allow_missing_retry else depth + 1,
-                allow_missing_retry=(
-                    not quality_retry and len(group) == 1 and len(spans) > 1
-                ),
+                allow_missing_retry=(len(group) == 1 and len(spans) > 1),
                 diagnostics=diagnostics,
                 previous_context=previous_context,
             )
@@ -766,7 +534,7 @@ def _schema(maximum_items: int) -> dict[str, object]:
                     "type": "object",
                     "properties": {
                         "span_id": {"type": "string"},
-                        "text": {"type": "string", "minLength": 1},
+                        "text": {"type": "string"},
                     },
                     "required": ["span_id", "text"],
                     "additionalProperties": False,
@@ -789,7 +557,9 @@ def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
         list[dict[str, object]]: 設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
     """
 
-    if not query.strip() or not config.qdrant_enabled():
+    if not query.strip() or not bool(
+        config.qdrant_uri and config.openai_embedding_model
+    ):
         return []
     vector = embed([query], config)[0]
     return search_qdrant(config, vector, limit=5)
@@ -849,7 +619,7 @@ def _translation_item(
         dict[str, str]: 一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。
     """
 
-    item = {"span_id": span.id, "source": _leader_parts(span.source)[0]}
+    item = {"span_id": span.id, "source": span.source}
     previous = previous_context.get(span.id)
     if previous is not None:
         item["previous_source"] = previous[0]

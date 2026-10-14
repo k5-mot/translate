@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from importlib import import_module
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
-import httpx
 import httpx2
 import pytest
 from openai import APIStatusError, BadRequestError, OpenAI
@@ -16,24 +16,25 @@ from pydantic import ValidationError
 from qdrant_client.http import models as qdrant_models
 
 from translate.adapters import qdrant
+from translate.adapters.artifact_store import canonical_hash, load_model, write_model
 from translate.adapters.embedding import embed
-from translate.adapters.libretranslate import translate_texts
 from translate.adapters.llm import (
     LLMAuthenticationError,
     LLMClient,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputTokenExceededError,
     LLMProviderError,
     LLMRateLimitError,
     LLMTimeoutError,
     _provider_error,
 )
-from translate.artifact_store import canonical_hash, load_model, write_model
-from translate.common.config import Config, ConfigError, load_config
-from translate.common.logger import configure_adapter_logging
+from translate.common.config import Config, ConfigError, load_config, validate_config
+from translate.common.logger import configure_logging
 from translate.models.artifacts import ArtifactFile, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, Page, TextSpan, TextUnit
-from translate.tasks.translation.translate import TranslationResponse
+
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -81,12 +82,15 @@ def test_canonical_hash_is_independent_of_json_key_order() -> None:
     assert canonical_hash({"b": 2, "a": 1}) == canonical_hash({"a": 1, "b": 2})
 
 
-def test_config_environment_overrides_dotenv(tmp_path: Path) -> None:
+def test_config_environment_overrides_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """process環境変数が.envより優先されることを確認する。"""
 
     (tmp_path / ".env").write_text("PDF_SPLIT_PAGES=5\n", encoding="utf-8")
 
-    config = load_config(tmp_path, {"PDF_SPLIT_PAGES": "7"})
+    monkeypatch.setenv("PDF_SPLIT_PAGES", "7")
+    config = load_config(tmp_path)
 
     assert config.pdf_split_pages == 7
 
@@ -95,22 +99,22 @@ def test_adapter_log_level_comes_from_dotenv(tmp_path: Path) -> None:
     """Adapterのログlevelを.envで変更できることを確認する。"""
 
     (tmp_path / ".env").write_text("LOG_LEVEL=DEBUG\n", encoding="utf-8")
-    assert load_config(tmp_path, {}).log_level == "DEBUG"
+    assert load_config(tmp_path).log_level == "DEBUG"
 
 
 def test_adapter_logging_writes_debug_to_stderr_without_changing_root(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Adapter専用LoggerだけにDEBUGを設定し、標準エラーへ出力する。"""
+    """アプリケーションのDEBUGを標準エラーへ出し、root設定を変えない。"""
 
-    adapter_logger = logging.getLogger("translate.adapters")
+    adapter_logger = logging.getLogger("translate")
     old_handlers = adapter_logger.handlers[:]
     old_level = adapter_logger.level
     old_propagate = adapter_logger.propagate
     root_level = logging.getLogger().level
     try:
         adapter_logger.handlers.clear()
-        configure_adapter_logging("DEBUG")
+        configure_logging("DEBUG")
         logging.getLogger("translate.adapters.docling").debug("adapter-diagnostic")
         assert "adapter-diagnostic" in capsys.readouterr().err
         assert logging.getLogger().level == root_level
@@ -120,46 +124,15 @@ def test_adapter_logging_writes_debug_to_stderr_without_changing_root(
         adapter_logger.propagate = old_propagate
 
 
-def test_libretranslate_logs_counts_without_request_content(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """翻訳Adapterのログが件数を示し、本文と認証情報を含まない。"""
-
-    def respond(*_args: object, **_kwargs: object) -> httpx.Response:
-        """実HTTP接続を使わず成功応答を返す。"""
-
-        return httpx.Response(
-            200,
-            json={"translatedText": ["secret-output"]},
-            request=httpx.Request("POST", "http://localhost/translate"),
-        )
-
-    monkeypatch.setattr(httpx, "post", respond)
-    monkeypatch.setattr(logging.getLogger("translate.adapters"), "propagate", True)
-    with caplog.at_level(logging.DEBUG, logger="translate.adapters.libretranslate"):
-        assert translate_texts(
-            ["secret-input"],
-            Config(
-                libretranslate_url="http://localhost",
-                libretranslate_api_key="secret-key",
-            ),
-        ) == ["secret-output"]
-
-    output = caplog.text
-    assert "LibreTranslate開始 items=1" in output
-    assert "LibreTranslate完了 items=1" in output
-    assert "secret-" not in output
-
-
-def test_settings_use_process_environment_without_changing_direct_config(
+def test_settings_use_process_environment_in_direct_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """実環境変数を優先し、空値は無視して直接生成の既定値を維持する。"""
+    """直接生成でも環境変数を読み、空値だけは.envの値へfallbackする。"""
 
     (tmp_path / ".env").write_text("PDF_SPLIT_PAGES=5\n", encoding="utf-8")
     monkeypatch.setenv("PDF_SPLIT_PAGES", "7")
     assert load_config(tmp_path).pdf_split_pages == 7
-    assert Config().pdf_split_pages == 10
+    assert Config().pdf_split_pages == 7
     monkeypatch.setenv("PDF_SPLIT_PAGES", "")
     assert load_config(tmp_path).pdf_split_pages == 5
 
@@ -168,15 +141,17 @@ def test_config_rejects_context_budget_overflow() -> None:
     """Task別token予算の超過を設定名と合計付きで拒否する。"""
 
     with pytest.raises(
-        ValidationError,
-        match=r"STRUCTURE token budget: .* = 11264 > LLM_CONTEXT_TOKENS=10000",
+        ConfigError,
+        match=r"STRUCTURE token budget 11264 exceeds LLM_CONTEXT_TOKENS=10000",
     ):
-        Config(
-            llm_context_tokens=10000,
-            structure_input_tokens=6144,
-            structure_output_tokens=2048,
-            llm_image_tokens=2048,
-            llm_safety_tokens=1024,
+        validate_config(
+            Config(
+                llm_context_tokens=10000,
+                structure_input_tokens=6144,
+                structure_output_tokens=2048,
+                llm_image_tokens=2048,
+                llm_safety_tokens=1024,
+            )
         )
 
 
@@ -202,10 +177,10 @@ def test_config_rejects_review_budget_over_context() -> None:
     """REVIEWの予算超過を個別上限ではなく合計で拒否する。"""
 
     with pytest.raises(
-        ValidationError,
-        match=r"REVIEW token budget: .* = 33216 > LLM_CONTEXT_TOKENS=30208",
+        ConfigError,
+        match=r"REVIEW token budget 33216 exceeds LLM_CONTEXT_TOKENS=30208",
     ):
-        Config(review_output_tokens=24000)
+        validate_config(Config(review_output_tokens=24000))
 
 
 def test_partial_qdrant_settings_are_rejected() -> None:
@@ -214,7 +189,7 @@ def test_partial_qdrant_settings_are_rejected() -> None:
     config = Config(qdrant_uri="http://qdrant")
 
     with pytest.raises(ConfigError):
-        config.qdrant_enabled()
+        validate_config(config)
 
 
 def test_generation_endpoint_does_not_replace_embedding_endpoint() -> None:
@@ -228,18 +203,21 @@ def test_generation_endpoint_does_not_replace_embedding_endpoint() -> None:
         docling_server_url="http://docling",
     )
 
-    config.require_translate("llm")
-    config.require_review()
-    with pytest.raises(ConfigError, match="Register settings are incomplete"):
-        config.require_register()
-    with pytest.raises(ConfigError, match="RAG requires OPENAI_BASE_URL"):
-        config.model_copy(
-            update={
-                "openai_embedding_model": "embedding",
-                "qdrant_uri": "http://qdrant",
-                "qdrant_collection": "reference",
-            }
-        ).qdrant_enabled()
+    validate_config(config, "translate")
+    validate_config(config, "review")
+    validate_config(config, "upgrade")
+    with pytest.raises(ConfigError, match="Required settings: OPENAI_BASE_URL"):
+        validate_config(config, "register")
+    with pytest.raises(ConfigError, match="Required settings: OPENAI_BASE_URL"):
+        validate_config(
+            config.model_copy(
+                update={
+                    "openai_embedding_model": "embedding",
+                    "qdrant_uri": "http://qdrant",
+                    "qdrant_collection": "reference",
+                }
+            )
+        )
 
 
 def test_qdrant_registration_uses_bounded_upload_batches(
@@ -505,10 +483,12 @@ def test_llm_reports_output_token_limit_with_setting(
         )
 
 
-def test_llm_uses_configured_retries_for_invalid_json(
+@pytest.mark.parametrize("invalid_count", [1, 2])
+def test_llm_limits_invalid_json_to_one_retry(
     monkeypatch: pytest.MonkeyPatch,
+    invalid_count: int,
 ) -> None:
-    """短い翻訳でJSON不正が続いても設定回数内の正常応答を採用する。"""
+    """JSON不正は一度だけ再試行し、通信再試行枠が残っていても停止する。"""
 
     client = LLMClient(
         Config(
@@ -528,23 +508,36 @@ def test_llm_uses_configured_retries_for_invalid_json(
     invalid.choices = [MagicMock(finish_reason="stop")]
     invalid.usage = None
     invalid.choices[0].message.content = "not JSON"
-    create = MagicMock(side_effect=[invalid, invalid, completion])
+    create = MagicMock(side_effect=[*[invalid] * invalid_count, completion])
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
 
-    result = client.structured(
-        task="TRANSLATE",
-        model="model",
-        response_type=TranslationResponse,
-        system="system",
-        user="user",
-        contract="contract",
-        native_schema=TranslationResponse.model_json_schema(),
-        output_tokens=128,
-    )
-
-    assert result.attempts == create.call_count == 3
-    assert result.response.translations[0].text == "意図的に空白"
+    if invalid_count == 2:
+        with pytest.raises(LLMInvalidResponseError) as failure:
+            client.structured(
+                task="TRANSLATE",
+                model="model",
+                response_type=TranslationResponse,
+                system="system",
+                user="user",
+                contract="contract",
+                native_schema=TranslationResponse.model_json_schema(),
+                output_tokens=128,
+            )
+        assert failure.value.attempts == create.call_count == 2
+    else:
+        result = client.structured(
+            task="TRANSLATE",
+            model="model",
+            response_type=TranslationResponse,
+            system="system",
+            user="user",
+            contract="contract",
+            native_schema=TranslationResponse.model_json_schema(),
+            output_tokens=128,
+        )
+        assert result.attempts == create.call_count == 2
+        assert result.response.translations[0].text == "意図的に空白"
 
 
 @pytest.mark.parametrize(

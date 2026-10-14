@@ -1,70 +1,55 @@
 """英語PDFを日本語MarkdownとDOCXへ変換するTranslate Pipeline。"""
 
-from __future__ import annotations
-
 from datetime import UTC, datetime
 from functools import partial
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     ProcessingLock,
     cancel_processing,
     canonical_hash,
     describe_artifact,
-    fail_task,
     finish_task,
     load_model,
-    reusable_task,
     sha256_file,
-    start_task,
-    task_artifacts,
     write_model,
 )
+from translate.common.config import Config, validate_config
+from translate.common.logger import processing_logging
 from translate.models.artifacts import (
-    CheckResult,
     CoverResult,
-    DoclingManifest,
     InputFile,
     LintResult,
     LLMCallArtifact,
     LLMCallIndex,
     LLMProgress,
+    LLMTaskName,
     ProcessingError,
     ReviewResult,
-    SplitManifest,
     TaskName,
     TranslationRecord,
-    UnpackManifest,
 )
 from translate.models.document import Document
-from translate.pipeline import InputError, resolve_processing_id
-from translate.tasks.converter.docling import convert as convert_with_docling
-from translate.tasks.converter.merge import merge
-from translate.tasks.converter.split import split
-from translate.tasks.converter.unpack import unpack
-from translate.tasks.preprocess.load import load
-from translate.tasks.preprocess.normalize import normalize
-from translate.tasks.preprocess.position import position
-from translate.tasks.preprocess.structure import structure
-from translate.tasks.publisher.cover import create_cover
-from translate.tasks.publisher.docx import publish
-from translate.tasks.publisher.lint import lint
-from translate.tasks.publisher.markdown import convert_document
-from translate.tasks.review.check import check, targets_from_document
-from translate.tasks.review.fix import apply_revisions
-from translate.tasks.review.review import review
-from translate.tasks.translation.translate import translate as translate_with_llm
-from translate.tasks.translation.translate_lite import translate_lite
+from translate.models.review import targets_from_document
+from translate.pipeline import (
+    InputError,
+    perform_task,
+    prepare_documents,
+    resolve_processing_id,
+)
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from translate.common.config import Config
-    from translate.models.artifacts import LLMTaskName
-    from translate.models.review import ReviewTarget
+structure = import_module("translate.tasks.13_structure").structure
+create_cover = import_module("translate.tasks.51_cover").create_cover
+publish_pandoc = import_module("translate.tasks.53_pandoc").publish
+publish_ooxml = import_module("translate.tasks.54_ooxml").publish
+lint = import_module("translate.tasks.50_lint").lint
+convert_document = import_module("translate.tasks.52_markdown").convert_document
+apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
+review = import_module("translate.tasks.41_review").review
+translate_with_llm = import_module("translate.tasks.30_translate").translate
 
 
 class PipelineError(RuntimeError):
@@ -72,7 +57,7 @@ class PipelineError(RuntimeError):
 
 
 class TranslationOutcome(BaseModel):
-    """CLIへ返す処理IDと最終成果物path。"""
+    """UIへ返す処理IDと最終成果物path。"""
 
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
@@ -86,7 +71,6 @@ def translate_pdf(
     source: Path,
     config: Config,
     *,
-    backend: str = "llm",
     processing_id: str | None = None,
     resume_id: str | None = None,
     outputs: Path | None = None,
@@ -96,7 +80,6 @@ def translate_pdf(
     Args:
         source (Path): 変換または検証対象の入力Source。
         config (Config): 接続先、上限値および処理Optionを保持する設定。
-        backend (str): 翻訳に使用するBackend名。
         processing_id (str | None): 新規処理またはResume対象の処理ID。
         resume_id (str | None): Resume対象として指定された処理ID。
         outputs (Path | None): 成果物Root Directory。
@@ -105,15 +88,12 @@ def translate_pdf(
         TranslationOutcome: 仕様順にTaskを実行し、有効なTaskとLLM Callだけを再利用する。
 
     Raises:
-        InputError: `backend must be llm or libretranslate`、`processing ID already
-            exists`のいずれかと判定した場合。
+        InputError: 入力PDFまたは処理IDが不正な場合。
     """
 
     source = source.resolve()
     _validate_source(source)
-    if backend not in {"llm", "libretranslate"}:
-        raise InputError("backend must be llm or libretranslate")
-    config.require_translate(backend)
+    validate_config(config, "translate")
     translation_id = resolve_processing_id(processing_id, resume_id)
     outputs_root = (outputs or Path.cwd() / "outputs").resolve()
     processing_directory = outputs_root / source.stem / translation_id
@@ -124,21 +104,22 @@ def translate_pdf(
         sha256=sha256_file(source),
         size_bytes=source.stat().st_size,
     )
-    with ProcessingLock(processing_directory):
+    with (
+        ProcessingLock(processing_directory),
+        processing_logging(processing_directory, config.log_level),
+    ):
         if processing_id is not None and record_path.is_file():
             raise InputError("processing ID already exists")
         record = _translation_record(
             record_path,
             translation_id,
             source_input,
-            backend,
             resume_id is not None,
         )
         try:
             return _translate_locked(
                 source,
                 config,
-                backend,
                 processing_directory,
                 record_path,
                 record,
@@ -151,447 +132,198 @@ def translate_pdf(
 def _translate_locked(
     source: Path,
     config: Config,
-    backend: str,
     root: Path,
     record_path: Path,
     record: TranslationRecord,
 ) -> TranslationOutcome:
-    """排他取得後のTranslate Task列を実行する。
+    """前処理、翻訳、レビューと修正を経てMarkdownとDOCXを公開する。
 
     Args:
-        source (Path): 変換または検証対象の入力Source。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        backend (str): 翻訳に使用するBackend名。
-        root (Path): 対象処理の成果物Root Directory。
-        record_path (Path): 処理Record JSONのPath。
-        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
+        source: 入力PDF。
+        config: 外部接続とLLM予算の設定。
+        root: 処理IDの成果物directory。
+        record_path: 処理記録の保存先。
+        record: 入力照合済みの処理記録。
 
     Returns:
-        TranslationOutcome: 排他取得後のTranslate Task列を実行する。
+        公開したMarkdownと最終DOCXのPath。
+
+    Raises:
+        PipelineError: LINTが文書構造の問題を検出した場合。
+        Exception: Taskが失敗した場合。
     """
-
-    template_root = Path(__file__).parents[1] / "templates"
-    structure_rules = (template_root / "structure-rules.md").read_text(encoding="utf-8")
-    translation_rules = (template_root / "translation-rules.md").read_text(
-        encoding="utf-8"
+    templates = Path(__file__).parents[1] / "templates"
+    rules = {
+        task: (templates / f"{name}-rules.md").read_text(encoding="utf-8")
+        for task, name in (
+            ("STRUCTURE", "structure"),
+            ("TRANSLATE", "translation"),
+            ("REVIEW", "review"),
+        )
+    }
+    glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+    documents, assets = prepare_documents(
+        {"": source}, record, record_path, root, config
     )
-    review_rules = (template_root / "review-rules.md").read_text(encoding="utf-8")
-    glossary = (template_root / "glossary.csv").read_text(encoding="utf-8")
-
-    split_dir = root / "converter" / "split"
-    split_fp = canonical_hash(
-        {
-            "task": "SPLIT",
-            "source": record.source.sha256,
-            "pages": config.pdf_split_pages,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.SPLIT,
-        split_fp,
-        split_dir,
-        partial(split, source, split_dir, root, config.pdf_split_pages),
-    )
-    split_manifest = load_model(split_dir / "manifest.json", SplitManifest)
-
-    docling_dir = root / "converter" / "docling"
-    docling_fp = canonical_hash(
-        {
-            "task": "DOCLING",
-            "split": canonical_hash(split_manifest),
-            "url": config.docling_server_url,
-            "ocr": [
-                config.docling_ocr_preset,
-                config.docling_ocr_lang,
-                config.docling_force_ocr,
-            ],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DOCLING,
-        docling_fp,
-        docling_dir,
-        partial(convert_with_docling, split_manifest, docling_dir, root, config),
-    )
-    docling_manifest = load_model(docling_dir / "manifest.json", DoclingManifest)
-
-    unpack_dir = root / "converter" / "unpack"
-    unpack_fp = canonical_hash(
-        {"task": "UNPACK", "input": canonical_hash(docling_manifest)}
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.UNPACK,
-        unpack_fp,
-        unpack_dir,
-        partial(unpack, docling_manifest, unpack_dir, root),
-    )
-    unpack_manifest = load_model(unpack_dir / "manifest.json", UnpackManifest)
-
-    merge_dir = root / "converter" / "merge"
-    merge_fp = canonical_hash(
-        {
-            "task": "MERGE",
-            "input": canonical_hash(unpack_manifest),
-            "source": record.source.sha256,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.MERGE,
-        merge_fp,
-        merge_dir,
-        partial(merge, unpack_manifest, source, merge_dir, root),
-    )
-
-    position_dir = root / "preprocess" / "position"
-    position_fp = canonical_hash(
-        {"task": "POSITION", "input": sha256_file(merge_dir / "document.json")}
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.POSITION,
-        position_fp,
-        position_dir,
-        partial(position, merge_dir / "document.json", position_dir),
-    )
-
-    normalize_dir = root / "preprocess" / "normalize"
-    normalize_fp = canonical_hash(
-        {"task": "NORMALIZE", "input": sha256_file(position_dir / "document.json")}
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.NORMALIZE,
-        normalize_fp,
-        normalize_dir,
-        partial(normalize, position_dir / "document.json", normalize_dir),
-    )
-
-    load_dir = root / "preprocess" / "load"
-    load_fp = canonical_hash(
-        {
-            "task": "LOAD",
-            "input": sha256_file(normalize_dir / "document.json"),
-            "schema": 2,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.LOAD,
-        load_fp,
-        load_dir,
-        partial(load, normalize_dir / "document.json", load_dir),
-    )
-    document = load_model(load_dir / "document.json", Document)
+    document, merge_dir = documents[""], assets[""]
+    run = partial(perform_task, record, record_path, root)
 
     structure_dir = root / "preprocess" / "structure"
-    structure_fp = canonical_hash(
-        {
-            "task": "STRUCTURE",
-            "document": canonical_hash(document),
-            "source": record.source.sha256,
-            "rules": canonical_hash(structure_rules),
-            "model": config.openai_structure_model,
-            "mode": config.llm_structured_output_mode,
-            "reasoning_effort": "none",
-            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
-            "temperature": 0.7,
-            "repetition_penalty": 1.01,
-            "call_index": 4,
-            "caption_guard": True,
-        }
-    )
-    reused_structure = reusable_task(record, TaskName.STRUCTURE, structure_fp, root)
-    _perform(
-        record,
-        record_path,
-        root,
+    reused = run(
         TaskName.STRUCTURE,
-        structure_fp,
-        structure_dir,
-        partial(
-            structure, document, source, structure_dir, root, config, structure_rules
-        ),
+        {"document": document, "source": record.source.sha256},
+        [
+            (
+                structure_dir,
+                partial(
+                    structure,
+                    document,
+                    source,
+                    structure_dir,
+                    root,
+                    config,
+                    rules["STRUCTURE"],
+                ),
+            )
+        ],
     )
-    _update_llm_progress(
-        record, record_path, structure_dir, "STRUCTURE", reused_structure
-    )
+    _update_llm_progress(record, record_path, structure_dir, "STRUCTURE", reused)
     document = load_model(structure_dir / "document.json", Document)
 
-    translation_task = (
-        TaskName.TRANSLATE if backend == "llm" else TaskName.TRANSLATE_LITE
+    translation_dir = root / "translation" / "translate"
+    reused = run(
+        TaskName.TRANSLATE,
+        document,
+        [
+            (
+                translation_dir,
+                partial(
+                    translate_with_llm,
+                    document,
+                    translation_dir,
+                    root,
+                    config,
+                    rules["TRANSLATE"],
+                    glossary,
+                ),
+            )
+        ],
     )
-    translation_name = "translate" if backend == "llm" else "translate-lite"
-    translation_dir = root / "translation" / translation_name
-    translation_fp = canonical_hash(
-        {
-            "task": translation_task.value,
-            "document": canonical_hash(document),
-            "rules": canonical_hash(translation_rules),
-            "glossary": canonical_hash(glossary),
-            "backend": backend,
-            "model": config.openai_translation_model
-            if backend == "llm"
-            else config.libretranslate_url,
-            "reasoning_effort": "none" if backend == "llm" else None,
-            "llm_endpoint": (
-                config.openai_llm_base_url or config.openai_base_url
-                if backend == "llm"
-                else None
-            ),
-            "temperature": 0.7 if backend == "llm" else None,
-            "repetition_penalty": 1.01 if backend == "llm" else None,
-            "call_index": 9 if backend == "llm" else None,
-        }
-    )
-    reused_translation = reusable_task(record, translation_task, translation_fp, root)
-    action = (
-        partial(
-            translate_with_llm,
-            document,
-            translation_dir,
-            root,
-            config,
-            translation_rules,
-            glossary,
-        )
-        if backend == "llm"
-        else partial(translate_lite, document, translation_dir, config)
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        translation_task,
-        translation_fp,
-        translation_dir,
-        action,
-    )
-    if backend == "llm":
-        _update_llm_progress(
-            record, record_path, translation_dir, "TRANSLATE", reused_translation
-        )
+    _update_llm_progress(record, record_path, translation_dir, "TRANSLATE", reused)
     document = load_model(translation_dir / "document.json", Document)
 
-    check_dir = root / "review" / "check"
-    initial_targets = targets_from_document(document)
-    initial_check_fp = canonical_hash(
-        {
-            "task": "CHECK",
-            "phase": "initial",
-            "targets": [item.model_dump(mode="json") for item in initial_targets],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.CHECK,
-        initial_check_fp,
-        check_dir,
-        partial(_check_and_write, initial_targets, check_dir / "findings.json"),
-    )
-    checked = load_model(check_dir / "findings.json", CheckResult)
-
     review_dir = root / "review" / "review"
-    review_fp = canonical_hash(
-        {
-            "task": "REVIEW",
-            "targets": [item.model_dump(mode="json") for item in initial_targets],
-            "check": canonical_hash(checked),
-            "rules": canonical_hash(review_rules),
-            "glossary": canonical_hash(glossary),
-            "model": config.openai_review_model,
-            "reasoning_effort": "none",
-            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
-            "temperature": 0.7,
-            "repetition_penalty": 1.01,
-            "call_index": 3,
-        }
-    )
-    reused_review = reusable_task(record, TaskName.REVIEW, review_fp, root)
-    _perform(
-        record,
-        record_path,
-        root,
+    targets = targets_from_document(document)
+    reused = run(
         TaskName.REVIEW,
-        review_fp,
-        review_dir,
-        partial(
-            review,
-            initial_targets,
-            checked,
-            review_dir,
-            root,
-            config,
-            review_rules,
-            glossary,
-        ),
+        targets,
+        [
+            (
+                review_dir,
+                partial(
+                    review,
+                    targets,
+                    review_dir,
+                    root,
+                    config,
+                    rules["REVIEW"],
+                    glossary,
+                ),
+            )
+        ],
     )
-    _update_llm_progress(record, record_path, review_dir, "REVIEW", reused_review)
+    _update_llm_progress(record, record_path, review_dir, "REVIEW", reused)
     reviewed = load_model(review_dir / "review.json", ReviewResult)
 
     fix_dir = root / "review" / "fix"
-    fix_fp = canonical_hash(
-        {
-            "task": "FIX",
-            "revision_guard": 4,
-            "document": canonical_hash(document),
-            "review": canonical_hash(reviewed),
-        }
-    )
+    fix_inputs = {"document": document, "review": reviewed}
     if reviewed.revisions:
-        _perform(
-            record,
-            record_path,
-            root,
+        run(
             TaskName.FIX,
-            fix_fp,
-            fix_dir,
-            partial(_fix_and_write, document, reviewed, fix_dir),
+            fix_inputs,
+            [(fix_dir, partial(_fix_and_write, document, reviewed, fix_dir))],
         )
         document = load_model(fix_dir / "document.json", Document)
     else:
-        finish_task(record, record_path, TaskName.FIX, fix_fp, [], skipped=True)
-
-    final_targets = targets_from_document(document)
-    final_check_fp = canonical_hash(
-        {
-            "task": "CHECK",
-            "phase": "final",
-            "targets": [item.model_dump(mode="json") for item in final_targets],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.CHECK,
-        final_check_fp,
-        check_dir,
-        partial(_check_and_write, final_targets, check_dir / "final-findings.json"),
-    )
-    final_check = load_model(check_dir / "final-findings.json", CheckResult)
-    if any(finding.category == "empty_translation" for finding in final_check.findings):
-        _stop(
+        finish_task(
             record,
             record_path,
-            "empty_translation",
-            "Empty translations remain after review.",
+            TaskName.FIX,
+            canonical_hash({"task": "FIX", "inputs": fix_inputs}),
+            [],
+            skipped=True,
         )
 
     lint_dir = root / "publisher" / "lint"
-    lint_fp = canonical_hash(
-        {
-            "task": "LINT",
-            "document": canonical_hash(document),
-            "assets": _tree_hash(merge_dir / "assets"),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
+    run(
         TaskName.LINT,
-        lint_fp,
-        lint_dir,
-        partial(_lint_and_write, document, merge_dir, lint_dir),
+        {"document": document, "assets": _tree_hash(merge_dir / "assets")},
+        [(lint_dir, partial(_lint_and_write, document, merge_dir, lint_dir))],
     )
-    linted = load_model(lint_dir / "report.json", LintResult)
-    if not linted.valid:
+    if not load_model(lint_dir / "report.json", LintResult).valid:
         _stop(
             record, record_path, "lint_failed", "Document structure is not publishable."
         )
 
     cover_dir = root / "publisher" / "cover"
-    cover_fp = canonical_hash(
-        {"task": "COVER", "source": record.source.sha256, "dpi": 150}
-    )
-    _perform(
-        record,
-        record_path,
-        root,
+    run(
         TaskName.COVER,
-        cover_fp,
-        cover_dir,
-        partial(create_cover, source, cover_dir, root),
+        record.source.sha256,
+        [(cover_dir, partial(create_cover, source, cover_dir, root))],
     )
     cover = load_model(cover_dir / "manifest.json", CoverResult)
-
     markdown_dir = root / "publisher" / "markdown"
     markdown_path = markdown_dir / "document.ja.md"
-    markdown_fp = canonical_hash(
-        {
-            "task": "MARKDOWN",
-            "table_layout": 2,
-            "document": canonical_hash(document),
-            "cover": canonical_hash(cover),
-            "assets": _tree_hash(merge_dir / "assets"),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
+    run(
         TaskName.MARKDOWN,
-        markdown_fp,
-        markdown_dir,
-        partial(
-            convert_document,
-            document,
-            markdown_path,
-            root / Path(cover.image.relative_path),
-            merge_dir,
-            set(cover.excluded_page_numbers),
-            config.http_request_timeout_seconds,
-        ),
-    )
-
-    docx_dir = root / "publisher" / "docx"
-    docx_path = docx_dir / "document.ja.docx"
-    docx_fp = canonical_hash(
         {
-            "task": "DOCX",
-            "markdown": sha256_file(markdown_path),
-            "template": sha256_file(template_root / "template.docx"),
-        }
+            "document": document,
+            "cover": cover,
+            "assets": _tree_hash(merge_dir / "assets"),
+        },
+        [
+            (
+                markdown_dir,
+                partial(
+                    convert_document,
+                    document,
+                    markdown_path,
+                    root / cover.image.relative_path,
+                    merge_dir,
+                    set(cover.excluded_page_numbers),
+                    config.http_request_timeout_seconds,
+                ),
+            )
+        ],
     )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DOCX,
-        docx_fp,
-        docx_dir,
-        partial(
-            publish,
-            markdown_path,
-            docx_path,
-            template_root / "template.docx",
-            config.http_request_timeout_seconds,
-        ),
+    pandoc_dir = root / "publisher" / "pandoc"
+    raw_docx = pandoc_dir / "document.raw.docx"
+    run(
+        TaskName.PANDOC,
+        sha256_file(markdown_path),
+        [
+            (
+                pandoc_dir,
+                partial(
+                    publish_pandoc,
+                    markdown_path,
+                    raw_docx,
+                    templates / "template.docx",
+                    config.http_request_timeout_seconds,
+                ),
+            )
+        ],
+    )
+    docx_dir = root / "publisher" / "ooxml"
+    docx_path = docx_dir / "document.ja.docx"
+    run(
+        TaskName.OOXML,
+        sha256_file(raw_docx),
+        [(docx_dir, partial(publish_ooxml, raw_docx, docx_path))],
     )
     record.status = "succeeded"
     record.outputs = [
-        describe_artifact(root, markdown_path),
-        describe_artifact(root, docx_path),
+        describe_artifact(root, path) for path in (markdown_path, docx_path)
     ]
     record.updated_at = datetime.now(UTC)
     record.error = None
@@ -602,66 +334,6 @@ def _translate_locked(
         markdown=markdown_path,
         docx=docx_path,
     )
-
-
-def _perform[ResultT](
-    record: TranslationRecord,
-    record_path: Path,
-    root: Path,
-    task: TaskName,
-    fingerprint: str,
-    task_directory: Path,
-    action: Callable[[], ResultT],
-) -> ResultT | None:
-    """一つのTaskを再利用または状態更新付きで実行する。
-
-    Args:
-        record (TranslationRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
-        task_directory (Path): 対象Taskの成果物Directory。
-        action (Callable[[], ResultT]): Task本体として実行するCallable。
-
-    Returns:
-        ResultT | None: 一つのTaskを再利用または状態更新付きで実行する。
-    """
-
-    if reusable_task(record, task, fingerprint, root):
-        return None
-    start_task(record, record_path, task, fingerprint)
-    try:
-        result = action()
-    except KeyboardInterrupt:
-        raise
-    except Exception as error:
-        fail_task(record, record_path, task, fingerprint, error)
-        raise
-    finish_task(
-        record,
-        record_path,
-        task,
-        fingerprint,
-        task_artifacts(root, task_directory),
-    )
-    return result
-
-
-def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
-    """CHECK結果を指定phaseのfileへ保存する。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-        path (Path): CHECK結果を書き込むJSON FileのPath。
-
-    Returns:
-        CheckResult: CHECK結果を指定phaseのfileへ保存する。
-    """
-
-    result = check(targets)
-    write_model(path, result)
-    return result
 
 
 def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) -> None:
@@ -697,7 +369,6 @@ def _translation_record(
     path: Path,
     translation_id: str,
     source: InputFile,
-    backend: str,
     resuming: bool,
 ) -> TranslationRecord:
     """新規記録を作るか、入力一致を確認して保存済み記録を返す。
@@ -706,24 +377,19 @@ def _translation_record(
         path (Path): Translation Recordを書き込むPath。
         translation_id (str): 作成またはResumeするTranslate処理ID。
         source (InputFile): 変換または検証対象の入力Source。
-        backend (str): 翻訳に使用するBackend名。
         resuming (bool): 既存処理をResumeしているかどうか。
 
     Returns:
         TranslationRecord: 新規記録を作るか、入力一致を確認して保存済み記録を返す。
 
     Raises:
-        InputError: `resume input does not match the saved translation`、`resume backend does
-            not match the saved translation`、`translation to resume does not
-            exist`のいずれかと判定した場合。
+        InputError: Resume対象がない、または入力が一致しない場合。
     """
 
     if path.is_file():
         record = load_model(path, TranslationRecord)
         if record.translation_id != translation_id or record.source != source:
             raise InputError("resume input does not match the saved translation")
-        if record.backend != backend:
-            raise InputError("resume backend does not match the saved translation")
         return record
     if resuming:
         raise InputError("translation to resume does not exist")
@@ -732,7 +398,6 @@ def _translation_record(
         translation_id=translation_id,
         status="processing",
         source=source,
-        backend=cast("Literal['llm', 'libretranslate']", backend),
         created_at=now,
         updated_at=now,
     )

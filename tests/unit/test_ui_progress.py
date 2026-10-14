@@ -4,17 +4,17 @@ import io
 import zipfile
 from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 
+from translate.adapters.artifact_store import load_model, write_model
 from translate.adapters.docling import DoclingClient
 from translate.adapters.llm import LLMOutputTokenExceededError
-from translate.artifact_store import load_model, write_model
 from translate.common.config import Config
 from translate.models.artifacts import (
     ArtifactFile,
-    CheckResult,
     DoclingProgress,
     InputFile,
     ProcessingError,
@@ -24,7 +24,6 @@ from translate.models.artifacts import (
     TaskState,
     TranslationRecord,
 )
-from translate.tasks.converter.docling import convert
 from translate.ui import (
     HistoryEntry,
     WorkerError,
@@ -34,6 +33,8 @@ from translate.ui import (
     _render_record_actions,
     _task_progress,
 )
+
+convert = import_module("translate.tasks.01_docling").convert
 
 
 def _record() -> TranslationRecord:
@@ -58,9 +59,9 @@ def _record() -> TranslationRecord:
                 completed_at=now,
             ),
             TaskState(
-                task=TaskName.CHECK,
+                task=TaskName.PANDOC,
                 status="processing",
-                fingerprint="final-check",
+                fingerprint="pandoc",
                 started_at=now,
             ),
         ],
@@ -69,24 +70,14 @@ def _record() -> TranslationRecord:
     )
 
 
-def test_translate_progress_counts_check_phases_from_valid_artifacts(
-    tmp_path: Path,
-) -> None:
-    """同名CHECKの初回と最終をArtifactで別々に数える。"""
-
-    check_dir = tmp_path / "review/check"
-    write_model(check_dir / "findings.json", CheckResult(findings=[]))
-
-    completed, total, active = _task_progress(tmp_path, _record())
-
-    assert (completed, total) == (2, 17)
-    assert active == "CHECK (最終)"
-
-    write_model(check_dir / "final-findings.json", CheckResult(findings=[]))
-    completed, total, active = _task_progress(tmp_path, _record())
-
-    assert (completed, total) == (3, 17)
-    assert active == "CHECK (最終)"
+def test_translate_progress_counts_pandoc_and_ooxml_separately(tmp_path: Path) -> None:
+    """PANDOCとOOXMLを別stageとして数え、固定CHECKを含めない。"""
+    record = _record()
+    completed, total, active = _task_progress(tmp_path, record)
+    assert (completed, total, active) == (1, 16, "PANDOC")
+    record.tasks[-1].status = "succeeded"
+    completed, total, _ = _task_progress(tmp_path, record)
+    assert (completed, total) == (2, 16)
 
 
 def test_ui_shows_llm_error_type_and_remedy(monkeypatch: pytest.MonkeyPatch) -> None:

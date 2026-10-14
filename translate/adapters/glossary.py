@@ -1,7 +1,5 @@
 """LLMへ渡す用語集を英語原文に現れる項目だけへ絞る。"""
 
-from __future__ import annotations
-
 import csv
 import io
 from functools import lru_cache

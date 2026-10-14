@@ -1,12 +1,9 @@
 """Qdrantへの決定的Point登録とRAG検索。"""
 
-from __future__ import annotations
-
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from translate.common.config import Config
+from translate.common.config import Config
 
 logger = logging.getLogger(__name__)
 

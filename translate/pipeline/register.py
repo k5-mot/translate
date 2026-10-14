@@ -1,30 +1,30 @@
 """参照資料をEmbeddingしてQdrantへ登録するRegister Pipeline。"""
 
-from __future__ import annotations
-
 import hashlib
 import json
+import re
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict
 
-from translate.adapters.docling import DoclingClient
-from translate.adapters.embedding import EmbeddingError, embed
-from translate.adapters.pdf import split_pdf
-from translate.adapters.qdrant import upsert_revision
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     ProcessingLock,
     canonical_hash,
     load_model,
     sha256_file,
     write_model,
 )
+from translate.adapters.docling import DoclingClient
+from translate.adapters.embedding import EmbeddingError, embed
+from translate.adapters.pdf import split_pdf
+from translate.adapters.qdrant import upsert_revision
+from translate.common.config import Config, validate_config
+from translate.common.logger import processing_logging
 from translate.models.artifacts import (
     InputFile,
     ProcessingError,
@@ -34,11 +34,7 @@ from translate.models.artifacts import (
 )
 from translate.pipeline import InputError, resolve_processing_id
 
-if TYPE_CHECKING:
-    from translate.common.config import Config
-
-_SUPPORTED = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
-_TEXT = {".md", ".markdown", ".txt"}
+_SUPPORTED = {".pdf"}
 _CHUNK_SCHEMA = "registration-v1"
 _CHUNK_SIZE = 1000
 _CHUNK_OVERLAP = 100
@@ -53,7 +49,7 @@ _RESERVED_NAMES = {
 
 
 class RegistrationOutcome(BaseModel):
-    """CLIへ返すRegistration IDと記録path。"""
+    """UIへ返すRegistration IDと記録path。"""
 
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
 
@@ -106,23 +102,18 @@ def register_paths(
         raise InputError("source-id is required for multiple registration paths")
     if source_id is not None:
         _validate_source_id(source_id)
-    config.require_register()
+    validate_config(config, "register")
     outputs_root = (outputs or Path.cwd() / "outputs").resolve()
     try:
         sources = _collect(paths, source_id, outputs_root)
     except ValueError as error:
         raise InputError(str(error)) from error
-    if (
-        any(source.path.suffix.casefold() not in _TEXT for source in sources)
-        and config.docling_server_url is None
-    ):
-        raise InputError("Docling settings are required for binary references")
     registration_id = resolve_processing_id(processing_id, resume_id)
     top_name = source_id or _single_top_name(paths)
     root = outputs_root / top_name / registration_id
     record_path = root / "registration.json"
-    fingerprint = _fingerprint(sources, source_id, config)
-    with ProcessingLock(root):
+    fingerprint = _fingerprint(sources, source_id)
+    with ProcessingLock(root), processing_logging(root, config.log_level):
         if processing_id is not None and record_path.is_file():
             raise InputError("processing ID already exists")
         record = _record(
@@ -196,7 +187,7 @@ def _register_sources(
     for source in sources:
         revision = _revision(source, config)
         previous = completed.get(source.logical_path)
-        if previous is not None and previous.revision == revision:
+        if previous is not None and previous.sha256 == source.input.sha256:
             results.append(previous)
             continue
         text = _extract(source.path, config)
@@ -307,6 +298,8 @@ def _collect(
             collected.append(
                 (resolved, f"{root.name}/{path.relative_to(root).as_posix()}")
             )
+    if len(collected) > 100:
+        raise ValueError("at most 100 registration files are allowed")
     if not collected:
         raise ValueError("no supported reference documents found")
     logical_paths = [logical for _, logical in collected]
@@ -329,27 +322,19 @@ def _collect(
 
 
 def _extract(path: Path, config: Config) -> str:
-    """text形式はUTF-8で読み、binary形式はDocling本文を抽出する。
+    """PDFを分割し、Docling本文を抽出する。
 
     Args:
         path (Path): 本文を抽出する登録対象FileのPath。
         config (Config): 接続先、上限値および処理Optionを保持する設定。
 
     Returns:
-        str: text形式はUTF-8で読み、binary形式はDocling本文を抽出する。
+        str: PDFを分割し、Docling本文を抽出する。
     """
 
-    if path.suffix.casefold() in _TEXT:
-        return (
-            path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-        )
     with tempfile.TemporaryDirectory(prefix="translate-register-") as temporary_name:
         temporary = Path(temporary_name)
-        parts = (
-            split_pdf(path, temporary / "parts", config.pdf_split_pages)
-            if path.suffix.casefold() == ".pdf"
-            else [path]
-        )
+        parts = split_pdf(path, temporary / "parts", config.pdf_split_pages)
         return "\n\n".join(_docling_text(part, config) for part in parts)
 
 
@@ -391,31 +376,54 @@ def _docling_text(path: Path, config: Config) -> str:
 
 
 def _chunks(value: str) -> list[str]:
-    """段落境界を優先し、最大1000文字・最大100文字重複で分割する。
+    """段落境界を優先し、文を途中で切らず最大1000文字・最大100文字重複で分割する。
 
     Args:
         value (str): Chunkへ分割する抽出済み本文Text。
 
     Returns:
-        list[str]: 段落境界を優先し、最大1000文字・最大100文字重複で分割する。
+        list[str]: 段落境界を優先し、文を途中で切らず最大1000文字・最大100文字重複で分割する。
+
+    Raises:
+        InputError: 一文だけで1000文字を超える場合。
     """
 
     text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    paragraphs = re.split(r"(?<=\n\n)(?=[^\n])", text)
+    atoms: list[str] = []
+    for paragraph in paragraphs:
+        if len(paragraph) <= _CHUNK_SIZE:
+            atoms.append(paragraph)
+            continue
+        start = 0
+        for boundary in [
+            match.end()
+            for match in re.finditer(
+                r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", paragraph
+            )
+        ] + [len(paragraph)]:
+            atom = paragraph[start:boundary]
+            if len(atom.strip()) > _CHUNK_SIZE:
+                raise InputError("A registration sentence exceeds 1000 characters")
+            if atom:
+                atoms.append(atom)
+            start = boundary
     chunks: list[str] = []
-    start = 0
-    while start < len(text):
-        maximum_end = min(start + _CHUNK_SIZE, len(text))
-        end = maximum_end
-        if maximum_end < len(text):
-            boundary = text.rfind("\n\n", start + 1, maximum_end + 1)
-            if boundary > start:
-                end = boundary
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
-            break
-        start = max(start + 1, end - _CHUNK_OVERLAP)
+    current: list[str] = []
+    for atom in atoms:
+        if current and len("".join(current) + atom) > _CHUNK_SIZE:
+            chunks.append("".join(current).strip())
+            overlap: list[str] = []
+            for previous in reversed(current):
+                if len("".join(overlap)) + len(previous) > _CHUNK_OVERLAP:
+                    break
+                overlap.insert(0, previous)
+            current = overlap
+            if len("".join(current) + atom) > _CHUNK_SIZE:
+                current = []
+        current.append(atom)
+    if current and "".join(current).strip():
+        chunks.append("".join(current).strip())
     return chunks
 
 
@@ -446,35 +454,20 @@ def _revision(source: _Source, config: Config) -> str:
     )
 
 
-def _fingerprint(
-    sources: list[_Source],
-    source_id: str | None,
-    config: Config,
-) -> str:
-    """Register Resume判定に必要な順序付き入力と出力影響設定をhash化する。
+def _fingerprint(sources: list[_Source], source_id: str | None) -> str:
+    """Registerの入力内容と論理IDだけを再開照合用にhash化する。
 
     Args:
-        sources (list[_Source]): Register対象として収集したSource。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
+        sources: logical path順の入力PDF。
+        source_id: 登録資料の論理識別子。
 
     Returns:
-        str: Register Resume判定に必要な順序付き入力と出力影響設定をhash化する。
+        設定・規則・用語集を含まない再開照合hash。
     """
-
     return canonical_hash(
         {
             "source_id": source_id,
             "inputs": [source.input.model_dump(mode="json") for source in sources],
-            "split_pages": config.pdf_split_pages,
-            "ocr": [
-                config.docling_ocr_preset,
-                config.docling_ocr_lang,
-                config.docling_force_ocr,
-            ],
-            "chunk_schema": _CHUNK_SCHEMA,
-            "embedding_model": config.openai_embedding_model,
-            "collection": config.qdrant_collection,
         }
     )
 
@@ -495,7 +488,7 @@ def _record(
         registration_id (str): 作成またはResumeするRegister処理ID。
         source_id (str | None): 登録対象へ付与する論理Source ID。
         sources (list[_Source]): Register対象として収集したSource。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
+        fingerprint (str): 入力から算出した再利用判定Hash。
         config (Config): 接続先、上限値および処理Optionを保持する設定。
         resuming (bool): 既存処理をResumeしているかどうか。
 
@@ -503,7 +496,7 @@ def _record(
         RegistrationRecord: 新規Register記録を作るか、入力とfingerprint一致後に保存済み記録を返す。
 
     Raises:
-        InputError: `resume inputs or settings do not match the saved
+        InputError: `resume inputs do not match the saved
             registration`、`registration to resume does not exist`のいずれかと判定した場合。
     """
 
@@ -511,9 +504,7 @@ def _record(
     if path.is_file():
         record = load_model(path, RegistrationRecord)
         if record.inputs != inputs or record.fingerprint != fingerprint:
-            raise InputError(
-                "resume inputs or settings do not match the saved registration"
-            )
+            raise InputError("resume inputs do not match the saved registration")
         if resuming and record.status != "succeeded":
             record.status = "processing"
             record.error = None

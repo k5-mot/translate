@@ -1,14 +1,11 @@
 """Docling ZIPを検査して安全に展開するUNPACK Task。"""
 
-from __future__ import annotations
-
 import json
 import stat
 import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from translate.artifact_store import (
-    atomic_write_bytes,
+from translate.adapters.artifact_store import (
     describe_staged_artifact,
     temporary_task_directory,
     write_json,
@@ -58,7 +55,7 @@ def unpack(
                 if not isinstance(document, dict):
                     raise ValueError("Docling JSON must be an object")
                 staged_document = staged_part / "document.json"
-                write_json(staged_document, document)
+                write_json(staged_document, document, atomic=False)
                 assets = _extract_assets(archive, infos, staged_part)
             document_artifact = describe_staged_artifact(
                 processing_directory,
@@ -81,7 +78,7 @@ def unpack(
                 )
             )
         result = UnpackManifest(parts=parts)
-        write_model(temporary / "manifest.json", result)
+        write_model(temporary / "manifest.json", result, atomic=False)
     return result
 
 
@@ -150,6 +147,7 @@ def _extract_assets(
         if not suffix:
             continue
         target = root.joinpath("artifacts", *suffix)
-        atomic_write_bytes(target, archive.read(info))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(archive.read(info))
         results.append(target)
     return results

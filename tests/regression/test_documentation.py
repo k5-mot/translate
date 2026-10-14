@@ -9,13 +9,16 @@ import re
 import shutil
 import tokenize
 import zipfile
+from importlib import import_module
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
 
 from translate.adapters.pdf import page_count
-from translate.tasks.publisher.docx import publish
+
+publish_pandoc = import_module("translate.tasks.53_pandoc").publish
+publish_ooxml = import_module("translate.tasks.54_ooxml").publish
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
@@ -62,8 +65,6 @@ ENV_NAMES = {
     "HTTP_RETRY_ATTEMPTS",
     "HTTP_REQUEST_TIMEOUT_SECONDS",
     "EXTERNAL_TASK_DEADLINE_SECONDS",
-    "LIBRETRANSLATE_URL",
-    "LIBRETRANSLATE_API_KEY",
     "QDRANT_API_KEY",
     "QDRANT_URI",
     "QDRANT_COLLECTION",
@@ -152,9 +153,11 @@ def test_docx_publication_applies_template_styles_and_embeds_images(
     markdown = PROJECT_ROOT / "translate/templates/sample.md"
     template = PROJECT_ROOT / "translate/templates/template.docx"
     placeholder = PROJECT_ROOT / "translate/templates/placeholder.png"
-    output = tmp_path / "sample.docx"
+    raw = tmp_path / "pandoc" / "sample.raw.docx"
+    output = tmp_path / "ooxml" / "sample.docx"
 
-    publish(markdown, output, template, 30.0)
+    publish_pandoc(markdown, raw, template, 30.0)
+    publish_ooxml(raw, output)
 
     word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     namespaces = {"w": word}

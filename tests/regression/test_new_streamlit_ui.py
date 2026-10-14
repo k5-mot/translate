@@ -6,6 +6,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
@@ -16,7 +17,7 @@ from uuid_utils import uuid7
 
 from scripts.real_ui_step import resume
 from translate import ui
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     describe_artifact,
     load_model,
     sha256_file,
@@ -31,7 +32,6 @@ from translate.models.artifacts import (
 )
 from translate.pipeline import InputError
 from translate.pipeline.translate import translate_pdf
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
 from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
@@ -47,6 +47,9 @@ from translate.ui import (
     _valid_artifact,
     _verified_response,
 )
+
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 if TYPE_CHECKING:
     from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -236,12 +239,9 @@ def test_processing_history_shows_loading_icon_and_stop_button(
 
     try:
         app.run(timeout=10)
-        history = next(
-            button
-            for button in app.sidebar.button
-            if button.key == f"history-{processing_id}"
-        )
-        assert "progress_activity" in str(history.proto)
+        assert not app.exception
+        component = app.get("bidi_component")[0]
+        assert '"active": true' in component.proto.json
         stop = next(
             button for button in app.button if button.key == f"stop-{processing_id}"
         )
@@ -309,6 +309,7 @@ def test_streamlit_delete_button_requires_confirmation_and_removes_history(
     app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py"))
     app.query_params["processing"] = processing_id
 
+    app.session_state["pending-delete"] = processing_id
     app.run(timeout=10)
 
     delete = next(
@@ -496,3 +497,21 @@ def test_streamlit_v2_renders_four_operations(
     )
     assert settings.label == "入力と設定"
     assert settings.proto.expanded
+
+
+def test_register_directory_upload_preserves_paths_and_rejects_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同名の子PDFを保持し、絶対pathと親参照を保存前に拒否する。"""
+    monkeypatch.chdir(tmp_path)
+    paths = _stage_register(
+        [_upload("manual/a/file.pdf", b"a"), _upload("manual/b/file.pdf", b"b")],
+        str(uuid7()),
+    )
+    assert len(paths) == 1
+    assert paths[0].name == "manual"
+    assert (paths[0] / "a/file.pdf").read_bytes() == b"a"
+    assert (paths[0] / "b/file.pdf").read_bytes() == b"b"
+    for name in ("../file.pdf", "/root/file.pdf", "C:/file.pdf", "manual/../file.pdf"):
+        with pytest.raises(InputError):
+            _stage_register([_upload(name)], str(uuid7()))

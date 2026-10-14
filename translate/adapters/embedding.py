@@ -1,12 +1,9 @@
 """OpenAI互換Embedding endpointへの有限batch接続。"""
 
-from __future__ import annotations
-
 import logging
 import math
 import random
 import time
-from typing import TYPE_CHECKING
 
 from openai import (
     APIConnectionError,
@@ -17,8 +14,7 @@ from openai import (
     OpenAI,
 )
 
-if TYPE_CHECKING:
-    from translate.common.config import Config
+from translate.common.config import Config
 
 logger = logging.getLogger(__name__)
 

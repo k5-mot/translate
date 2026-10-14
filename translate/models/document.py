@@ -1,13 +1,9 @@
 """全Taskが共有する文書モデル。"""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Iterator
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 TextKind = Literal["text", "code", "link", "line_break"]
 TextMark = Literal[
@@ -103,13 +99,11 @@ class Image(DocumentModel):
 
 
 class TableCell(DocumentModel):
-    """表内の結合範囲起点となる一つのセル。"""
+    """結合を展開した通常gridの一つのセル。"""
 
     id: str = Field(min_length=1)
     row: int = Field(ge=0)
     column: int = Field(ge=0)
-    rowspan: int = Field(default=1, ge=1)
-    colspan: int = Field(default=1, ge=1)
     header: bool = False
     content: TextUnit
     images: list[Image] = Field(default_factory=list)

@@ -1,16 +1,12 @@
 """分割Docling JSONを参照整合性を保って結合するMERGE Task。"""
 
-from __future__ import annotations
-
 import json
 import shutil
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from translate.artifact_store import temporary_task_directory, write_json
-
-if TYPE_CHECKING:
-    from translate.models.artifacts import UnpackManifest
+from translate.adapters.artifact_store import temporary_task_directory, write_json
+from translate.models.artifacts import UnpackManifest
 
 _COLLECTIONS = (
     "texts",
@@ -76,7 +72,7 @@ def merge(
             raise ValueError("Docling origin must be an object")
         origin.update({"filename": source.name, "mimetype": "application/pdf"})
         _validate_references(merged)
-        write_json(temporary / "document.json", merged)
+        write_json(temporary / "document.json", merged, atomic=False)
     return task_directory / "document.json"
 
 

@@ -1,6 +1,6 @@
 # 📘 translate 仕様書
 
-本書は英語文書の日本語化、翻訳結果の確認、参照資料の登録、改訂版の翻訳について、入力から成果物までの動作を定める。まず処理全体を示し、続いて機能、データ、UIおよび実装構成を記述する。
+本書は英語文書の日本語化、翻訳結果の確認、参照資料の登録、改訂による変更箇所と修正提案の作成について、入力から成果物までの動作を定める。まず処理全体を示し、続いて機能、データ、UIおよび実装構成を記述する。
 
 本書は実装時に満たす仕様を記述する。Task配置、DOCX公開、設定、ログおよびAgentによる制御を含む。
 
@@ -13,11 +13,11 @@
 | 操作 | 入力 | 出力 |
 |---|---|---|
 | Translate | 英語PDF | 日本語MarkdownとDOCX |
-| Review | 英語原文PDFと日本語訳文PDF | UI上の対応関係、指摘、修正候補と結果JSON |
+| Review | 英語原文PDFと日本語訳文PDF | UI上の変更箇所・指摘・修正提案一覧と結果JSON |
 | Register | 単一・複数PDF、またはPDFを含むディレクトリ | Qdrantへの登録結果 |
 | Upgrade | 英文旧版・新版PDFと日本語旧版PDF | UI上の変更箇所・修正提案一覧と結果JSON |
 
-`Task` は処理工程の単位、`Pipeline` は操作ごとのTaskの実行順を指す。文書内容は `Document` というモデルで保持し、原文、翻訳文、修正訳を対応付ける。詳細なfieldは「データと成果物」で定義する。
+`Task` は処理工程の単位、`Pipeline` は操作全体の実行を管理する処理を指す。`Agent` は目的と途中結果に基づき、次に調べる対象や操作を選び、結果を確認して処理を続ける仕組みを指す。ReviewとUpgradeはそれぞれAgentとして実装する。文書内容は `Document` というモデルで保持し、原文、翻訳文、修正訳を対応付ける。詳細なfieldは「データと成果物」で定義する。
 
 ### 🌐 対応言語
 
@@ -69,8 +69,8 @@ SPLIT → DOCLING → UNPACK → MERGE
 
 ```text
 原文と訳文をそれぞれSPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD
-→ Review Agent（対応候補の取得 → 対応付け → 品質確認 → 必要箇所の再確認）
-→ 結果JSONの保存・UI表示
+→ Review Agent（文脈取得・対応付け・品質確認・修正提案・再確認を必要に応じて選択・反復）
+→ 変更箇所・指摘・修正提案一覧の保存・UI表示
 ```
 
 独立したALIGN Taskは設けず、対応付けをReview Agentへ統合する。原文と訳文のページや段落の分割が異なる場合も、要素IDの組を使って対応を表す。確定できない対応は未対応として残す。ReviewではFIXを実行しない。
@@ -91,8 +91,8 @@ Upgradeは改訂による変更箇所を確認する操作とする。英文旧�
 
 ```text
 3つのPDFをそれぞれSPLIT → DOCLING → UNPACK → MERGE → POSITION → NORMALIZE → LOAD
-→ Upgrade Agent（比較対象の選択 → DIFF → 結果確認・必要箇所の再比較）
-→ 変更箇所一覧JSONの保存・UI表示
+→ Upgrade Agent（文脈取得・新旧比較・旧訳の対応付け・修正提案・再確認を必要に応じて選択・反復）
+→ 変更箇所・修正提案一覧の保存・UI表示
 ```
 
 - 追加、変更、削除、移動した箇所を一覧に含める。未変更箇所は一覧から除く。
@@ -156,7 +156,14 @@ LLMを使用するTaskはSTRUCTURE、TRANSLATE、REVIEW、DIFFとする。FIXと
 
 #### 🤖 Review・Upgrade Agent
 
-ReviewとUpgradeは、それぞれ目的と利用可能な操作を持つAgentとして実装する。Agentは観察した文書と途中結果に基づき、調べる範囲、次の操作、再確認の要否、終了を判断する。制御ループはそれぞれのPipelineに置き、対象の取得と保存には既存のDocument・Task・Adapterを使用する。
+ReviewとUpgradeは、それぞれ目的と利用可能な操作を持つAgentとして実装する。LLMが観察した文書と途中結果に基づき、調べる範囲、次の操作、再確認の要否、終了を判断する。applicationは選ばれた操作の実行、状態の保存、参照と完了条件の検証を担当する。制御ループはそれぞれのPipelineに置き、対象の取得と保存には既存のDocument・Task・Adapterを使用する。
+
+| Agent | 達成する目的 | 一覧の内容 |
+|---|---|---|
+| Review Agent | 英語原文に照らして、日本語訳文の修正が必要な箇所と修正案を特定する | 対象箇所、根拠となる原文、現在の訳文、指摘内容、修正提案 |
+| Upgrade Agent | 英文の改訂箇所を特定し、日本語旧訳に必要な変更を提案する | 変更の種類、英語旧版・新版と日本語旧訳の対応箇所、変更概要、修正提案 |
+
+どちらも提案を一覧化するところまでを担当する。各項目では、参照IDから対象箇所を特定でき、現状の本文、指摘または変更の理由、修正提案を一緒に確認できるようにする。修正が必要な箇所を特定できても候補を確定できない場合は、その箇所と判断できない理由を一覧へ残す。
 
 ```text
 目的・入力文書・保存済み結果を読み込む
@@ -480,7 +487,7 @@ OOXMLはその中間DOCXを読み、本文のstyle参照、数式のstyle、お�
 
 Review Agentが入力Documentの要素IDを対応付け、結果をREVIEWの成果物へ保存する。独立したALIGN、CHECK、最終CHECKのTaskと成果物は設けない。
 
-`AlignmentGroup` は `id`、`source_ids: list[str]`、`translation_ids: list[str]`、`kind: Literal["matched", "source_only", "translation_only"]` を持つ。1対多・多対1を含む対応は同じgroupで表し、元の読み順と参照を保持する。存在しないID、矛盾する重複対応、未確認対象の黙示的な除外を禁止する。
+`AlignmentGroup` は `id`、`source_ids: list[str]`、`translation_ids: list[str]`、`kind: Literal["matched", "source_only", "translation_only"]`、`reason: str | None` を持つ。1対多・多対1を含む対応は同じgroupで表し、元の読み順と参照を保持する。未対応の場合は `reason` に対応を確定できない理由を記録し、一覧へ表示する。存在しないID、矛盾する重複対応、未確認対象の黙示的な除外を禁止する。
 
 対応済みgroupから `ReviewTarget` を作り、Agentが品質確認対象として選ぶ。未対応groupもUIの一覧へ表示する。Translateは同じDocumentの原文・訳文IDから対象を直接作成し、別文書間の対応付けを必要としない。
 
@@ -520,7 +527,7 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 | `Revision` | `target_id` | 対象の `TextUnit.id` |
 | `Revision` | `edits` | `list[TextEdit]` |
 | `TextEdit` | `span_id` | 対象の `TextSpan.id` |
-| `TextEdit` | `text` | `revised` へ設定する修正訳 |
+| `TextEdit` | `text` | 修正候補の訳文。Reviewでは一覧表示し、TranslateのFIXでは `revised` へ設定する |
 
 `ReviewResult` は `groups: list[AlignmentGroup]`、`targets: list[ReviewTarget]`、`reviewed_target_ids: list[str]`、`findings` と `revisions` を保持する。Translateでは `groups` は空でよい。FIXはTranslateでのみ実行し、RevisionのID参照、重複、対象の種類などを検査して、有効な `TextEdit.text` を `TextSpan.revised` へ設定する。
 
@@ -1200,7 +1207,7 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 | 英語原文PDF | `.pdf` の単一fileを必須とする |
 | 日本語訳文PDF | `.pdf` の単一fileを必須とする |
 | 開始操作 | `review_pdfs()` をbackground workerへ登録する |
-| 成功時 | 対応関係、未対応要素、指摘、修正候補の一覧と結果JSONのdownload |
+| 成功時 | 変更箇所・指摘・修正提案一覧と結果JSONのdownload。確認に必要な対応関係と未対応要素を併記 |
 
 Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二列表示する。成果物領域ではすべての修正対象箇所・指摘・修正提案を一覧表示し、previewの先頭件数制限は一覧へ適用しない。FIXは実行せず、提案を適用する操作も設けない。Markdown report専用の整形は設けない。
 
@@ -1984,6 +1991,7 @@ uv run playwright install chromium
 - 固定の長さ比、原文との同文判定、軍種名などの個別補正を品質判定に使用しないこと。
 - Review Agentが対応付けと品質確認を行い、未対応要素と修正候補を一覧化すること。
 - Upgrade Agentが追加・変更・削除・移動を一覧化し、未変更箇所を除外して修正提案を示すこと。
+- ReviewとUpgradeの両Agentが、操作結果に応じて次の対象・操作を変更できること。対応が曖昧な場合に周辺文脈の取得や候補探索へ戻り、提案に矛盾がある場合に再確認を選ぶことを検証する。
 - ReviewとUpgradeが提案を入力文書へ適用せず、全文翻訳・新版DOCXを生成しないこと。
 - Agentが不正なID、無効な操作、未確認対象を残す終了指示、step上限を検出すること。
 - Registerが単一・複数・ディレクトリ内のPDFを登録し、非PDFの単独指定と論理path衝突を拒否すること。

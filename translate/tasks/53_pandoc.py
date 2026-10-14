@@ -1,17 +1,12 @@
-"""Pandoc Markdownを最終DOCXとして公開するDOCX Task。"""
+"""Pandoc Markdownを中間DOCXへ変換するPANDOC Task。"""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from translate.adapters.pandoc import publish as publish_with_pandoc
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Path:
-    """Pandoc Adapterへ固定したDOCX公開契約を委譲する。
+    """Pandoc Adapterへ中間DOCXの生成を委譲する。
 
     Args:
         markdown (Path): DOCX変換またはPreview対象のMarkdown Path。
@@ -20,7 +15,7 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
         timeout (float): 外部処理のTimeout秒数。
 
     Returns:
-        Path: Pandoc Adapterへ固定したDOCX公開契約を委譲する。
+        Path: Pandoc Adapterへ中間DOCXの生成を委譲する。
     """
 
     return publish_with_pandoc(markdown, output, template, timeout)

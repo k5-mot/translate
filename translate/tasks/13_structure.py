@@ -1,24 +1,17 @@
 """視覚情報を使って意味構造を補正するSTRUCTURE Task。"""
 
-from __future__ import annotations
-
 import json
 import math
 import re
+import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, get_args
+from pathlib import Path
+from typing import get_args
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from translate.adapters.llm import (
-    LLMClient,
-    LLMError,
-    LLMInputExceededError,
-    LLMOutputExceededError,
-)
-from translate.adapters.pdf import render_page
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     begin_llm_call,
     canonical_hash,
     complete_llm_call,
@@ -30,6 +23,14 @@ from translate.artifact_store import (
     sha256_file,
     write_model,
 )
+from translate.adapters.llm import (
+    LLMClient,
+    LLMError,
+    LLMInputExceededError,
+    LLMOutputExceededError,
+)
+from translate.adapters.pdf import render_page
+from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import (
     AlertKind,
@@ -39,15 +40,8 @@ from translate.models.document import (
     Page,
 )
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from translate.common.config import Config
-
-
 # ローカルGemma VLMで安定して処理できる実測上限にpage画像を収める。
 MAX_VISION_PIXELS = 1_000_000
-MAX_BLOCK_EXCERPT_BYTES = 1024
 
 
 class StructureModel(BaseModel):
@@ -127,49 +121,53 @@ def structure(
         if block.kind == "heading"
     }
     client = LLMClient(config)
-    used_call_ids: list[str] = []
-    heading_history: list[dict[str, object]] = []
-    for page in updated.pages:
-        page_responses: list[tuple[str, StructureResponse]] = []
-        image = task_directory / "pages" / f"page-{page.number:04d}.png"
-        if not image.is_file():
-            render_page(source_pdf, page.number, image, 144)
-        _bound_image(image)
-        overhead = len(rules.encode("utf-8")) + 2048
-        chunks = _chunks(
-            page.blocks,
-            config.structure_max_blocks,
-            config.structure_input_tokens - overhead,
-        )
-        for index, blocks in enumerate(chunks):
-            page_responses.extend(
-                _execute(
-                    client=client,
-                    config=config,
-                    blocks=blocks,
-                    image=image,
-                    task_directory=task_directory,
-                    rules=rules,
-                    heading_history=heading_history,
-                    lineage=[f"page-{page.number:04d}", f"chunk-{index:04d}"],
-                    depth=0,
-                )
+    client.deadline = time.monotonic() + config.llm_task_deadline_seconds
+    try:
+        used_call_ids: list[str] = []
+        heading_history: list[dict[str, object]] = []
+        for page in updated.pages:
+            page_responses: list[tuple[str, StructureResponse]] = []
+            image = task_directory / "pages" / f"page-{page.number:04d}.png"
+            if not image.is_file():
+                render_page(source_pdf, page.number, image, 144)
+            _bound_image(image)
+            overhead = len(rules.encode("utf-8")) + 2048
+            chunks = _chunks(
+                page.blocks,
+                config.structure_max_blocks,
+                config.structure_input_tokens - overhead,
             )
-        used_call_ids.extend(call_id for call_id, _ in page_responses)
-        _apply_page(page, page_responses, diagnostics)
-        heading_history.extend(_page_heading_history(page))
-        del heading_history[:-8]
-        write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
-    _normalize_heading_levels(updated, baseline_levels, diagnostics)
-    for page in updated.pages:
-        write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
-    _write_diagnostics(diagnostics_path, diagnostics)
-    write_model(
-        task_directory / "call-index.json",
-        LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
-    )
-    write_model(task_directory / "document.json", updated)
-    return updated
+            for index, blocks in enumerate(chunks):
+                page_responses.extend(
+                    _execute(
+                        client=client,
+                        config=config,
+                        blocks=blocks,
+                        image=image,
+                        task_directory=task_directory,
+                        rules=rules,
+                        heading_history=heading_history,
+                        lineage=[f"page-{page.number:04d}", f"chunk-{index:04d}"],
+                        depth=0,
+                    )
+                )
+            used_call_ids.extend(call_id for call_id, _ in page_responses)
+            _apply_page(page, page_responses, diagnostics)
+            heading_history.extend(_page_heading_history(page))
+            del heading_history[:-8]
+            write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
+        _normalize_heading_levels(updated, baseline_levels, diagnostics)
+        for page in updated.pages:
+            write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
+        _write_diagnostics(diagnostics_path, diagnostics)
+        write_model(
+            task_directory / "call-index.json",
+            LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
+        )
+        write_model(task_directory / "document.json", updated)
+        return updated
+    finally:
+        client.client.close()
 
 
 def _chunks(
@@ -193,7 +191,58 @@ def _chunks(
     current: list[Block] = []
     for block in blocks:
         if _block_bytes([block]) > maximum_bytes:
-            raise ValueError(f"single Block exceeds structure input limit: {block.id}")
+            if current:
+                result.append(current)
+                current = []
+            if block.content is None or not block.content.spans:
+                raise ValueError(
+                    f"single Block exceeds structure input limit: {block.id}"
+                )
+            spans = []
+            for span in block.content.spans:
+                content = block.content.model_copy(update={"spans": [*spans, span]})
+                piece = block.model_copy(update={"content": content})
+                if _block_bytes([piece]) > maximum_bytes:
+                    if not spans:
+                        raise ValueError(
+                            f"single sentence exceeds structure input limit: {span.id}"
+                        )
+                    result.append(
+                        [
+                            block.model_copy(
+                                update={
+                                    "content": block.content.model_copy(
+                                        update={"spans": spans}
+                                    )
+                                }
+                            )
+                        ]
+                    )
+                    spans = [span]
+                    piece = block.model_copy(
+                        update={
+                            "content": block.content.model_copy(update={"spans": spans})
+                        }
+                    )
+                    if _block_bytes([piece]) > maximum_bytes:
+                        raise ValueError(
+                            f"single sentence exceeds structure input limit: {span.id}"
+                        )
+                else:
+                    spans.append(span)
+            if spans:
+                result.append(
+                    [
+                        block.model_copy(
+                            update={
+                                "content": block.content.model_copy(
+                                    update={"spans": spans}
+                                )
+                            }
+                        )
+                    ]
+                )
+            continue
         if current and (
             len(current) >= maximum_blocks
             or _block_bytes([*current, block]) > maximum_bytes
@@ -221,64 +270,22 @@ def _block_bytes(blocks: list[Block]) -> int:
 
 
 def _block_payload(block: Block) -> dict[str, object]:
-    """分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。
+    """分類対象の本文を省略せずSTRUCTURE入力へ含める。
 
     Args:
         block (Block): 変換または検証対象のDocument Block。
 
     Returns:
-        dict[str, object]: 分類に十分な先頭・末尾の本文だけをSTRUCTURE入力へ含める。
+        dict[str, object]: 分類対象の本文を省略せずSTRUCTURE入力へ含める。
     """
 
     text = block.content.text("source") if block.content is not None else ""
     return {
         "block_id": block.id,
         "kind": block.kind,
-        "text": _excerpt(text, MAX_BLOCK_EXCERPT_BYTES),
+        "text": text,
         "level": block.level,
     }
-
-
-def _excerpt(value: str, maximum_bytes: int) -> str:
-    """UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。
-
-    Args:
-        value (str): 先頭と末尾を残して短縮するText。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        str: UTF-8を壊さず、長文の先頭と末尾を指定byte内へ収める。
-    """
-
-    if len(value.encode("utf-8")) <= maximum_bytes:
-        return value
-    marker = "\n…\n"
-    side = (maximum_bytes - len(marker.encode("utf-8"))) // 2
-    head = _take_utf8(value, side)
-    tail = _take_utf8(value[::-1], side)[::-1]
-    return f"{head}{marker}{tail}"
-
-
-def _take_utf8(value: str, maximum_bytes: int) -> str:
-    """文字境界を保って先頭から指定byteまで返す。
-
-    Args:
-        value (str): 先頭からByte上限まで切り出すText。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        str: 文字境界を保って先頭から指定byteまで返す。
-    """
-
-    result: list[str] = []
-    size = 0
-    for character in value:
-        encoded = len(character.encode("utf-8"))
-        if size + encoded > maximum_bytes:
-            break
-        result.append(character)
-        size += encoded
-    return "".join(result)
 
 
 def _bound_image(path: Path) -> None:
@@ -338,19 +345,9 @@ def _execute(
     fingerprint = canonical_hash(
         {
             "task": "STRUCTURE",
-            "schema": 3,
+            "operation": "structure",
             "blocks": [block.model_dump(mode="json") for block in blocks],
             "image": sha256_file(image),
-            "rules": canonical_hash(rules),
-            "heading_history": heading_history,
-            "model": config.openai_structure_model,
-            "mode": config.llm_structured_output_mode,
-            "reasoning_effort": "none",
-            "llm_endpoint": config.openai_llm_base_url or config.openai_base_url,
-            "temperature": 0.7,
-            "repetition_penalty": 1.01,
-            "input_tokens": config.structure_input_tokens,
-            "output_tokens": config.structure_output_tokens,
         }
     )
     reusable = load_reusable_llm_response(
@@ -521,9 +518,7 @@ def _page_heading_history(page: Page) -> list[dict[str, object]]:
     return [
         {
             "level": block.level,
-            "text": _excerpt(block.content.text("source"), 256)
-            if block.content is not None
-            else "",
+            "text": block.content.text("source") if block.content is not None else "",
         }
         for block in sorted(page.blocks, key=lambda item: item.order)
         if block.kind == "heading"
