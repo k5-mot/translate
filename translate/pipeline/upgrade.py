@@ -268,9 +268,10 @@ def run_agent(
                 for role, ids in covered.items()
             }
             state: dict[str, object] = {
+                "roles": list(units),
                 "pending_counts": {role: len(ids) for role, ids in pending.items()},
-                "pending_ids": {role: ids[:32] for role, ids in pending.items()},
-                "translation_candidates": list(units["translation_v1"])[:32],
+                "pending_ids": {role: ids[:8] for role, ids in pending.items()},
+                "translation_candidates": list(units["translation_v1"])[:8],
                 "confirmed_count": len(confirmed),
             }
             if idle_steps >= 12 or time.monotonic() >= deadline:
@@ -280,6 +281,7 @@ def run_agent(
                 "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
                 state,
                 observation,
+                units,
             )
             if action.operation == "finish":
                 if any(pending.values()):
@@ -306,6 +308,7 @@ def run_agent(
                         "error": "Selected scope exceeds the budget. Select fewer units."
                     }
                 round_number += 1
+            observation = {"action": action.model_dump(), "result": observation}
             after = sum(
                 len(item.source_v1_ids) + len(item.source_v2_ids)
                 for _, item in confirmed

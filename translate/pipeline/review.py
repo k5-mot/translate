@@ -353,8 +353,9 @@ def run_agent(
                 if target.id not in result.reviewed_target_ids
             ]
             state: dict[str, object] = {
+                "roles": list(units),
                 "pending_counts": {role: len(ids) for role, ids in pending.items()},
-                "pending_ids": {role: ids[:32] for role, ids in pending.items()},
+                "pending_ids": {role: ids[:8] for role, ids in pending.items()},
                 "unchecked_count": len(unchecked),
                 "unchecked_targets": unchecked[:32],
                 "conflicts": sorted(conflicts),
@@ -366,6 +367,7 @@ def run_agent(
                 "Review English source against Japanese translation and propose edits.",
                 state,
                 observation,
+                units,
             )
             if action.operation == "finish":
                 if any(pending.values()) or unchecked or conflicts:
@@ -400,6 +402,7 @@ def run_agent(
                         "error": "Selected scope exceeds the budget. Select fewer units or targets."
                     }
                 round_number += 1
+            observation = {"action": action.model_dump(), "result": observation}
             progress_after = sum(
                 len(group.source_ids) + len(group.translation_ids)
                 for group in result.groups

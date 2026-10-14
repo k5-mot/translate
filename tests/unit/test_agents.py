@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from pydantic import BaseModel
@@ -15,7 +16,13 @@ from translate.models.artifacts import LLMCallArtifact
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.models.review import AgentAction, ReviewResponse
 from translate.models.upgrade import DiffResponse
-from translate.pipeline import InputError, completed_agent_calls
+from translate.pipeline import (
+    InputError,
+    agent_units,
+    choose_action,
+    completed_agent_calls,
+    observe_documents,
+)
 from translate.pipeline.review import run_agent as review_agent
 from translate.pipeline.upgrade import run_agent as upgrade_agent
 
@@ -53,6 +60,82 @@ def config() -> Config:
         qdrant_uri=None,
         qdrant_collection=None,
     )
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        AgentAction(operation="evaluate", target_ids=["source-id"]),
+        AgentAction(operation="read", references={"source": ["invented-id"]}),
+        AgentAction(operation="overview", references={"source": ["source-id"]}),
+    ],
+)
+def test_agent_corrects_evaluation_before_matching(
+    config: Config, monkeypatch: pytest.MonkeyPatch, invalid: AgentAction
+) -> None:
+    """対応付け前の評価指示をSDK応答境界で訂正し、存在する対象の対応付けを選ぶ。"""
+    client = LLMClient(config)
+    responses = []
+    for action in (
+        invalid,
+        AgentAction(
+            operation="match",
+            references={"source": ["source-id"], "translation": ["translation-id"]},
+        ),
+    ):
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = action.model_dump_json()
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        action = choose_action(
+            client,
+            "Review English source against Japanese translation.",
+            {
+                "roles": ["source", "translation"],
+                "pending_counts": {"source": 1, "translation": 1},
+                "pending_ids": {
+                    "source": ["source-id"],
+                    "translation": ["translation-id"],
+                },
+                "unchecked_targets": [],
+                "unchecked_count": 0,
+                "conflicts": [],
+            },
+            {},
+            agent_units(
+                {
+                    "source": document(**{"source-id": "Original"}),
+                    "translation": document(**{"translation-id": "訳文"}),
+                }
+            ),
+        )
+        assert action.operation == "match"
+        assert create.call_count == 2
+        assert "Previous response validation failed" in str(create.call_args_list[1])
+    finally:
+        client.client.close()
+
+
+def test_agent_overview_includes_bounded_content() -> None:
+    """IDだけの一覧でAgentが探索を繰り返さないよう、予算内で本文も提示する。"""
+    units = agent_units(
+        {
+            "source": document(
+                **{f"unit-{i}": "Heading and context. " * 8 for i in range(10)}
+            ),
+            "translation": document(**{"translated-unit": "Translated context. " * 8}),
+        }
+    )
+    result = observe_documents(AgentAction(operation="overview"), units, 700)
+    assert "Heading and context." in json.dumps(result)
+    assert 0 < len(result["items"]) < 10
+    assert result["next_offset"] == len(result["items"])
+    assert len(json.dumps(result["items"]).encode()) <= 700
+    assert [item["role"] for item in result["items"][:2]] == ["source", "translation"]
 
 
 def scripted(
@@ -126,8 +209,11 @@ def test_review_observes_conflict_and_rechecks_then_resumes(
     def after_conflict(kwargs: dict[str, object]) -> AgentAction:
         """競合の観察結果から再確認を選ぶ。"""
         observation = json.loads(kwargs["user"])["observation"]
-        assert observation["conflicts"] == ["review/alignment-000001"]
-        return AgentAction(operation="recheck", target_ids=observation["conflicts"])
+        assert observation["action"]["operation"] == "evaluate"
+        assert observation["result"]["conflicts"] == ["review/alignment-000001"]
+        return AgentAction(
+            operation="recheck", target_ids=observation["result"]["conflicts"]
+        )
 
     answers = [
         AgentAction(operation="read", references={"source": ["en"]}),
