@@ -1104,18 +1104,35 @@ def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     ]
 
 
-def test_structure_allows_explicit_chapter_reset_to_level_one() -> None:
-    """章見出しはページ境界でもlevel=1を維持する。"""
+@pytest.mark.parametrize(
+    "title", ["CHAPTER II", "1 Document Control", "7 TOC Levels", "10 Notes"]
+)
+def test_structure_allows_explicit_chapter_reset_to_level_one(title: str) -> None:
+    """先行見出しがあるページ境界でも、明示的な章番号のlevel=1補正を維持する。"""
 
     heading = Block(
         id="chapter",
         order=0,
         kind="heading",
         level=1,
-        content=_unit("chapter/content", "CHAPTER II"),
+        content=_unit("chapter/content", title),
     )
     document = Document(
-        pages=[Page(number=1, blocks=[]), Page(number=2, blocks=[heading])]
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="prior",
+                        order=0,
+                        kind="heading",
+                        level=1,
+                        content=_unit("prior/content", "Introduction"),
+                    )
+                ],
+            ),
+            Page(number=2, blocks=[heading]),
+        ]
     )
     diagnostics: list[str] = []
 

@@ -531,7 +531,7 @@ _TOP_LEVEL_MARKER = re.compile(
     r"^\s*(?:chapter\b|part\b|appendix\b|付録\b|第\s*\d+\s*[章編])",
     re.IGNORECASE,
 )
-_NUMBERED_TOP_LEVEL = re.compile(r"^\s*\d+[.)、\uFF1A:]\s+")
+_NUMBERED_TOP_LEVEL = re.compile(r"^\s*(?:\d+[.)、\uFF1A:]|\d{1,3})\s+")
 
 
 def _normalize_heading_levels(
