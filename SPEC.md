@@ -42,7 +42,9 @@
 Markdown・DOCX、Review結果、変更箇所一覧または登録結果を出力
 ```
 
-Translateは `MARKDOWN → PANDOC → OOXML` の順にDOCXを生成する。ReviewはAgentが原文と訳文の対応付けと確認を行い、指摘と修正候補を表示する。UpgradeはAgentが英文二版の変更箇所と対応する旧訳を調べ、変更箇所と修正提案を一覧化する。RegisterはPDFからテキストを抽出してQdrantへ登録する。
+Translateは原文を翻訳し、日本語のMarkdownとDOCXを生成する。ReviewとUpgradeは、どちらも変更箇所と修正提案の一覧を最終成果物とする。Reviewは現在の訳文で修正が必要な箇所を、Upgradeは英文の改訂に伴って旧訳の変更が必要な箇所を示す。RegisterはPDFからテキストを抽出してQdrantへ登録する。
+
+ReviewとUpgradeはそれぞれAgentとして動作する。Agentは途中結果に応じて、次に読む箇所、対応候補の探索、評価、提案の再確認を選び、確認が完了したら一覧を確定する。提案を文書へ適用せず、利用者が一覧を見て採否を判断する。
 
 ### 🔀 Translate・Review・Registerの処理
 
