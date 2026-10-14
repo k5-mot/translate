@@ -316,6 +316,8 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 
 LLM応答モデルはTaskごとに `StructureResponse`、`TranslationResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、必要な差分だけを表す。
 
+対象IDの参照先、確認範囲、操作ごとの完了条件などの説明は、すべてのstructured output方式でpromptへ含める。`json_schema` でも型定義だけに置き換えず、操作説明とSchemaの両方を入力予算へ計上する。
+
 生成LLMは一つのOpenAI互換endpointを使用する。Embeddingと別のendpointを設定できるが、model別の振り分け、実行時の切替およびfailoverはスコープ外とする。
 
 #### 💾 LLM Call進捗とResume

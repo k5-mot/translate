@@ -276,10 +276,13 @@ def test_document_json_uses_schema_version_one() -> None:
     assert TextUnit(id="unit", spans=[]).text() == ""
 
 
-def test_llm_payload_uses_non_thinking_sampling() -> None:
+@pytest.mark.parametrize("mode", ["json_object", "json_schema", "prompt"])
+def test_llm_payload_uses_non_thinking_sampling(mode: str) -> None:
     """LLM要求に現在の非推論sampling設定を指定する。"""
 
-    client = LLMClient(Config(openai_base_url="http://llm"))
+    client = LLMClient(
+        Config(openai_base_url="http://llm", llm_structured_output_mode=mode)
+    )
 
     payload = client._payload(  # noqa: SLF001
         model="model",
@@ -291,6 +294,7 @@ def test_llm_payload_uses_non_thinking_sampling() -> None:
         image=None,
     )
 
+    assert payload["messages"][0]["content"] == "system\n\ncontract"
     assert payload["reasoning_effort"] == "none"
     assert "thinking_budget_tokens" not in payload
     assert payload["temperature"] == 0.7
@@ -632,3 +636,30 @@ def test_llm_call_index_rejects_duplicate_ids() -> None:
 
     with pytest.raises(ValidationError):
         LLMCallIndex(task="REVIEW", call_ids=["call-1", "call-1"])
+
+
+def test_native_schema_budget_includes_operation_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """native Schemaでも操作説明を入力予算へ含め、超過時はHTTP送信しない。"""
+    client = LLMClient(
+        Config(openai_base_url="http://llm", llm_structured_output_mode="json_schema")
+    )
+    create = MagicMock(side_effect=AssertionError("oversized request must not be sent"))
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        with pytest.raises(LLMInputExceededError, match="task limit"):
+            client.structured(
+                task="REVIEW",
+                model="model",
+                response_type=TranslationResponse,
+                system="system",
+                user="user",
+                contract="contract " * 400,
+                native_schema=TranslationResponse.model_json_schema(),
+                input_tokens=1024,
+                output_tokens=128,
+            )
+        create.assert_not_called()
+    finally:
+        client.client.close()

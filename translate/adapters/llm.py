@@ -335,7 +335,7 @@ class LLMClient:
         """
 
         mode = self.config.llm_structured_output_mode
-        system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
+        system_text = f"{system}\n\n{contract}"
         user_content: str | list[dict[str, object]] = user
         if image is not None:
             mime = mimetypes.guess_type(image.name)[0] or "image/png"
@@ -475,7 +475,7 @@ def _validate_input_size(
 
     if maximum_bytes is None:
         return
-    system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
+    system_text = f"{system}\n\n{contract}"
     schema_text = (
         json.dumps(native_schema, ensure_ascii=False, separators=(",", ":"))
         if mode == "json_schema"
