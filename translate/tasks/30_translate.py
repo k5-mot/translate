@@ -340,7 +340,9 @@ def _execute(
             response_type=TranslationResponse,
             system=(
                 "Translate each English source into natural Japanese. Preserve IDs and "
-                "return JSON only. When previous_source and previous_translation are "
+                "return JSON only. Translate headings, captions, short labels and sample prose too; "
+                "these are not identifiers to preserve. Keep code, URLs, mathematical notation "
+                "and actual proper names unchanged. When previous_source and previous_translation are "
                 "present, use them only as context for translating the current source."
                 "\n\n" + rules
             ),
