@@ -1566,3 +1566,61 @@ def test_review_retries_coverage_error_before_publishing(
         assert "confirm every requested target" in str(create.call_args_list[1])
     finally:
         client.client.close()
+
+
+def test_review_trims_rag_using_complete_native_prompt_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """単一の短い対象でもSchema込みで上限を守り、参考文だけを減らして評価する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        llm_structured_output_mode="json_schema",
+        review_input_tokens=11264,
+        qdrant_uri="http://qdrant",
+        qdrant_collection="test",
+        openai_embedding_model="embed",
+    )
+    client = LLMClient(config)
+    target = ReviewTarget(
+        id="translate/unit",
+        source="Original sentence.",
+        translation="訳文。",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="Original sentence.", translated="訳文。")],
+    )
+    monkeypatch.setattr("translate.tasks.embed", MagicMock(return_value=[[1.0]]))
+    monkeypatch.setattr(
+        "translate.tasks.search",
+        MagicMock(
+            return_value=[{"text": "reference " * 140, "id": i} for i in range(5)]
+        ),
+    )
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = ReviewResponse(
+        reviewed_target_ids=[target.id]
+    ).model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = execute_review(
+            client=client,
+            config=config,
+            targets=[target],
+            task_directory=tmp_path,
+            rules="r" * 2800,
+            glossary="",
+            lineage=[],
+            depth=0,
+        )
+        assert result[0][1].reviewed_target_ids == [target.id]
+        create.assert_called_once()
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        assert 0 < len(sent["references"]) < 5
+        assert sent["targets"][0]["source"] == target.source
+        assert sent["targets"][0]["spans"][0]["text"] == target.translation
+    finally:
+        client.client.close()
