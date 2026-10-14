@@ -1788,7 +1788,7 @@ Ruffの `TC` ruleは有効化しない。型注釈専用importを機械的に `i
 - `OPENAI_TRANSLATION_MODEL`
 - `OPENAI_REVIEW_MODEL`
 
-生成LLMのChat Completions要求には選択したendpointのAPI keyだけを送信する。要求は `reasoning_effort="none"`、`temperature=0.7`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=1.5`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。streaming、tool call、FIXまたはVERIFY用model、実行時のendpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
+生成LLMのChat Completions要求には選択したendpointのAPI keyだけを送信する。要求は `reasoning_effort="none"`、`temperature=0.7`、`top_p=0.8`、`top_k=20`、`min_p=0`、`presence_penalty=0`、`repetition_penalty=1.01` とし、`enable_thinking=false` と `preserve_thinking=false` を指定する。同じID断片や訳語を複数の対象で使えるよう、出現済み語の生成を抑制しない。streaming、tool call、FIXまたはVERIFY用model、実行時のendpoint切替およびfallbackは使用しない。SDK内の再試行は無効にし、LLM Callの再試行回数だけを適用する。
 
 transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。その他のHTTP 4xxは即時失敗とする。
 
@@ -1920,7 +1920,7 @@ PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値�
 
 ディレクトリ入力は再帰的に列挙し、symlinkを追跡しない。指定入力の内側に解決済みの成果物rootが存在する場合、そのdirectoryと配下を列挙対象から除外する。単一fileとして未対応形式が指定された場合はエラーとする。ディレクトリ内の未対応形式は無視し、対応fileが1件も存在しない場合はエラーとする。
 
-抽出したテキストは改行をLFへ正規化し、空行で区切られた段落を優先して最大1,000 Unicode code pointのchunkへ分割する。隣接chunkは最大100 code pointを重複させる。単一段落が上限を超える場合は文境界で分割する。意味を保った最小単位が上限を超える場合は入力エラーとし、文字位置で切断しない。分割規則の識別子は `registration-v1` とする。
+抽出したテキストは改行をLFへ正規化し、空行で区切られた段落を優先して最大1,000 Unicode code pointのchunkへ分割する。隣接chunkは最大100 code pointを重複させる。単一段落が上限を超える場合は文境界で分割する。意味を保った最小単位が上限を超える場合は入力エラーとし、文字位置で切断しない。表本文を含む抽出・分割規則の識別子は `registration-v2` とする。
 
 `source_key` は、`source_id` が指定された場合は `<source_id>/<logical_path>`、指定されない場合は `logical_path` そのものとする。`revision` は入力内容のSHA-256、抽出設定、`chunk_schema` およびEmbedding model名から生成する。
 
