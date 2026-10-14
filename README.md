@@ -152,8 +152,7 @@ Codexを起動せず30秒、60秒、90秒待って同じ工程を再検証しま
 
 ## 🧭 設計資料
 
-- 確定仕様: [SPEC.md](SPEC.md)
-- Streamlit UI仕様: [SPEC_v2.md](SPEC_v2.md)
+- 現行仕様: [SPEC.md](SPEC.md)
 - 用語とContext: [CONTEXT.md](CONTEXT.md)
 - 実装規則: [CODING_RULES.md](CODING_RULES.md)
 - 文書規則: [DOCUMENTATION_RULES.md](DOCUMENTATION_RULES.md)
