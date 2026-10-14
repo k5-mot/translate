@@ -10,10 +10,14 @@ from translate.adapters.artifact_store import temporary_task_directory, write_js
 
 SKIPPED = {"page_header", "page_footer", "document_index"}
 INDEX_RE = re.compile(
-    r"^(?:table of contents|contents|list of figures|list of tables|目次|図目次|表目次)$",
+    r"^(?:table of contents|contents|list of figures|list of tables|目次|図目次|表目次|図一覧|表一覧)$",
     re.IGNORECASE,
 )
 CODE = {"code", "program_listing"}
+# Doclingが目次項目を通常textとした場合も、目次のあるページ内のリーダー付き行を除く。
+_INDEX_ENTRY_RE = re.compile(
+    r".+(?:\.{2,}|…+|\t)\s*(?:[0-9]+|[ivxlcdm]+)", re.IGNORECASE
+)
 
 
 def _clean(value: str) -> str:
@@ -68,32 +72,41 @@ def _page(item: dict[str, Any]) -> int | None:
     return None
 
 
-def index_only_pages(document: dict[str, Any]) -> set[int]:
-    """目次見出しがあり、長い本文段落を含まないページだけを返す。"""
+def index_text_refs(document: dict[str, Any]) -> set[str]:
+    """本文と同居するページでも、目次の見出しと項目だけを特定する。
 
-    markers = {
-        page
-        for item in document.get("texts", [])
+    Args:
+        document: Docling Schemaの文書。
+
+    Returns:
+        除外する目次見出しと、目次ページ内のリーダー付き項目の参照ID。
+    """
+    texts = [
+        (str(item.get("self_ref", f"#/texts/{index}")), item)
+        for index, item in enumerate(document.get("texts", []))
         if isinstance(item, dict)
-        and (
-            item.get("label") == "document_index"
-            or (
-                item.get("label") in {"title", "section_header", "heading", "header"}
-                and INDEX_RE.fullmatch(str(item.get("text", "")).strip())
-            )
-        )
+    ]
+    titles = {
+        ref
+        for ref, item in texts
+        if item.get("label") in {"title", "section_header", "heading", "header"}
+        and INDEX_RE.fullmatch(str(item.get("text", "")).strip())
+    }
+    index_pages = {
+        page
+        for collection in ("texts", "tables", "pictures")
+        for item in document.get(collection, [])
+        if isinstance(item, dict)
+        and (item.get("label") == "document_index" or item.get("self_ref") in titles)
         if (page := _page(item)) is not None
     }
-    # ponytail: 120字未満の本文が目次見出しと同居すると除外され得る。必要なら配置情報で判別する。
-    prose = {
-        page
-        for item in document.get("texts", [])
-        if isinstance(item, dict)
-        and item.get("label") == "text"
-        and len(str(item.get("text", "")).strip()) >= 120
-        if (page := _page(item)) is not None
+    return titles | {
+        ref
+        for ref, item in texts
+        if item.get("label") in {"text", "list_item"}
+        and _page(item) in index_pages
+        and _INDEX_ENTRY_RE.fullmatch(str(item.get("text", "")).strip())
     }
-    return markers - prose
 
 
 def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None:
@@ -148,7 +161,7 @@ def normalize(source: Path, output_dir: Path) -> Path:
         *(_refs(item.get("children", [])) for item in document.get("pictures", [])),
         set(),
     )
-    index_pages = index_only_pages(document)
+    index_refs = index_text_refs(document)
     for collection in ("texts", "tables", "pictures"):
         for index, item in enumerate(document.get(collection, [])):
             if not isinstance(item, dict):
@@ -158,15 +171,8 @@ def normalize(source: Path, output_dir: Path) -> Path:
             reason = None
             if item.get("label") in SKIPPED:
                 reason = str(item.get("label"))
-            elif _page(item) in index_pages:
-                reason = "document_index_page"
-            elif (
-                collection == "texts"
-                and item.get("label")
-                in {"title", "section_header", "heading", "header"}
-                and INDEX_RE.fullmatch(text.strip())
-            ):
-                reason = "document_index_title"
+            elif ref in index_refs:
+                reason = "document_index_text"
             elif ref in picture_owned:
                 reason = "picture_owned_text"
             elif collection == "texts" and not text.strip():

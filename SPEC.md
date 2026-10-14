@@ -148,7 +148,7 @@ Upgradeは改訂による変更箇所を確認する操作とする。英文旧�
 
 MERGEの `assets/` を原本assetの正本とする。後続Taskはこれを変更せず、MARKDOWNだけが公開用の `assets/` へ複製する。
 
-NORMALIZEは原本から抽出された目次・図一覧・表一覧の見出しと項目を出力対象から除外する。同じページに本文がある場合は本文を残す。PANDOCが生成する一覧は除外しない。
+NORMALIZEは入力PDFから抽出された目次・図一覧・表一覧の見出しと項目を出力対象から除外する。同じページの短い本文・表・画像・コードも保持し、本文の長さを基準にページ全体を削除しない。Doclingの`document_index`、一覧の見出し、およびそのページ内のリーダー付き目次項目を除外する。公開時にPANDOCが出力DOCXへ生成する一覧は保持する。
 
 Registerは中間Taskディレクトリを作成せず、Qdrantへの登録結果を `RegistrationResult` として `registration.json` へ保存する。
 

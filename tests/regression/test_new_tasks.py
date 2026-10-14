@@ -767,15 +767,31 @@ def test_load_converts_minimal_docling_document() -> None:
     assert unit.spans[0].source == "Hello"
 
 
-def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> None:
-    """目次見出しと本文が同じページにあるPDFの本文を保持する。"""
+@pytest.mark.parametrize(
+    ("body_kind", "index_title"),
+    [
+        ("long_text", "List of Figures"),
+        ("short_text", "図一覧"),
+        ("table", "表一覧"),
+        ("code", "List of Tables"),
+    ],
+)
+def test_index_heading_does_not_discard_body_on_same_page(
+    tmp_path: Path, body_kind: str, index_title: str
+) -> None:
+    """目次と同じページにある本文を、段落の長さや表の形式によらず保持する。"""
 
-    paragraph = "本文と図の説明が同じページに続きます。" * 12
+    paragraph = "本文と図の説明が同じページに続きます。" * (
+        12 if body_kind == "long_text" else 1
+    )
+    if body_kind == "code":
+        paragraph = "# input ... 2"
     texts = [
         (1, "section_header", "Table of Contents"),
         (1, "text", "Chapter 1 ........ 1"),
-        (2, "section_header", "List of Figures"),
-        (2, "text", paragraph),
+        (2, "section_header", index_title),
+        (2, "text", "Figure 1 ........ 2"),
+        (2, "code" if body_kind == "code" else "text", paragraph),
     ]
     value = {
         "schema_name": "DoclingDocument",
@@ -801,6 +817,30 @@ def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> Non
             "children": [{"$ref": f"#/texts/{index}"} for index in range(len(texts))]
         },
     }
+    if body_kind == "table":
+        value["texts"].pop()
+        value["body"]["children"].pop()
+        value["tables"] = [
+            {
+                "self_ref": "#/tables/0",
+                "label": "table",
+                "prov": [{"page_no": 2}],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [
+                        {
+                            "start_row_offset_idx": 0,
+                            "start_col_offset_idx": 0,
+                            "end_row_offset_idx": 1,
+                            "end_col_offset_idx": 1,
+                            "text": "Document ID: SYS-DD-001",
+                        }
+                    ],
+                },
+            }
+        ]
+        value["body"]["children"].append({"$ref": "#/tables/0"})
     source = tmp_path / "source.json"
     source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
@@ -809,7 +849,12 @@ def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> Non
 
     assert document.pages[0].blocks == []
     assert len(document.pages[1].blocks) == 1
-    assert document.pages[1].blocks[0].content.text("source") == paragraph
+    block = document.pages[1].blocks[0]
+    if body_kind == "table":
+        assert block.kind == "table"
+        assert block.cells[0].content.text("source") == "Document ID: SYS-DD-001"
+    else:
+        assert block.content.text("source") == paragraph
 
 
 def test_load_keeps_cells_when_docling_spans_overlap() -> None:

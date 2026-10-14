@@ -24,8 +24,7 @@ from translate.models.document import (
     TextUnit,
 )
 
-INDEX_RE = import_module("translate.tasks.11_normalize").INDEX_RE
-index_only_pages = import_module("translate.tasks.11_normalize").index_only_pages
+index_text_refs = import_module("translate.tasks.11_normalize").index_text_refs
 
 COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
 SKIPPED_LABELS = {"page_header", "page_footer", "document_index"}
@@ -1162,7 +1161,7 @@ def load_document(document: dict[str, Any]) -> Document:
     pages = _normalized_pages(document)
     seen: set[str] = set()
     caption_refs = _owned_caption_refs(document)
-    index_pages = index_only_pages(document)
+    index_refs = index_text_refs(document)
     picture_content_refs = _picture_content_refs(document)
     # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
     ordered_items = list(_walk_refs(document, document.get("body", {})))
@@ -1191,19 +1190,12 @@ def load_document(document: dict[str, Any]) -> Document:
         seen.add(ref)
         if ref in caption_refs or ref in picture_content_refs:
             continue
-        if item.get("label") in {
-            "title",
-            "section_header",
-            "heading",
-            "header",
-        } and INDEX_RE.fullmatch(str(item.get("text", "")).strip()):
+        if ref in index_refs:
             continue
         number = _page_number(item)
         if number not in pages:
             msg = f"Docling element references missing page: ref={ref} page={number}"
             raise ValueError(msg)
-        if number in index_pages:
-            continue
         block = _block(document, item, page_orders[number], list_level, parent_ordered)
         if block is not None:
             pages[number].blocks.append(block)
