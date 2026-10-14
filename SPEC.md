@@ -1913,7 +1913,7 @@ Qdrantが設定済みで検索または登録に失敗した場合、障害を�
 
 RegisterはPDFだけを受理する。単一PDF、複数PDF、およびPDFを含むディレクトリをUIから指定できる。
 
-PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値を10とする。OCRを含むDocling成果の本文だけを登録用テキストとして抽出する。
+PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値を10とする。OCRを含むDocling成果の本文だけを登録用テキストとして抽出する。通常の段落・Captionに加えて表セルの本文も含め、結合セルの本文を重複登録しない。
 
 単一fileの `logical_path` はbasenameとする。ディレクトリ入力では `<rootのbasename>/<rootからの相対path>`、複数入力でも各入力に同じ規則を適用する。logical pathはPOSIX形式へ正規化し、Unicode code point順で昇順に並べる。異なる入力が同じ `logical_path` になる場合は入力エラーとし、自動改名しない。
 

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from importlib import import_module
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from uuid_utils import uuid7
@@ -20,13 +24,46 @@ from translate.adapters.llm import LLMOutputTokenExceededError
 from translate.common.config import Config
 from translate.models.artifacts import RegistrationRecord
 from translate.pipeline import InputError, resolve_processing_id
-from translate.pipeline.register import _chunks, _validate_source_id, register_paths
+from translate.pipeline.register import (
+    _chunks,
+    _docling_text,
+    _validate_source_id,
+    register_paths,
+)
 
 TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
 TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+def test_registration_extracts_table_cells_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docling ZIPの表本文を登録対象へ含め、grid表現やメタデータを二重抽出しない。"""
+    cells = [{"text": "Term"}, {"text": "Definition in a merged cell"}]
+    document = {
+        "texts": [{"text": "Reference heading"}],
+        "tables": [{"data": {"table_cells": cells, "grid": [cells, cells]}}],
+        "pictures": [{"text": "Figure description"}],
+        "origin": {"text": "Not document content"},
+    }
+    archive_bytes = io.BytesIO()
+    with zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("document.json", json.dumps(document))
+    monkeypatch.setattr(
+        "translate.pipeline.register.DoclingClient.convert",
+        MagicMock(return_value=(archive_bytes.getvalue(), "job", 1)),
+    )
+    text = _docling_text(
+        tmp_path / "reference.pdf", Config(docling_server_url="http://docling")
+    )
+    assert text.count("Definition in a merged cell") == 1
+    assert "Term" in text
+    assert "Reference heading" in text
+    assert "Figure description" in text
+    assert "Not document content" not in text
 
 
 def test_register_resume_clears_stale_failure_and_records_embedding_cause(

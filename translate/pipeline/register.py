@@ -35,7 +35,7 @@ from translate.models.artifacts import (
 from translate.pipeline import InputError, resolve_processing_id
 
 _SUPPORTED = {".pdf"}
-_CHUNK_SCHEMA = "registration-v1"
+_CHUNK_SCHEMA = "registration-v2"  # 表本文を含む抽出へ更新し、旧revisionを再登録する。
 _CHUNK_SIZE = 1000
 _CHUNK_OVERLAP = 100
 _RESERVED_NAMES = {
@@ -339,14 +339,14 @@ def _extract(path: Path, config: Config) -> str:
 
 
 def _docling_text(path: Path, config: Config) -> str:
-    """一つの文書をDoclingへ送り、collection直下の本文を読み順で連結する。
+    """一つの文書をDoclingへ送り、本文と表セルの内容を連結する。
 
     Args:
         path (Path): Doclingへ送信する登録対象FileのPath。
         config (Config): 接続先、上限値および処理Optionを保持する設定。
 
     Returns:
-        str: 一つの文書をDoclingへ送り、collection直下の本文を読み順で連結する。
+        str: 通常要素の本文と、重複するgrid表現を除いた表セルの本文。
 
     Raises:
         ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
@@ -372,6 +372,13 @@ def _docling_text(path: Path, config: Config) -> str:
         for item in value.get(collection, [])
         if isinstance(item, dict) and str(item.get("text", "")).strip()
     ]
+    # table_cellsは結合セルを一件で保持する。gridも走査すると同じ本文が重複する。
+    texts.extend(
+        str(cell.get("text", "")).strip()
+        for table in value.get("tables", [])
+        for cell in table.get("data", {}).get("table_cells", [])
+        if str(cell.get("text", "")).strip()
+    )
     return "\n\n".join(texts)
 
 
