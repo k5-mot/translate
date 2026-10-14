@@ -47,7 +47,7 @@ def prepare_versions() -> None:
     """検証用の英文新版を原本から作り、最後の1ページを削除した変更を記録する。"""
     destination = Path(".tmp/versions")
     destination.mkdir(parents=True, exist_ok=True)
-    for stem in ("sample", "sample2", "sample3"):
+    for stem in ("sample", "sample2", "sample3", "sample4", "sample5"):
         source = Path("inputs") / f"{stem}.pdf"
         target = destination / source.name
         with pdfium.PdfDocument(source) as document:

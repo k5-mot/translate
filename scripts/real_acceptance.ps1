@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
-$samples = @('sample', 'sample2', 'sample3')
+$samples = @('sample', 'sample2', 'sample3', 'sample4', 'sample5')
 $runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $statePath = Join-Path $root ".tmp/acceptance/$runId/state.json"
 $state = @{ head = (& git rev-parse HEAD).Trim(); status = 'processing' }

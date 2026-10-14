@@ -51,7 +51,7 @@ uv run pytest
 
 ### 🌐 実PDFの受入検証
 
-実装をコミットしてから、`inputs/sample.pdf`、`sample2.pdf`、`sample3.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
+実装をコミットしてから、`inputs/sample.pdf`、`sample2.pdf`、`sample3.pdf`、`sample4.pdf`、`sample5.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
 
 Upgradeの新版入力には、元PDFの最終ページを削除した検証用PDFを`.tmp/versions/`へ生成します。入力の変更内容は同じ場所のJSONへ記録します。
 
