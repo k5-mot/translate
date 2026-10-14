@@ -143,8 +143,52 @@ def _finalize_document(
         bytes: 本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。
     """
 
-    namespace = {"m": _MATH_NAMESPACE, "w": _WORD_NAMESPACE}
+    namespace = {
+        "m": _MATH_NAMESPACE,
+        "w": _WORD_NAMESPACE,
+        "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+    }
     document = _parse_xml(value)
+    body = document.find("w:body", namespace)
+    if body is not None:
+        children = list(body)
+        for index, paragraph in enumerate(children):
+            if (
+                paragraph.find('.//pic:cNvPr[@descr="assets/cover.png"]', namespace)
+                is None
+            ):
+                continue
+            # 一覧より前へ表紙を移す。独立した改ページ段落は空白pageを生む。
+            body.remove(paragraph)
+            body.insert(0, paragraph)
+            if (
+                index + 1 < len(children)
+                and children[index + 1].find('.//w:br[@w:type="page"]', namespace)
+                is not None
+            ):
+                body.remove(children[index + 1])
+            if all(
+                child.tag in {f"{_WORD}sdt", f"{_WORD}sectPr"}
+                for child in list(body)[1:]
+            ):
+                # 本文のない1ページPDFは、空の自動一覧を加えず表紙だけを公開する。
+                for child in list(body)[1:]:
+                    if child.tag == f"{_WORD}sdt":
+                        body.remove(child)
+            following = body[1] if len(body) > 1 else None
+            if following is not None:
+                first = (
+                    following
+                    if following.tag == f"{_WORD}p"
+                    else following.find(".//w:p", namespace)
+                )
+                if first is not None:
+                    properties = first.find("w:pPr", namespace)
+                    if properties is None:
+                        properties = ET.Element(f"{_WORD}pPr")
+                        first.insert(0, properties)
+                    ET.SubElement(properties, f"{_WORD}pageBreakBefore")
+            break
     for style in document.findall(".//w:pStyle", namespace):
         current = style.get(f"{_WORD}val")
         if current in mappings:

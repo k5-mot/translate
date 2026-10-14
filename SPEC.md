@@ -483,7 +483,7 @@ Upgrade AgentはDIFFを使って、英文旧版と新版の節・段落・表な
 
 PANDOCはMARKDOWNの成果物と同梱templateをPandocへ渡し、`publisher/pandoc/document.raw.docx` を生成する。このTaskではDOCXの内部XMLを変更しない。
 
-OOXMLはその中間DOCXを読み、本文のstyle参照、数式のstyle、および目次・図表一覧の更新設定を整える。必須部品とCRCを検査した後、`publisher/ooxml/document.ja.docx` を原子的に公開する。PANDOCとOOXMLは別々の `TaskState` とfingerprintを持ち、OOXMLだけが失敗した場合は検証済みのPANDOC成果物を再利用できる。
+OOXMLはその中間DOCXを読み、本文のstyle参照、数式のstyle、および目次・図表一覧の更新設定を整える。表紙を先頭に配置し、自動生成する一覧は次のページから表示する。本文のない1ページPDFでは空の一覧を加えない。必須部品とCRCを検査した後、`publisher/ooxml/document.ja.docx` を原子的に公開する。PANDOCとOOXMLは別々の `TaskState` とfingerprintを持ち、OOXMLだけが失敗した場合は検証済みのPANDOC成果物を再利用できる。
 
 生成DOCXの見出し番号はWordの見出しstyleのアウトライン番号で表示し、本文には同じ番号を埋め込まない。OOXMLは見出しstyleの採番設定を残す。目次・図一覧・表一覧はPANDOCのfieldから生成し、原本から抽出した一覧を重ねない。
 

@@ -16,7 +16,9 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from translate.adapters.pdf import page_count
+from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 
+convert_document = import_module("translate.tasks.52_markdown").convert_document
 publish_pandoc = import_module("translate.tasks.53_pandoc").publish
 publish_ooxml = import_module("translate.tasks.54_ooxml").publish
 
@@ -142,6 +144,60 @@ def test_bundled_docx_template_has_english_page_furniture() -> None:
     assert "SYS-DD-001" in header_text
     assert "CONFIDENTIAL / Example Corporation" in footer_text
     assert "Last updated: " in footer_text
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is required")
+@pytest.mark.parametrize("has_body", [True, False])
+def test_docx_cover_precedes_generated_lists(tmp_path: Path, *, has_body: bool) -> None:
+    """実Pandoc経由で表紙・改ページ・自動一覧・本文の順序を保持する。"""
+    document = Document(
+        pages=[
+            Page(
+                number=2 if has_body else 1,
+                blocks=[
+                    Block(
+                        id="heading",
+                        kind="heading",
+                        order=0,
+                        level=1,
+                        content=TextUnit(
+                            id="title",
+                            spans=[TextSpan(id="title-span", source="Body heading")],
+                        ),
+                    )
+                ],
+            )
+        ]
+    )
+    markdown = tmp_path / "markdown" / "document.md"
+    convert_document(
+        document,
+        markdown,
+        PROJECT_ROOT / "translate/templates/placeholder.png",
+        tmp_path / "source-assets",
+        {1},
+        30,
+    )
+    raw, output = tmp_path / "raw.docx", tmp_path / "final" / "document.docx"
+    publish_pandoc(
+        markdown, raw, PROJECT_ROOT / "translate/templates/template.docx", 30
+    )
+    publish_ooxml(raw, output)
+    with zipfile.ZipFile(output) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))  # noqa: S314
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    body = root.find("w:body", ns)
+    assert body is not None
+    assert body[0].find(".//w:drawing", ns) is not None
+    if has_body:
+        assert body[1].find(".//w:pageBreakBefore", ns) is not None
+        assert body[1].find(".//w:instrText", ns) is not None
+        assert (
+            sum("Body heading" in "".join(element.itertext()) for element in body) == 1
+        )
+    else:
+        assert root.find(".//w:instrText", ns) is None
+        assert len(body) == 2  # 表紙の段落と文書全体のsection設定。
 
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is required")

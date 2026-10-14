@@ -47,7 +47,7 @@ def convert_document(
     shutil.copy2(cover_image, cover_target)
     fragments = [
         '![](assets/cover.png){width=100% fig-alt="表紙"}',
-        '<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:br w:type="page"/></w:r></w:p>',
+        '```{=openxml}\n<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:br w:type="page"/></w:r></w:p>\n```',
     ]
     for page in document.pages:
         if page.number in excluded_pages:

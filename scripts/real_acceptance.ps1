@@ -83,6 +83,9 @@ function Convert-Docx {
         $word.Visible = $false
         $word.DisplayAlerts = 0
         $document = $word.Documents.Open($docx, $false, $true)
+        # 非表示・読取専用で開く場合も、PDF化する前に目次と図表一覧を実体化する。
+        $document.Fields.Update() | Out-Null
+        $document.Repaginate()
         $document.ExportAsFixedFormat($pdf, 17)
     }
     finally {
