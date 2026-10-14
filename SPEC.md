@@ -2038,7 +2038,7 @@ uv run playwright install chromium
 1. UIから4操作を実行でき、選択された入力と出力の仕様を満たす。
 2. Translateはレビューと修正を経たDOCX、ReviewとUpgradeは変更箇所・指摘・修正提案の一覧、RegisterはPDFの登録結果を提供する。
 3. 履歴、進捗、比較、download、保存入力によるResume、右クリックによる履歴削除が動作する。
-4. Agentの対応付けと対象選択、LLM Callの再開、および必要な構造・入出力検証を満たす。
+4. ReviewとUpgradeをそれぞれAgentとして実装し、途中結果に応じて文脈取得・対応付け・評価・修正提案・再確認の対象と順序を選択できる。全対象の確認後に変更箇所と修正提案の一覧を確定し、LLM Callの再開と必要な構造・入出力検証を満たす。
 5. Ruff、formatter、ty、自動testを通過する。
 6. `translate/` のPython source全体を7,000〜8,000行程度に近づける。行数のために、選択された機能や検証を黙って削除しない。
 
