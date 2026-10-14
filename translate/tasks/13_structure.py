@@ -506,15 +506,17 @@ def _apply_page(
 
 
 def _page_heading_history(page: Page) -> list[dict[str, object]]:
-    """処理済みページから次ページへ渡す短い見出し履歴を作る。
+    """表紙を除く処理済みページから、本文の見出し履歴を作る。
 
     Args:
         page (Page): 処理対象のPageまたはPage番号。
 
     Returns:
-        list[dict[str, object]]: 処理済みページから次ページへ渡す短い見出し履歴を作る。
+        list[dict[str, object]]: 本文の見出し履歴。表紙では空のList。
     """
 
+    if page.number == 1:
+        return []
     return [
         {
             "level": block.level,
@@ -550,6 +552,9 @@ def _normalize_heading_levels(
     previous_level: int | None = None
     previous_page_number: int | None = None
     for page in sorted(document.pages, key=lambda item: item.number):
+        # 先頭ページは表紙画像として公開するため、本文の親階層にはしない。
+        if page.number == 1:
+            continue
         page_boundary = (
             previous_page_number is not None and page.number > previous_page_number
         )

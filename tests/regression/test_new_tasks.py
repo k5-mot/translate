@@ -1092,7 +1092,7 @@ def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
         content=_unit("h2/content", "Section"),
     )
     document = Document(
-        pages=[Page(number=1, blocks=[first]), Page(number=2, blocks=[second])]
+        pages=[Page(number=2, blocks=[first]), Page(number=3, blocks=[second])]
     )
     diagnostics: list[str] = []
 
@@ -1120,7 +1120,7 @@ def test_structure_allows_explicit_chapter_reset_to_level_one(title: str) -> Non
     document = Document(
         pages=[
             Page(
-                number=1,
+                number=2,
                 blocks=[
                     Block(
                         id="prior",
@@ -1131,7 +1131,7 @@ def test_structure_allows_explicit_chapter_reset_to_level_one(title: str) -> Non
                     )
                 ],
             ),
-            Page(number=2, blocks=[heading]),
+            Page(number=3, blocks=[heading]),
         ]
     )
     diagnostics: list[str] = []
@@ -1159,13 +1159,78 @@ def test_structure_does_not_normalize_same_page_heading_reset() -> None:
         level=1,
         content=_unit("h2/content", "Section"),
     )
-    document = Document(pages=[Page(number=1, blocks=[first, second])])
+    document = Document(pages=[Page(number=2, blocks=[first, second])])
     diagnostics: list[str] = []
 
     _normalize_heading_levels(document, {"h1": 1, "h2": 2}, diagnostics)
 
     assert second.level == 1
     assert diagnostics == []
+
+
+def test_structure_keeps_cover_out_of_body_heading_hierarchy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """表紙を本文の親にせず、本文内のページ境界補正だけを維持する。"""
+    module = import_module("translate.tasks.13_structure")
+    document = Document(
+        pages=[
+            Page(
+                number=number,
+                blocks=[
+                    Block(
+                        id=key,
+                        order=0,
+                        kind="heading",
+                        level=level,
+                        content=_unit(f"{key}/content", title),
+                    )
+                ],
+            )
+            for number, key, level, title in (
+                (1, "cover", 1, "System Design"),
+                (2, "body", 3, "Introduction"),
+                (3, "section", 2, "Requirements"),
+            )
+        ]
+    )
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    for page in document.pages:
+        PILImage.new("RGB", (20, 20)).save(
+            directory / "pages" / f"page-{page.number:04d}.png"
+        )
+    client = MagicMock()
+    client.structured.side_effect = [
+        StructuredResult(
+            response=StructureResponse(
+                patches=[StructurePatch(block_id=key, kind="heading", level=1)]
+            ),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=20,
+        )
+        for key in ("cover", "body", "section")
+    ]
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    result = module.structure(
+        document,
+        tmp_path / "source.pdf",
+        directory,
+        tmp_path,
+        Config(openai_structure_model="model"),
+        "rules",
+    )
+
+    requests = [
+        json.loads(call.kwargs["user"]) for call in client.structured.call_args_list
+    ]
+    assert requests[1]["heading_history"] == []
+    assert requests[2]["heading_history"] == [{"level": 1, "text": "Introduction"}]
+    assert result.pages[1].blocks[0].level == 1
+    assert result.pages[2].blocks[0].level == 2
+    assert document.pages[1].blocks[0].level == 3
 
 
 def test_load_splits_long_text_without_loss() -> None:
