@@ -414,6 +414,7 @@ LOADは結合セルを通常セルの矩形格子へ展開する。結合範囲�
 #### 🌐 TRANSLATE
 
 - 応答は `span_id` と翻訳後の `text` だけを含む。
+- TRANSLATEがLLMへ送る `span_id` は要求内の1始まりの連番とする。応答はこの連番で元のSpanへ対応付け、保存前に元のSpan IDへ戻す。Document、Callの `target_ids`、fingerprintおよび保存済み応答では元のIDを維持する。
 - 各LLM Callの `target_ids` に含まれない `span_id` の訳文は、文書へ適用せず診断情報へ記録する。他のCallの対象IDでも上書きしない。
 - `code` と `line_break` はLLMへ送信しない。
 - 応答に存在しない対象IDは未完了として扱い、`partial` に保存して再送する。文字数比、英語と同文であること、語句ごとの例外補正による品質判定は設けない。訳抜け・正確性はREVIEWで確認する。

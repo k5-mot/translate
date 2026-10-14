@@ -302,7 +302,7 @@ def test_llm_payload_uses_non_thinking_sampling(mode: str) -> None:
     assert payload["extra_body"] == {
         "top_k": 20,
         "min_p": 0.0,
-        "presence_penalty": 1.5,
+        "presence_penalty": 0.0,
         "repetition_penalty": 1.01,
         "enable_thinking": False,
         "preserve_thinking": False,

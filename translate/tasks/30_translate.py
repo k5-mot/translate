@@ -378,6 +378,10 @@ def _execute(
         fail_llm_call(call_directory, artifact, error, attempts=1)
         raise
     response = result.response
+    # 長いJSON Pointerを生成させず、要求内の連番を保存前に元のSpan IDへ戻す。
+    original_ids = {str(index): span.id for index, span in enumerate(spans, 1)}
+    for item in response.translations:
+        item.span_id = original_ids.get(item.span_id, item.span_id)
     translations: dict[str, str] = {}
     duplicates: set[str] = set()
     for item in response.translations:
@@ -572,7 +576,7 @@ def _user_payload(
     maximum_bytes: int,
     previous_context: TranslationContext | None = None,
 ) -> str:
-    """低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+    """要求内の連番でSpanを識別し、低順位RAGを除いて入力枠へ収める。
 
     Args:
         spans (list[TextSpan]): 翻訳または分割対象のTextSpan列。
@@ -582,7 +586,7 @@ def _user_payload(
         previous_context (TranslationContext | None): 再翻訳時に参照する旧原文と旧訳。
 
     Returns:
-        str: 低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
+        str: span_idを要求内の1始まりの連番にしたJSON payload。
 
     Raises:
         LLMInputExceededError: `translation prompt exceeds input limit`と判定した場合。
@@ -595,7 +599,10 @@ def _user_payload(
             {
                 "glossary": glossary,
                 "references": selected,
-                "items": [_translation_item(span, context) for span in spans],
+                "items": [
+                    {**_translation_item(span, context), "span_id": str(index)}
+                    for index, span in enumerate(spans, 1)
+                ],
             },
             ensure_ascii=False,
         )

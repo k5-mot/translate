@@ -379,6 +379,73 @@ def test_translation_schema_constrains_ids_without_quality_threshold() -> None:
     assert translations["items"]["properties"]["text"] == {"type": "string"}
 
 
+def test_translation_short_ids_restore_original_spans_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ要素の複数Spanを短いIDで区別し、順不同の応答も元IDへ戻して保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_translation_model="model",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    spans = [
+        TextSpan(id=f"#/texts/33/content/span-{i:04d}", source=text)
+        for i, text in enumerate(["Footnote.", "Use superscript."], 1)
+    ]
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = json.dumps(
+        {
+            "translations": [
+                {"span_id": "2", "text": "上付きにする。"},
+                {"span_id": "1", "text": "脚注。"},
+            ]
+        }
+    )
+    completion.usage = None
+    client = LLMClient(config)
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    kwargs = {
+        "client": client,
+        "config": config,
+        "spans": spans,
+        "task_directory": tmp_path,
+        "rules": "",
+        "glossary": "",
+        "lineage": ["chunk-0000"],
+        "depth": 0,
+        "allow_missing_retry": True,
+        "diagnostics": [],
+        "previous_context": {spans[1].id: ("Old source", "旧訳")},
+    }
+    try:
+        result = execute_translation(**kwargs)
+        user = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        assert [item["span_id"] for item in user["items"]] == ["1", "2"]
+        assert user["items"][1]["previous_translation"] == "旧訳"
+        assert {item.span_id: item.text for item in result[0][1].translations} == {
+            spans[0].id: "脚注。",
+            spans[1].id: "上付きにする。",
+        }
+        directory = tmp_path / "calls" / result[0][0]
+        assert json.loads((directory / "call.json").read_text(encoding="utf-8"))[
+            "target_ids"
+        ] == [s.id for s in spans]
+        assert (
+            json.loads((directory / "response.json").read_text(encoding="utf-8"))[
+                "translations"
+            ][0]["span_id"]
+            == spans[1].id
+        )
+        assert execute_translation(**kwargs) == result
+        create.assert_called_once()
+    finally:
+        client.client.close()
+
+
 def test_translation_ignores_ids_from_other_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

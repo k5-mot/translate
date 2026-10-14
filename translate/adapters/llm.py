@@ -362,7 +362,8 @@ class LLMClient:
             "extra_body": {
                 "top_k": 20,
                 "min_p": 0.0,
-                "presence_penalty": 1.5,
+                # 別の対象でも同じID断片や訳語が必要なため、出現済み語を抑制しない。
+                "presence_penalty": 0.0,
                 "repetition_penalty": 1.01,
                 "enable_thinking": False,
                 "preserve_thinking": False,
