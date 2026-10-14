@@ -99,10 +99,15 @@ class ReviewRevision(ReviewModel):
     edits: list[ReviewTextEdit] = Field(default_factory=list)
 
 
-class ReviewResponse(ReviewModel):
-    """REVIEWのLLMから受け取る浅いstructured output。"""
+class AlignmentResponse(ReviewModel):
+    """対応付け操作から受け取る対応関係だけの応答。"""
 
-    groups: list[AlignmentCandidate] = Field(default_factory=list)
+    groups: list[AlignmentCandidate] = Field(min_length=1)
+
+
+class ReviewResponse(ReviewModel):
+    """品質評価操作から受け取る確認範囲・指摘・修正提案。"""
+
     reviewed_target_ids: list[str] = Field(default_factory=list)
     findings: list[ReviewFinding] = Field(default_factory=list)
     revisions: list[ReviewRevision] = Field(default_factory=list)

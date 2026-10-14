@@ -59,7 +59,11 @@ from translate.models.document import (
     iter_text_units,
     text_unit_index,
 )
-from translate.models.review import ReviewResponse, targets_from_document
+from translate.models.review import (
+    AlignmentResponse,
+    ReviewResponse,
+    targets_from_document,
+)
 from translate.models.upgrade import (
     DiffResponse,
     UpgradePlan,
@@ -1309,7 +1313,14 @@ def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
 
 def _verified_response(
     root: Path, task: TaskName, call: LLMCallArtifact
-) -> StructureResponse | TranslationResponse | ReviewResponse | DiffResponse | None:
+) -> (
+    StructureResponse
+    | TranslationResponse
+    | AlignmentResponse
+    | ReviewResponse
+    | DiffResponse
+    | None
+):
     """確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
 
     Args:
@@ -1318,7 +1329,7 @@ def _verified_response(
         call (LLMCallArtifact): 応答Fileを検証するLLM Call Artifact。
 
     Returns:
-        StructureResponse | TranslationResponse | ReviewResponse | DiffResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
+        StructureResponse | TranslationResponse | AlignmentResponse | ReviewResponse | DiffResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
     """
 
     if call.status not in {"succeeded", "partial"} or call.response_sha256 is None:
@@ -1330,7 +1341,9 @@ def _verified_response(
     models = {
         TaskName.STRUCTURE: StructureResponse,
         TaskName.TRANSLATE: TranslationResponse,
-        TaskName.REVIEW: ReviewResponse,
+        TaskName.REVIEW: AlignmentResponse
+        if call.operation == "match"
+        else ReviewResponse,
         TaskName.DIFF: DiffResponse,
     }
     model = models.get(task)
@@ -1601,7 +1614,9 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
                 _llm_calls(root, TaskName.REVIEW), key=lambda item: item.round
             ):
                 response = _verified_response(root, TaskName.REVIEW, call)
-                if call.operation == "match" and isinstance(response, ReviewResponse):
+                if call.operation == "match" and isinstance(
+                    response, AlignmentResponse
+                ):
                     groups.extend(response.groups)
             for index, group in enumerate(groups, 1):
                 if group.kind != "matched":

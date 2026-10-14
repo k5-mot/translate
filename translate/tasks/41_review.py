@@ -25,6 +25,7 @@ from translate.models.artifacts import (
 )
 from translate.models.document import TextSpan, TextUnit
 from translate.models.review import (
+    AlignmentResponse,
     Finding,
     ReviewResponse,
     ReviewTarget,
@@ -467,11 +468,9 @@ def _execute(
             response: Schema検証済み応答。
 
         Raises:
-            ValueError: 確認漏れ、未知ID、重複IDまたは対応付け結果が混在する場合。
+            ValueError: 確認漏れ、未知IDまたは重複IDがある場合。
         """
-        if response.groups or sorted(response.reviewed_target_ids) != sorted(
-            target_ids
-        ):
+        if sorted(response.reviewed_target_ids) != sorted(target_ids):
             raise ValueError(
                 "REVIEW response must confirm every requested target exactly once"
             )
@@ -513,13 +512,13 @@ def _execute(
             glossary,
             "\n".join(target.source for target in targets),
             ReviewResponse,
-            '{"groups":[],"reviewed_target_ids":["target id"],'
+            '{"reviewed_target_ids":["target id"],'
             '"findings":[{"category":"accuracy","severity":"warning","target_ids":["unit id"],"message":"reason"}],'
             '"revisions":[{"target_id":"unit id","edits":[{"span_id":"span id","text":"replacement"}]}]}. '
             "reviewed_target_ids must contain every input targets[].id exactly once, including targets with no findings. "
             "Copy the full id verbatim, including translate/, review/ and /part- prefixes or suffixes. "
             "Finding.target_ids and Revision.target_id instead refer to input targets[].target_ids (TextUnit IDs). "
-            "Keep groups empty. Return only concrete findings and proposed edits.",
+            "Return only concrete findings and proposed edits.",
             validate,
         )
     except (LLMInputExceededError, LLMOutputExceededError):
@@ -566,7 +565,7 @@ def match_documents(
     rules: str,
     glossary: str,
     round_number: int,
-) -> tuple[str, ReviewResponse]:
+) -> tuple[str, AlignmentResponse]:
     """Agentが選んだ原文と訳文の対応候補を取得し、参照と網羅性を検証する。
 
     Args:
@@ -586,7 +585,7 @@ def match_documents(
     """
     expected = {role: [unit.id for unit in values] for role, values in units.items()}
 
-    def validate(response: ReviewResponse) -> None:
+    def validate(response: AlignmentResponse) -> None:
         """選択した各IDが一つのgroupに属し、未対応には理由があることを確認する。
 
         Args:
@@ -595,8 +594,6 @@ def match_documents(
         Raises:
             ValueError: 対応関係が不正、または範囲外の結果を含む場合。
         """
-        if response.findings or response.revisions or response.reviewed_target_ids:
-            raise ValueError("match must return only correspondence groups")
         for role in ("source", "translation"):
             found = [
                 key
@@ -635,10 +632,9 @@ def match_documents(
         rules,
         glossary,
         "\n".join(unit.text("source") for unit in units["source"]),
-        ReviewResponse,
+        AlignmentResponse,
         '{"groups":[{"source_ids":["id"],"translation_ids":["id"],'
-        '"kind":"matched|source_only|translation_only","reason":null}],'
-        '"reviewed_target_ids":[],"findings":[],"revisions":[]}. '
+        '"kind":"matched|source_only|translation_only","reason":null}]}. '
         "Cover all selected IDs exactly once. Match by meaning; unmatched IDs need an explanation.",
         validate,
     )

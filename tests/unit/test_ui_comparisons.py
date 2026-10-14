@@ -17,6 +17,7 @@ from translate.models.artifacts import (
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 from translate.models.review import (
+    AlignmentResponse,
     Finding,
     ReviewResponse,
     ReviewTarget,
@@ -31,6 +32,7 @@ from translate.ui import (
     _review_comparison,
     _review_context,
     _review_rows,
+    _review_targets,
     _structure_comparison,
     _translation_comparison,
     _upgrade_context,
@@ -522,3 +524,50 @@ def test_review_comparison_resolves_agent_ids_and_revision_units(
         ),
     )
     assert _review_comparison(tmp_path) == ("[unit]\n現在訳", "[unit]\n修正案")
+
+
+def test_review_preview_reads_alignment_response(tmp_path: Path) -> None:
+    """対応付け専用の成功応答から、評価前にも同じ英日単位を比較表示する。"""
+    for role, identifier, text in [
+        ("source", "en", "English"),
+        ("translation", "ja", "訳文"),
+    ]:
+        write_model(
+            tmp_path / "preprocess" / role / "load/document.json",
+            _document([(identifier, text)]),
+        )
+    directory = tmp_path / "review/review/calls/match-call"
+    write_model(
+        directory / "response.json",
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["en"],
+                        "translation_ids": ["ja"],
+                        "kind": "matched",
+                    },
+                ]
+            }
+        ),
+    )
+    now = datetime.now(UTC)
+    write_model(
+        directory / "call.json",
+        LLMCallArtifact(
+            call_id="match-call",
+            task="REVIEW",
+            operation="match",
+            status="succeeded",
+            fingerprint="inputs",
+            target_ids=["source:en", "translation:ja"],
+            attempts=1,
+            response_sha256=sha256_file(directory / "response.json"),
+            started_at=now,
+            updated_at=now,
+        ),
+    )
+    assert _review_targets(tmp_path) == {
+        "review/alignment-000001": ("English", "訳文"),
+        "ja": ("English", "訳文"),
+    }

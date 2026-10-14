@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable
 from functools import partial
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,7 +15,7 @@ from translate.adapters.llm import LLMClient, StructuredResult
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.review import AgentAction, ReviewResponse
+from translate.models.review import AgentAction, AlignmentResponse, ReviewResponse
 from translate.models.upgrade import DiffResponse
 from translate.pipeline import (
     InputError,
@@ -138,6 +139,45 @@ def test_agent_overview_includes_bounded_content() -> None:
     assert [item["role"] for item in result["items"][:2]] == ["source", "translation"]
 
 
+def test_match_schema_requests_only_correspondence(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """対応付け要求に品質評価欄を混在させず、実SDK境界で対応関係だけを受け取る。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = json.dumps(
+        {
+            "groups": [
+                {"source_ids": ["en"], "translation_ids": ["ja"], "kind": "matched"}
+            ]
+        }
+    )
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        units = agent_units(
+            {"source": document(en="Original."), "translation": document(ja="訳文。")}
+        )
+        _, result = import_module("translate.tasks.41_review").match_documents(
+            {role: list(values.values()) for role, values in units.items()},
+            tmp_path,
+            client,
+            "Compare document meanings.",
+            "",
+            0,
+        )
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        assert set(schema["properties"]) == {"groups"}
+        assert result.groups[0].translation_ids == ["ja"]
+        create.assert_called_once()
+    finally:
+        client.client.close()
+
+
 def scripted(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[BaseModel | Callable[[dict[str, object]], BaseModel]],
@@ -159,9 +199,9 @@ def scripted(
     return calls
 
 
-def matched() -> ReviewResponse:
+def matched() -> AlignmentResponse:
     """一対多の対応付け応答を返す。"""
-    return ReviewResponse.model_validate(
+    return AlignmentResponse.model_validate(
         {
             "groups": [
                 {

@@ -316,7 +316,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 
 `json_object` と `prompt` では完全なJSON Schemaをpromptへ埋め込まず、field名、型、必須性、件数上限および最小例だけを含むcompact contractを使用する。`prompt` 方式に限り、応答全体を囲む1組の `json` code fenceを除去してよい。JSON5化、正規表現による修復、欠落値の捏造は行わない。parse、Pydantic検証、または応答の対象ID・確認範囲の検証に失敗した場合は検証エラーを示して1回だけ再試行し、この再試行も `LLM_RETRY_ATTEMPTS` に含める。検証を通過した応答だけを成功Callとして保存する。
 
-LLM応答モデルはTaskごとに `StructureResponse`、`TranslationResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、必要な差分だけを表す。
+LLM応答モデルは処理内容に応じて `StructureResponse`、`TranslationResponse`、`AlignmentResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、その操作に必要な結果だけを表す。
 
 対象IDの参照先、確認範囲、操作ごとの完了条件などの説明は、すべてのstructured output方式でpromptへ含める。`json_schema` でも型定義だけに置き換えず、操作説明とSchemaの両方を入力予算へ計上する。
 
@@ -537,7 +537,7 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 
 `FixResult` は更新した `Document` と `RevisionOutcome` の一覧を保持する。適用できない候補は本文の状態として保存せず、`RevisionOutcome` に理由とともに記録する。
 
-`ReviewResponse` は `groups: list[AlignmentCandidate]`、`reviewed_target_ids: list[str]`、`findings: list[ReviewFinding]` と `revisions: list[ReviewRevision]` を持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。対応付け時はgroups、品質確認時は確認済み対象IDとfindings・revisionsを保存する。group、Finding、RevisionのIDはapplicationが付与する。
+対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。品質確認の `ReviewResponse` は `reviewed_target_ids: list[str]`、`findings: list[ReviewFinding]` と `revisions: list[ReviewRevision]` を持つ。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
 
 | Model | Field |
 |---|---|
