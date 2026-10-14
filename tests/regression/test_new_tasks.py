@@ -1149,6 +1149,95 @@ def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     ]
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("source_kind", "target_kind"),
+    [("heading", "table"), ("paragraph", "table"), ("paragraph", "paragraph")],
+)
+def test_structure_caption_transfer_respects_final_block_roles(
+    *, reverse: bool, source_kind: str, target_kind: str
+) -> None:
+    """応答の順序によらず、見出しをCaptionへ移さず、明示的な段落への補正は許可する。"""
+    source = Block(
+        id="source",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("source/content", "Table description"),
+    )
+    target = Block.model_validate(
+        {
+            "id": "target",
+            "order": 1,
+            "kind": target_kind,
+            "content": _unit("target/content", "Body").model_dump()
+            if target_kind == "paragraph"
+            else None,
+            "cells": [
+                TableCell(id="cell", row=0, column=0, content=_unit("cell", "value"))
+            ]
+            if target_kind == "table"
+            else [],
+        }
+    )
+    patches = [
+        StructurePatch.model_validate({"block_id": "source", "kind": source_kind}),
+        StructurePatch(block_id="target", caption_source_id="source"),
+    ]
+    page = Page(number=2, blocks=[source, target])
+    diagnostics: list[str] = []
+
+    _apply_page(
+        page,
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=list(reversed(patches)) if reverse else patches
+                ),
+            )
+        ],
+        diagnostics,
+    )
+
+    if source_kind == "paragraph" and target_kind == "table":
+        assert [block.id for block in page.blocks] == ["target"]
+        assert target.caption.text("source") == "Table description"
+        assert diagnostics == []
+    else:
+        assert [block.id for block in page.blocks] == ["source", "target"]
+        assert target.caption is None
+        assert diagnostics
+
+
+@pytest.mark.parametrize(
+    ("title", "initial_level", "expected_level"),
+    [
+        ("1 Document Control", 3, 1),
+        ("2 Lists", 2, 1),
+        ("7.1 Heading", 1, 2),
+        ("7.1.1 Heading", 4, 3),
+        ("2026 Results", 2, 2),
+    ],
+)
+def test_structure_uses_section_depth_for_numbered_heading_level(
+    title: str, initial_level: int, expected_level: int
+) -> None:
+    """番号付き見出しの深さを章番号から揃え、年号は章番号として扱わない。"""
+    heading = Block(
+        id="heading",
+        order=0,
+        kind="heading",
+        level=initial_level,
+        content=_unit("heading/content", title),
+    )
+    document = Document(pages=[Page(number=2, blocks=[heading])])
+
+    _normalize_heading_levels(document, {"heading": initial_level}, [])
+
+    assert heading.level == expected_level
+
+
 @pytest.mark.parametrize(
     "title", ["CHAPTER II", "1 Document Control", "7 TOC Levels", "10 Notes"]
 )

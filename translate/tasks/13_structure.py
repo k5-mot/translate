@@ -472,11 +472,21 @@ def _apply_page(
                 block.alert_kind = patch.alert_kind
             elif patch.alert_kind is not None:
                 diagnostics.append(f"{call_id} invalid_alert_kind {patch.block_id}")
+    # Captionの所属判定は、応答内の並び順ではなく補正後の種別に基づく。
+    for call_id, response in responses:
+        for patch in response.patches:
+            block = blocks.get(patch.block_id)
+            if block is None:
+                continue
             if patch.caption_source_id is not None:
+                if block.kind not in {"figure", "table"}:
+                    diagnostics.append(f"{call_id} invalid_caption_target {block.id}")
+                    continue
                 source = blocks.get(patch.caption_source_id)
                 if (
                     source is None
                     or source.content is None
+                    or source.kind == "heading"
                     or source.id == block.id
                     or source.id in caption_sources
                 ):
@@ -533,7 +543,7 @@ _TOP_LEVEL_MARKER = re.compile(
     r"^\s*(?:chapter\b|part\b|appendix\b|付録\b|第\s*\d+\s*[章編])",
     re.IGNORECASE,
 )
-_NUMBERED_TOP_LEVEL = re.compile(r"^\s*(?:\d+[.)、\uFF1A:]|\d{1,3})\s+")
+_NUMBERED_HEADING = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]+)*)[.)、\uFF1A:]?\s+")
 
 
 def _normalize_heading_levels(
@@ -541,7 +551,7 @@ def _normalize_heading_levels(
     baseline_levels: dict[str, int | None],
     diagnostics: list[str],
 ) -> None:
-    """ページ境界でのlevel=1リセットを初期階層へ戻す。
+    """章節番号の深さを揃え、番号のない見出しのページ境界リセットを補正する。
 
     Args:
         document (Document): 変換または検証対象のDocument。
@@ -563,13 +573,22 @@ def _normalize_heading_levels(
                 continue
             baseline = baseline_levels.get(block.id)
             text = block.content.text("source").strip() if block.content else ""
-            if (
+            section = _NUMBERED_HEADING.match(text)
+            if section is not None:
+                level = min(6, section.group(1).count(".") + 1)
+                if block.level != level:
+                    diagnostics.append(
+                        f"{block.id} level_normalized llm={block.level} "
+                        f"numbered={level} reason=section_depth"
+                    )
+                    block.level = level
+            elif (
                 previous_level is not None
                 and page_boundary
                 and block.level == 1
                 and baseline is not None
                 and baseline > 1
-                and not _is_top_level_marker(text)
+                and not _TOP_LEVEL_MARKER.search(text)
             ):
                 diagnostics.append(
                     f"{block.id} level_normalized llm=1 baseline={baseline} "
@@ -578,19 +597,6 @@ def _normalize_heading_levels(
                 block.level = baseline
             previous_level = block.level
         previous_page_number = page.number
-
-
-def _is_top_level_marker(text: str) -> bool:
-    """章・付録など明示的な最上位見出し表現か判定する。
-
-    Args:
-        text (str): 正規化、検索または表示するText。
-
-    Returns:
-        bool: 章・付録など明示的な最上位見出し表現か判定する。
-    """
-
-    return bool(_TOP_LEVEL_MARKER.search(text) or _NUMBERED_TOP_LEVEL.search(text))
 
 
 def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
