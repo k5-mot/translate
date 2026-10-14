@@ -1517,7 +1517,7 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     )
 
 
-@pytest.mark.parametrize("prefix", ["1. ", "1.2 ", "1.2.3 "])
+@pytest.mark.parametrize("prefix", ["1 ", "10 ", "123 ", "1. ", "1.2 ", "1.2.3 "])
 def test_heading_number_is_removed_only_when_publishing(prefix: str) -> None:
     """分割Spanの番号だけをMarkdownで除き、原文・書式・本文の数字を保つ。"""
     unit = TextUnit(

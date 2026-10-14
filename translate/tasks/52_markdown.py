@@ -85,8 +85,10 @@ def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
     if block.kind == "heading":
         if block.content is not None:
             content = block.content.model_copy(deep=True)
+            # ピリオドなしの節番号も除き、4桁以上の年度らしい接頭辞は保持する。
             prefix = re.match(
-                r"^\s*(?:[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+", content.text()
+                r"^\s*(?:[0-9]{1,3}|[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+",
+                content.text(),
             )
             if prefix is not None:
                 remaining = prefix.end()
