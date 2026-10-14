@@ -1508,3 +1508,61 @@ def test_load_expands_merged_table_into_empty_grid_cells() -> None:
         "rowspan" not in cell.model_dump() and "colspan" not in cell.model_dump()
         for cell in cells
     )
+
+
+@pytest.mark.parametrize("reviewed_ids", [[], ["unit"]])
+def test_review_retries_coverage_error_before_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reviewed_ids: list[str]
+) -> None:
+    """確認済みIDの不一致も同じCall内で一度再要求し、正しい結果だけ成功保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="review",
+        openai_llm_base_url=None,
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    client = LLMClient(config)
+    target = ReviewTarget(
+        id="translate/unit",
+        source="Original",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="unit/span", source="Original", translated="訳")],
+    )
+    invalid = MagicMock()
+    invalid.choices = [MagicMock(finish_reason="stop")]
+    invalid.choices[0].message.content = ReviewResponse(
+        reviewed_target_ids=reviewed_ids
+    ).model_dump_json()
+    invalid.usage = None
+    valid = MagicMock()
+    valid.choices = [MagicMock(finish_reason="stop")]
+    valid.choices[0].message.content = ReviewResponse(
+        reviewed_target_ids=[target.id]
+    ).model_dump_json()
+    valid.usage = None
+    create = MagicMock(side_effect=[invalid, valid])
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        responses = execute_review(
+            client=client,
+            config=config,
+            targets=[target],
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            lineage=[],
+            depth=0,
+        )
+        assert create.call_count == 2
+        assert responses[0][1].reviewed_target_ids == [target.id]
+        call = json.loads(
+            next(tmp_path.glob("calls/*/call.json")).read_text(encoding="utf-8")
+        )
+        assert call["status"] == "succeeded"
+        assert call["attempts"] == 2
+        assert "confirm every requested target" in str(create.call_args_list[1])
+    finally:
+        client.client.close()

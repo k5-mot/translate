@@ -134,6 +134,7 @@ def saved_request[ResponseT: BaseModel](
             native_schema=response_type.model_json_schema(),
             input_tokens=config.review_input_tokens,
             output_tokens=config.review_output_tokens,
+            validate=validate,
         )
         validate(result.response)
     except Exception as error:

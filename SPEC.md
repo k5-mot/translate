@@ -312,7 +312,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 - `null` をSchemaへ含めず、省略可能な値はfield自体を省略する。
 - arrayにはTask別の最大件数を設定する。
 
-`json_object` と `prompt` では完全なJSON Schemaをpromptへ埋め込まず、field名、型、必須性、件数上限および最小例だけを含むcompact contractを使用する。`prompt` 方式に限り、応答全体を囲む1組の `json` code fenceを除去してよい。JSON5化、正規表現による修復、欠落値の捏造は行わない。parseまたはPydantic検証に失敗した場合は検証エラーを示して1回だけ再試行し、この再試行も `LLM_RETRY_ATTEMPTS` に含める。
+`json_object` と `prompt` では完全なJSON Schemaをpromptへ埋め込まず、field名、型、必須性、件数上限および最小例だけを含むcompact contractを使用する。`prompt` 方式に限り、応答全体を囲む1組の `json` code fenceを除去してよい。JSON5化、正規表現による修復、欠落値の捏造は行わない。parse、Pydantic検証、または応答の対象ID・確認範囲の検証に失敗した場合は検証エラーを示して1回だけ再試行し、この再試行も `LLM_RETRY_ATTEMPTS` に含める。検証を通過した応答だけを成功Callとして保存する。
 
 LLM応答モデルはTaskごとに `StructureResponse`、`TranslationResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、必要な差分だけを表す。
 
@@ -430,7 +430,7 @@ LOADは結合セルを通常セルの矩形格子へ展開する。結合範囲�
 #### 🔁 再試行
 
 1. 接続失敗、timeoutおよびrate limitは、安全上限内の指数backoffで再試行する。
-2. Schema不正は検証エラーを渡して1回だけ再試行する。
+2. Schema不正と応答の対象ID・確認範囲の不整合は、同じ検証再試行枠で1回だけ再試行する。
 3. 送信前検査、HTTP 400/413のcontext超過、または出力超過は同じ要求を繰り返さず、対象を分割する。
 4. TRANSLATEの欠落IDは該当対象だけを再送する。文字数比や同文判定を理由とした再試行は行わない。部分応答のみのCallは再開時に再送する。
 5. 意味を保った最小単位でも応答契約を満たせない場合は、そのTaskを失敗とする。

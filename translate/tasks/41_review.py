@@ -516,7 +516,10 @@ def _execute(
             '{"groups":[],"reviewed_target_ids":["target id"],'
             '"findings":[{"category":"accuracy","severity":"warning","target_ids":["unit id"],"message":"reason"}],'
             '"revisions":[{"target_id":"unit id","edits":[{"span_id":"span id","text":"replacement"}]}]}. '
-            "Confirm every requested target ID. Return only concrete findings and proposed edits.",
+            "reviewed_target_ids must contain every input targets[].id exactly once, including targets with no findings. "
+            "Copy the full id verbatim, including translate/, review/ and /part- prefixes or suffixes. "
+            "Finding.target_ids and Revision.target_id instead refer to input targets[].target_ids (TextUnit IDs). "
+            "Keep groups empty. Return only concrete findings and proposed edits.",
             validate,
         )
     except (LLMInputExceededError, LLMOutputExceededError):

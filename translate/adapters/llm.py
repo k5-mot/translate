@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -128,6 +129,7 @@ class LLMClient:
         input_tokens: int | None = None,
         output_tokens: int,
         image: Path | None = None,
+        validate: Callable[[ResponseT], None] | None = None,
     ) -> StructuredResult[ResponseT]:
         """一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
 
@@ -142,6 +144,7 @@ class LLMClient:
             input_tokens (int | None): Providerが報告した入力Token数。
             output_tokens (int): Providerが報告した出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
+            validate: 対象IDなどの応答契約を検証する関数。ValueErrorはSchema不正と同じ再試行枠を使う。
 
         Returns:
             StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
@@ -200,6 +203,8 @@ class LLMClient:
                     self.config.llm_response_max_bytes,
                 )
                 validated = response_type.model_validate(parsed)
+                if validate is not None:
+                    validate(validated)
                 logger.info(
                     "LLM完了 task=%s attempt=%d input_tokens=%s output_tokens=%s",
                     task,
@@ -231,8 +236,19 @@ class LLMClient:
                 invalid_responses += 1
                 if invalid_responses >= 2 or attempt >= self.config.llm_retry_attempts:
                     break
+                if isinstance(error, ValidationError):
+                    detail = "; ".join(
+                        f"{'.'.join(map(str, item['loc']))}: {item['type']}"
+                        for item in error.errors(include_input=False)
+                    )
+                else:
+                    detail = (
+                        str(error)
+                        if type(error) is ValueError
+                        else type(error).__name__
+                    )
                 feedback = (
-                    "\n\nThe previous response was invalid JSON or violated the contract. "
+                    f"\n\nPrevious response validation failed: {detail[:1024]}. "
                     "Return one complete JSON object matching the contract exactly."
                 )
             except APITimeoutError as error:

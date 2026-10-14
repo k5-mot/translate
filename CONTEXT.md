@@ -13,7 +13,7 @@ Taskの順序と分岐を調整し、利用者向け成果物を生成する処�
 _Avoid_: Workflow
 
 **Upgrade**:
-英文v2を構造の正本とし、英文v1と日本語v1から再利用できる訳を移植して、差分だけを翻訳した日本語v2を生成する処理。
+英文旧版・新版と日本語旧版を比較し、変更箇所と修正提案を一覧化するAgent。提案を適用した文書は生成しない。
 _Avoid_: 差分翻訳、文書更新
 
 **Docling Schema JSON**:
@@ -49,9 +49,9 @@ _Avoid_: Translation IDとの共用
 _Avoid_: Qdrant point ID
 
 **Upgrade ID**:
-一回のUpgradeの3入力、設定、進捗、Artifactおよび日本語v2成果物を関連付けるUUIDv7。
+一回のUpgradeの3入力、設定、進捗、Artifactおよび変更・修正提案一覧を関連付けるUUIDv7。
 _Avoid_: Translation IDとの共用
 
 **Resume**:
-入力と設定の互換性を確認し、同じTranslation ID、Review ID、Registration IDまたはUpgrade IDに属する完了済み処理を再利用して、未完了または失敗した位置から処理を再開すること。LLM Callの再利用はTranslate、ReviewおよびUpgradeだけで行う。
+入力ファイルの同一性を確認し、同じTranslation ID、Review ID、Registration IDまたはUpgrade IDに属する完了済み処理を再利用して、未完了または失敗した位置から処理を再開すること。設定・規則・用語集の一致は判定しない。LLM Callの再利用はTranslate、ReviewおよびUpgradeだけで行う。
 _Avoid_: retry、restart
