@@ -498,172 +498,179 @@ def task_artifacts(
     ]
 
 
-def reusable_task(
-    record: ProcessingRecord,
-    task: TaskName,
-    fingerprint: str,
-    processing_directory: Path,
-) -> bool:
-    """成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
+class ArtifactStore:
+    """一つの処理記録と保存先を保持し、Taskの状態と再開条件を管理する。"""
 
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
-        processing_directory (Path): 対象処理の成果物Directory。
+    def __init__(self, record: ProcessingRecord, record_path: Path) -> None:
+        """入力照合済みの記録と、そのJSON保存先を受け取る。
 
-    Returns:
-        bool: 成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
-    """
+        Args:
+            record: 処理状態とTask成果物を更新する記録。
+            record_path: 処理IDディレクトリ直下の記録JSON。
+        """
+        self.record = record
+        self.record_path = record_path
+        self.root = record_path.parent
 
-    state = next((item for item in record.tasks if item.task == task), None)
-    if state is None or state.status != "succeeded" or state.fingerprint != fingerprint:
-        return False
-    return all(
-        (path := processing_directory / Path(artifact.relative_path)).is_file()
-        and sha256_file(path) == artifact.sha256
-        for artifact in state.artifacts
-    )
+    def reusable_task(
+        self,
+        task: TaskName,
+        fingerprint: str,
+    ) -> bool:
+        """成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
 
+        Args:
+            task (TaskName): 状態またはCallを記録するTask名。
+            fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
 
-def start_task(
-    record: ProcessingRecord,
-    record_path: Path,
-    task: TaskName,
-    fingerprint: str,
-) -> None:
-    """Taskをprocessingとして最上位記録へ追加または置換する。
+        Returns:
+            bool: 成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
+        """
 
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
-    """
+        state = next((item for item in self.record.tasks if item.task == task), None)
+        if (
+            state is None
+            or state.status != "succeeded"
+            or state.fingerprint != fingerprint
+        ):
+            return False
+        return all(
+            (path := self.root / Path(artifact.relative_path)).is_file()
+            and sha256_file(path) == artifact.sha256
+            for artifact in state.artifacts
+        )
 
-    state = TaskState(
-        task=task,
-        status="processing",
-        fingerprint=fingerprint,
-        started_at=datetime.now(UTC),
-    )
-    _replace_task(record, state)
-    record.status = "processing"
-    record.updated_at = datetime.now(UTC)
-    record.error = None
-    write_model(record_path, record)
+    def start_task(
+        self,
+        task: TaskName,
+        fingerprint: str,
+    ) -> None:
+        """Taskをprocessingとして最上位記録へ追加または置換する。
 
+        Args:
+            task (TaskName): 状態またはCallを記録するTask名。
+            fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
+        """
 
-def finish_task(
-    record: ProcessingRecord,
-    record_path: Path,
-    task: TaskName,
-    fingerprint: str,
-    artifacts: list[ArtifactFile],
-    *,
-    skipped: bool = False,
-) -> None:
-    """Taskの成功または省略を成果物一覧とともに保存する。
+        state = TaskState(
+            task=task,
+            status="processing",
+            fingerprint=fingerprint,
+            started_at=datetime.now(UTC),
+        )
+        self._replace_task(state)
+        self.record.status = "processing"
+        self.record.updated_at = datetime.now(UTC)
+        self.record.error = None
+        write_model(self.record_path, self.record)
 
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
-        artifacts (list[ArtifactFile]): 完了Taskへ関連付ける成果物一覧。
-        skipped (bool): Taskを省略して完了したかどうか。
-    """
+    def finish_task(
+        self,
+        task: TaskName,
+        fingerprint: str,
+        artifacts: list[ArtifactFile],
+        *,
+        skipped: bool = False,
+    ) -> None:
+        """Taskの成功または省略を成果物一覧とともに保存する。
 
-    existing = next((item for item in record.tasks if item.task == task), None)
-    state = TaskState(
-        task=task,
-        status="skipped" if skipped else "succeeded",
-        fingerprint=fingerprint,
-        started_at=existing.started_at if existing is not None else datetime.now(UTC),
-        completed_at=datetime.now(UTC),
-        artifacts=artifacts,
-    )
-    _replace_task(record, state)
-    record.updated_at = datetime.now(UTC)
-    write_model(record_path, record)
+        Args:
+            task (TaskName): 状態またはCallを記録するTask名。
+            fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
+            artifacts (list[ArtifactFile]): 完了Taskへ関連付ける成果物一覧。
+            skipped (bool): Taskを省略して完了したかどうか。
+        """
 
+        existing = next((item for item in self.record.tasks if item.task == task), None)
+        state = TaskState(
+            task=task,
+            status="skipped" if skipped else "succeeded",
+            fingerprint=fingerprint,
+            started_at=existing.started_at
+            if existing is not None
+            else datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            artifacts=artifacts,
+        )
+        self._replace_task(state)
+        self.record.updated_at = datetime.now(UTC)
+        write_model(self.record_path, self.record)
 
-def fail_task(
-    record: ProcessingRecord,
-    record_path: Path,
-    task: TaskName,
-    fingerprint: str,
-    error: BaseException,
-    *,
-    code: str = "task_failed",
-) -> None:
-    """実行中Taskと処理全体を本文なしの失敗情報で終了する。
+    def fail_task(
+        self,
+        task: TaskName,
+        fingerprint: str,
+        error: BaseException,
+        *,
+        code: str = "task_failed",
+    ) -> None:
+        """実行中Taskと処理全体を本文なしの失敗情報で終了する。
 
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
-        error (BaseException): 記録または分類する例外。
-        code (str): 診断または停止理由を識別するCode。
-    """
+        Args:
+            task (TaskName): 状態またはCallを記録するTask名。
+            fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
+            error (BaseException): 記録または分類する例外。
+            code (str): 診断または停止理由を識別するCode。
+        """
 
-    existing = next((item for item in record.tasks if item.task == task), None)
-    processing_error = ProcessingError(
-        code=code,
-        message=str(error)
-        if isinstance(error, (LLMError, EmbeddingError))
-        else f"{task.value} did not complete.",
-        cause_type=type(error).__name__,
-        retryable=True,
-    )
-    state = TaskState(
-        task=task,
-        status="failed",
-        fingerprint=fingerprint,
-        started_at=existing.started_at if existing is not None else datetime.now(UTC),
-        completed_at=datetime.now(UTC),
-        error=processing_error,
-    )
-    _replace_task(record, state)
-    record.status = "failed"
-    record.updated_at = datetime.now(UTC)
-    record.error = processing_error
-    write_model(record_path, record)
+        existing = next((item for item in self.record.tasks if item.task == task), None)
+        processing_error = ProcessingError(
+            code=code,
+            message=str(error)
+            if isinstance(error, (LLMError, EmbeddingError))
+            else f"{task.value} did not complete.",
+            cause_type=type(error).__name__,
+            retryable=True,
+        )
+        state = TaskState(
+            task=task,
+            status="failed",
+            fingerprint=fingerprint,
+            started_at=existing.started_at
+            if existing is not None
+            else datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            error=processing_error,
+        )
+        self._replace_task(state)
+        self.record.status = "failed"
+        self.record.updated_at = datetime.now(UTC)
+        self.record.error = processing_error
+        write_model(self.record_path, self.record)
 
+    def cancel_processing(
+        self,
+    ) -> None:
+        """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。
 
-def cancel_processing(record: ProcessingRecord, record_path: Path) -> None:
-    """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。
+        Args:
+        """
 
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-    """
+        now = datetime.now(UTC)
+        for index, state in enumerate(self.record.tasks):
+            if state.status == "processing":
+                self.record.tasks[index] = state.model_copy(
+                    update={"status": "cancelled", "completed_at": now}
+                )
+        self.record.status = "cancelled"
+        self.record.updated_at = now
+        write_model(self.record_path, self.record)
 
-    now = datetime.now(UTC)
-    for index, state in enumerate(record.tasks):
-        if state.status == "processing":
-            record.tasks[index] = state.model_copy(
-                update={"status": "cancelled", "completed_at": now}
-            )
-    record.status = "cancelled"
-    record.updated_at = now
-    write_model(record_path, record)
+    def _replace_task(
+        self,
+        state: TaskState,
+    ) -> None:
+        """同名Task状態を一つだけ維持し、未登録なら末尾へ追加する。
 
+        Args:
+            state (TaskState): Taskへ設定する新しい状態。
+        """
 
-def _replace_task(record: ProcessingRecord, state: TaskState) -> None:
-    """同名Task状態を一つだけ維持し、未登録なら末尾へ追加する。
-
-    Args:
-        record (ProcessingRecord): 状態またはTask情報を更新する処理Record。
-        state (TaskState): Taskへ設定する新しい状態。
-    """
-
-    for index, current in enumerate(record.tasks):
-        if current.task == state.task:
-            record.tasks[index] = state
-            return
-    record.tasks.append(state)
+        for index, current in enumerate(self.record.tasks):
+            if current.task == state.task:
+                self.record.tasks[index] = state
+                return
+        self.record.tasks.append(state)
 
 
 def processing_directory(outputs: Path, source: Path, processing_id: str) -> Path:

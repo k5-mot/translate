@@ -12,14 +12,10 @@ from uuid import UUID
 from uuid_utils import uuid7
 
 from translate.adapters.artifact_store import (
-    ProcessingRecord,
+    ArtifactStore,
     canonical_hash,
-    fail_task,
-    finish_task,
     load_model,
-    reusable_task,
     sha256_file,
-    start_task,
     task_artifacts,
 )
 from translate.adapters.llm import LLMClient
@@ -69,137 +65,148 @@ def resolve_processing_id(processing_id: str | None, resume_id: str | None) -> s
     return value
 
 
-def perform_task(
-    record: ProcessingRecord,
-    record_path: Path,
-    root: Path,
-    task: TaskName,
-    inputs: object,
-    jobs: list[tuple[Path, Callable[[], object]]],
-) -> bool:
-    """文書入力の一致と成果物の検証後に再利用し、必要なTaskだけ実行する。
+class PipelineRun:
+    """共通の前処理とTask実行を、一つの保存記録と設定で進める。"""
 
-    Args:
-        record: Task状態を更新する処理記録。
-        record_path: 処理記録JSONの保存先。
-        root: 成果物の基準directory。
-        task: 今回実行する工程名。
-        inputs: 再開判定に使う文書由来の入力。設定・規則は含めない。
-        jobs: 成果物directoryと実行処理の組。複数文書は同じ工程内で処理する。
+    def __init__(self, store: ArtifactStore, config: Config) -> None:
+        """Task実行に使用する記録管理と接続設定を受け取る。
 
-    Returns:
-        成功済みTaskを再利用した場合はTrue。
+        Args:
+            store: 実行中の処理記録と成果物の保存先。
+            config: PDF分割、DoclingおよびLLMの設定。
+        """
+        self.store = store
+        self.config = config
 
-    Raises:
-        Exception: Taskの失敗。記録に原因の種別を保存して伝播する。
-    """
-    fingerprint = canonical_hash({"task": task.value, "inputs": inputs})
-    if reusable_task(record, task, fingerprint, root):
-        return True
-    start_task(record, record_path, task, fingerprint)
-    try:
-        for _, action in jobs:
-            action()
-        artifacts = [
-            artifact
-            for directory, _ in jobs
-            for artifact in task_artifacts(root, directory)
-        ]
-        finish_task(record, record_path, task, fingerprint, artifacts)
-    except Exception as error:
-        fail_task(record, record_path, task, fingerprint, error)
-        raise
-    return False
+    def perform_task(
+        self,
+        task: TaskName,
+        inputs: object,
+        jobs: list[tuple[Path, Callable[[], object]]],
+    ) -> bool:
+        """文書入力の一致と成果物の検証後に再利用し、必要なTaskだけ実行する。
 
+        Args:
+            task: 今回実行する工程名。
+            inputs: 再開判定に使う文書由来の入力。設定・規則は含めない。
+            jobs: 成果物directoryと実行処理の組。複数文書は同じ工程内で処理する。
 
-def prepare_documents(
-    sources: dict[str, Path],
-    record: ProcessingRecord,
-    record_path: Path,
-    root: Path,
-    config: Config,
-) -> tuple[dict[str, Document], dict[str, Path]]:
-    """各PDFを同じ前処理工程へ通し、文書と原本assetの場所を返す。
+        Returns:
+            成功済みTaskを再利用した場合はTrue。
 
-    Translate・Review・Upgradeで共通の変換、保存、再開判定を使用する。
+        Raises:
+            Exception: Taskの失敗。記録に原因の種別を保存して伝播する。
+        """
+        fingerprint = canonical_hash({"task": task.value, "inputs": inputs})
+        if self.store.reusable_task(task, fingerprint):
+            return True
+        self.store.start_task(task, fingerprint)
+        try:
+            for _, action in jobs:
+                action()
+            artifacts = [
+                artifact
+                for directory, _ in jobs
+                for artifact in task_artifacts(self.store.root, directory)
+            ]
+            self.store.finish_task(task, fingerprint, artifacts)
+        except Exception as error:
+            self.store.fail_task(task, fingerprint, error)
+            raise
+        return False
 
-    Args:
-        sources: 入力roleとPDFの組。Translateの単一文書だけroleを空文字にする。
-        record: 工程ごとの状態を保存する処理記録。
-        record_path: 処理記録JSON。
-        root: 処理IDの成果物directory。
-        config: PDF分割とDoclingの実行設定。
+    def prepare_documents(
+        self,
+        sources: dict[str, Path],
+    ) -> tuple[dict[str, Document], dict[str, Path]]:
+        """各PDFを同じ前処理工程へ通し、文書と原本assetの場所を返す。
 
-    Returns:
-        role別のDocumentとMERGE directoryの辞書。
+        Translate・Review・Upgradeで共通の変換、保存、再開判定を使用する。
 
-    Raises:
-        Exception: PDF解析・変換・成果物検証の失敗。
-    """
-    stages = (
-        (TaskName.SPLIT, "converter", "00_split", "split"),
-        (TaskName.DOCLING, "converter", "01_docling", "convert"),
-        (TaskName.UNPACK, "converter", "02_unpack", "unpack"),
-        (TaskName.MERGE, "converter", "03_merge", "merge"),
-        (TaskName.POSITION, "preprocess", "10_position", "position"),
-        (TaskName.NORMALIZE, "preprocess", "11_normalize", "normalize"),
-        (TaskName.LOAD, "preprocess", "12_load", "load"),
-    )
-    previous = dict(sources)
-    originals = {role: sha256_file(path) for role, path in sources.items()}
-    merge_roots: dict[str, Path] = {}
-    for task, category, module, function in stages:
-        action = getattr(import_module(f"translate.tasks.{module}"), function)
-        jobs: list[tuple[Path, Callable[[], object]]] = []
-        next_inputs: dict[str, Path] = {}
-        for role, source in sources.items():
-            directory = root / category / role.replace("_", "-") / task.value.lower()
-            current = previous[role]
-            if task == TaskName.SPLIT:
-                arguments = (source, directory, root, config.pdf_split_pages)
-            elif task == TaskName.DOCLING:
-                arguments = (
-                    load_model(current, SplitManifest),
-                    directory,
-                    root,
-                    config,
-                )
-            elif task == TaskName.UNPACK:
-                arguments = (load_model(current, DoclingManifest), directory, root)
-            elif task == TaskName.MERGE:
-                arguments = (
-                    load_model(current, UnpackManifest),
-                    source,
-                    directory,
-                    root,
-                )
-                merge_roots[role] = directory
-            else:
-                arguments = (current, directory)
-            jobs.append((directory, partial(action, *arguments)))
-            name = (
-                "manifest.json"
-                if task in {TaskName.SPLIT, TaskName.DOCLING, TaskName.UNPACK}
-                else "document.json"
-            )
-            next_inputs[role] = directory / name
-        perform_task(
-            record,
-            record_path,
-            root,
-            task,
-            {
-                "originals": originals,
-                "documents": {
-                    role: sha256_file(path) for role, path in previous.items()
-                },
-            },
-            jobs,
+        Args:
+            sources: 入力roleとPDFの組。Translateの単一文書だけroleを空文字にする。
+
+        Returns:
+            role別のDocumentとMERGE directoryの辞書。
+
+        Raises:
+            Exception: PDF解析・変換・成果物検証の失敗。
+        """
+        stages = (
+            (TaskName.SPLIT, "converter", "00_split", "split"),
+            (TaskName.DOCLING, "converter", "01_docling", "convert"),
+            (TaskName.UNPACK, "converter", "02_unpack", "unpack"),
+            (TaskName.MERGE, "converter", "03_merge", "merge"),
+            (TaskName.POSITION, "preprocess", "10_position", "position"),
+            (TaskName.NORMALIZE, "preprocess", "11_normalize", "normalize"),
+            (TaskName.LOAD, "preprocess", "12_load", "load"),
         )
-        previous = next_inputs
-    return {
-        role: load_model(path, Document) for role, path in previous.items()
-    }, merge_roots
+        previous = dict(sources)
+        originals = {role: sha256_file(path) for role, path in sources.items()}
+        merge_roots: dict[str, Path] = {}
+        for task, category, module, function in stages:
+            action = getattr(import_module(f"translate.tasks.{module}"), function)
+            jobs: list[tuple[Path, Callable[[], object]]] = []
+            next_inputs: dict[str, Path] = {}
+            for role, source in sources.items():
+                directory = (
+                    self.store.root
+                    / category
+                    / role.replace("_", "-")
+                    / task.value.lower()
+                )
+                current = previous[role]
+                if task == TaskName.SPLIT:
+                    arguments = (
+                        source,
+                        directory,
+                        self.store.root,
+                        self.config.pdf_split_pages,
+                    )
+                elif task == TaskName.DOCLING:
+                    arguments = (
+                        load_model(current, SplitManifest),
+                        directory,
+                        self.store.root,
+                        self.config,
+                    )
+                elif task == TaskName.UNPACK:
+                    arguments = (
+                        load_model(current, DoclingManifest),
+                        directory,
+                        self.store.root,
+                    )
+                elif task == TaskName.MERGE:
+                    arguments = (
+                        load_model(current, UnpackManifest),
+                        source,
+                        directory,
+                        self.store.root,
+                    )
+                    merge_roots[role] = directory
+                else:
+                    arguments = (current, directory)
+                jobs.append((directory, partial(action, *arguments)))
+                name = (
+                    "manifest.json"
+                    if task in {TaskName.SPLIT, TaskName.DOCLING, TaskName.UNPACK}
+                    else "document.json"
+                )
+                next_inputs[role] = directory / name
+            self.perform_task(
+                task,
+                {
+                    "originals": originals,
+                    "documents": {
+                        role: sha256_file(path) for role, path in previous.items()
+                    },
+                },
+                jobs,
+            )
+            previous = next_inputs
+        return {
+            role: load_model(path, Document) for role, path in previous.items()
+        }, merge_roots
 
 
 def pdf_inputs(sources: dict[str, Path]) -> dict[str, InputFile]:

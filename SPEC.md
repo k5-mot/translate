@@ -1767,7 +1767,7 @@ tests/
 
 | 責務 | オブジェクトが管理するもの |
 |---|---|
-| Pipeline | 入力、処理記録、Taskの実行順序、Resume、公開条件 |
+| Pipeline | 入力、処理記録、Taskの実行順序、Resume、公開条件。共通の前処理とTask実行は `PipelineRun` が `ArtifactStore` と設定を保持して進める |
 | Review・Upgrade Agent | `ReviewAgent` と `UpgradeAgent` が対象文書、確認済み範囲、途中結果を保持し、`run()` 内でLLMによる次の操作の選択・実行・終了判定を行う |
 | Task | 文書処理の依存関係と、その処理内で共有する設定・状態。`StructureTask` が見出し履歴を、`TranslationTask` が参照用語・旧訳文脈と分割要求を管理し、`run()` で文書を処理する |
 | Adapter | 接続設定、client、外部形式の解釈および入出力。`EmbeddingClient` はbatch要求を、`QdrantStore` はcollectionへの登録・検索と接続の解放を管理する |
@@ -1782,6 +1782,10 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 `ReviewTask` は対応付けと品質評価を、`DiffTask` は版間比較を実行する。
 両者は `SavedLLMCalls` に判断規則・解析済み用語集・Call保存先を保持し、
 操作ごとの入力だけを渡す。Agentが渡したLLM接続の期限と終了はAgentが管理する。
+
+`ArtifactStore` は処理記録とその保存先を保持し、Taskの開始・成功・失敗・中断、
+および保存済み成果物の再利用判定を担当する。一般のJSON読書きやHash計算は
+状態を持たない関数として同じAdapterに置く。
 
 `common` は設定とloggingだけに限定する。`core`、`utils` のように責務が曖昧なpackageは設けない。Task間で共有するためだけの `BaseTask` も設けない。例外は所有するmoduleに定義し、単独の `errors.py` へ集約しない。ReviewとUpgradeの制御ループはそれぞれ `pipeline/review.py` と `pipeline/upgrade.py` に置き、専用のAgent frameworkは追加しない。
 

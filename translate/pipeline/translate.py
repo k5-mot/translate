@@ -8,11 +8,10 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from translate.adapters.artifact_store import (
+    ArtifactStore,
     ProcessingLock,
-    cancel_processing,
     canonical_hash,
     describe_artifact,
-    finish_task,
     load_model,
     sha256_file,
     write_model,
@@ -36,8 +35,7 @@ from translate.models.document import Document
 from translate.models.review import ReviewTarget
 from translate.pipeline import (
     InputError,
-    perform_task,
-    prepare_documents,
+    PipelineRun,
     resolve_processing_id,
 )
 
@@ -125,7 +123,7 @@ def translate_pdf(
                 record,
             )
         except KeyboardInterrupt:
-            cancel_processing(record, record_path)
+            ArtifactStore(record, record_path).cancel_processing()
             raise
 
 
@@ -162,11 +160,10 @@ def _translate_locked(
         )
     }
     glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
-    documents, assets = prepare_documents(
-        {"": source}, record, record_path, root, config
-    )
+    execution = PipelineRun(ArtifactStore(record, record_path), config)
+    documents, assets = execution.prepare_documents({"": source})
     document, merge_dir = documents[""], assets[""]
-    run = partial(perform_task, record, record_path, root)
+    run = execution.perform_task
 
     structure_dir = root / "preprocess" / "structure"
     reused = run(
@@ -236,9 +233,7 @@ def _translate_locked(
         )
         document = load_model(fix_dir / "document.json", Document)
     else:
-        finish_task(
-            record,
-            record_path,
+        execution.store.finish_task(
             TaskName.FIX,
             canonical_hash({"task": "FIX", "inputs": fix_inputs}),
             [],

@@ -6,10 +6,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from translate.adapters.artifact_store import load_model
+from translate.adapters.artifact_store import ArtifactStore, load_model
+from translate.common.config import Config
 from translate.models.artifacts import InputFile, TaskName, TranslationRecord
 from translate.models.document import Document
-from translate.pipeline import perform_task
+from translate.pipeline import PipelineRun
 
 
 def test_task_reuses_matching_input_and_rebuilds_corrupt_artifact(
@@ -38,21 +39,23 @@ def test_task_reuses_matching_input_and_rebuilds_corrupt_artifact(
         output.write_text("complete", encoding="utf-8")
 
     document = Document()
-    args = (record, record_path, tmp_path, TaskName.LOAD)
+    execution = PipelineRun(ArtifactStore(record, record_path), Config())
     inputs = {"document": document}
-    assert not perform_task(*args, inputs, [(directory, produce)])
-    assert perform_task(*args, inputs, [(directory, produce)])
+    assert not execution.perform_task(TaskName.LOAD, inputs, [(directory, produce)])
+    assert execution.perform_task(TaskName.LOAD, inputs, [(directory, produce)])
     output.write_text("corrupt", encoding="utf-8")
-    assert not perform_task(*args, inputs, [(directory, produce)])
+    assert not execution.perform_task(TaskName.LOAD, inputs, [(directory, produce)])
     document.metadata["input-change"] = True
-    assert not perform_task(*args, inputs, [(directory, produce)])
+    assert not execution.perform_task(TaskName.LOAD, inputs, [(directory, produce)])
     assert len(calls) == 3
     saved = load_model(record_path, TranslationRecord)
     assert saved.tasks[0].status == "succeeded"
 
     failure = Mock(side_effect=ValueError("private input"))
     with pytest.raises(ValueError, match="private input"):
-        perform_task(*args, {"changed": document}, [(directory, failure)])
+        execution.perform_task(
+            TaskName.LOAD, {"changed": document}, [(directory, failure)]
+        )
     saved = load_model(record_path, TranslationRecord)
     assert saved.status == saved.tasks[0].status == "failed"
     assert "private input" not in record_path.read_text(encoding="utf-8")

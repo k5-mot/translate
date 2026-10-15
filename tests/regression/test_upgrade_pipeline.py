@@ -40,7 +40,7 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     )
     documents = {role: Document() for role in roles}
     prepare = Mock(return_value=(documents, {}))
-    monkeypatch.setattr(module, "prepare_documents", prepare)
+    monkeypatch.setattr(module.PipelineRun, "prepare_documents", prepare)
     identifier = str(uuid7())
     root = tmp_path / "outputs"
     entry = module.review_pdfs if kind == "review" else module.upgrade_pdfs

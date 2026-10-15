@@ -28,8 +28,8 @@ from uuid_utils import uuid7
 
 from translate.adapters.artifact_store import (
     ArtifactError,
+    ArtifactStore,
     ProcessingInUseError,
-    cancel_processing,
     load_model,
     replace_path,
     sha256_file,
@@ -2875,7 +2875,7 @@ def _force_stop(entry: HistoryEntry, registry: WorkerRegistry) -> bool:
             current.updated_at = datetime.now(UTC)
             write_model(entry.record_path, current)
         else:
-            cancel_processing(current, entry.record_path)
+            ArtifactStore(current, entry.record_path).cancel_processing()
     return True
 
 

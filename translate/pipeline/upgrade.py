@@ -8,8 +8,8 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from translate.adapters.artifact_store import (
+    ArtifactStore,
     ProcessingLock,
-    cancel_processing,
     describe_artifact,
     load_model,
     write_model,
@@ -32,13 +32,12 @@ from translate.models.upgrade import (
 )
 from translate.pipeline import (
     InputError,
+    PipelineRun,
     agent_units,
     choose_action,
     completed_agent_calls,
     observe_documents,
     pdf_inputs,
-    perform_task,
-    prepare_documents,
     resolve_processing_id,
 )
 
@@ -117,14 +116,10 @@ def upgrade_pdfs(
             write_model(record_path, record)
         with processing_logging(root, config.log_level):
             try:
-                documents, _ = prepare_documents(
-                    sources, record, record_path, root, config
-                )
+                execution = PipelineRun(ArtifactStore(record, record_path), config)
+                documents, _ = execution.prepare_documents(sources)
                 directory = root / "upgrade" / "diff"
-                perform_task(
-                    record,
-                    record_path,
-                    root,
+                execution.perform_task(
                     TaskName.DIFF,
                     documents,
                     [(directory, UpgradeAgent(documents, directory, config).run)],
@@ -135,7 +130,7 @@ def upgrade_pdfs(
                 record.updated_at = datetime.now(UTC)
                 write_model(record_path, record)
             except KeyboardInterrupt:
-                cancel_processing(record, record_path)
+                ArtifactStore(record, record_path).cancel_processing()
                 raise
     return UpgradeOutcome(
         upgrade_id=identifier, processing_directory=root, plan=result_path
