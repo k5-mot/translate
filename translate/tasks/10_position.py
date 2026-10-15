@@ -5,8 +5,11 @@ import json
 import re
 import statistics
 from collections import defaultdict
+from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+import pypdfium2 as pdfium
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
 
@@ -355,13 +358,15 @@ def _merge_table(  # noqa: PLR0911
 class PositionTask:
     """対象文書と診断・走査状態を保持し、読み順補正と断片結合を実行する。"""
 
-    def __init__(self, source: dict[str, Any]) -> None:
+    def __init__(self, source: dict[str, Any], pdf_source: Path | None = None) -> None:
         """変更前の文書を保持し、処理時には複製を補正する。
 
         Args:
             source: 座標と参照を持つDocling文書。元の値は変更しない。
+            pdf_source: 見出しの行境界を照合する原本PDF。省略時は分割しない。
         """
         self.source = source
+        self.pdf_source = pdf_source
 
     def run(self) -> tuple[dict[str, Any], dict[str, Any]]:
         """文書を補正し、順序変更・結合・警告の記録を返す。
@@ -373,16 +378,142 @@ class PositionTask:
         self.changed: list[dict[str, Any]] = []
         self.merged: list[dict[str, str]] = []
         self.warnings: list[dict[str, str]] = []
+        self.split_headings: list[str] = []
         self.merge_visited: set[int] = set()
-        self._sort_children(self.document.get("body", {}))
         self.unsafe = self._unsafe_merge_refs()
+        if self.pdf_source is not None:
+            with pdfium.PdfDocument(self.pdf_source) as pdf:
+                self._split_headings(pdf)
+        self._sort_children(self.document.get("body", {}))
         self._merge_fragments(self.document.get("body", {}))
         self.document = _compact_fragments(self.document, self.merged)
         return self.document, {
             "reordered": self.changed,
             "merged": self.merged,
             "warnings": self.warnings,
+            "split_headings": self.split_headings,
         }
+
+    def _split_headings(self, pdf: pdfium.PdfDocument) -> None:
+        """PDF上で確認できた番号付き見出しの行を、独立した要素へ戻す。
+
+        Args:
+            pdf: Docling文書と同じ原本PDF。
+        """
+        texts = self.document.get("texts", [])
+        for item in list(texts):
+            ref = item.get("self_ref", "")
+            parent = self._resolve(item.get("parent", {}).get("$ref", ""))
+            if (
+                item.get("label") != "section_header"
+                or item.get("children")
+                or ref in self.unsafe
+                or re.fullmatch(r"#/texts/(?:0|[1-9][0-9]*)", ref) is None
+                or self._resolve(ref) is not item
+                or parent is None
+                or {"$ref": ref} not in parent.get("children", [])
+                or len(item.get("prov", [])) != 1
+                or _geometry(item) is None
+            ):
+                continue
+            lines = self._heading_lines(item, pdf)
+            if not lines:
+                continue
+            refs = []
+            for index, (line, box, level) in enumerate(lines):
+                part = copy.deepcopy(item)
+                part["text"] = line
+                if "orig" in part:
+                    part["orig"] = line
+                part["level"] = level
+                part["prov"][0].update(bbox=box, charspan=[0, len(line)])
+                if index:
+                    part["self_ref"] = f"#/texts/{len(texts)}"
+                    texts.append(part)
+                else:
+                    texts[int(ref.rsplit("/", 1)[1])] = part
+                refs.append({"$ref": part["self_ref"]})
+            offset = parent["children"].index({"$ref": ref})
+            parent["children"][offset : offset + 1] = refs
+            self.split_headings.append(ref)
+
+    def _heading_lines(
+        self, item: dict[str, Any], pdf: pdfium.PdfDocument
+    ) -> list[tuple[str, dict[str, Any], int]]:
+        """原本の本文・番号・座標が一意に一致する複数行だけを返す。
+
+        Args:
+            item: 一ページのbboxを持つ見出し。
+            pdf: 行境界と文字座標を読む原本PDF。
+
+        Returns:
+            各行の本文・BOTTOMLEFT座標・見出しlevel。不一致なら空配列。
+        """
+        prov = item["prov"][0]
+        if not 1 <= prov["page_no"] <= len(pdf):
+            return []
+        with (
+            closing(pdf[prov["page_no"] - 1]) as page,
+            closing(page.get_textpage()) as text,
+        ):
+            box = prov["bbox"]
+            left, right = sorted((box["l"], box["r"]))
+            top, bottom = box["t"], box["b"]
+            if str(box.get("coord_origin", "BOTTOMLEFT")).upper() == "TOPLEFT":
+                top, bottom = page.get_height() - top, page.get_height() - bottom
+            top, bottom = max(top, bottom), min(top, bottom)
+            lines = [
+                line.strip()
+                for line in text.get_text_bounded(left, bottom, right, top).splitlines()
+                if line.strip()
+            ]
+            numbers = [
+                re.match(r"^([0-9]{1,3}(?:\.[0-9]+)*)[.)、\uFF1A:]?\s+", line)
+                for line in lines
+            ]
+            if (
+                len(lines) < 2
+                or len({match[1] for match in numbers if match}) != len(lines)
+                or " ".join(" ".join(lines).split())
+                != " ".join(item.get("text", "").split())
+                or " ".join(item.get("orig", item["text"]).split())
+                != " ".join(item["text"].split())
+            ):
+                return []
+            result = []
+            for line, number in zip(lines, numbers, strict=True):
+                if number is None:
+                    return []
+                boxes = []
+                with closing(text.search(line, match_case=True)) as search:
+                    while found := search.get_next():
+                        rectangles = [
+                            text.get_rect(i) for i in range(text.count_rects(*found))
+                        ]
+                        if not rectangles:
+                            continue
+                        line_left = min(rect[0] for rect in rectangles)
+                        line_bottom = min(rect[1] for rect in rectangles)
+                        line_right = max(rect[2] for rect in rectangles)
+                        line_top = max(rect[3] for rect in rectangles)
+                        # DoclingとPDFiumのglyph境界の丸め差だけを1 pt以内で許容する。
+                        if (
+                            left - 1 <= line_left < line_right <= right + 1
+                            and bottom - 1 <= line_bottom < line_top <= top + 1
+                        ):
+                            boxes.append(
+                                {
+                                    "l": line_left,
+                                    "b": line_bottom,
+                                    "r": line_right,
+                                    "t": line_top,
+                                    "coord_origin": "BOTTOMLEFT",
+                                }
+                            )
+                if len(boxes) != 1 or (result and boxes[0]["t"] > result[-1][1]["b"]):
+                    return []
+                result.append((line, boxes[0], min(number[1].count(".") + 1, 6)))
+            return result
 
     def _resolve(self, ref: str) -> dict[str, Any] | None:
         """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
@@ -682,19 +813,20 @@ class PositionTask:
                 self._sort_children(target, visited)
 
 
-def position(source: Path, output_dir: Path) -> Path:
+def position(source: Path, output_dir: Path, pdf_source: Path | None = None) -> Path:
     """読み順を補正してJSONとreportを原子的に保存する。
 
     Args:
         source (Path): 変換または検証対象の入力Source。
         output_dir (Path): Task成果物の出力Directory。
+        pdf_source: 見出しの行境界を照合する原本PDF。省略時は分割しない。
 
     Returns:
         Path: 読み順を補正してJSONとreportを原子的に保存する。
     """
 
     document, report = PositionTask(
-        json.loads(source.read_text(encoding="utf-8"))
+        json.loads(source.read_text(encoding="utf-8")), pdf_source
     ).run()
     with temporary_task_directory(output_dir) as temporary:
         write_json(temporary / "document.json", document, atomic=False)

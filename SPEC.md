@@ -139,7 +139,7 @@ Upgradeは改訂による変更箇所を確認する操作とする。英文旧�
 | DOCLING | `SplitManifest` | `DoclingManifest` | `manifest.json`, `part-*/result.zip`, `part-*/job.json` |
 | UNPACK | `DoclingManifest` | `UnpackManifest` | `manifest.json`, `part-*/document.json`, `part-*/assets/` |
 | MERGE | `UnpackManifest`, 入力PDF | Docling Schema JSONのPath | `document.json`, `assets/` |
-| POSITION | Docling Schema JSON | Path | `document.json`, `report.json` |
+| POSITION | Docling Schema JSON・原本PDF | Path | `document.json`, `report.json` |
 | NORMALIZE | 位置補正済みJSON | Path | `document.json`, `report.json` |
 | LOAD | 正規化済みJSON | `Document` | `document.json` |
 | STRUCTURE | `Document`, 原本PDF, 規則 | `Document` | `document.json`, `pages/page-*.json`, `calls/*/` |
@@ -1801,6 +1801,7 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 `PositionTask` は文書の複製と走査済み参照・結合結果・警告を保持し、読み順補正を行う。
 段組は欄外のHeader・Footer・脚注を除いて判定し、縦方向に重なる段は左から右へ読む。
 上下に分かれた領域は上から下へ並べ、中央配置の見出しを下方の本文より後ろへ送らない。
+複数の番号付き見出しが一要素に結合されている場合は、原本PDFの同じ領域から各行と座標を読み、空白を正規化した本文が一致するときだけ分割する。各行の番号が異なり、座標と所有参照が一意であることを確認し、本文・読み順・親子参照を保持して番号の深さをlevelへ反映する。段落や単なる折り返し、本文や参照が曖昧な要素は分割しない。`report.json` の `split_headings` には分割前の要素IDを記録する。
 `MarkdownTask` は `Pandoc` Adapterを受け取り、文書内の各Blockを変換する。
 `Pandoc` はTimeoutと確認済みの実行fileを保持し、同じインスタンス内では機能確認を繰り返さない。
 

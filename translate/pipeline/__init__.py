@@ -184,6 +184,8 @@ class PipelineRun:
                         self.store.root,
                     )
                     merge_roots[role] = directory
+                elif task == TaskName.POSITION:
+                    arguments = (current, directory, source)
                 else:
                     arguments = (current, directory)
                 jobs.append((directory, partial(action, *arguments)))
