@@ -1769,7 +1769,7 @@ tests/
 |---|---|
 | Pipeline | 入力、処理記録、Taskの実行順序、Resume、公開条件 |
 | Review・Upgrade Agent | 対象文書、確認済み範囲、途中結果、LLMによる次の操作の選択 |
-| Task | 文書処理の依存関係と、その処理内で共有する設定・状態 |
+| Task | 文書処理の依存関係と、その処理内で共有する設定・状態。`StructureTask` が見出し履歴を、`TranslationTask` が参照用語・旧訳文脈と分割要求を管理し、`run()` で文書を処理する |
 | Adapter | 接続設定、client、外部形式の解釈および入出力。`EmbeddingClient` はbatch要求を、`QdrantStore` はcollectionへの登録・検索と接続の解放を管理する |
 | UI | 画面の入力、履歴、workerへの起動依頼と結果の表示 |
 | データモデル | 検証済みデータと、そのデータ自身の参照・変換操作。`Document.text_units()` と `unit_index()` が本文・Caption・表セルを扱い、`ReviewTarget.from_document()` が翻訳文書からレビュー対象を作る |

@@ -41,7 +41,7 @@ from translate.pipeline import (
     resolve_processing_id,
 )
 
-structure = import_module("translate.tasks.13_structure").structure
+StructureTask = import_module("translate.tasks.13_structure").StructureTask
 create_cover = import_module("translate.tasks.51_cover").create_cover
 publish_pandoc = import_module("translate.tasks.53_pandoc").publish
 publish_ooxml = import_module("translate.tasks.54_ooxml").publish
@@ -49,7 +49,7 @@ lint = import_module("translate.tasks.50_lint").lint
 convert_document = import_module("translate.tasks.52_markdown").convert_document
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
 review = import_module("translate.tasks.41_review").review
-translate_with_llm = import_module("translate.tasks.30_translate").translate
+TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
 
 
 class PipelineError(RuntimeError):
@@ -176,13 +176,10 @@ def _translate_locked(
             (
                 structure_dir,
                 partial(
-                    structure,
+                    StructureTask(config, structure_dir, rules["STRUCTURE"]).run,
                     document,
                     source,
-                    structure_dir,
                     root,
-                    config,
-                    rules["STRUCTURE"],
                 ),
             )
         ],
@@ -198,13 +195,11 @@ def _translate_locked(
             (
                 translation_dir,
                 partial(
-                    translate_with_llm,
+                    TranslationTask(
+                        config, translation_dir, rules["TRANSLATE"], glossary
+                    ).run,
                     document,
-                    translation_dir,
                     root,
-                    config,
-                    rules["TRANSLATE"],
-                    glossary,
                 ),
             )
         ],

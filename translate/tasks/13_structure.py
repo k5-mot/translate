@@ -82,92 +82,218 @@ class StructureResponse(StructureModel):
     patches: list[StructurePatch] = Field(default_factory=list)
 
 
-def structure(
-    document: Document,
-    source_pdf: Path,
-    task_directory: Path,
-    processing_directory: Path,
-    config: Config,
-    rules: str,
-) -> Document:
-    """page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+class StructureTask:
+    """構造補正の設定と保存先を保持し、文書を通して見出し階層を確認する。"""
 
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        source_pdf (Path): Page画像を取得する原文PDF Path。
-        task_directory (Path): 対象Taskの成果物Directory。
-        processing_directory (Path): 対象処理の成果物Directory。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        rules (str): LLM Promptへ含める追加規則。
+    def __init__(self, config: Config, task_directory: Path, rules: str) -> None:
+        """構造補正に使う設定・規則と保存先を受け取る。
 
-    Returns:
-        Document: page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+        Args:
+            config: VLMの接続と要求・再試行の上限。
+            task_directory: Page画像、Callおよび補正後文書の保存先。
+            rules: 構造補正Promptに追加する判断規則。
+        """
+        self.config = config
+        self.task_directory = task_directory
+        self.rules = rules
+        self.heading_history: list[dict[str, object]] = []
 
-    Raises:
-        ValueError: `structure model is required`と判定した場合。
-    """
+    def run(
+        self,
+        document: Document,
+        source_pdf: Path,
+        processing_directory: Path,
+    ) -> Document:
+        """page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
 
-    if config.openai_structure_model is None:
-        raise ValueError("structure model is required")
-    task_directory.mkdir(parents=True, exist_ok=True)
-    diagnostics_path = processing_directory / "task-structure.json"
-    diagnostics: list[str] = []
-    _write_diagnostics(diagnostics_path, diagnostics)
-    updated = document.model_copy(deep=True)
-    baseline_levels = {
-        block.id: block.level
-        for page in updated.pages
-        for block in page.blocks
-        if block.kind == "heading"
-    }
-    client = LLMClient(config)
-    client.deadline = time.monotonic() + config.llm_task_deadline_seconds
-    try:
-        used_call_ids: list[str] = []
-        heading_history: list[dict[str, object]] = []
-        for page in updated.pages:
-            page_responses: list[tuple[str, StructureResponse]] = []
-            image = task_directory / "pages" / f"page-{page.number:04d}.png"
-            if not image.is_file():
-                render_page(source_pdf, page.number, image, 144)
-            _bound_image(image)
-            overhead = len(rules.encode("utf-8")) + 2048
-            chunks = _chunks(
-                page.blocks,
-                config.structure_max_blocks,
-                config.structure_input_tokens - overhead,
+        Args:
+            document (Document): 変換または検証対象のDocument。
+            source_pdf (Path): Page画像を取得する原文PDF Path。
+            processing_directory (Path): 対象処理の成果物Directory。
+
+        Returns:
+            Document: page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+
+        Raises:
+            ValueError: `structure model is required`と判定した場合。
+        """
+
+        if self.config.openai_structure_model is None:
+            raise ValueError("structure model is required")
+        self.task_directory.mkdir(parents=True, exist_ok=True)
+        diagnostics_path = processing_directory / "task-structure.json"
+        diagnostics: list[str] = []
+        _write_diagnostics(diagnostics_path, diagnostics)
+        updated = document.model_copy(deep=True)
+        baseline_levels = {
+            block.id: block.level
+            for page in updated.pages
+            for block in page.blocks
+            if block.kind == "heading"
+        }
+        client = LLMClient(self.config)
+        client.deadline = time.monotonic() + self.config.llm_task_deadline_seconds
+        try:
+            used_call_ids: list[str] = []
+            self.heading_history: list[dict[str, object]] = []
+            for page in updated.pages:
+                page_responses: list[tuple[str, StructureResponse]] = []
+                image = self.task_directory / "pages" / f"page-{page.number:04d}.png"
+                if not image.is_file():
+                    render_page(source_pdf, page.number, image, 144)
+                _bound_image(image)
+                overhead = len(self.rules.encode("utf-8")) + 2048
+                chunks = _chunks(
+                    page.blocks,
+                    self.config.structure_max_blocks,
+                    self.config.structure_input_tokens - overhead,
+                )
+                for index, blocks in enumerate(chunks):
+                    page_responses.extend(
+                        self._execute(
+                            client=client,
+                            blocks=blocks,
+                            image=image,
+                            lineage=[f"page-{page.number:04d}", f"chunk-{index:04d}"],
+                            depth=0,
+                        )
+                    )
+                used_call_ids.extend(call_id for call_id, _ in page_responses)
+                _apply_page(page, page_responses, diagnostics)
+                self.heading_history.extend(_page_heading_history(page))
+                del self.heading_history[:-8]
+                write_model(
+                    self.task_directory / "pages" / f"page-{page.number:04d}.json", page
+                )
+            _normalize_heading_levels(updated, baseline_levels, diagnostics)
+            for page in updated.pages:
+                write_model(
+                    self.task_directory / "pages" / f"page-{page.number:04d}.json", page
+                )
+            _write_diagnostics(diagnostics_path, diagnostics)
+            write_model(
+                self.task_directory / "call-index.json",
+                LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
             )
-            for index, blocks in enumerate(chunks):
-                page_responses.extend(
-                    _execute(
+            write_model(self.task_directory / "document.json", updated)
+            return updated
+        finally:
+            client.client.close()
+
+    def _execute(
+        self,
+        *,
+        client: LLMClient,
+        blocks: list[Block],
+        image: Path,
+        lineage: list[str],
+        depth: int,
+    ) -> list[tuple[str, StructureResponse]]:
+        """一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+
+        Args:
+            client (LLMClient): 外部処理を呼び出すClient。
+            blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
+            image (Path): Multimodal Callへ添付する画像File。
+            lineage (list[str]): 親から子へ連なるLLM Call ID列。
+            depth (int): 分割LLM Callの現在の深さ。
+
+        Returns:
+            list[tuple[str, StructureResponse]]: 一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+        """
+
+        target_ids = [block.id for block in blocks]
+        call_id = llm_call_id("STRUCTURE", target_ids, lineage)
+        call_directory = self.task_directory / "calls" / call_id
+        fingerprint = canonical_hash(
+            {
+                "task": "STRUCTURE",
+                "operation": "structure",
+                "blocks": [block.model_dump(mode="json") for block in blocks],
+                "image": sha256_file(image),
+            }
+        )
+        reusable = load_reusable_llm_response(
+            call_directory,
+            call_id=call_id,
+            fingerprint=fingerprint,
+            response_type=StructureResponse,
+        )
+        if reusable is not None:
+            return [(call_id, reusable[1])]
+        artifact = begin_llm_call(
+            call_directory,
+            call_id=call_id,
+            task="STRUCTURE",
+            fingerprint=fingerprint,
+            target_ids=target_ids,
+            previous_attempts=_previous_attempts(call_directory),
+        )
+        try:
+            result = client.structured(
+                task="STRUCTURE",
+                model=self.config.openai_structure_model or "",
+                response_type=StructureResponse,
+                system=(
+                    "Inspect the page image and return only necessary structural patches. "
+                    "Never rewrite text or IDs. Caption is not a block kind; associate a "
+                    "caption only with caption_source_id. Heading levels are document-global; "
+                    "do not reset them at a page boundary.\n\n" + self.rules
+                ),
+                user=json.dumps(
+                    {
+                        "heading_history": self.heading_history,
+                        "blocks": [_block_payload(block) for block in blocks],
+                    },
+                    ensure_ascii=False,
+                ),
+                contract=(
+                    '{"patches":[{"block_id":string,"kind"?:string,"level"?:integer,'
+                    '"alert_kind"?:string,"caption_source_id"?:string}]}. '
+                    f"At most {len(blocks)} patches."
+                ),
+                native_schema=_schema(len(blocks)),
+                input_tokens=self.config.structure_input_tokens,
+                output_tokens=self.config.structure_output_tokens,
+                image=image,
+            )
+        except (LLMInputExceededError, LLMOutputExceededError) as error:
+            if len(blocks) < 2 or depth >= self.config.llm_split_max_depth:
+                fail_llm_call(call_directory, artifact, error, attempts=1)
+                raise
+            middle = len(blocks) // 2
+            groups = (blocks[:middle], blocks[middle:])
+            child_ids = [
+                llm_call_id(
+                    "STRUCTURE", [block.id for block in group], [*lineage, str(index)]
+                )
+                for index, group in enumerate(groups)
+            ]
+            mark_split_llm_call(call_directory, artifact, child_ids)
+            values: list[tuple[str, StructureResponse]] = []
+            for index, group in enumerate(groups):
+                values.extend(
+                    self._execute(
                         client=client,
-                        config=config,
-                        blocks=blocks,
+                        blocks=group,
                         image=image,
-                        task_directory=task_directory,
-                        rules=rules,
-                        heading_history=heading_history,
-                        lineage=[f"page-{page.number:04d}", f"chunk-{index:04d}"],
-                        depth=0,
+                        lineage=[*lineage, str(index)],
+                        depth=depth + 1,
                     )
                 )
-            used_call_ids.extend(call_id for call_id, _ in page_responses)
-            _apply_page(page, page_responses, diagnostics)
-            heading_history.extend(_page_heading_history(page))
-            del heading_history[:-8]
-            write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
-        _normalize_heading_levels(updated, baseline_levels, diagnostics)
-        for page in updated.pages:
-            write_model(task_directory / "pages" / f"page-{page.number:04d}.json", page)
-        _write_diagnostics(diagnostics_path, diagnostics)
-        write_model(
-            task_directory / "call-index.json",
-            LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
+            return values
+        except LLMError as error:
+            fail_llm_call(call_directory, artifact, error, attempts=1)
+            raise
+        complete_llm_call(
+            call_directory,
+            artifact,
+            result.response,
+            attempts=result.attempts,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
         )
-        write_model(task_directory / "document.json", updated)
-        return updated
-    finally:
-        client.client.close()
+        return [(call_id, result.response)]
 
 
 def _chunks(
@@ -308,133 +434,6 @@ def _bound_image(path: Path) -> None:
         resized.save(path, format="PNG")
     finally:
         resized.close()
-
-
-def _execute(
-    *,
-    client: LLMClient,
-    config: Config,
-    blocks: list[Block],
-    image: Path,
-    task_directory: Path,
-    rules: str,
-    heading_history: list[dict[str, object]],
-    lineage: list[str],
-    depth: int,
-) -> list[tuple[str, StructureResponse]]:
-    """一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
-
-    Args:
-        client (LLMClient): 外部処理を呼び出すClient。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
-        image (Path): Multimodal Callへ添付する画像File。
-        task_directory (Path): 対象Taskの成果物Directory。
-        rules (str): LLM Promptへ含める追加規則。
-        heading_history (list[dict[str, object]]): 前Pageまでの確定見出し階層。
-        lineage (list[str]): 親から子へ連なるLLM Call ID列。
-        depth (int): 分割LLM Callの現在の深さ。
-
-    Returns:
-        list[tuple[str, StructureResponse]]: 一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
-    """
-
-    target_ids = [block.id for block in blocks]
-    call_id = llm_call_id("STRUCTURE", target_ids, lineage)
-    call_directory = task_directory / "calls" / call_id
-    fingerprint = canonical_hash(
-        {
-            "task": "STRUCTURE",
-            "operation": "structure",
-            "blocks": [block.model_dump(mode="json") for block in blocks],
-            "image": sha256_file(image),
-        }
-    )
-    reusable = load_reusable_llm_response(
-        call_directory,
-        call_id=call_id,
-        fingerprint=fingerprint,
-        response_type=StructureResponse,
-    )
-    if reusable is not None:
-        return [(call_id, reusable[1])]
-    artifact = begin_llm_call(
-        call_directory,
-        call_id=call_id,
-        task="STRUCTURE",
-        fingerprint=fingerprint,
-        target_ids=target_ids,
-        previous_attempts=_previous_attempts(call_directory),
-    )
-    try:
-        result = client.structured(
-            task="STRUCTURE",
-            model=config.openai_structure_model or "",
-            response_type=StructureResponse,
-            system=(
-                "Inspect the page image and return only necessary structural patches. "
-                "Never rewrite text or IDs. Caption is not a block kind; associate a "
-                "caption only with caption_source_id. Heading levels are document-global; "
-                "do not reset them at a page boundary.\n\n" + rules
-            ),
-            user=json.dumps(
-                {
-                    "heading_history": heading_history,
-                    "blocks": [_block_payload(block) for block in blocks],
-                },
-                ensure_ascii=False,
-            ),
-            contract=(
-                '{"patches":[{"block_id":string,"kind"?:string,"level"?:integer,'
-                '"alert_kind"?:string,"caption_source_id"?:string}]}. '
-                f"At most {len(blocks)} patches."
-            ),
-            native_schema=_schema(len(blocks)),
-            input_tokens=config.structure_input_tokens,
-            output_tokens=config.structure_output_tokens,
-            image=image,
-        )
-    except (LLMInputExceededError, LLMOutputExceededError) as error:
-        if len(blocks) < 2 or depth >= config.llm_split_max_depth:
-            fail_llm_call(call_directory, artifact, error, attempts=1)
-            raise
-        middle = len(blocks) // 2
-        groups = (blocks[:middle], blocks[middle:])
-        child_ids = [
-            llm_call_id(
-                "STRUCTURE", [block.id for block in group], [*lineage, str(index)]
-            )
-            for index, group in enumerate(groups)
-        ]
-        mark_split_llm_call(call_directory, artifact, child_ids)
-        values: list[tuple[str, StructureResponse]] = []
-        for index, group in enumerate(groups):
-            values.extend(
-                _execute(
-                    client=client,
-                    config=config,
-                    blocks=group,
-                    image=image,
-                    task_directory=task_directory,
-                    rules=rules,
-                    heading_history=heading_history,
-                    lineage=[*lineage, str(index)],
-                    depth=depth + 1,
-                )
-            )
-        return values
-    except LLMError as error:
-        fail_llm_call(call_directory, artifact, error, attempts=1)
-        raise
-    complete_llm_call(
-        call_directory,
-        artifact,
-        result.response,
-        attempts=result.attempts,
-        input_tokens=result.input_tokens,
-        output_tokens=result.output_tokens,
-    )
-    return [(call_id, result.response)]
 
 
 def _apply_page(

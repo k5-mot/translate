@@ -64,9 +64,8 @@ review_user_payload = import_module("translate.tasks.41_review")._user_payload  
 run_review = import_module("translate.tasks.41_review").review
 TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
 TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
-execute_translation = import_module("translate.tasks.30_translate")._execute  # noqa: SLF001
+TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
 translation_schema = import_module("translate.tasks.30_translate")._schema  # noqa: SLF001
-run_translation = import_module("translate.tasks.30_translate").translate
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -87,11 +86,37 @@ def _unit(identifier: str, source: str, translated: str | None = None) -> TextUn
     )
 
 
-def test_translation_splits_missing_ids_after_retry(tmp_path: Path) -> None:
+def _translation_document(spans: list[TextSpan]) -> Document:
+    """指定Spanを持つ本文を作り、Task全体の分割・適用・保存を試験する。"""
+    return Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="body",
+                        order=0,
+                        kind="paragraph",
+                        content=TextUnit(id="body/content", spans=spans),
+                    )
+                ],
+            )
+        ]
+    )
+
+
+def test_translation_splits_missing_ids_after_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """一括応答で欠けた訳を再送・分割し、全対象の訳を集める。"""
 
     config = Config(openai_base_url="http://llm", openai_translation_model="model")
     client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     responses = [
         [("a", "訳A"), ("b", "訳B")],
         [],
@@ -115,33 +140,38 @@ def test_translation_splits_missing_ids_after_retry(tmp_path: Path) -> None:
     )
     client.structured = structured  # type: ignore[method-assign]
 
-    calls = execute_translation(
-        client=client,
+    calls = TranslationTask(
         config=config,
-        spans=[TextSpan(id=key, source=key) for key in "abcd"],
         task_directory=tmp_path,
         rules="",
         glossary="",
-        lineage=["chunk-0000"],
-        depth=0,
-        allow_missing_retry=True,
-        diagnostics=[],
         previous_context={},
+    ).run(
+        _translation_document([TextSpan(id=key, source=key) for key in "abcd"]),
+        tmp_path,
     )
 
     assert structured.call_count == 4
+    assert client.client.is_closed()
     assert {
-        item.span_id: item.text
-        for _, response in calls
-        for item in response.translations
+        span.id: span.translated
+        for _, unit in calls.text_units()
+        for span in unit.spans
     } == {"a": "訳A", "b": "訳B", "c": "訳C", "d": "訳D"}
 
 
-def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
+def test_translation_rejects_missing_single_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """最小単位の再送後も訳が欠けたら空訳を確定せず失敗する。"""
 
     config = Config(openai_base_url="http://llm", openai_translation_model="model")
     client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     structured = MagicMock(
         return_value=StructuredResult(
             response=TranslationResponse(translations=[]),
@@ -153,28 +183,29 @@ def test_translation_rejects_missing_single_span(tmp_path: Path) -> None:
     client.structured = structured  # type: ignore[method-assign]
 
     with pytest.raises(LLMInvalidResponseError, match="span-a"):
-        execute_translation(
-            client=client,
+        TranslationTask(
             config=config,
-            spans=[TextSpan(id="span-a", source="A")],
             task_directory=tmp_path,
             rules="",
             glossary="",
-            lineage=["chunk-0000"],
-            depth=0,
-            allow_missing_retry=True,
-            diagnostics=[],
             previous_context={},
-        )
+        ).run(_translation_document([TextSpan(id="span-a", source="A")]), tmp_path)
 
     assert structured.call_count == 2
 
 
-def test_translation_accepts_span_id_without_fragment_marker(tmp_path: Path) -> None:
+def test_translation_accepts_span_id_without_fragment_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """LLMが先頭の#だけ落としたIDの訳を元のSpanへ適用する。"""
 
     config = Config(openai_base_url="http://llm", openai_translation_model="model")
     client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     structured = MagicMock(
         return_value=StructuredResult(
             response=TranslationResponse(
@@ -191,46 +222,45 @@ def test_translation_accepts_span_id_without_fragment_marker(tmp_path: Path) -> 
     )
     client.structured = structured  # type: ignore[method-assign]
 
-    calls = execute_translation(
-        client=client,
+    calls = TranslationTask(
         config=config,
-        spans=[
-            TextSpan(id="#/texts/48/content/span-0001", source="Transmission Media;")
-        ],
         task_directory=tmp_path,
         rules="",
         glossary="",
-        lineage=["chunk-0000"],
-        depth=0,
-        allow_missing_retry=True,
-        diagnostics=[],
         previous_context={},
+    ).run(
+        _translation_document(
+            [TextSpan(id="#/texts/48/content/span-0001", source="Transmission Media;")]
+        ),
+        tmp_path,
     )
 
     assert structured.call_count == 1
-    assert calls[0][1].translations == [
-        TranslationItem(span_id="#/texts/48/content/span-0001", text="伝送媒体;")
-    ]
+    assert calls.pages[0].blocks[0].content.spans[0].translated == "伝送媒体;"
 
 
-def test_translation_does_not_restart_exhausted_schema_retries(tmp_path: Path) -> None:
+def test_translation_does_not_restart_exhausted_schema_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """AdapterのSchema再試行を使い切ったCallを別方式で追加送信しない。"""
     config = Config(openai_base_url="http://llm", openai_translation_model="model")
     client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     client.structured.side_effect = LLMInvalidResponseError("invalid JSON")
     with pytest.raises(LLMInvalidResponseError):
-        execute_translation(
-            client=client,
+        TranslationTask(
             config=config,
-            spans=[TextSpan(id="span-a", source="Original sentence.")],
             task_directory=tmp_path,
             rules="",
             glossary="",
-            lineage=["chunk-0000"],
-            depth=0,
-            allow_missing_retry=True,
-            diagnostics=[],
             previous_context={},
+        ).run(
+            _translation_document([TextSpan(id="span-a", source="Original sentence.")]),
+            tmp_path,
         )
     assert client.structured.call_count == 1
     calls = [
@@ -241,11 +271,18 @@ def test_translation_does_not_restart_exhausted_schema_retries(tmp_path: Path) -
     assert calls[0]["status"] == "failed"
 
 
-def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> None:
+def test_translation_retries_single_missing_span_after_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """分割済みCallの欠落一件を単独で再送して訳文を回収する。"""
 
     config = Config(openai_base_url="http://llm", openai_translation_model="model")
     client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     structured = MagicMock(
         side_effect=[
             StructuredResult(
@@ -276,26 +313,22 @@ def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> 
     )
     client.structured = structured  # type: ignore[method-assign]
 
-    calls = execute_translation(
-        client=client,
+    calls = TranslationTask(
         config=config,
-        spans=[TextSpan(id=key, source=key) for key in "ab"],
         task_directory=tmp_path,
         rules="",
         glossary="",
-        lineage=["chunk-0000", "missing"],
-        depth=1,
-        allow_missing_retry=False,
-        diagnostics=[],
         previous_context={},
+    ).run(
+        _translation_document([TextSpan(id=key, source=key) for key in "ab"]), tmp_path
     )
 
     assert structured.call_count == 3
     assert {
-        item.span_id: item.text
-        for _, response in calls
-        for item in response.translations
-        if item.text
+        span.id: span.translated
+        for _, unit in calls.text_units()
+        for span in unit.spans
+        if span.translated
     } == {"a": "訳A", "b": "訳B"}
 
 
@@ -303,11 +336,15 @@ def test_translation_retries_single_missing_span_after_split(tmp_path: Path) -> 
     "translation", ["", "THE BIG PICTURE", "(省略)", "余計" * 300, "Army:"]
 )
 def test_translation_preserves_model_text_without_quality_retries(
-    tmp_path: Path,
-    translation: str,
+    tmp_path: Path, translation: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """長さ・同文・軍種名による補正や再送を行わず、品質判断をREVIEWへ渡す。"""
     client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     client.structured.return_value = StructuredResult(
         response=TranslationResponse(
             translations=[TranslationItem(span_id="span-a", text=translation)]
@@ -316,26 +353,30 @@ def test_translation_preserves_model_text_without_quality_retries(
         input_tokens=10,
         output_tokens=10,
     )
-    calls = execute_translation(
-        client=client,
+    calls = TranslationTask(
         config=Config(openai_translation_model="model"),
-        spans=[TextSpan(id="span-a", source="THE BIG PICTURE")],
         task_directory=tmp_path,
         rules="",
         glossary="",
-        lineage=["chunk-0000"],
-        depth=0,
-        allow_missing_retry=True,
-        diagnostics=[],
         previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
     )
     assert client.structured.call_count == 1
-    assert calls[-1][1].translations[0].text == translation
+    assert calls.pages[0].blocks[0].content.spans[0].translated == translation
 
 
-def test_translation_reuses_calls_when_rules_and_model_change(tmp_path: Path) -> None:
+def test_translation_reuses_calls_when_rules_and_model_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """入力が同じなら規則・用語集・modelの変更で成功応答を再送しない。"""
     client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     client.structured.return_value = StructuredResult(
         response=TranslationResponse(
             translations=[TranslationItem(span_id="span-a", text="THE BIG PICTURE")]
@@ -344,27 +385,25 @@ def test_translation_reuses_calls_when_rules_and_model_change(tmp_path: Path) ->
         input_tokens=10,
         output_tokens=10,
     )
-    kwargs = {
-        "client": client,
-        "spans": [TextSpan(id="span-a", source="THE BIG PICTURE")],
-        "task_directory": tmp_path,
-        "lineage": ["chunk-0000"],
-        "depth": 0,
-        "allow_missing_retry": True,
-        "diagnostics": [],
-        "previous_context": {},
-    }
-    first = execute_translation(
-        **kwargs,
+    first = TranslationTask(
         config=Config(openai_translation_model="first"),
+        task_directory=tmp_path,
         rules="",
         glossary="",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
     )
-    second = execute_translation(
-        **kwargs,
+    second = TranslationTask(
         config=Config(openai_translation_model="second"),
+        task_directory=tmp_path,
         rules="Updated rules",
         glossary="english-short,japanese\\nPICTURE,全体像",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
     )
     assert first == second
     assert client.structured.call_count == 1
@@ -405,31 +444,33 @@ def test_translation_short_ids_restore_original_spans_and_cache(
     )
     completion.usage = None
     client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
     create = MagicMock(return_value=completion)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
-    kwargs = {
-        "client": client,
-        "config": config,
-        "spans": spans,
-        "task_directory": tmp_path,
-        "rules": "",
-        "glossary": "",
-        "lineage": ["chunk-0000"],
-        "depth": 0,
-        "allow_missing_retry": True,
-        "diagnostics": [],
-        "previous_context": {spans[1].id: ("Old source", "旧訳")},
-    }
     try:
-        result = execute_translation(**kwargs)
+        result = TranslationTask(
+            config=config,
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            previous_context={spans[1].id: ("Old source", "旧訳")},
+        ).run(_translation_document(spans), tmp_path)
         user = json.loads(create.call_args.kwargs["messages"][1]["content"])
         assert [item["span_id"] for item in user["items"]] == ["1", "2"]
         assert user["items"][1]["previous_translation"] == "旧訳"
-        assert {item.span_id: item.text for item in result[0][1].translations} == {
+        assert {
+            span.id: span.translated
+            for _, unit in result.text_units()
+            for span in unit.spans
+        } == {
             spans[0].id: "脚注。",
             spans[1].id: "上付きにする。",
         }
-        directory = tmp_path / "calls" / result[0][0]
+        directory = next((tmp_path / "calls").iterdir())
         assert json.loads((directory / "call.json").read_text(encoding="utf-8"))[
             "target_ids"
         ] == [s.id for s in spans]
@@ -439,7 +480,16 @@ def test_translation_short_ids_restore_original_spans_and_cache(
             ][0]["span_id"]
             == spans[1].id
         )
-        assert execute_translation(**kwargs) == result
+        assert (
+            TranslationTask(
+                config=config,
+                task_directory=tmp_path,
+                rules="",
+                glossary="",
+                previous_context={spans[1].id: ("Old source", "旧訳")},
+            ).run(_translation_document(spans), tmp_path)
+            == result
+        )
         create.assert_called_once()
     finally:
         client.client.close()
@@ -495,18 +545,16 @@ def test_translation_ignores_ids_from_other_calls(
         ),
     )
 
-    result = run_translation(
-        document,
-        tmp_path / "translation",
-        tmp_path,
+    result = TranslationTask(
         Config(
             openai_base_url="http://llm",
             openai_translation_model="model",
             translate_max_units=1,
         ),
+        tmp_path / "translation",
         "",
         "",
-    )
+    ).run(document, tmp_path)
 
     assert [unit.spans[0].translated for _, unit in result.text_units()] == [
         "正しいA",
@@ -1383,14 +1431,9 @@ def test_structure_keeps_cover_out_of_body_heading_hierarchy(
     ]
     monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
 
-    result = module.structure(
-        document,
-        tmp_path / "source.pdf",
-        directory,
-        tmp_path,
-        Config(openai_structure_model="model"),
-        "rules",
-    )
+    result = module.StructureTask(
+        Config(openai_structure_model="model"), directory, "rules"
+    ).run(document, tmp_path / "source.pdf", tmp_path)
 
     requests = [
         json.loads(call.kwargs["user"]) for call in client.structured.call_args_list
