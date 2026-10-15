@@ -42,7 +42,7 @@ from translate.pipeline import (
     resolve_processing_id,
 )
 
-diff_task = import_module("translate.tasks.21_diff")
+DiffTask = import_module("translate.tasks.21_diff").DiffTask
 
 
 class UpgradeOutcome(BaseModel):
@@ -175,8 +175,9 @@ class UpgradeAgent:
         self.client.deadline = deadline
         try:
             templates = Path(__file__).parents[1] / "templates"
-            self.rules = (templates / "review-rules.md").read_text(encoding="utf-8")
-            self.glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            rules = (templates / "review-rules.md").read_text(encoding="utf-8")
+            glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            self.diff = DiffTask(self.client, self.directory, rules, glossary)
             self.confirmed: list[tuple[str, DiffChange]] = []
             self.call_ids: list[str] = []
 
@@ -338,15 +339,11 @@ class UpgradeAgent:
             raise InputError(
                 "Recheck must include changes already using the selected translation"
             )
-        call_id, response = diff_task.diff(
+        call_id, response = self.diff.run(
             {
                 role: [self.units[role][key] for key in ids]
                 for role, ids in chosen.items()
             },
-            self.directory,
-            self.client,
-            self.rules,
-            self.glossary,
             action.operation,
             round_number,
         )

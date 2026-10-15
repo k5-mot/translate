@@ -48,7 +48,7 @@ publish_ooxml = import_module("translate.tasks.54_ooxml").publish
 lint = import_module("translate.tasks.50_lint").lint
 convert_document = import_module("translate.tasks.52_markdown").convert_document
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
-review = import_module("translate.tasks.41_review").review
+ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
 
 
@@ -216,13 +216,9 @@ def _translate_locked(
             (
                 review_dir,
                 partial(
-                    review,
+                    ReviewTask(config, review_dir, rules["REVIEW"], glossary).run,
                     targets,
-                    review_dir,
                     root,
-                    config,
-                    rules["REVIEW"],
-                    glossary,
                 ),
             )
         ],

@@ -41,7 +41,7 @@ from translate.pipeline import (
     resolve_processing_id,
 )
 
-review_task = import_module("translate.tasks.41_review")
+ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 
 
 class ReviewOutcome(BaseModel):
@@ -179,8 +179,9 @@ class ReviewAgent:
         self.client.deadline = deadline
         try:
             templates = Path(__file__).parents[1] / "templates"
-            self.rules = (templates / "review-rules.md").read_text(encoding="utf-8")
-            self.glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            rules = (templates / "review-rules.md").read_text(encoding="utf-8")
+            glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            self.review = ReviewTask(self.config, self.directory, rules, glossary)
             self.result = ReviewResult()
             self.conflicts: set[str] = set()
             self.call_ids: list[str] = []
@@ -335,15 +336,12 @@ class ReviewAgent:
                     raise InputError(
                         "Match requires units without a confirmed correspondence"
                     )
-            call_id, response = review_task.match_documents(
+            call_id, response = self.review.match_documents(
                 {
                     role: [self.units[role][key] for key in ids]
                     for role, ids in chosen.items()
                 },
-                self.directory,
                 self.client,
-                self.rules,
-                self.glossary,
                 round_number,
             )
             for candidate in response.groups:
@@ -389,13 +387,9 @@ class ReviewAgent:
             self.result.reviewed_target_ids
         ):
             raise InputError("Use recheck to revisit a completed target")
-        evaluated = review_task.review(
+        evaluated = self.review.run(
             selected,
-            self.directory,
             self.root,
-            self.config,
-            self.rules,
-            self.glossary,
             operation=action.operation,
             round_number=round_number,
             publish=False,

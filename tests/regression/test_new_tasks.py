@@ -59,9 +59,8 @@ lint = import_module("translate.tasks.50_lint").lint
 convert_block = import_module("translate.tasks.52_markdown").convert_block
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
 review_chunks = import_module("translate.tasks.41_review")._chunks  # noqa: SLF001
-execute_review = import_module("translate.tasks.41_review")._execute  # noqa: SLF001
 review_user_payload = import_module("translate.tasks.41_review")._user_payload  # noqa: SLF001
-run_review = import_module("translate.tasks.41_review").review
+ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
 TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
@@ -1611,18 +1610,16 @@ def test_review_reserves_json_envelope_for_split_target(
         target_ids=["unit"],
         spans=[span],
     )
-    result = run_review(
-        [target],
-        tmp_path / "review",
-        tmp_path,
+    result = ReviewTask(
         Config(
             openai_base_url="http://llm",
             openai_review_model="model",
             review_input_tokens=8192,
         ),
+        tmp_path / "review",
         "r" * 2783,
         "",
-    )
+    ).run([target], tmp_path)
 
     assert result.findings == []
     assert result.revisions == []
@@ -1700,14 +1697,12 @@ def test_review_discards_identical_model_items(
         target_ids=["other-unit"],
         spans=[TextSpan(id="other-span", source="other", translated="別訳")],
     )
-    result = run_review(
-        [target, other],
-        tmp_path / "review",
-        tmp_path,
+    result = ReviewTask(
         Config(openai_base_url="http://llm", openai_review_model="model"),
+        tmp_path / "review",
         "",
         "",
-    )
+    ).run([target, other], tmp_path)
 
     assert [item.message for item in result.findings] == ["誤訳", "用語違い"]
     assert [item.target_ids for item in result.findings] == [["unit"], ["unit"]]
@@ -1786,20 +1781,16 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
         spans=spans,
     )
 
-    responses = execute_review(
-        client=SizeLimitedClient(),  # type: ignore[arg-type]
-        config=Config(
+    responses = ReviewTask(
+        Config(
             openai_base_url="http://localhost",
             openai_review_model="review",
             review_input_tokens=8192,
         ),
-        targets=[target],
-        task_directory=tmp_path,
-        rules="",
-        glossary="",
-        lineage=["chunk-0000"],
-        depth=0,
-    )
+        tmp_path,
+        "",
+        "",
+    ).run([target], tmp_path, client=SizeLimitedClient())
 
     artifacts = [
         json.loads(path.read_text()) for path in tmp_path.glob("calls/*/call.json")
@@ -1807,10 +1798,19 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     statuses = [artifact["status"] for artifact in artifacts]
     assert "split" in statuses
     assert "failed" not in statuses
-    assert len(responses) > 1
+    assert responses.reviewed_target_ids == [target.id]
+    successful = [
+        artifact for artifact in artifacts if artifact["status"] == "succeeded"
+    ]
+    assert len(successful) > 1
     assert all(
-        response.reviewed_target_ids == [part.id for part in parts]
-        for _, response, parts in responses
+        ReviewResponse.model_validate_json(
+            (tmp_path / "calls" / artifact["call_id"] / "response.json").read_text(
+                encoding="utf-8"
+            )
+        ).reviewed_target_ids
+        == [key.removeprefix("review:") for key in artifact["target_ids"]]
+        for artifact in successful
     )
 
 
@@ -1910,18 +1910,11 @@ def test_review_retries_coverage_error_before_publishing(
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
     try:
-        responses = execute_review(
-            client=client,
-            config=config,
-            targets=[target],
-            task_directory=tmp_path,
-            rules="",
-            glossary="",
-            lineage=[],
-            depth=0,
+        responses = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
         )
         assert create.call_count == 2
-        assert responses[0][1].reviewed_target_ids == [target.id]
+        assert responses.reviewed_target_ids == [target.id]
         call = json.loads(
             next(tmp_path.glob("calls/*/call.json")).read_text(encoding="utf-8")
         )
@@ -1972,17 +1965,10 @@ def test_review_trims_rag_using_complete_native_prompt_budget(
     create = MagicMock(return_value=completion)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     try:
-        result = execute_review(
-            client=client,
-            config=config,
-            targets=[target],
-            task_directory=tmp_path,
-            rules="r" * 2800,
-            glossary="",
-            lineage=[],
-            depth=0,
+        result = ReviewTask(config, tmp_path, "r" * 2800, "").run(
+            [target], tmp_path, client=client
         )
-        assert result[0][1].reviewed_target_ids == [target.id]
+        assert result.reviewed_target_ids == [target.id]
         create.assert_called_once()
         sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
         assert 0 < len(sent["references"]) < 5

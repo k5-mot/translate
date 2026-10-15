@@ -1779,6 +1779,10 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 状態を持たない小さな計算や標準Libraryに委譲する処理は関数として保持できる。
 既存のpackage配置とTask file名、保存形式、操作順序およびserviceの逐次実行は維持する。
 
+`ReviewTask` は対応付けと品質評価を、`DiffTask` は版間比較を実行する。
+両者は `SavedLLMCalls` に判断規則・解析済み用語集・Call保存先を保持し、
+操作ごとの入力だけを渡す。Agentが渡したLLM接続の期限と終了はAgentが管理する。
+
 `common` は設定とloggingだけに限定する。`core`、`utils` のように責務が曖昧なpackageは設けない。Task間で共有するためだけの `BaseTask` も設けない。例外は所有するmoduleに定義し、単独の `errors.py` へ集約しない。ReviewとUpgradeの制御ループはそれぞれ `pipeline/review.py` と `pipeline/upgrade.py` に置き、専用のAgent frameworkは追加しない。
 
 `adapters/artifact_store.py` は一つの処理IDにつき一つの `.lock` を処理中だけ保持する。個々のTask file、LLM Call fileおよび最終成果物にlockを追加しない。最上位の処理記録、成功済みLLM Callの `response.json` と `call.json`、および最終公開fileは、同じdirectoryの一時fileから置換して途中書込みを見せない。Task用の一時ディレクトリ内の各fileは通常の書込みとし、成功後だけディレクトリを公開する。各fileの `fsync`、多重の一時fileおよび旧Taskディレクトリのbackupは必須としない。既存Taskが無効な場合だけ再生成し、成功済みTaskはfingerprintとhashで再利用する。ディレクトリの退避と配置を一つの原子操作と見なしてはならない。`models/artifacts.py` は保存するPydanticモデルの定義だけを持ち、file I/Oを行わない。

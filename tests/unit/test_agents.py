@@ -190,13 +190,14 @@ def test_match_schema_requests_only_correspondence(
         units = agent_units(
             {"source": document(en="Original."), "translation": document(ja="訳文。")}
         )
-        _, result = import_module("translate.tasks.41_review").match_documents(
-            {role: list(values.values()) for role, values in units.items()},
-            tmp_path,
-            client,
-            "Compare document meanings.",
-            "",
-            0,
+        _, result = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(client.config, tmp_path, "Compare document meanings.", "")
+            .match_documents(
+                {role: list(values.values()) for role, values in units.items()},
+                client,
+                0,
+            )
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
         assert set(schema["properties"]) == {"groups"}
