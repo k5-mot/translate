@@ -306,6 +306,64 @@ def test_match_schema_requests_only_correspondence(
         client.client.close()
 
 
+def test_match_retry_identifies_missing_duplicate_and_unknown_ids(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """対応付けの再試行で、訳文側の不足・重複・範囲外IDを具体的に伝える。"""
+    client = LLMClient(config)
+    invalid = {
+        "groups": [
+            {"source_ids": ["en1"], "translation_ids": ["ja1"], "kind": "matched"},
+            {
+                "source_ids": ["en2"],
+                "translation_ids": ["ja1", "unknown"],
+                "kind": "matched",
+            },
+        ]
+    }
+    valid = {
+        "groups": [
+            {"source_ids": ["en1"], "translation_ids": ["ja1"], "kind": "matched"},
+            {"source_ids": ["en2"], "translation_ids": ["ja2"], "kind": "matched"},
+        ]
+    }
+    responses = []
+    for payload in (invalid, valid):
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = json.dumps(payload)
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        units = agent_units(
+            {
+                "source": document(en1="First", en2="Second"),
+                "translation": document(ja1="一つ目", ja2="二つ目"),
+            }
+        )
+        _, result = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(config, tmp_path, "Compare meanings.", "")
+            .match_documents(
+                {role: list(values.values()) for role, values in units.items()},
+                client,
+                0,
+            )
+        )
+        feedback = create.call_args.kwargs["messages"][-1]["content"]
+        assert "translation: missing=['ja2']" in feedback
+        assert "duplicate=['ja1']" in feedback
+        assert "unknown=['unknown']" in feedback
+        assert (
+            result.model_dump() == AlignmentResponse.model_validate(valid).model_dump()
+        )
+        assert create.call_count == 2
+    finally:
+        client.client.close()
+
+
 def scripted(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[BaseModel | Callable[[dict[str, object]], BaseModel]],

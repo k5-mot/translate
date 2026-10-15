@@ -415,7 +415,10 @@ class ReviewTask:
                 ]
                 if sorted(found) != sorted(expected[role]):
                     raise ValueError(
-                        "Correspondence must cover the selected IDs exactly once"
+                        "Correspondence must cover the selected IDs exactly once. "
+                        f"{role}: missing={sorted(set(expected[role]) - set(found))}; "
+                        f"duplicate={sorted({key for key in found if found.count(key) > 1})}; "
+                        f"unknown={sorted(set(found) - set(expected[role]))}"
                     )
             for group in response.groups:
                 correct = (
@@ -447,6 +450,9 @@ class ReviewTask:
             '{"groups":[{"source_ids":["id"],"translation_ids":["id"],'
             '"kind":"matched|source_only|translation_only","reason":null}]}. '
             "Every source ID and every translation ID must appear exactly once, including unmatched IDs. "
+            "The source and translation arrays are independent candidate pools, not parallel rows. "
+            "For each source, search ALL translation candidates for the same content; "
+            "never pair by array position or similar IDs. "
             "Match only the same content, not related topics. "
             "When two texts do not correspond, return two groups: source_only and translation_only, "
             "each with its own IDs and reason.",
