@@ -71,6 +71,7 @@ def upsert_revision(
             for point in points
         ],
         batch_size=64,
+        parallel=1,
         wait=True,
     )
     verified = client.retrieve(

@@ -1320,8 +1320,8 @@ UIは保存先をPipeline起動前に決定し、即時に処理IDを表示で�
 - Streamlit server再起動で `Future` を失っても、Artifactを失わない。利用者は処理履歴からResumeする。
 - `Future.result()` は `Future.done()` の確認後だけ呼び出し、Streamlitの表示threadを待機させない。
 
-単一workerは、ローカルLLMへの同時要求をUIが不用意に増やさないための初期制限とする。
-外部service自体の同時実行能力を制限するものではない。
+単一workerと同期呼出しにより、Embedding・LLM・Qdrantへの要求を逐次実行する。
+複数のCLIやUI serverを同時起動して同じserviceへ処理を送る運用は対象外とする。
 
 ### 📊 進捗表示
 
@@ -1929,6 +1929,14 @@ PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値�
 `source_key` は、`source_id` が指定された場合は `<source_id>/<logical_path>`、指定されない場合は `logical_path` そのものとする。`revision` は入力内容のSHA-256、抽出設定、`chunk_schema` およびEmbedding model名から生成する。
 
 #### ⏱️ 外部処理の制限
+
+Embedding・LLM・Qdrantは並列要求に対応しないローカルserviceとして扱い、
+各serviceへの同時要求数は1とする。
+
+- UIの処理枠は既存の `ThreadPoolExecutor(max_workers=1)` を使う。
+- LLM・Embeddingは同期clientを使い、Task・Agent・batch・再試行を逐次実行する。
+- Qdrantの登録・検索も同期で実行し、batch uploadには `parallel=1` を明示する。
+- service用の追加lockやqueueは設けない。検証・接続診断も実行中の処理に重ねず、順番に行う。
 
 生成LLM以外のHTTP接続および外部processには次の環境変数を使用する。安全上限を超える値または正でない値は設定エラーとし、黙って丸めない。
 

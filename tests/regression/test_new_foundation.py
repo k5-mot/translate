@@ -259,6 +259,7 @@ def test_qdrant_registration_uses_bounded_upload_batches(
     assert written is True
     client.upload_points.assert_called_once()
     assert client.upload_points.call_args.kwargs["batch_size"] == 64
+    assert client.upload_points.call_args.kwargs["parallel"] == 1
     assert client.upload_points.call_args.kwargs["wait"] is True
     assert len(client.upload_points.call_args.kwargs["points"]) == 65
     client.upsert.assert_not_called()
