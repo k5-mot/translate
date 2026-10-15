@@ -2,7 +2,6 @@
 
 import time
 from datetime import UTC, datetime
-from functools import partial
 from importlib import import_module
 from pathlib import Path
 
@@ -128,7 +127,7 @@ def upgrade_pdfs(
                     root,
                     TaskName.DIFF,
                     documents,
-                    [(directory, partial(run_agent, documents, directory, config))],
+                    [(directory, UpgradeAgent(documents, directory, config).run)],
                 )
                 result_path = directory / "plan.json"
                 record.status, record.error = "succeeded", None
@@ -143,203 +142,220 @@ def upgrade_pdfs(
     )
 
 
-def run_agent(
-    documents: dict[str, Document], directory: Path, config: Config
-) -> UpgradePlan:
-    """Agentが対象と比較・再確認を選択し、英文の全範囲を確認する。
+class UpgradeAgent:
+    """文書の確認状況を保持し、LLMが選んだ操作と終了条件を管理する。"""
 
-    Args:
-        documents: 英文二版と旧訳のDocument。
-        directory: DIFF成果物directory。
-        config: 接続と判断の上限設定。
+    def __init__(
+        self, documents: dict[str, Document], directory: Path, config: Config
+    ) -> None:
+        """比較対象と処理の依存関係を受け取る。
 
-    Returns:
-        未変更を除く変更一覧と全確認範囲。
+        Args:
+            documents: 役割名で区別した比較対象文書。
+            directory: 操作の記録と最終一覧の保存先。
+            config: LLMの接続と処理予算。
+        """
+        self.units = agent_units(documents)
+        self.directory = directory
+        self.config = config
 
-    Raises:
-        InputError: 参照・対応・終了条件が不正な場合。
-        TimeoutError: 判断回数またはTask期限を超えた場合。
-        LLMError: 外部要求が失敗した場合。
-    """
-    units = agent_units(documents)
-    client = LLMClient(config)
-    deadline = time.monotonic() + config.llm_task_deadline_seconds
-    client.deadline = deadline
-    try:
-        templates = Path(__file__).parents[1] / "templates"
-        rules = (templates / "review-rules.md").read_text(encoding="utf-8")
-        glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
-        confirmed: list[tuple[str, DiffChange]] = []
-        call_ids: list[str] = []
+    def run(self) -> UpgradePlan:
+        """Agentが対象と比較・再確認を選択し、英文の全範囲を確認する。
 
-        def execute(action: AgentAction, round_number: int) -> dict[str, object]:
-            """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。
+        Returns:
+            未変更を除く変更一覧と全確認範囲。
 
-            Args:
-                action: Agentが選んだ比較または再確認。
-                round_number: 保存する操作の連番。
+        Raises:
+            InputError: 参照・対応・終了条件が不正な場合。
+            TimeoutError: 判断回数またはTask期限を超えた場合。
+            LLMError: 外部要求が失敗した場合。
+        """
+        self.client = LLMClient(self.config)
+        deadline = time.monotonic() + self.config.llm_task_deadline_seconds
+        self.client.deadline = deadline
+        try:
+            templates = Path(__file__).parents[1] / "templates"
+            self.rules = (templates / "review-rules.md").read_text(encoding="utf-8")
+            self.glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            self.confirmed: list[tuple[str, DiffChange]] = []
+            self.call_ids: list[str] = []
 
-            Returns:
-                次の判断へ渡す変更結果の概要。
-
-            Raises:
-                InputError: 範囲外IDや既存結果と矛盾する部分対応がある場合。
-            """
-            if action.operation not in {"match", "evaluate", "recheck"}:
-                raise InputError("Unsupported Upgrade Agent operation")
-            if set(action.references) - set(units):
-                raise InputError("Unknown Upgrade role")
-            chosen = {role: action.references.get(role, []) for role in units}
-            if (
-                not (chosen["source_v1"] or chosen["source_v2"])
-                or sum(map(len, chosen.values())) > 32
-            ):
-                raise InputError(
-                    "Upgrade comparison requires English IDs and at most 32 units"
-                )
-            for role, ids in chosen.items():
-                if len(ids) != len(set(ids)) or not set(ids).issubset(units[role]):
-                    raise InputError("Invalid Upgrade reference")
-            overlaps = [
-                item
-                for item in confirmed
-                if set(item[1].source_v1_ids).intersection(chosen["source_v1"])
-                or set(item[1].source_v2_ids).intersection(chosen["source_v2"])
-            ]
-            if overlaps and action.operation != "recheck":
-                raise InputError("Use recheck to revisit confirmed changes")
-            for _, previous in overlaps:
-                if not set(previous.source_v1_ids).issubset(
-                    chosen["source_v1"]
-                ) or not set(previous.source_v2_ids).issubset(chosen["source_v2"]):
-                    raise InputError(
-                        "Recheck must include the complete existing correspondence"
-                    )
-            retained = [item for item in confirmed if item not in overlaps]
-            used_translation = {
-                key for _, item in retained for key in item.translation_v1_ids
-            }
-            if used_translation.intersection(chosen["translation_v1"]):
-                raise InputError(
-                    "Recheck must include changes already using the selected translation"
-                )
-            call_id, response = diff_task.diff(
-                {
-                    role: [units[role][key] for key in ids]
-                    for role, ids in chosen.items()
-                },
-                directory,
-                client,
-                rules,
-                glossary,
-                action.operation,
-                round_number,
-            )
-            confirmed[:] = retained + [
-                (f"change-{call_id}-{index:04d}", item)
-                for index, item in enumerate(response.changes, 1)
-            ]
-            call_ids.append(call_id)
-            return {
-                "changes": [item.model_dump() for item in response.changes[:5]],
-                "total": len(response.changes),
-            }
-
-        restored = completed_agent_calls(directory)
-        for call in restored:
-            action = AgentAction.model_validate({"operation": call.operation})
-            for reference in call.target_ids:
-                role, _, identifier = reference.partition(":")
-                action.references.setdefault(role, []).append(identifier)
-            execute(action, call.round)
-        round_number = max((call.round for call in restored), default=-1) + 1
-        idle_steps = 0
-        group_steps: dict[str, int] = {}
-        observation: object = {"restored_operations": len(restored)}
-        while True:
-            covered = {
-                role: {
-                    key for _, item in confirmed for key in getattr(item, f"{role}_ids")
+            restored = completed_agent_calls(self.directory)
+            for call in restored:
+                action = AgentAction.model_validate({"operation": call.operation})
+                for reference in call.target_ids:
+                    role, _, identifier = reference.partition(":")
+                    action.references.setdefault(role, []).append(identifier)
+                self._execute(action, call.round)
+            round_number = max((call.round for call in restored), default=-1) + 1
+            idle_steps = 0
+            group_steps: dict[str, int] = {}
+            observation: object = {"restored_operations": len(restored)}
+            while True:
+                covered = {
+                    role: {
+                        key
+                        for _, item in self.confirmed
+                        for key in getattr(item, f"{role}_ids")
+                    }
+                    for role in ("source_v1", "source_v2")
                 }
-                for role in ("source_v1", "source_v2")
-            }
-            pending = {
-                role: [key for key in units[role] if key not in ids]
-                for role, ids in covered.items()
-            }
-            state: dict[str, object] = {
-                "roles": list(units),
-                "pending_counts": {role: len(ids) for role, ids in pending.items()},
-                "pending_ids": {role: ids[:8] for role, ids in pending.items()},
-                "translation_candidates": list(units["translation_v1"])[:8],
-                "confirmed_count": len(confirmed),
-            }
-            if idle_steps >= 12 or time.monotonic() >= deadline:
-                raise TimeoutError("Upgrade Agent reached its step or time limit")
-            action = choose_action(
-                client,
-                "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
-                state,
-                observation,
-                units,
-            )
-            if action.operation == "finish":
-                if any(pending.values()):
-                    raise InputError(
-                        "Upgrade cannot finish with unconfirmed English units"
+                pending = {
+                    role: [key for key in self.units[role] if key not in ids]
+                    for role, ids in covered.items()
+                }
+                state: dict[str, object] = {
+                    "roles": list(self.units),
+                    "pending_counts": {role: len(ids) for role, ids in pending.items()},
+                    "pending_ids": {role: ids[:8] for role, ids in pending.items()},
+                    "translation_candidates": list(self.units["translation_v1"])[:8],
+                    "confirmed_count": len(self.confirmed),
+                }
+                if idle_steps >= 12 or time.monotonic() >= deadline:
+                    raise TimeoutError("Upgrade Agent reached its step or time limit")
+                action = choose_action(
+                    self.client,
+                    "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
+                    state,
+                    observation,
+                    self.units,
+                )
+                if action.operation == "finish":
+                    if any(pending.values()):
+                        raise InputError(
+                            "Upgrade cannot finish with unconfirmed English units"
+                        )
+                    break
+                before = sum(map(len, covered.values()))
+                group_key = repr(
+                    (action.references, action.role, action.query, action.offset)
+                )
+                group_steps[group_key] = group_steps.get(group_key, 0) + 1
+                if group_steps[group_key] > 12:
+                    raise TimeoutError("Upgrade target group exceeded 12 Agent steps")
+                if action.operation in {"overview", "read", "search"}:
+                    visible = (
+                        {
+                            role: {
+                                key: values[key] for key in pending.get(role, values)
+                            }
+                            for role, values in self.units.items()
+                        }
+                        if action.operation == "overview"
+                        else self.units
                     )
-                break
-            before = sum(map(len, covered.values()))
-            group_key = repr(
-                (action.references, action.role, action.query, action.offset)
-            )
-            group_steps[group_key] = group_steps.get(group_key, 0) + 1
-            if group_steps[group_key] > 12:
-                raise TimeoutError("Upgrade target group exceeded 12 Agent steps")
-            if action.operation in {"overview", "read", "search"}:
-                visible = (
-                    {
-                        role: {key: values[key] for key in pending.get(role, values)}
-                        for role, values in units.items()
-                    }
-                    if action.operation == "overview"
-                    else units
+                    observation = observe_documents(
+                        action, visible, max(512, self.config.review_input_tokens // 3)
+                    )
+                else:
+                    try:
+                        observation = self._execute(action, round_number)
+                    except (LLMInputExceededError, LLMOutputExceededError):
+                        observation = {
+                            "error": "Selected scope exceeds the budget. Select fewer units."
+                        }
+                    round_number += 1
+                observation = {"action": action.model_dump(), "result": observation}
+                after = sum(
+                    len(item.source_v1_ids) + len(item.source_v2_ids)
+                    for _, item in self.confirmed
                 )
-                observation = observe_documents(
-                    action, visible, max(512, config.review_input_tokens // 3)
-                )
-            else:
-                try:
-                    observation = execute(action, round_number)
-                except (LLMInputExceededError, LLMOutputExceededError):
-                    observation = {
-                        "error": "Selected scope exceeds the budget. Select fewer units."
-                    }
-                round_number += 1
-            observation = {"action": action.model_dump(), "result": observation}
-            after = sum(
-                len(item.source_v1_ids) + len(item.source_v2_ids)
-                for _, item in confirmed
+                idle_steps = idle_steps + 1 if after <= before else 0
+            result = UpgradePlan(
+                changes=[
+                    VersionChange(id=key, **item.model_dump())
+                    for key, item in self.confirmed
+                    if item.kind != "unchanged"
+                ],
+                reviewed_source_v1_ids=[
+                    key
+                    for key in self.units["source_v1"]
+                    if key in covered["source_v1"]
+                ],
+                reviewed_source_v2_ids=[
+                    key
+                    for key in self.units["source_v2"]
+                    if key in covered["source_v2"]
+                ],
             )
-            idle_steps = idle_steps + 1 if after <= before else 0
-        result = UpgradePlan(
-            changes=[
-                VersionChange(id=key, **item.model_dump())
-                for key, item in confirmed
-                if item.kind != "unchanged"
-            ],
-            reviewed_source_v1_ids=[
-                key for key in units["source_v1"] if key in covered["source_v1"]
-            ],
-            reviewed_source_v2_ids=[
-                key for key in units["source_v2"] if key in covered["source_v2"]
-            ],
+            write_model(
+                self.directory / "call-index.json",
+                LLMCallIndex(task="DIFF", call_ids=list(dict.fromkeys(self.call_ids))),
+            )
+            write_model(self.directory / "plan.json", result)
+            return result
+        finally:
+            self.client.client.close()
+
+    def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
+        """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。
+
+        Args:
+            action: Agentが選んだ比較または再確認。
+            round_number: 保存する操作の連番。
+
+        Returns:
+            次の判断へ渡す変更結果の概要。
+
+        Raises:
+            InputError: 範囲外IDや既存結果と矛盾する部分対応がある場合。
+        """
+        if action.operation not in {"match", "evaluate", "recheck"}:
+            raise InputError("Unsupported Upgrade Agent operation")
+        if set(action.references) - set(self.units):
+            raise InputError("Unknown Upgrade role")
+        chosen = {role: action.references.get(role, []) for role in self.units}
+        if (
+            not (chosen["source_v1"] or chosen["source_v2"])
+            or sum(map(len, chosen.values())) > 32
+        ):
+            raise InputError(
+                "Upgrade comparison requires English IDs and at most 32 units"
+            )
+        for role, ids in chosen.items():
+            if len(ids) != len(set(ids)) or not set(ids).issubset(self.units[role]):
+                raise InputError("Invalid Upgrade reference")
+        overlaps = [
+            item
+            for item in self.confirmed
+            if set(item[1].source_v1_ids).intersection(chosen["source_v1"])
+            or set(item[1].source_v2_ids).intersection(chosen["source_v2"])
+        ]
+        if overlaps and action.operation != "recheck":
+            raise InputError("Use recheck to revisit confirmed changes")
+        for _, previous in overlaps:
+            if not set(previous.source_v1_ids).issubset(chosen["source_v1"]) or not set(
+                previous.source_v2_ids
+            ).issubset(chosen["source_v2"]):
+                raise InputError(
+                    "Recheck must include the complete existing correspondence"
+                )
+        retained = [item for item in self.confirmed if item not in overlaps]
+        used_translation = {
+            key for _, item in retained for key in item.translation_v1_ids
+        }
+        if used_translation.intersection(chosen["translation_v1"]):
+            raise InputError(
+                "Recheck must include changes already using the selected translation"
+            )
+        call_id, response = diff_task.diff(
+            {
+                role: [self.units[role][key] for key in ids]
+                for role, ids in chosen.items()
+            },
+            self.directory,
+            self.client,
+            self.rules,
+            self.glossary,
+            action.operation,
+            round_number,
         )
-        write_model(
-            directory / "call-index.json",
-            LLMCallIndex(task="DIFF", call_ids=list(dict.fromkeys(call_ids))),
-        )
-        write_model(directory / "plan.json", result)
-        return result
-    finally:
-        client.client.close()
+        self.confirmed[:] = retained + [
+            (f"change-{call_id}-{index:04d}", item)
+            for index, item in enumerate(response.changes, 1)
+        ]
+        self.call_ids.append(call_id)
+        return {
+            "changes": [item.model_dump() for item in response.changes[:5]],
+            "total": len(response.changes),
+        }

@@ -48,23 +48,24 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     representative = paths[-1] if kind == "review" else paths[1]
     directory = root / representative.stem / identifier
     record_path = directory / f"{kind}.json"
+    agent_type = module.ReviewAgent if kind == "review" else module.UpgradeAgent
     fail = Mock(side_effect=RuntimeError("comparison unavailable"))
-    monkeypatch.setattr(module, "run_agent", fail)
+    monkeypatch.setattr(agent_type, "run", fail)
     with pytest.raises(RuntimeError, match="comparison unavailable"):
         entry(*paths, config, processing_id=identifier, outputs=root)
     failed = load_model(record_path, model)
     assert failed.status == "failed"
     assert failed.outputs == []
 
-    def complete(_documents: object, destination: Path, *_args: object) -> None:
+    def complete(instance: review.ReviewAgent | upgrade.UpgradeAgent) -> None:
         """実際の保存境界へAgentの最終JSONだけを出力する。"""
         result = ReviewResult() if kind == "review" else UpgradePlan()
         write_model(
-            destination / ("review.json" if kind == "review" else "plan.json"), result
+            instance.directory / ("review.json" if kind == "review" else "plan.json"),
+            result,
         )
 
-    agent = Mock(side_effect=complete)
-    monkeypatch.setattr(module, "run_agent", agent)
+    monkeypatch.setattr(agent_type, "run", complete)
     entry(*paths, config, resume_id=identifier, outputs=root)
     succeeded = load_model(record_path, model)
     assert succeeded.status == "succeeded"
@@ -72,14 +73,19 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     assert succeeded.outputs[0].relative_path.endswith(".json")
     assert (directory / "app.log").is_file()
     assert not list(directory.rglob("*.docx"))
+    monkeypatch.setattr(
+        agent_type,
+        "run",
+        Mock(side_effect=AssertionError("completed Agent must be reused")),
+    )
     entry(
         *paths,
         config.model_copy(update={"openai_review_model": "changed"}),
         resume_id=identifier,
         outputs=root,
     )
-    assert agent.call_count == 1
+    assert len(succeeded.outputs) == 1
     paths[0].write_bytes(b"changed input")
     with pytest.raises(InputError, match="inputs differ"):
         entry(*paths, config, resume_id=identifier, outputs=root)
-    assert agent.call_count == 1
+    assert len(succeeded.outputs) == 1

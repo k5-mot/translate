@@ -2,7 +2,6 @@
 
 import json
 from collections.abc import Callable
-from functools import partial
 from importlib import import_module
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -24,8 +23,8 @@ from translate.pipeline import (
     completed_agent_calls,
     observe_documents,
 )
-from translate.pipeline.review import run_agent as review_agent
-from translate.pipeline.upgrade import run_agent as upgrade_agent
+from translate.pipeline.review import ReviewAgent
+from translate.pipeline.upgrade import UpgradeAgent
 
 
 def document(**units: str) -> Document:
@@ -308,7 +307,7 @@ def test_review_observes_conflict_and_rechecks_then_resumes(
     ]
     calls = scripted(monkeypatch, answers)
     directory = tmp_path / "review" / "review"
-    result = review_agent(documents, directory, tmp_path, config)
+    result = ReviewAgent(documents, directory, tmp_path, config).run()
     assert not answers
     assert len(result.groups) == 1
     assert len(result.revisions) == 1
@@ -319,12 +318,12 @@ def test_review_observes_conflict_and_rechecks_then_resumes(
     assert not list(tmp_path.rglob("*.docx"))
     before = len(calls)
     answers.append(AgentAction(operation="finish"))
-    restored = review_agent(
+    restored = ReviewAgent(
         documents,
         directory,
         tmp_path,
         config.model_copy(update={"openai_review_model": "changed"}),
-    )
+    ).run()
     assert restored == result
     assert len(calls) == before + 1
 
@@ -336,16 +335,14 @@ def test_agent_rejects_premature_finish(
     """未確認対象がある終了宣言を拒否し、最終成果物を公開しない。"""
     scripted(monkeypatch, [AgentAction(operation="finish")])
     if operation == "review":
-        operation_call = partial(
-            review_agent,
+        operation_call = ReviewAgent(
             {"source": document(en="Text"), "translation": document(ja="訳")},
             tmp_path,
             tmp_path,
             config,
         )
     else:
-        operation_call = partial(
-            upgrade_agent,
+        operation_call = UpgradeAgent(
             {
                 "source_v1": document(old="Old"),
                 "source_v2": document(new="New"),
@@ -355,7 +352,7 @@ def test_agent_rejects_premature_finish(
             config,
         )
     with pytest.raises(InputError, match="cannot finish"):
-        operation_call()
+        operation_call.run()
     assert not (tmp_path / "review.json").exists()
     assert not (tmp_path / "plan.json").exists()
 
@@ -381,7 +378,7 @@ def test_invalid_review_edit_is_failed_before_cache_publication(
         "translation": document(ja1="訳", ja2="三つ"),
     }
     with pytest.raises(ValueError, match="unowned span"):
-        review_agent(documents, tmp_path, tmp_path, config)
+        ReviewAgent(documents, tmp_path, tmp_path, config).run()
     artifacts = [
         load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
     ]
@@ -454,7 +451,7 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
         after_overview,
     ]
     calls = scripted(monkeypatch, answers)
-    result = upgrade_agent(documents, tmp_path, config)
+    result = UpgradeAgent(documents, tmp_path, config).run()
     assert [item.kind for item in result.changes] == ["modified", "deleted", "added"]
     assert "same" in result.reviewed_source_v1_ids
     assert result.changes[0].suggested_translation == "二つ"
@@ -462,5 +459,5 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     assert not list(tmp_path.rglob("*.docx"))
     before = len(calls)
     answers.append(AgentAction(operation="finish"))
-    assert upgrade_agent(documents, tmp_path, config) == result
+    assert UpgradeAgent(documents, tmp_path, config).run() == result
     assert len(calls) == before + 1
