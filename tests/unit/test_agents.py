@@ -10,7 +10,13 @@ import pytest
 from pydantic import BaseModel
 
 from translate.adapters.artifact_store import load_model
-from translate.adapters.llm import LLMClient, StructuredResult
+from translate.adapters.llm import (
+    LLMClient,
+    LLMConnectionError,
+    LLMError,
+    LLMInvalidResponseError,
+    StructuredResult,
+)
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
@@ -276,32 +282,76 @@ def test_match_schema_requests_only_correspondence(
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
         assert set(schema["properties"]) == {"groups"}
-        variants = {
-            item["properties"]["kind"]["const"]: item
-            for item in schema["$defs"]["AlignmentCandidate"]["anyOf"]
-        }
-        assert set(variants) == {"matched", "source_only", "translation_only"}
-        for kind, variant in variants.items():
-            assert next(iter(variant["properties"])) == "kind"
-            assert {"source_ids", "translation_ids", "kind"}.issubset(
-                variant["required"]
-            )
-            for role in ("source", "translation"):
-                field = variant["properties"][f"{role}_ids"]
-                if kind in {"matched", f"{role}_only"}:
-                    assert field["minItems"] == 1
-                else:
-                    assert field["maxItems"] == 0
-            if kind != "matched":
-                assert "reason" in variant["required"]
-                assert variant["properties"]["reason"] == {
-                    "type": "string",
-                    "minLength": 1,
-                }
+        candidate = schema["$defs"]["AlignmentCandidate"]
+        assert list(candidate["properties"]) == [
+            "reason",
+            "kind",
+            "source_ids",
+            "translation_ids",
+        ]
+        assert set(candidate["required"]) == set(candidate["properties"])
+        assert candidate["properties"]["reason"] == {"type": "string", "minLength": 1}
         assert [key for group in result.groups for key in group.translation_ids] == [
             "ja"
         ]
         create.assert_called_once()
+    finally:
+        client.client.close()
+
+
+@pytest.mark.parametrize("invalid_kind", ["matched", "missing_reason", "empty"])
+def test_match_rejects_inconsistent_groups_before_saving(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, invalid_kind: str
+) -> None:
+    """Schemaを簡素化しても、片側だけのmatched・理由なし・空groupを拒否する。"""
+    groups = [
+        {
+            "source_ids": ["en"],
+            "translation_ids": [],
+            "kind": "source_only",
+            "reason": "相手なし",
+        },
+        {
+            "source_ids": [],
+            "translation_ids": ["ja"],
+            "kind": "translation_only",
+            "reason": "相手なし",
+        },
+    ]
+    if invalid_kind == "matched":
+        groups[0]["kind"] = "matched"
+    elif invalid_kind == "missing_reason":
+        groups[0]["reason"] = ""
+    else:
+        groups.append(
+            {
+                "source_ids": [],
+                "translation_ids": [],
+                "kind": "source_only",
+                "reason": "空",
+            }
+        )
+    client = LLMClient(config)
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = json.dumps({"groups": groups})
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        units = agent_units(
+            {"source": document(en="Source"), "translation": document(ja="訳文")}
+        )
+        with pytest.raises(LLMInvalidResponseError):
+            import_module("translate.tasks.41_review").ReviewTask(
+                config, tmp_path, "Compare.", ""
+            ).match_documents(
+                {role: list(values.values()) for role, values in units.items()},
+                client,
+                0,
+            )
+        assert create.call_count == 2
+        assert not list(tmp_path.glob("calls/*/response.json"))
     finally:
         client.client.close()
 
@@ -599,6 +649,122 @@ def test_review_observes_only_current_matches_and_retains_all_results(
     result = ReviewAgent(documents, tmp_path / "review", tmp_path, config).run()
     assert len(result.groups) == len(result.reviewed_target_ids) == 104
     assert not answers
+
+
+def test_review_agent_reselects_after_invalid_operation_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """検証再試行を使い切ったmatchを失敗保存し、Agentが対象を絞って確認を完了する。"""
+    documents = {
+        "source": document(en="Use two units."),
+        "translation": document(ja1="二つ使用する。", ja2="補足。"),
+    }
+
+    def failed_match(_kwargs: dict[str, object]) -> BaseModel:
+        """LLM接続層が検証再試行後に返す失敗を再現する。"""
+        message = "Invalid correspondence after retry"
+        raise LLMInvalidResponseError(message)
+
+    def reselect(kwargs: dict[str, object]) -> AgentAction:
+        """失敗を観察して、未確認のまま保持された対象から小さな候補群を選ぶ。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["state"]["pending_counts"] == {"source": 1, "translation": 2}
+        assert payload["state"]["unchecked_count"] == 0
+        assert "invalid" in payload["observation"]["result"]["error"]
+        return AgentAction(
+            operation="match", references={"source": ["en"], "translation": ["ja1"]}
+        )
+
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source": ["en"], "translation": ["ja1", "ja2"]},
+        ),
+        failed_match,
+        reselect,
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["en"],
+                        "translation_ids": ["ja1"],
+                        "kind": "matched",
+                    }
+                ]
+            }
+        ),
+        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+        ReviewResponse(reviewed_target_ids=["review/alignment-000001"]),
+        AgentAction(operation="match", references={"translation": ["ja2"]}),
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": [],
+                        "translation_ids": ["ja2"],
+                        "kind": "translation_only",
+                        "reason": "原文にない補足",
+                    }
+                ]
+            }
+        ),
+        AgentAction(operation="finish"),
+    ]
+    scripted(monkeypatch, answers)
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+    assert not answers
+    assert len(result.groups) == 2
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+    artifacts = [
+        load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
+    ]
+    assert sorted(item.status for item in artifacts) == [
+        "failed",
+        "succeeded",
+        "succeeded",
+        "succeeded",
+    ]
+    failed = next(item for item in artifacts if item.status == "failed")
+    assert not (tmp_path / "calls" / failed.call_id / "response.json").exists()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (LLMInvalidResponseError, TimeoutError, 12),
+        (LLMConnectionError, LLMConnectionError, 1),
+    ],
+)
+def test_review_operation_failure_retains_stop_conditions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    case: tuple[type[LLMError], type[Exception], int],
+) -> None:
+    """契約不正の反復は12stepで止まり、接続失敗は対象選び直しで再送しない。"""
+    error_type, expected_error, attempts = case
+
+    def failure(_kwargs: dict[str, object]) -> BaseModel:
+        """操作のLLM要求だけを指定された失敗にする。"""
+        message = "Operation failed"
+        raise error_type(message)
+
+    action = AgentAction(
+        operation="match", references={"source": ["en"], "translation": ["ja"]}
+    )
+    answers = [item for _ in range(attempts) for item in (action, failure)]
+    scripted(monkeypatch, answers)
+    with pytest.raises(expected_error):
+        ReviewAgent(
+            {"source": document(en="Text"), "translation": document(ja="訳文")},
+            tmp_path,
+            tmp_path,
+            config,
+        ).run()
+    assert not answers
+    assert not (tmp_path / "review.json").exists()
+    assert len(list(tmp_path.glob("calls/*/call.json"))) == attempts
+    assert not list(tmp_path.glob("calls/*/response.json"))
 
 
 def test_review_observes_conflict_and_rechecks_then_resumes(

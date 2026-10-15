@@ -17,6 +17,7 @@ from translate.adapters.artifact_store import (
 from translate.adapters.llm import (
     LLMClient,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputExceededError,
 )
 from translate.common.config import Config, validate_config
@@ -314,6 +315,11 @@ class ReviewAgent:
                     except (LLMInputExceededError, LLMOutputExceededError):
                         observation = {
                             "error": "Selected scope exceeds the budget. Select fewer units or targets."
+                        }
+                    except LLMInvalidResponseError:
+                        observation = {
+                            "error": "The operation returned an invalid response after its validation retry. "
+                            "No result was accepted. Inspect context and select a smaller or different group."
                         }
                     round_number += 1
                 observation = {"action": action.model_dump(), "result": observation}
