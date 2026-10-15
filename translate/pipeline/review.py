@@ -198,6 +198,8 @@ class ReviewAgent:
             self.result = ReviewResult()
             self.conflicts: set[str] = set()
             self.call_ids: list[str] = []
+            # 未対応群を置換しても、評価が参照するgroup IDを再利用しない。
+            self.group_number = 0
 
             restored = completed_agent_calls(self.directory)
             replayed: set[tuple[int, str]] = set()
@@ -236,6 +238,15 @@ class ReviewAgent:
                     role: [key for key in values if key not in assigned[role]]
                     for role, values in self.units.items()
                 }
+                unmatched = {
+                    role: [
+                        key
+                        for group in self.result.groups
+                        if group.kind != "matched"
+                        for key in getattr(group, f"{role}_ids")
+                    ]
+                    for role in self.units
+                }
                 unchecked = [
                     target.id
                     for target in self.result.targets
@@ -245,6 +256,10 @@ class ReviewAgent:
                     "roles": list(self.units),
                     "pending_counts": {role: len(ids) for role, ids in pending.items()},
                     "pending_ids": {role: ids[:8] for role, ids in pending.items()},
+                    "unmatched_counts": {
+                        role: len(ids) for role, ids in unmatched.items()
+                    },
+                    "unmatched_ids": {role: ids[:8] for role, ids in unmatched.items()},
                     "unchecked_count": len(unchecked),
                     "unchecked_targets": unchecked[:32],
                     "reviewed_targets": self.result.reviewed_target_ids[-8:],
@@ -265,8 +280,10 @@ class ReviewAgent:
                             "Review cannot finish with unconfirmed or conflicting targets"
                         )
                     break
-                progress_before = sum(map(len, assigned.values())) + len(
-                    self.result.reviewed_target_ids
+                progress_before = (
+                    sum(map(len, assigned.values()))
+                    + len(self.result.targets)
+                    + len(self.result.reviewed_target_ids)
                 )
                 # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
                 if action.references or action.target_ids:
@@ -279,7 +296,10 @@ class ReviewAgent:
                 if action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
-                            role: {key: self.units[role][key] for key in ids}
+                            role: {
+                                key: self.units[role][key]
+                                for key in ids + unmatched[role]
+                            }
                             for role, ids in pending.items()
                         }
                         if action.operation == "overview"
@@ -297,10 +317,14 @@ class ReviewAgent:
                         }
                     round_number += 1
                 observation = {"action": action.model_dump(), "result": observation}
-                progress_after = sum(
-                    len(group.source_ids) + len(group.translation_ids)
-                    for group in self.result.groups
-                ) + len(self.result.reviewed_target_ids)
+                progress_after = (
+                    sum(
+                        len(group.source_ids) + len(group.translation_ids)
+                        for group in self.result.groups
+                    )
+                    + len(self.result.targets)
+                    + len(self.result.reviewed_target_ids)
+                )
                 idle_steps = idle_steps + 1 if progress_after <= progress_before else 0
             write_model(
                 self.directory / "call-index.json",
@@ -339,6 +363,7 @@ class ReviewAgent:
                 assigned = {
                     key
                     for group in self.result.groups
+                    if group.kind == "matched"
                     for key in getattr(group, f"{role}_ids")
                 }
                 if assigned.intersection(ids):
@@ -353,10 +378,27 @@ class ReviewAgent:
                 self.client,
                 round_number,
             )
+            # 新しい結果の検証成功後に、再探索したIDだけを以前の未対応群から除く。
+            for group in self.result.groups:
+                if group.kind != "matched":
+                    group.source_ids = [
+                        key for key in group.source_ids if key not in chosen["source"]
+                    ]
+                    group.translation_ids = [
+                        key
+                        for key in group.translation_ids
+                        if key not in chosen["translation"]
+                    ]
+            self.result.groups = [
+                group
+                for group in self.result.groups
+                if group.source_ids or group.translation_ids
+            ]
             first_new_group = len(self.result.groups)
             for candidate in response.groups:
+                self.group_number += 1
                 group = AlignmentGroup(
-                    id=f"alignment-{len(self.result.groups) + 1:06d}",
+                    id=f"alignment-{self.group_number:06d}",
                     **candidate.model_dump(),
                 )
                 self.result.groups.append(group)

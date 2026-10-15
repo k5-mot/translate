@@ -363,6 +363,126 @@ def evaluation(*texts: str) -> ReviewResponse:
     )
 
 
+def test_review_recovers_unmatched_units_and_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """候補不足の未対応群を部分的に再対応付けし、IDと再開時の結果を保つ。"""
+    documents = {
+        "source": document(en1="Alpha", en2="Beta"),
+        "translation": document(ja1="ベータ", ja2="アルファ"),
+    }
+
+    def recover_remaining(kwargs: dict[str, object]) -> AgentAction:
+        """一部を対応付けた後も未対応の残りを観察し、次の候補へ組み直す。"""
+        state = json.loads(kwargs["user"])["state"]
+        assert state["unmatched_ids"] == {"source": [], "translation": ["ja1"]}
+        assert state["unmatched_counts"] == {"source": 0, "translation": 1}
+        assert state["unchecked_targets"] == ["review/alignment-000003"]
+        items = json.loads(kwargs["user"])["observation"]["result"]["items"]
+        assert {(item["role"], item["id"], item["text"]) for item in items} == {
+            ("source", "en2", "Beta"),
+            ("translation", "ja1", "ベータ"),
+        }
+        return AgentAction(
+            operation="match", references={"source": ["en2"], "translation": ["ja1"]}
+        )
+
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source": ["en1"], "translation": ["ja1", "ja2"]},
+        ),
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["en1"],
+                        "translation_ids": [],
+                        "kind": "source_only",
+                        "reason": "対応未確定",
+                    },
+                    {
+                        "source_ids": [],
+                        "translation_ids": ["ja1", "ja2"],
+                        "kind": "translation_only",
+                        "reason": "対応未確定",
+                    },
+                ]
+            }
+        ),
+        AgentAction(
+            operation="match", references={"source": ["en1"], "translation": ["ja2"]}
+        ),
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["en1"],
+                        "translation_ids": ["ja2"],
+                        "kind": "matched",
+                    }
+                ]
+            }
+        ),
+        AgentAction(operation="overview"),
+        recover_remaining,
+        AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["en2"],
+                        "translation_ids": ["ja1"],
+                        "kind": "matched",
+                    }
+                ]
+            }
+        ),
+        AgentAction(
+            operation="evaluate",
+            target_ids=["review/alignment-000003", "review/alignment-000004"],
+        ),
+        ReviewResponse(
+            reviewed_target_ids=["review/alignment-000003", "review/alignment-000004"]
+        ),
+        AgentAction(operation="finish"),
+    ]
+    calls = scripted(monkeypatch, answers)
+    directory = tmp_path / "review"
+    result = ReviewAgent(documents, directory, tmp_path, config).run()
+    assert not answers
+    assert [
+        (group.id, group.source_ids, group.translation_ids) for group in result.groups
+    ] == [
+        ("alignment-000003", ["en1"], ["ja2"]),
+        ("alignment-000004", ["en2"], ["ja1"]),
+    ]
+    assert len(result.targets) == len(result.reviewed_target_ids) == 2
+    before = len(calls)
+    answers.append(AgentAction(operation="finish"))
+    assert ReviewAgent(documents, directory, tmp_path, config).run() == result
+    assert len(calls) == before + 1
+
+
+def test_review_cannot_rematch_confirmed_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """未対応の再探索を許しても、確定した対応の再割当ては拒否する。"""
+    action = AgentAction(
+        operation="match", references={"source": ["en"], "translation": ["ja1", "ja2"]}
+    )
+    scripted(monkeypatch, [action, matched(), action])
+    with pytest.raises(InputError, match="confirmed correspondence"):
+        ReviewAgent(
+            {
+                "source": document(en="Text"),
+                "translation": document(ja1="訳", ja2="文"),
+            },
+            tmp_path / "review",
+            tmp_path,
+            config,
+        ).run()
+
+
 def test_review_observes_only_current_matches_and_retains_all_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
