@@ -1759,6 +1759,26 @@ tests/
 | `tasks/` | 文書処理の各Taskを実装する |
 | `templates/` | 規則、既定用語集およびDOCX公開用templateを保持する |
 
+### 🧱 オブジェクト指向の構成
+
+`translate/` の製品コードは、責務ごとの状態と操作を同じクラスへまとめる。
+設定・接続・保存先を多数の関数へ渡し直す構成を避け、依存するオブジェクトを
+コンストラクタで受け取り、公開methodから処理を実行する。
+
+| 責務 | オブジェクトが管理するもの |
+|---|---|
+| Pipeline | 入力、処理記録、Taskの実行順序、Resume、公開条件 |
+| Review・Upgrade Agent | 対象文書、確認済み範囲、途中結果、LLMによる次の操作の選択 |
+| Task | 文書処理の依存関係と、その処理内で共有する設定・状態 |
+| Adapter | 接続設定、client、外部形式の解釈および入出力。`EmbeddingClient` はbatch要求を、`QdrantStore` はcollectionへの登録・検索と接続の解放を管理する |
+| UI | 画面の入力、履歴、workerへの起動依頼と結果の表示 |
+| データモデル | 検証済みデータと、そのデータ自身の参照・変換操作 |
+
+継承よりオブジェクトの組合せを優先する。共通化のためだけの基底クラス、
+factory、DI framework、旧関数へ転送するだけの互換wrapperは設けない。
+状態を持たない小さな計算や標準Libraryに委譲する処理は関数として保持できる。
+既存のpackage配置とTask file名、保存形式、操作順序およびserviceの逐次実行は維持する。
+
 `common` は設定とloggingだけに限定する。`core`、`utils` のように責務が曖昧なpackageは設けない。Task間で共有するためだけの `BaseTask` も設けない。例外は所有するmoduleに定義し、単独の `errors.py` へ集約しない。ReviewとUpgradeの制御ループはそれぞれ `pipeline/review.py` と `pipeline/upgrade.py` に置き、専用のAgent frameworkは追加しない。
 
 `adapters/artifact_store.py` は一つの処理IDにつき一つの `.lock` を処理中だけ保持する。個々のTask file、LLM Call fileおよび最終成果物にlockを追加しない。最上位の処理記録、成功済みLLM Callの `response.json` と `call.json`、および最終公開fileは、同じdirectoryの一時fileから置換して途中書込みを見せない。Task用の一時ディレクトリ内の各fileは通常の書込みとし、成功後だけディレクトリを公開する。各fileの `fsync`、多重の一時fileおよび旧Taskディレクトリのbackupは必須としない。既存Taskが無効な場合だけ再生成し、成功済みTaskはfingerprintとhashで再利用する。ディレクトリの退避と配置を一つの原子操作と見なしてはならない。`models/artifacts.py` は保存するPydanticモデルの定義だけを持ち、file I/Oを行わない。

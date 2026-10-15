@@ -1909,13 +1909,15 @@ def test_review_trims_rag_using_complete_native_prompt_budget(
         target_ids=["unit"],
         spans=[TextSpan(id="span", source="Original sentence.", translated="訳文。")],
     )
-    monkeypatch.setattr("translate.tasks.embed", MagicMock(return_value=[[1.0]]))
     monkeypatch.setattr(
-        "translate.tasks.search",
-        MagicMock(
-            return_value=[{"text": "reference " * 140, "id": i} for i in range(5)]
-        ),
+        "translate.tasks.EmbeddingClient.embed", MagicMock(return_value=[[1.0]])
     )
+    store = MagicMock()
+    store.__enter__.return_value = store
+    store.search.return_value = [
+        {"text": "reference " * 140, "id": i} for i in range(5)
+    ]
+    monkeypatch.setattr("translate.tasks.QdrantStore", MagicMock(return_value=store))
     completion = MagicMock()
     completion.choices = [MagicMock(finish_reason="stop")]
     completion.choices[0].message.content = ReviewResponse(

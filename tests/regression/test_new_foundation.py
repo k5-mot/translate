@@ -13,11 +13,10 @@ import httpx2
 import pytest
 from openai import APIStatusError, BadRequestError, OpenAI
 from pydantic import ValidationError
-from qdrant_client.http import models as qdrant_models
 
 from translate.adapters import qdrant
 from translate.adapters.artifact_store import canonical_hash, load_model, write_model
-from translate.adapters.embedding import embed
+from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.llm import (
     LLMAuthenticationError,
     LLMClient,
@@ -239,22 +238,20 @@ def test_qdrant_registration_uses_bounded_upload_batches(
         [],
         [MagicMock(id=point["id"]) for point in points],
     ]
-    monkeypatch.setattr(
-        qdrant,
-        "_client",
-        MagicMock(return_value=(client, qdrant_models)),
-    )
+    monkeypatch.setattr("qdrant_client.QdrantClient", MagicMock(return_value=client))
 
-    written = qdrant.upsert_revision(
-        config=Config(
+    with qdrant.QdrantStore(
+        Config(
             qdrant_uri="http://qdrant",
             qdrant_collection="translation",
         ),
-        source_key="source/sample.pdf",
-        revision="revision",
-        points=points,
-        vector_size=2,
-    )
+    ) as store:
+        written = store.upsert_revision(
+            source_key="source/sample.pdf",
+            revision="revision",
+            points=points,
+            vector_size=2,
+        )
 
     assert written is True
     client.upload_points.assert_called_once()
@@ -263,6 +260,7 @@ def test_qdrant_registration_uses_bounded_upload_batches(
     assert client.upload_points.call_args.kwargs["wait"] is True
     assert len(client.upload_points.call_args.kwargs["points"]) == 65
     client.upsert.assert_not_called()
+    client.close.assert_called_once()
 
 
 def test_qdrant_client_does_not_start_background_requests(
@@ -275,15 +273,30 @@ def test_qdrant_client_does_not_start_background_requests(
     query = MagicMock()
     query.return_value.points = []
     monkeypatch.setattr("qdrant_client.qdrant_remote.QdrantRemote.query_points", query)
-    assert (
-        qdrant.search(
-            Config(qdrant_uri="http://qdrant", qdrant_collection="translation"),
-            [0.0, 1.0],
-        )
-        == []
-    )
+    with qdrant.QdrantStore(
+        Config(qdrant_uri="http://qdrant", qdrant_collection="translation")
+    ) as store:
+        assert store.search([0.0, 1.0]) == []
     background_thread.assert_not_called()
     query.assert_called_once()
+
+
+def test_qdrant_store_closes_connection_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """検索失敗時にも所有する接続を閉じ、例外は呼出元へ返す。"""
+
+    client = MagicMock()
+    client.query_points.side_effect = RuntimeError
+    monkeypatch.setattr("qdrant_client.QdrantClient", MagicMock(return_value=client))
+    with (
+        pytest.raises(RuntimeError),
+        qdrant.QdrantStore(
+            Config(qdrant_uri="http://qdrant", qdrant_collection="translation")
+        ) as store,
+    ):
+        store.search([0.0, 1.0])
+    client.close.assert_called_once()
 
 
 def test_document_json_uses_schema_version_one() -> None:
@@ -636,14 +649,13 @@ def test_embedding_sdk_preserves_order_and_auth(
         )
 
     monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
-    vectors = embed(
-        ["one", "two"],
+    vectors = EmbeddingClient(
         Config(
             openai_base_url="http://llm",
             openai_api_key=api_key,
             openai_embedding_model="embedding-model",
         ),
-    )
+    ).embed(["one", "two"])
 
     assert vectors == [[1.0], [2.0]]
     assert seen["max_retries"] == 0

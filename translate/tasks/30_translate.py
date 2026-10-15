@@ -19,7 +19,7 @@ from translate.adapters.artifact_store import (
     mark_split_llm_call,
     write_model,
 )
-from translate.adapters.embedding import embed
+from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.glossary import relevant_glossary
 from translate.adapters.llm import (
     LLMClient,
@@ -28,7 +28,7 @@ from translate.adapters.llm import (
     LLMInvalidResponseError,
     LLMOutputExceededError,
 )
-from translate.adapters.qdrant import search as search_qdrant
+from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
 from translate.models.document import Document, TextSpan, iter_text_units
@@ -567,8 +567,9 @@ def _rag_context(config: Config, query: str) -> list[dict[str, object]]:
         config.qdrant_uri and config.openai_embedding_model
     ):
         return []
-    vector = embed([query], config)[0]
-    return search_qdrant(config, vector, limit=5)
+    vector = EmbeddingClient(config).embed([query])[0]
+    with QdrantStore(config) as store:
+        return store.search(vector, limit=5)
 
 
 def _user_payload(

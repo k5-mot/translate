@@ -15,10 +15,10 @@ from translate.adapters.artifact_store import (
     load_model,
     load_reusable_llm_response,
 )
-from translate.adapters.embedding import embed
+from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.glossary import relevant_glossary
 from translate.adapters.llm import LLMClient, LLMInputExceededError
-from translate.adapters.qdrant import search
+from translate.adapters.qdrant import QdrantStore
 from translate.models.artifacts import LLMCallArtifact, LLMTaskName
 
 
@@ -128,7 +128,9 @@ def saved_request[ResponseT: BaseModel](
             and config.qdrant_uri
             and config.openai_embedding_model
         ):
-            references = search(config, embed([query], config)[0], limit=5)
+            vector = EmbeddingClient(config).embed([query])[0]
+            with QdrantStore(config) as store:
+                references = store.search(vector, limit=5)
         while True:
             user = json.dumps(
                 {**payload, "glossary": selected, "references": references},

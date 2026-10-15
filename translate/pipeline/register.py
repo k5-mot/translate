@@ -20,9 +20,9 @@ from translate.adapters.artifact_store import (
     write_model,
 )
 from translate.adapters.docling import DoclingClient
-from translate.adapters.embedding import EmbeddingError, embed
+from translate.adapters.embedding import EmbeddingClient, EmbeddingError
 from translate.adapters.pdf import split_pdf
-from translate.adapters.qdrant import upsert_revision
+from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
 from translate.models.artifacts import (
@@ -196,7 +196,7 @@ def _register_sources(
             raise ValueError(
                 f"reference contains no extractable text: {source.logical_path}"
             )
-        vectors = embed(chunks, config)
+        vectors = EmbeddingClient(config).embed(chunks)
         points = [
             {
                 "id": str(
@@ -219,13 +219,13 @@ def _register_sources(
             }
             for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True))
         ]
-        written = upsert_revision(
-            config=config,
-            source_key=source.source_key,
-            revision=revision,
-            points=points,
-            vector_size=len(vectors[0]),
-        )
+        with QdrantStore(config) as store:
+            written = store.upsert_revision(
+                source_key=source.source_key,
+                revision=revision,
+                points=points,
+                vector_size=len(vectors[0]),
+            )
         results.append(
             RegistrationSourceResult(
                 logical_path=source.logical_path,
