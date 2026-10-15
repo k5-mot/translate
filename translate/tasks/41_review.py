@@ -446,7 +446,10 @@ class ReviewTask:
             AlignmentResponse,
             '{"groups":[{"source_ids":["id"],"translation_ids":["id"],'
             '"kind":"matched|source_only|translation_only","reason":null}]}. '
-            "Cover all selected IDs exactly once. Match by meaning; unmatched IDs need an explanation.",
+            "Every source ID and every translation ID must appear exactly once, including unmatched IDs. "
+            "Match only the same content, not related topics. "
+            "When two texts do not correspond, return two groups: source_only and translation_only, "
+            "each with its own IDs and reason.",
             validate,
         )
 
