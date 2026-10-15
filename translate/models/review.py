@@ -16,8 +16,8 @@ class ReviewModel(BaseModel):
 class AlignmentCandidate(ReviewModel):
     """Agentが提案する原文と訳文の対応。"""
 
-    source_ids: list[str] = Field(default_factory=list)
-    translation_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str]
+    translation_ids: list[str]
     kind: Literal["matched", "source_only", "translation_only"]
     reason: str | None = None
 

@@ -225,8 +225,31 @@ def test_agent_overview_includes_bounded_content() -> None:
     assert [item["role"] for item in result["items"][:2]] == ["source", "translation"]
 
 
+@pytest.mark.parametrize(
+    "groups",
+    [
+        [{"source_ids": ["en"], "translation_ids": ["ja"], "kind": "matched"}],
+        [
+            {
+                "source_ids": ["en"],
+                "translation_ids": [],
+                "kind": "source_only",
+                "reason": "対応する訳文がない",
+            },
+            {
+                "source_ids": [],
+                "translation_ids": ["ja"],
+                "kind": "translation_only",
+                "reason": "対応する原文がない",
+            },
+        ],
+    ],
+)
 def test_match_schema_requests_only_correspondence(
-    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    groups: list[dict[str, object]],
 ) -> None:
     """対応付け要求に品質評価欄を混在させず、実SDK境界で対応関係だけを受け取る。"""
     client = LLMClient(
@@ -234,13 +257,7 @@ def test_match_schema_requests_only_correspondence(
     )
     response = MagicMock()
     response.choices = [MagicMock(finish_reason="stop")]
-    response.choices[0].message.content = json.dumps(
-        {
-            "groups": [
-                {"source_ids": ["en"], "translation_ids": ["ja"], "kind": "matched"}
-            ]
-        }
-    )
+    response.choices[0].message.content = json.dumps({"groups": groups})
     response.usage = None
     create = MagicMock(return_value=response)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
@@ -259,7 +276,12 @@ def test_match_schema_requests_only_correspondence(
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
         assert set(schema["properties"]) == {"groups"}
-        assert result.groups[0].translation_ids == ["ja"]
+        assert {"source_ids", "translation_ids"}.issubset(
+            schema["$defs"]["AlignmentCandidate"]["required"]
+        )
+        assert [key for group in result.groups for key in group.translation_ids] == [
+            "ja"
+        ]
         create.assert_called_once()
     finally:
         client.client.close()
