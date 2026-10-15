@@ -268,18 +268,14 @@ class ReviewAgent:
                 progress_before = sum(map(len, assigned.values())) + len(
                     self.result.reviewed_target_ids
                 )
-                group_key = repr(
-                    (
-                        action.references,
-                        action.target_ids,
-                        action.role,
-                        action.query,
-                        action.offset,
-                    )
-                )
-                group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                if group_steps[group_key] > 12:
-                    raise TimeoutError("Review target group exceeded 12 Agent steps")
+                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
+                if action.references or action.target_ids:
+                    group_key = repr((action.references, action.target_ids))
+                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
+                    if group_steps[group_key] > 12:
+                        raise TimeoutError(
+                            "Review target group exceeded 12 Agent steps"
+                        )
                 if action.operation in {"overview", "read", "search"}:
                     visible = (
                         {

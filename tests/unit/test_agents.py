@@ -366,10 +366,10 @@ def evaluation(*texts: str) -> ReviewResponse:
 def test_review_observes_only_current_matches_and_retains_all_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
-    """判断入力へ過去の対応を再送せず、全対応と確認範囲は成果物に保持する。"""
+    """概要を再取得しながら13群を完了し、直近の観察と全確認範囲を保持する。"""
     documents = {
-        "source": document(**{f"en-{index}": "Text" for index in range(32)}),
-        "translation": document(**{f"ja-{index}": "訳文" for index in range(32)}),
+        "source": document(**{f"en-{index}": "Text" for index in range(104)}),
+        "translation": document(**{f"ja-{index}": "訳文" for index in range(104)}),
     }
 
     def evaluate_current(kwargs: dict[str, object]) -> AgentAction:
@@ -382,9 +382,10 @@ def test_review_observes_only_current_matches_and_retains_all_results(
         return AgentAction(operation="evaluate", target_ids=targets)
 
     answers = []
-    for start in range(0, 32, 8):
+    for start in range(0, 104, 8):
         answers.extend(
             [
+                AgentAction(operation="overview"),
                 AgentAction(
                     operation="match",
                     references={
@@ -418,7 +419,7 @@ def test_review_observes_only_current_matches_and_retains_all_results(
     answers.append(AgentAction(operation="finish"))
     scripted(monkeypatch, answers)
     result = ReviewAgent(documents, tmp_path / "review", tmp_path, config).run()
-    assert len(result.groups) == len(result.reviewed_target_ids) == 32
+    assert len(result.groups) == len(result.reviewed_target_ids) == 104
     assert not answers
 
 
@@ -620,3 +621,75 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     answers.append(AgentAction(operation="finish"))
     assert UpgradeAgent(documents, tmp_path, config).run() == result
     assert len(calls) == before + 1
+
+
+def test_upgrade_can_refresh_overview_between_thirteen_groups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """未確認範囲が減る概要取得を反復しても、13群以上の比較を完了できる。"""
+    documents = {
+        role: document(**{f"unit-{index}": "Text" for index in range(13)})
+        for role in ("source_v1", "source_v2", "translation_v1")
+    }
+    answers = []
+    for index in range(13):
+        references = {role: [f"unit-{index}"] for role in documents}
+        answers.extend(
+            [
+                AgentAction(operation="overview"),
+                AgentAction(operation="evaluate", references=references),
+                DiffResponse.model_validate(
+                    {
+                        "changes": [
+                            {
+                                "kind": "unchanged",
+                                **{
+                                    f"{role}_ids": ids
+                                    for role, ids in references.items()
+                                },
+                                "summary": "変更なし",
+                            }
+                        ],
+                        "reviewed_source_v1_ids": references["source_v1"],
+                        "reviewed_source_v2_ids": references["source_v2"],
+                    }
+                ),
+            ]
+        )
+    answers.append(AgentAction(operation="finish"))
+    scripted(monkeypatch, answers)
+    result = UpgradeAgent(documents, tmp_path, config).run()
+    assert len(result.reviewed_source_v1_ids) == 13
+    assert len(result.reviewed_source_v2_ids) == 13
+    assert not result.changes
+    assert not answers
+
+
+@pytest.mark.parametrize("operation", ["review", "upgrade"])
+def test_agent_stops_repeated_overview_without_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, operation: str
+) -> None:
+    """対象の確認を進めず概要取得だけを繰り返すAgentは12回で停止する。"""
+    answers = [AgentAction(operation="overview") for _ in range(12)]
+    calls = scripted(monkeypatch, answers)
+    if operation == "review":
+        agent = ReviewAgent(
+            {"source": document(en="Text"), "translation": document(ja="訳文")},
+            tmp_path,
+            tmp_path,
+            config,
+        )
+    else:
+        agent = UpgradeAgent(
+            {
+                "source_v1": document(old="Text"),
+                "source_v2": document(new="Text"),
+                "translation_v1": document(ja="訳文"),
+            },
+            tmp_path,
+            config,
+        )
+    with pytest.raises(TimeoutError, match="step or time limit"):
+        agent.run()
+    assert len(calls) == 12
+    assert not answers

@@ -249,12 +249,14 @@ class UpgradeAgent:
                         )
                     break
                 before = sum(map(len, covered.values()))
-                group_key = repr(
-                    (action.references, action.role, action.query, action.offset)
-                )
-                group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                if group_steps[group_key] > 12:
-                    raise TimeoutError("Upgrade target group exceeded 12 Agent steps")
+                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
+                if action.references:
+                    group_key = repr(action.references)
+                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
+                    if group_steps[group_key] > 12:
+                        raise TimeoutError(
+                            "Upgrade target group exceeded 12 Agent steps"
+                        )
                 if action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
