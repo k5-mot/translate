@@ -34,9 +34,8 @@ from translate.pipeline import InputError
 from translate.pipeline.translate import TranslatePipeline
 from translate.ui import (
     HistoryEntry,
+    TranslationApp,
     WorkerRegistry,
-    _delete_history_entry,
-    _force_stop,
     _history_entries,
     _live_call_counts,
     _preview,
@@ -229,7 +228,7 @@ def test_force_stop_terminates_worker_and_marks_record_cancelled(
 
     try:
         assert registry._processes  # noqa: SLF001
-        assert _force_stop(entry, registry)
+        assert TranslationApp(registry).stop(entry)
         future = registry.future(processing_id)
         assert future is not None
         future.result(timeout=5)
@@ -295,11 +294,8 @@ def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
         record=record,
     )
 
-    _delete_history_entry(
-        entry,
-        WorkerRegistry(),
-        outputs_root=tmp_path / "outputs",
-        work_root=tmp_path / ".translate-ui",
+    TranslationApp(WorkerRegistry()).delete_history(
+        entry, outputs_root=tmp_path / "outputs", work_root=tmp_path / ".translate-ui"
     )
 
     assert not processing_directory.exists()

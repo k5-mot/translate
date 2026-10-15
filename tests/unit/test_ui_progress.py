@@ -26,11 +26,11 @@ from translate.models.artifacts import (
 )
 from translate.ui import (
     HistoryEntry,
+    TranslationApp,
     WorkerError,
     WorkerRegistry,
     _docling_progress,
     _render_future_error,
-    _render_record_actions,
     _task_progress,
 )
 
@@ -124,12 +124,14 @@ def test_record_error_does_not_repeat_worker_error(
     future.set_exception(WorkerError("LLMOutputTokenExceededError"))
     registry = WorkerRegistry()
     monkeypatch.setattr(registry, "future", lambda _: future)
-    monkeypatch.setattr("translate.ui._render_resume", lambda *_: None)
-    monkeypatch.setattr("translate.ui._render_history_delete", lambda *_: None)
+    monkeypatch.setattr("translate.ui.TranslationApp._render_resume", lambda *_: None)
+    monkeypatch.setattr(
+        "translate.ui.TranslationApp._render_history_delete", lambda *_: None
+    )
     messages: list[str] = []
     monkeypatch.setattr("translate.ui.st.error", messages.append)
 
-    _render_record_actions(entry, registry)
+    TranslationApp(registry)._render_record_actions(entry)  # noqa: SLF001 — 失敗表示の回帰試験。
 
     assert len(messages) == 1
     assert "対策: TRANSLATE_OUTPUT_TOKENS" in messages[0]

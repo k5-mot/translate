@@ -10,8 +10,8 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
 from importlib import import_module
 from multiprocessing.connection import Connection, wait
 from multiprocessing.process import BaseProcess
@@ -389,150 +389,47 @@ def worker_registry() -> WorkerRegistry:
     return WorkerRegistry()
 
 
-def _execute_translate(source: Path, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
+@dataclass(frozen=True, slots=True)
+class PipelineJob:
+    """操作・入力Path・処理IDを保持し、子processで最新設定を読んで実行する。"""
 
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        processing_id (str): 新規処理またはResume対象の処理ID。
+    kind: ProcessingKind
+    paths: tuple[Path, ...]
+    processing_id: str
+    source_id: str | None = None
+    resuming: bool = False
 
-    Returns:
-        object: 最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
-    """
+    def __call__(self) -> object:
+        """新規実行または再開を、対応するPipelineへ渡す。
 
-    return TranslatePipeline(load_config()).run(source, processing_id=processing_id)
+        Returns:
+            操作に対応する成果物情報。
 
-
-def _execute_review(source: Path, translation: Path, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでReview Pipelineを実行する。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでReview Pipelineを実行する。
-    """
-
-    return ReviewPipeline(load_config()).run(
-        source, translation, processing_id=processing_id
-    )
-
-
-def _execute_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """最新設定を読み、UI指定IDでRegister Pipelineを実行する。
-
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでRegister Pipelineを実行する。
-    """
-
-    return RegisterPipeline(load_config()).run(
-        paths, source_id=source_id, processing_id=processing_id
-    )
-
-
-def _execute_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    processing_id: str,
-) -> object:
-    """最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
-
-    Args:
-        source_v1 (Path): 比較基準にする英文v1。
-        source_v2 (Path): 変更を反映する英文v2。
-        translation_v1 (Path): 比較基準にする日本語v1。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
-    """
-
-    return UpgradePipeline(load_config()).run(
-        source_v1, source_v2, translation_v1, processing_id=processing_id
-    )
-
-
-def _resume_translate(source: Path, processing_id: str) -> object:
-    """保存済みTranslate入力とIDでPipelineをResumeする。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みTranslate入力とIDでPipelineをResumeする。
-    """
-
-    return TranslatePipeline(load_config()).run(source, resume_id=processing_id)
-
-
-def _resume_review(source: Path, translation: Path, processing_id: str) -> object:
-    """保存済みReview入力とIDでPipelineをResumeする。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みReview入力とIDでPipelineをResumeする。
-    """
-
-    return ReviewPipeline(load_config()).run(
-        source, translation, resume_id=processing_id
-    )
-
-
-def _resume_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """保存済みRegister入力とIDでPipelineをResumeする。
-
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みRegister入力とIDでPipelineをResumeする。
-    """
-
-    return RegisterPipeline(load_config()).run(
-        paths, source_id=source_id, resume_id=processing_id
-    )
-
-
-def _resume_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    processing_id: str,
-) -> object:
-    """保存済みUpgrade入力とIDでPipelineをResumeする。
-
-    Args:
-        source_v1 (Path): 比較基準にする英文v1。
-        source_v2 (Path): 変更を反映する英文v2。
-        translation_v1 (Path): 比較基準にする日本語v1。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みUpgrade入力とIDでPipelineをResumeする。
-    """
-
-    return UpgradePipeline(load_config()).run(
-        source_v1, source_v2, translation_v1, resume_id=processing_id
-    )
+        Raises:
+            InputError: 操作の種類またはPipelineの入力・再開条件が不正な場合。
+            ValueError: 操作に必要な入力Pathの数が一致しない場合。
+            Exception: 設定検証やPipelineの実行に失敗した場合。
+        """
+        config = load_config()
+        options = {
+            "resume_id" if self.resuming else "processing_id": self.processing_id
+        }
+        if self.kind == "translate":
+            (source,) = self.paths
+            return TranslatePipeline(config).run(source, **options)
+        if self.kind == "review":
+            source, translation = self.paths
+            return ReviewPipeline(config).run(source, translation, **options)
+        if self.kind == "upgrade":
+            source_v1, source_v2, translation_v1 = self.paths
+            return UpgradePipeline(config).run(
+                source_v1, source_v2, translation_v1, **options
+            )
+        if self.kind == "register":
+            return RegisterPipeline(config).run(
+                list(self.paths), source_id=self.source_id, **options
+            )
+        raise InputError("Unknown processing kind")
 
 
 def _safe_upload_name(name: str, suffixes: set[str]) -> str:
@@ -730,113 +627,6 @@ def _stage_upgrade(
     return staged[0], staged[1], staged[2]
 
 
-def _start_translate(upload: UploadedFile, registry: WorkerRegistry) -> str:
-    """Translate入力を保存し、background workerへ登録する。
-
-    Args:
-        upload (UploadedFile): 保存または照合するUpload File。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Translate入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    source = _stage_translate(upload, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_translate, source, processing_id),
-    )
-    return processing_id
-
-
-def _start_review(
-    source_upload: UploadedFile,
-    translation_upload: UploadedFile,
-    registry: WorkerRegistry,
-) -> str:
-    """Review二入力を保存し、background workerへ登録する。
-
-    Args:
-        source_upload (UploadedFile): Review原文のUpload File。
-        translation_upload (UploadedFile): Review訳文のUpload File。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Review二入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    source, translation = _stage_review(
-        source_upload, translation_upload, processing_id
-    )
-    registry.submit(
-        processing_id,
-        partial(_execute_review, source, translation, processing_id),
-    )
-    return processing_id
-
-
-def _start_register(
-    uploads: list[UploadedFile],
-    source_id: str | None,
-    registry: WorkerRegistry,
-) -> str:
-    """Register入力を保存し、background workerへ登録する。
-
-    Args:
-        uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Register入力を保存し、background workerへ登録する。
-
-    Raises:
-        InputError: `at least one registration file is required`、`source_id is required for
-            multiple registration files`のいずれかと判定した場合。
-    """
-
-    if not uploads:
-        raise InputError("at least one registration file is required")
-    if len(uploads) > 1 and not source_id:
-        raise InputError("source_id is required for multiple registration files")
-    processing_id = str(uuid7())
-    paths = _stage_register(uploads, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_register, paths, source_id or None, processing_id),
-    )
-    return processing_id
-
-
-def _start_upgrade(
-    source_v1: UploadedFile,
-    source_v2: UploadedFile,
-    translation_v1: UploadedFile,
-    registry: WorkerRegistry,
-) -> str:
-    """Upgrade三入力を保存し、background workerへ登録する。
-
-    Args:
-        source_v1 (UploadedFile): 比較基準にする英文v1。
-        source_v2 (UploadedFile): 変更を反映する英文v2。
-        translation_v1 (UploadedFile): 比較基準にする日本語v1。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Upgrade三入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    paths = _stage_upgrade(source_v1, source_v2, translation_v1, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_upgrade, *paths, processing_id),
-    )
-    return processing_id
-
-
 def _history_entries(outputs: Path | None = None) -> list[HistoryEntry]:
     """outputs直下の新Schema処理記録を新しい順に100件返す。
 
@@ -946,129 +736,6 @@ def _select_processing(processing_id: str) -> None:
     st.rerun()
 
 
-def _render_translate_form(registry: WorkerRegistry) -> None:
-    """Translateの英語PDF入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
-    submitted = st.button(
-        "翻訳を開始",
-        disabled=upload is None,
-        type="primary",
-        key="start-translate",
-    )
-    if submitted and upload is not None:
-        try:
-            _select_processing(_start_translate(upload, registry))
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_review_form(registry: WorkerRegistry) -> None:
-    """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
-    translation = st.file_uploader(
-        "日本語訳文PDF", type=["pdf"], key="review-translation"
-    )
-    submitted = st.button(
-        "レビューを開始",
-        disabled=source is None or translation is None,
-        type="primary",
-        key="start-review",
-    )
-    if submitted and source is not None and translation is not None:
-        try:
-            _select_processing(_start_review(source, translation, registry))
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_register_form(registry: WorkerRegistry) -> None:
-    """Registerの複数fileとsource_id入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    mode = st.segmented_control(
-        "登録する入力",
-        ["ファイル", "ディレクトリ"],
-        default="ファイル",
-        key="register-input-mode",
-    )
-    uploads = st.file_uploader(
-        "参照資料",
-        type=["pdf"],
-        accept_multiple_files="directory" if mode == "ディレクトリ" else True,
-        key="register-sources",
-    )
-    source_id = st.text_input("source_id")
-    needs_source_id = len(uploads) > 1 and not source_id.strip()
-    submitted = st.button(
-        "登録を開始",
-        disabled=not uploads or needs_source_id or len(uploads) > 100,
-        type="primary",
-        key="start-register",
-    )
-    if needs_source_id:
-        st.caption("複数fileの登録ではsource_idが必要です。")
-    if len(uploads) > 100:
-        st.caption("一度に登録できるfileは100件までです。")
-    if submitted:
-        try:
-            _select_processing(
-                _start_register(uploads, source_id.strip() or None, registry)
-            )
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_upgrade_form(registry: WorkerRegistry) -> None:
-    """Upgradeの英文二版と日本語旧版のPDF入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    source_v1 = st.file_uploader("英文v1 PDF", type=["pdf"], key="upgrade-source-v1")
-    source_v2 = st.file_uploader("英文v2 PDF", type=["pdf"], key="upgrade-source-v2")
-    translation_v1 = st.file_uploader(
-        "日本語v1 PDF", type=["pdf"], key="upgrade-translation-v1"
-    )
-    ready = all(value is not None for value in (source_v1, source_v2, translation_v1))
-    submitted = st.button(
-        "Upgradeを開始",
-        disabled=not ready,
-        type="primary",
-        key="start-upgrade",
-    )
-    if (
-        submitted
-        and source_v1 is not None
-        and source_v2 is not None
-        and translation_v1 is not None
-    ):
-        try:
-            _select_processing(
-                _start_upgrade(
-                    source_v1,
-                    source_v2,
-                    translation_v1,
-                    registry,
-                )
-            )
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
 def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
     """左sidebarの縦並び一覧から処理を選択し、選択IDを返す。
 
@@ -1126,34 +793,6 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
         for entry in invalid_entries:
             st.warning(f"{entry.error} {entry.record_path}")
     return selected_id
-
-
-def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
-    """Artifact公開前の待機・準備状態またはworker失敗を表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    future = registry.future(processing_id)
-    st.progress(0.0, text="0 / ? Task — 準備 — preparing")
-    if future is None:
-        current = "処理記録の公開待ち"
-    elif not future.running() and not future.done():
-        current = "workerの開始待ち"
-    elif not future.done():
-        current = "Pipelineを準備中"
-    else:
-        current = "workerの結果を確認中"
-    with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
-        st.write("更新時刻: -")
-        st.caption("LLM進捗はまだありません。")
-    st.caption(current)
-    if future is None:
-        st.info("処理記録が見つかりません。")
-    elif future.done():
-        _render_future_error(future)
 
 
 def _render_future_error(future: Future[object]) -> None:
@@ -2522,41 +2161,6 @@ def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
     return paths if actual == wanted else None
 
 
-def _resume_entry(
-    entry: HistoryEntry, paths: list[Path], registry: WorkerRegistry
-) -> bool:
-    """検証済み入力を使って処理種類別のResumeを登録する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        paths (list[Path]): 列挙された入力Path。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        bool: 検証済み入力を使って処理種類別のResumeを登録する。
-    """
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if processing_id is None or record is None:
-        return False
-    if isinstance(record, TranslationRecord):
-        operation = partial(_resume_translate, paths[0], processing_id)
-    elif isinstance(record, ReviewRecord):
-        operation = partial(_resume_review, paths[0], paths[1], processing_id)
-    elif isinstance(record, UpgradeRecord):
-        operation = partial(
-            _resume_upgrade,
-            paths[0],
-            paths[1],
-            paths[2],
-            processing_id,
-        )
-    else:
-        operation = partial(_resume_register, paths, record.source_id, processing_id)
-    return registry.submit(processing_id, operation)
-
-
 def _matches_input(upload: UploadedFile, logical_path: str, sha256: str) -> bool:
     """uploadのbasenameとSHA-256が保存済み入力に一致するかを返す。
 
@@ -2722,43 +2326,6 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
         return None
 
 
-def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終端失敗またはworker不明のprocessing記録にResume確認を表示する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    processing_id = entry.processing_id
-    if (
-        record is None
-        or processing_id is None
-        or record.status == "succeeded"
-        or registry.active(processing_id)
-    ):
-        return
-    paths = _stored_resume_paths(entry)
-    if paths is None:
-        st.info("Resume用の保存済み入力がありません。同じ入力を再uploadしてください。")
-        paths = _render_resume_uploads(entry)
-        if paths is not None and _resume_entry(entry, paths, registry):
-            st.rerun()
-        return
-    confirmed = st.checkbox(
-        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-        key=f"resume-confirm-{processing_id}",
-    )
-    submitted = st.button(
-        "Resume",
-        disabled=not confirmed,
-        key=f"resume-submit-{processing_id}",
-    )
-    if submitted and confirmed and _resume_entry(entry, paths, registry):
-        st.rerun()
-
-
 def _render_record(entry: HistoryEntry) -> None:
     """最上位記録のProgressBar、詳細および比較TextAreaを表示する。
 
@@ -2781,232 +2348,6 @@ def _render_record(entry: HistoryEntry) -> None:
         with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
             st.write(f"更新時刻: {record.updated_at.isoformat()}")
             st.caption("LLM進捗はありません。")
-
-
-def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    if record is None:
-        return
-    processing_id = entry.processing_id or "-"
-    if record.status == "processing" and st.button(
-        "強制ストップ",
-        key=f"stop-{processing_id}",
-        icon=":material/stop_circle:",
-        disabled=not registry.active(processing_id),
-        help="このUIが起動した処理だけ停止できます。",
-    ):
-        if _force_stop(entry, registry):
-            st.rerun()
-        st.error("処理を停止できませんでした。履歴を更新して状態を確認してください。")
-    if record.error is not None:
-        st.error(
-            f"{record.error.message} "
-            f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
-        )
-    future = registry.future(processing_id)
-    if future is not None and future.done() and record.error is None:
-        _render_future_error(future)
-    if record.status == "succeeded":
-        if isinstance(record, TranslationRecord):
-            _render_translation_outputs(entry, record)
-        elif isinstance(record, ReviewRecord):
-            _render_review_outputs(entry, record)
-        elif isinstance(record, UpgradeRecord):
-            _render_upgrade_output(entry, record)
-        else:
-            _render_registration_result(entry, record)
-    _render_resume(entry, registry)
-
-
-def _force_stop(entry: HistoryEntry, registry: WorkerRegistry) -> bool:
-    """UI所有workerを停止し、残った処理記録をcancelledへ確定する。"""
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if (
-        processing_id is None
-        or record is None
-        or record.status != "processing"
-        or not registry.stop(processing_id)
-    ):
-        return False
-    try:
-        current = load_model(entry.record_path, type(record))
-    except ArtifactError:
-        return True
-    if current.status == "processing":
-        if isinstance(current, RegistrationRecord):
-            current.status = "cancelled"
-            current.updated_at = datetime.now(UTC)
-            write_model(entry.record_path, current)
-        else:
-            ArtifactStore(current, entry.record_path).cancel_processing()
-    return True
-
-
-def _render_history_delete(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終了済みの選択履歴だけを確認操作付きで削除する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    processing_id = entry.processing_id
-    if (
-        record is None
-        or processing_id is None
-        or record.status == "processing"
-        or registry.active(processing_id)
-    ):
-        return
-    with st.expander("履歴を削除", expanded=True, icon=":material/delete:"):
-        st.caption(_entry_label(entry))
-        confirmed = st.checkbox(
-            "成果物と保存済み入力を削除する",
-            key=f"confirm-delete-{processing_id}",
-        )
-        if st.button(
-            "削除",
-            key=f"delete-{processing_id}",
-            disabled=not confirmed,
-            type="secondary",
-        ):
-            try:
-                _delete_history_entry(entry, registry)
-            except (InputError, OSError) as error:
-                st.error(str(error))
-            else:
-                st.session_state.pop("pending-delete", None)
-                if _selected_processing_id() == processing_id:
-                    st.query_params.clear()
-                st.rerun()
-
-
-def _delete_history_entry(
-    entry: HistoryEntry,
-    registry: WorkerRegistry,
-    *,
-    outputs_root: Path | None = None,
-    work_root: Path | None = None,
-) -> None:
-    """終了済み記録の正確な処理directoryと保存入力だけを削除する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-        outputs_root (Path | None): 成果物Root Directory。
-        work_root (Path | None): Uploadの一時保存Root Directory。
-
-    Raises:
-        InputError: `valid processing history is required`、`active processing history cannot
-            be deleted`、`history path is outside the outputs directory`、`saved input path is
-            outside the UI work directory`のいずれかと判定した場合。
-    """
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if processing_id is None or record is None:
-        raise InputError("valid processing history is required")
-    if record.status == "processing" or registry.active(processing_id):
-        raise InputError("active processing history cannot be deleted")
-    outputs = (outputs_root or Path.cwd() / "outputs").resolve()
-    processing_directory = entry.record_path.parent.resolve()
-    if (
-        processing_directory.name != processing_id
-        or processing_directory.parent.parent != outputs
-    ):
-        raise InputError("history path is outside the outputs directory")
-    staged_root = (work_root or Path.cwd() / ".translate-ui").resolve()
-    staged_directory = (staged_root / processing_id).resolve()
-    if staged_directory.parent != staged_root:
-        raise InputError("saved input path is outside the UI work directory")
-    shutil.rmtree(processing_directory)
-    if staged_directory.is_dir():
-        shutil.rmtree(staged_directory)
-
-
-def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
-    """選択処理をArtifactから再読込みして表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    entry = _entry_by_id(processing_id)
-    if entry is None:
-        _render_future_state(processing_id, registry)
-        return
-    _render_record(entry)
-
-
-def _render_processing_panel(
-    processing_id: str,
-    registry: WorkerRegistry,
-    entries: list[HistoryEntry] | None = None,
-) -> None:
-    """進捗と比較を折り畳み、成果物操作をその外側へ表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-        entries (list[HistoryEntry] | None): 表示対象の処理履歴一覧。
-    """
-
-    entries = entries if entries is not None else _history_entries()
-    current = next(
-        (entry for entry in entries if entry.processing_id == processing_id), None
-    )
-    processing = (
-        current is not None
-        and current.record is not None
-        and (current.record.status == "processing")
-    )
-    active = processing or registry.active(processing_id)
-    status = "running"
-    if current is not None and current.record is not None:
-        if current.record.status == "succeeded":
-            status = "complete"
-        elif current.record.status in {"failed", "cancelled"}:
-            status = "error"
-
-    progress_panel = st.status(
-        "進捗と処理内容",
-        expanded=True,
-        state=status,
-    )
-    with progress_panel:
-
-        @st.fragment(run_every="1s" if active else None)
-        def render_progress() -> None:
-            """実行中だけ1秒ごとにArtifactを再読込みする。"""
-
-            _render_selected(processing_id, registry)
-            refreshed = _entry_by_id(processing_id)
-            if refreshed is not None and (
-                current is None
-                or (
-                    active
-                    and refreshed.record is not None
-                    and refreshed.record.status in _TERMINAL_STATUSES
-                )
-            ):
-                st.rerun(scope="app")
-
-        render_progress()
-    progress_panel.update(expanded=True, state=status)
-    refreshed = _entry_by_id(processing_id)
-    if refreshed is not None:
-        _render_record_actions(refreshed, registry)
 
 
 def _render_session_title(processing_id: str | None) -> None:
@@ -3046,42 +2387,587 @@ def _render_session_title(processing_id: str | None) -> None:
     )
 
 
-def main() -> None:
-    """折り畳み可能なStreamlitの4操作と共通処理履歴を表示する。"""
+class TranslationApp:
+    """worker登録表を共有し、入力・実行・再開・履歴操作と画面表示を制御する。"""
 
-    st.set_page_config(
-        page_title="Translate",
-        page_icon=":material/translate:",
-        layout="wide",
-    )
-    st.logo(_LOGO_PATH, size="large")
-    registry = worker_registry()
-    entries = _history_entries()
-    selected_id = _render_history_sidebar(entries)
-    _render_session_title(selected_id)
-    pending_delete = st.session_state.get("pending-delete")
-    candidate = next(
-        (entry for entry in entries if entry.processing_id == pending_delete), None
-    )
-    if candidate is not None:
-        _render_history_delete(candidate, registry)
-    expander_key = selected_id or "new"
-    with st.expander(
-        "入力と設定",
-        expanded=selected_id is None,
-        key=f"pipeline-setup-{expander_key}",
-        icon=":material/tune:",
-    ):
-        translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
-            ["Translate", "Review", "Upgrade", "Register"]
+    def __init__(self, registry: WorkerRegistry) -> None:
+        """Streamlitの再実行をまたいで存続するworker登録表を受け取る。
+
+        Args:
+            registry: 新規実行・再開・停止の対象workerを管理する登録表。
+        """
+        self.registry = registry
+
+    def _start_translate(self, upload: UploadedFile) -> str:
+        """Translate入力を保存し、background workerへ登録する。
+
+        Args:
+            upload (UploadedFile): 保存または照合するUpload File。
+
+        Returns:
+            str: Translate入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        source = _stage_translate(upload, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("translate", (source,), processing_id),
         )
-        with translate_tab:
-            _render_translate_form(registry)
-        with review_tab:
-            _render_review_form(registry)
-        with upgrade_tab:
-            _render_upgrade_form(registry)
-        with register_tab:
-            _render_register_form(registry)
-    if selected_id is not None:
-        _render_processing_panel(selected_id, registry, entries)
+        return processing_id
+
+    def _start_review(
+        self, source_upload: UploadedFile, translation_upload: UploadedFile
+    ) -> str:
+        """Review二入力を保存し、background workerへ登録する。
+
+        Args:
+            source_upload (UploadedFile): Review原文のUpload File。
+            translation_upload (UploadedFile): Review訳文のUpload File。
+
+        Returns:
+            str: Review二入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        source, translation = _stage_review(
+            source_upload, translation_upload, processing_id
+        )
+        self.registry.submit(
+            processing_id,
+            PipelineJob("review", (source, translation), processing_id),
+        )
+        return processing_id
+
+    def _start_register(
+        self, uploads: list[UploadedFile], source_id: str | None
+    ) -> str:
+        """Register入力を保存し、background workerへ登録する。
+
+        Args:
+            uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
+            source_id (str | None): 登録対象へ付与する論理Source ID。
+
+        Returns:
+            str: Register入力を保存し、background workerへ登録する。
+
+        Raises:
+            InputError: `at least one registration file is required`、`source_id is required for
+                multiple registration files`のいずれかと判定した場合。
+        """
+
+        if not uploads:
+            raise InputError("at least one registration file is required")
+        if len(uploads) > 1 and not source_id:
+            raise InputError("source_id is required for multiple registration files")
+        processing_id = str(uuid7())
+        paths = _stage_register(uploads, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("register", tuple(paths), processing_id, source_id or None),
+        )
+        return processing_id
+
+    def _start_upgrade(
+        self,
+        source_v1: UploadedFile,
+        source_v2: UploadedFile,
+        translation_v1: UploadedFile,
+    ) -> str:
+        """Upgrade三入力を保存し、background workerへ登録する。
+
+        Args:
+            source_v1 (UploadedFile): 比較基準にする英文v1。
+            source_v2 (UploadedFile): 変更を反映する英文v2。
+            translation_v1 (UploadedFile): 比較基準にする日本語v1。
+
+        Returns:
+            str: Upgrade三入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        paths = _stage_upgrade(source_v1, source_v2, translation_v1, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("upgrade", paths, processing_id),
+        )
+        return processing_id
+
+    def _render_translate_form(
+        self,
+    ) -> None:
+        """Translateの英語PDF入力を表示する。
+
+        Args:
+        """
+
+        upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
+        submitted = st.button(
+            "翻訳を開始",
+            disabled=upload is None,
+            type="primary",
+            key="start-translate",
+        )
+        if submitted and upload is not None:
+            try:
+                _select_processing(self._start_translate(upload))
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_review_form(
+        self,
+    ) -> None:
+        """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。
+
+        Args:
+        """
+
+        source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
+        translation = st.file_uploader(
+            "日本語訳文PDF", type=["pdf"], key="review-translation"
+        )
+        submitted = st.button(
+            "レビューを開始",
+            disabled=source is None or translation is None,
+            type="primary",
+            key="start-review",
+        )
+        if submitted and source is not None and translation is not None:
+            try:
+                _select_processing(self._start_review(source, translation))
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_register_form(
+        self,
+    ) -> None:
+        """Registerの複数fileとsource_id入力を表示する。
+
+        Args:
+        """
+
+        mode = st.segmented_control(
+            "登録する入力",
+            ["ファイル", "ディレクトリ"],
+            default="ファイル",
+            key="register-input-mode",
+        )
+        uploads = st.file_uploader(
+            "参照資料",
+            type=["pdf"],
+            accept_multiple_files="directory" if mode == "ディレクトリ" else True,
+            key="register-sources",
+        )
+        source_id = st.text_input("source_id")
+        needs_source_id = len(uploads) > 1 and not source_id.strip()
+        submitted = st.button(
+            "登録を開始",
+            disabled=not uploads or needs_source_id or len(uploads) > 100,
+            type="primary",
+            key="start-register",
+        )
+        if needs_source_id:
+            st.caption("複数fileの登録ではsource_idが必要です。")
+        if len(uploads) > 100:
+            st.caption("一度に登録できるfileは100件までです。")
+        if submitted:
+            try:
+                _select_processing(
+                    self._start_register(uploads, source_id.strip() or None)
+                )
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_upgrade_form(
+        self,
+    ) -> None:
+        """Upgradeの英文二版と日本語旧版のPDF入力を表示する。
+
+        Args:
+        """
+
+        source_v1 = st.file_uploader(
+            "英文v1 PDF", type=["pdf"], key="upgrade-source-v1"
+        )
+        source_v2 = st.file_uploader(
+            "英文v2 PDF", type=["pdf"], key="upgrade-source-v2"
+        )
+        translation_v1 = st.file_uploader(
+            "日本語v1 PDF", type=["pdf"], key="upgrade-translation-v1"
+        )
+        ready = all(
+            value is not None for value in (source_v1, source_v2, translation_v1)
+        )
+        submitted = st.button(
+            "Upgradeを開始",
+            disabled=not ready,
+            type="primary",
+            key="start-upgrade",
+        )
+        if (
+            submitted
+            and source_v1 is not None
+            and source_v2 is not None
+            and translation_v1 is not None
+        ):
+            try:
+                _select_processing(
+                    self._start_upgrade(source_v1, source_v2, translation_v1)
+                )
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_future_state(self, processing_id: str) -> None:
+        """Artifact公開前の待機・準備状態またはworker失敗を表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+        """
+
+        future = self.registry.future(processing_id)
+        st.progress(0.0, text="0 / ? Task — 準備 — preparing")
+        if future is None:
+            current = "処理記録の公開待ち"
+        elif not future.running() and not future.done():
+            current = "workerの開始待ち"
+        elif not future.done():
+            current = "Pipelineを準備中"
+        else:
+            current = "workerの結果を確認中"
+        with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
+            st.write("更新時刻: -")
+            st.caption("LLM進捗はまだありません。")
+        st.caption(current)
+        if future is None:
+            st.info("処理記録が見つかりません。")
+        elif future.done():
+            _render_future_error(future)
+
+    def _resume_entry(self, entry: HistoryEntry, paths: list[Path]) -> bool:
+        """検証済み入力を使って処理種類別のResumeを登録する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+            paths (list[Path]): 列挙された入力Path。
+
+        Returns:
+            bool: 検証済み入力を使って処理種類別のResumeを登録する。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if processing_id is None or record is None:
+            return False
+        return self.registry.submit(
+            processing_id,
+            PipelineJob(
+                entry.kind,
+                tuple(paths),
+                processing_id,
+                record.source_id if isinstance(record, RegistrationRecord) else None,
+                resuming=True,
+            ),
+        )
+
+    def _render_resume(self, entry: HistoryEntry) -> None:
+        """終端失敗またはworker不明のprocessing記録にResume確認を表示する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        processing_id = entry.processing_id
+        if (
+            record is None
+            or processing_id is None
+            or record.status == "succeeded"
+            or self.registry.active(processing_id)
+        ):
+            return
+        paths = _stored_resume_paths(entry)
+        if paths is None:
+            st.info(
+                "Resume用の保存済み入力がありません。同じ入力を再uploadしてください。"
+            )
+            paths = _render_resume_uploads(entry)
+            if paths is not None and self._resume_entry(entry, paths):
+                st.rerun()
+            return
+        confirmed = st.checkbox(
+            "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+            key=f"resume-confirm-{processing_id}",
+        )
+        submitted = st.button(
+            "Resume",
+            disabled=not confirmed,
+            key=f"resume-submit-{processing_id}",
+        )
+        if submitted and confirmed and self._resume_entry(entry, paths):
+            st.rerun()
+
+    def _render_record_actions(self, entry: HistoryEntry) -> None:
+        """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        if record is None:
+            return
+        processing_id = entry.processing_id or "-"
+        if record.status == "processing" and st.button(
+            "強制ストップ",
+            key=f"stop-{processing_id}",
+            icon=":material/stop_circle:",
+            disabled=not self.registry.active(processing_id),
+            help="このUIが起動した処理だけ停止できます。",
+        ):
+            if self.stop(entry):
+                st.rerun()
+            st.error(
+                "処理を停止できませんでした。履歴を更新して状態を確認してください。"
+            )
+        if record.error is not None:
+            st.error(
+                f"{record.error.message} "
+                f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
+            )
+        future = self.registry.future(processing_id)
+        if future is not None and future.done() and record.error is None:
+            _render_future_error(future)
+        if record.status == "succeeded":
+            if isinstance(record, TranslationRecord):
+                _render_translation_outputs(entry, record)
+            elif isinstance(record, ReviewRecord):
+                _render_review_outputs(entry, record)
+            elif isinstance(record, UpgradeRecord):
+                _render_upgrade_output(entry, record)
+            else:
+                _render_registration_result(entry, record)
+        self._render_resume(entry)
+
+    def stop(self, entry: HistoryEntry) -> bool:
+        """UI所有workerを停止し、残った処理記録をcancelledへ確定する。
+
+        Args:
+            entry: 停止対象の処理履歴。
+
+        Returns:
+            所有する実行中workerを停止した場合はTrue。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if (
+            processing_id is None
+            or record is None
+            or record.status != "processing"
+            or not self.registry.stop(processing_id)
+        ):
+            return False
+        try:
+            current = load_model(entry.record_path, type(record))
+        except ArtifactError:
+            return True
+        if current.status == "processing":
+            if isinstance(current, RegistrationRecord):
+                current.status = "cancelled"
+                current.updated_at = datetime.now(UTC)
+                write_model(entry.record_path, current)
+            else:
+                ArtifactStore(current, entry.record_path).cancel_processing()
+        return True
+
+    def _render_history_delete(self, entry: HistoryEntry) -> None:
+        """終了済みの選択履歴だけを確認操作付きで削除する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        processing_id = entry.processing_id
+        if (
+            record is None
+            or processing_id is None
+            or record.status == "processing"
+            or self.registry.active(processing_id)
+        ):
+            return
+        with st.expander("履歴を削除", expanded=True, icon=":material/delete:"):
+            st.caption(_entry_label(entry))
+            confirmed = st.checkbox(
+                "成果物と保存済み入力を削除する",
+                key=f"confirm-delete-{processing_id}",
+            )
+            if st.button(
+                "削除",
+                key=f"delete-{processing_id}",
+                disabled=not confirmed,
+                type="secondary",
+            ):
+                try:
+                    self.delete_history(entry)
+                except (InputError, OSError) as error:
+                    st.error(str(error))
+                else:
+                    st.session_state.pop("pending-delete", None)
+                    if _selected_processing_id() == processing_id:
+                        st.query_params.clear()
+                    st.rerun()
+
+    def delete_history(
+        self,
+        entry: HistoryEntry,
+        *,
+        outputs_root: Path | None = None,
+        work_root: Path | None = None,
+    ) -> None:
+        """終了済み記録の正確な処理directoryと保存入力だけを削除する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+            outputs_root (Path | None): 成果物Root Directory。
+            work_root (Path | None): Uploadの一時保存Root Directory。
+
+        Raises:
+            InputError: `valid processing history is required`、`active processing history cannot
+                be deleted`、`history path is outside the outputs directory`、`saved input path is
+                outside the UI work directory`のいずれかと判定した場合。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if processing_id is None or record is None:
+            raise InputError("valid processing history is required")
+        if record.status == "processing" or self.registry.active(processing_id):
+            raise InputError("active processing history cannot be deleted")
+        outputs = (outputs_root or Path.cwd() / "outputs").resolve()
+        processing_directory = entry.record_path.parent.resolve()
+        if (
+            processing_directory.name != processing_id
+            or processing_directory.parent.parent != outputs
+        ):
+            raise InputError("history path is outside the outputs directory")
+        staged_root = (work_root or Path.cwd() / ".translate-ui").resolve()
+        staged_directory = (staged_root / processing_id).resolve()
+        if staged_directory.parent != staged_root:
+            raise InputError("saved input path is outside the UI work directory")
+        shutil.rmtree(processing_directory)
+        if staged_directory.is_dir():
+            shutil.rmtree(staged_directory)
+
+    def _render_selected(self, processing_id: str) -> None:
+        """選択処理をArtifactから再読込みして表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+        """
+
+        entry = _entry_by_id(processing_id)
+        if entry is None:
+            self._render_future_state(processing_id)
+            return
+        _render_record(entry)
+
+    def _render_processing_panel(
+        self, processing_id: str, entries: list[HistoryEntry] | None = None
+    ) -> None:
+        """進捗と比較を折り畳み、成果物操作をその外側へ表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+            entries (list[HistoryEntry] | None): 表示対象の処理履歴一覧。
+        """
+
+        entries = entries if entries is not None else _history_entries()
+        current = next(
+            (entry for entry in entries if entry.processing_id == processing_id), None
+        )
+        processing = (
+            current is not None
+            and current.record is not None
+            and (current.record.status == "processing")
+        )
+        active = processing or self.registry.active(processing_id)
+        status = "running"
+        if current is not None and current.record is not None:
+            if current.record.status == "succeeded":
+                status = "complete"
+            elif current.record.status in {"failed", "cancelled"}:
+                status = "error"
+
+        progress_panel = st.status(
+            "進捗と処理内容",
+            expanded=True,
+            state=status,
+        )
+        with progress_panel:
+
+            @st.fragment(run_every="1s" if active else None)
+            def render_progress() -> None:
+                """実行中だけ1秒ごとにArtifactを再読込みする。"""
+
+                self._render_selected(processing_id)
+                refreshed = _entry_by_id(processing_id)
+                if refreshed is not None and (
+                    current is None
+                    or (
+                        active
+                        and refreshed.record is not None
+                        and refreshed.record.status in _TERMINAL_STATUSES
+                    )
+                ):
+                    st.rerun(scope="app")
+
+            render_progress()
+        progress_panel.update(expanded=True, state=status)
+        refreshed = _entry_by_id(processing_id)
+        if refreshed is not None:
+            self._render_record_actions(refreshed)
+
+    def run(self) -> None:
+        """折り畳み可能なStreamlitの4操作と共通処理履歴を表示する。"""
+
+        st.set_page_config(
+            page_title="Translate",
+            page_icon=":material/translate:",
+            layout="wide",
+        )
+        st.logo(_LOGO_PATH, size="large")
+        entries = _history_entries()
+        selected_id = _render_history_sidebar(entries)
+        _render_session_title(selected_id)
+        pending_delete = st.session_state.get("pending-delete")
+        candidate = next(
+            (entry for entry in entries if entry.processing_id == pending_delete), None
+        )
+        if candidate is not None:
+            self._render_history_delete(candidate)
+        expander_key = selected_id or "new"
+        with st.expander(
+            "入力と設定",
+            expanded=selected_id is None,
+            key=f"pipeline-setup-{expander_key}",
+            icon=":material/tune:",
+        ):
+            translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
+                ["Translate", "Review", "Upgrade", "Register"]
+            )
+            with translate_tab:
+                self._render_translate_form()
+            with review_tab:
+                self._render_review_form()
+            with upgrade_tab:
+                self._render_upgrade_form()
+            with register_tab:
+                self._render_register_form()
+        if selected_id is not None:
+            self._render_processing_panel(selected_id, entries)
+
+
+def main() -> None:
+    """Streamlitの実行ごとにControllerを作り、共有workerで画面を表示する。"""
+    TranslationApp(worker_registry()).run()

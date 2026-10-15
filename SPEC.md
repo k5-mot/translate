@@ -1771,7 +1771,7 @@ tests/
 | Review・Upgrade Agent | `ReviewAgent` と `UpgradeAgent` が対象文書、確認済み範囲、途中結果を保持し、`run()` 内でLLMによる次の操作の選択・実行・終了判定を行う |
 | Task | 文書処理の依存関係と、その処理内で共有する設定・状態。`StructureTask` が見出し履歴を、`TranslationTask` が参照用語・旧訳文脈と分割要求を管理し、`run()` で文書を処理する |
 | Adapter | 接続設定、client、外部形式の解釈および入出力。`EmbeddingClient` はbatch要求を、`QdrantStore` はcollectionへの登録・検索と接続の解放を管理する |
-| UI | 画面の入力、履歴、workerへの起動依頼と結果の表示 |
+| UI | `TranslationApp` がworker登録表を共有し、入力、履歴、実行・再開・停止と結果表示を管理する。`PipelineJob` は操作種別・入力Path・処理IDを保持し、子processで最新設定を読んでPipelineを呼ぶ |
 | データモデル | 検証済みデータと、そのデータ自身の参照・変換操作。`Document.text_units()` と `unit_index()` が本文・Caption・表セルを扱い、`ReviewTarget.from_document()` が翻訳文書からレビュー対象を作る |
 
 継承よりオブジェクトの組合せを優先する。共通化のためだけの基底クラス、

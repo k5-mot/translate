@@ -309,41 +309,23 @@ def _upgrade(
     )
 
 
-def execute_translate(source: Path, processing_id: str) -> object:
-    """子processからE2E用Translate成果物を生成する。"""
+class FakePipelineJob(ui.PipelineJob):
+    """本番と同じspawn境界で、外部要求の代わりに検証用成果物を作る。"""
 
-    return _translate(source, Config(), processing_id=processing_id)
-
-
-def execute_review(source: Path, translation: Path, processing_id: str) -> object:
-    """子processからE2E用Review成果物を生成する。"""
-
-    return _review(source, translation, Config(), processing_id=processing_id)
-
-
-def execute_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """子processからE2E用Register成果物を生成する。"""
-
-    return _register(paths, Config(), source_id=source_id, processing_id=processing_id)
-
-
-def execute_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    processing_id: str,
-) -> object:
-    """子processからE2E用Upgrade成果物を生成する。"""
-
-    return _upgrade(
-        source_v1,
-        source_v2,
-        translation_v1,
-        Config(),
-        processing_id=processing_id,
-    )
+    def __call__(self) -> object:
+        """保持した操作・入力・IDから検証用の処理記録を公開する。"""
+        if self.kind == "translate":
+            return _translate(self.paths[0], Config(), processing_id=self.processing_id)
+        if self.kind == "review":
+            return _review(*self.paths, Config(), processing_id=self.processing_id)
+        if self.kind == "upgrade":
+            return _upgrade(*self.paths, Config(), processing_id=self.processing_id)
+        return _register(
+            list(self.paths),
+            Config(),
+            source_id=self.source_id,
+            processing_id=self.processing_id,
+        )
 
 
 if __name__ == "__main__":
@@ -351,8 +333,5 @@ if __name__ == "__main__":
     from tests.e2e import streamlit_driver as worker  # noqa: PLW0406
 
     ui.load_config = Config
-    ui._execute_translate = worker.execute_translate  # noqa: SLF001
-    ui._execute_review = worker.execute_review  # noqa: SLF001
-    ui._execute_register = worker.execute_register  # noqa: SLF001
-    ui._execute_upgrade = worker.execute_upgrade  # noqa: SLF001
+    ui.PipelineJob = worker.FakePipelineJob
     ui.main()
