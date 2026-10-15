@@ -8,7 +8,7 @@ from typing import Any
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
 
-SKIPPED = {"page_header", "page_footer", "document_index"}
+SKIPPED = {"page_header", "page_footer"}
 INDEX_RE = re.compile(
     r"^(?:table of contents|contents|list of figures|list of tables|目次|図目次|表目次|図一覧|表一覧)$",
     re.IGNORECASE,
@@ -72,14 +72,14 @@ def _page(item: dict[str, Any]) -> int | None:
     return None
 
 
-def index_text_refs(document: dict[str, Any]) -> set[str]:
-    """本文と同居するページでも、目次の見出しと項目だけを特定する。
+def index_refs(document: dict[str, Any]) -> set[str]:
+    """本文と同居するページでも、見出し・リーダー・ページ参照から目次を特定する。
 
     Args:
         document: Docling Schemaの文書。
 
     Returns:
-        除外する目次見出しと、目次ページ内のリーダー付き項目の参照ID。
+        目次見出し、内容を確認した目次要素、リーダー付き項目の参照ID。
     """
     texts = [
         (str(item.get("self_ref", f"#/texts/{index}")), item)
@@ -94,13 +94,51 @@ def index_text_refs(document: dict[str, Any]) -> set[str]:
     }
     index_pages = {
         page
-        for collection in ("texts", "tables", "pictures")
-        for item in document.get(collection, [])
-        if isinstance(item, dict)
-        and (item.get("label") == "document_index" or item.get("self_ref") in titles)
-        if (page := _page(item)) is not None
+        for ref, item in texts
+        if ref in titles and (page := _page(item)) is not None
     }
-    return titles | {
+    confirmed = set(titles)
+    # Doclingは注記などの通常表もdocument_indexとするため、ラベルだけでは削除しない。
+    for collection in ("texts", "tables", "pictures"):
+        for index, item in enumerate(document.get(collection, [])):
+            if not isinstance(item, dict) or item.get("label") != "document_index":
+                continue
+            data = item.get("data") or {}
+            cells = (
+                data.get("table_cells")
+                or data.get("cells")
+                or [cell for row in data.get("grid", []) for cell in row]
+            )
+            cells = [cell for cell in cells if isinstance(cell, dict)]
+            values = [
+                str(item.get("text", "")),
+                *(str(cell.get("text", "")) for cell in cells),
+            ]
+            page_cells = [
+                str(cell.get("text", "")).strip()
+                for cell in cells
+                if data.get("num_cols", 0) > 1
+                and cell.get("start_col_offset_idx") == data["num_cols"] - 1
+                and not cell.get("column_header")
+                and str(cell.get("text", "")).strip()
+            ]
+            has_leaders = any(
+                _INDEX_ENTRY_RE.fullmatch(line.strip())
+                for value in values
+                for line in value.splitlines()
+            )
+            if has_leaders or (
+                _page(item) in index_pages
+                and page_cells
+                and all(
+                    re.fullmatch(r"[0-9]+|[ivxlcdm]+", value, re.IGNORECASE)
+                    for value in page_cells
+                )
+            ):
+                confirmed.add(str(item.get("self_ref", f"#/{collection}/{index}")))
+                if (page := _page(item)) is not None:
+                    index_pages.add(page)
+    return confirmed | {
         ref
         for ref, item in texts
         if item.get("label") in {"text", "list_item"}
@@ -161,7 +199,7 @@ def normalize(source: Path, output_dir: Path) -> Path:
         *(_refs(item.get("children", [])) for item in document.get("pictures", [])),
         set(),
     )
-    index_refs = index_text_refs(document)
+    excluded_indexes = index_refs(document)
     for collection in ("texts", "tables", "pictures"):
         for index, item in enumerate(document.get(collection, [])):
             if not isinstance(item, dict):
@@ -171,8 +209,8 @@ def normalize(source: Path, output_dir: Path) -> Path:
             reason = None
             if item.get("label") in SKIPPED:
                 reason = str(item.get("label"))
-            elif ref in index_refs:
-                reason = "document_index_text"
+            elif ref in excluded_indexes:
+                reason = "document_index"
             elif ref in picture_owned:
                 reason = "picture_owned_text"
             elif collection == "texts" and not text.strip():

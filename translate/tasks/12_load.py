@@ -24,10 +24,10 @@ from translate.models.document import (
     TextUnit,
 )
 
-index_text_refs = import_module("translate.tasks.11_normalize").index_text_refs
+index_refs = import_module("translate.tasks.11_normalize").index_refs
 
 COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
-SKIPPED_LABELS = {"page_header", "page_footer", "document_index"}
+SKIPPED_LABELS = {"page_header", "page_footer"}
 TEXT_KINDS = {
     "title": "heading",
     "section_header": "heading",
@@ -733,7 +733,7 @@ class DocumentLoader:
         pages = self._normalized_pages()
         seen: set[str] = set()
         caption_refs = self._owned_caption_refs()
-        index_refs = index_text_refs(self.document)
+        excluded_indexes = index_refs(self.document)
         picture_content_refs = self._picture_content_refs()
         # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
         ordered_items = list(self._walk_refs(self.document.get("body", {})))
@@ -762,7 +762,7 @@ class DocumentLoader:
             seen.add(ref)
             if ref in caption_refs or ref in picture_content_refs:
                 continue
-            if ref in index_refs:
+            if ref in excluded_indexes:
                 continue
             number = _page_number(item)
             if number not in pages:
@@ -1078,6 +1078,11 @@ class DocumentLoader:
         label = str(item.get("label", ""))
         if label in SKIPPED_LABELS:
             return None
+        if label == "document_index":
+            # 内容から目次と確認できなかった要素は、所属collectionの表・画像・本文として残す。
+            label = {"tables": "table", "pictures": "picture"}.get(
+                ref.removeprefix("#/").split("/")[0], "text"
+            )
         if label == "table":
             return Block(
                 id=ref,
