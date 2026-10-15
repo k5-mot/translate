@@ -63,6 +63,7 @@ SPLIT → DOCLING → UNPACK → MERGE
 
 - 翻訳は生成LLMだけで行う。
 - REVIEWは翻訳結果を確認し、指摘と修正候補を返す。失敗時は公開へ進まない。
+- TRANSLATEとREVIEWは識別子・パラメータ名・URL・ファイル名・パスの表記を保持する。通常の英文とは区別し、英語表記の保持を理由に修正しない。
 - FIXは有効なRevisionを適用する。一つのRevisionの失敗は他の有効なRevisionの適用を妨げない。
 - LINTは表の構造、参照、画像などの公開可能性を検査する。翻訳品質を長さや同文率で判定しない。
 - LINTの検査が完了した場合、`valid=false` でもTaskと検査結果を保存する。Pipelineは `lint_failed` で停止し、COVER以降を開始しない。
