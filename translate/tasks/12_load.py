@@ -717,12 +717,8 @@ class DocumentLoader:
         """
         self.document = document
 
-    def load(
-        self,
-    ) -> Document:
+    def load(self) -> Document:
         """Docling documentをページ順のv5 Documentへ変換する。
-
-        Args:
 
         Returns:
             正規化済みDocument。
@@ -888,12 +884,8 @@ class DocumentLoader:
                 result.extend(_inline(f"{ref}/caption/{index}", value))
         return TextUnit(id=f"{ref}/caption", spans=result) if result else None
 
-    def _owned_caption_refs(
-        self,
-    ) -> set[str]:
+    def _owned_caption_refs(self) -> set[str]:
         """図表Blockへ内包するcaption TextItemのrefを集める。
-
-        Args:
 
         Returns:
             standalone本文として重複出力しないcaption ref集合。
@@ -914,12 +906,8 @@ class DocumentLoader:
                 )
         return refs
 
-    def _picture_content_refs(
-        self,
-    ) -> set[str]:
+    def _picture_content_refs(self) -> set[str]:
         """picture配下でcaptionではない重複textのrefを集める。
-
-        Args:
 
         Returns:
             Figure asset側に任せて本文出力しないtext ref集合。
@@ -1169,12 +1157,8 @@ class DocumentLoader:
             language=str(item.get("language")) if item.get("language") else None,
         )
 
-    def _normalized_pages(
-        self,
-    ) -> dict[int, Page]:
+    def _normalized_pages(self) -> dict[int, Page]:
         """Docling page mapを検証して内部Page mapへ変換する。
-
-        Args:
 
         Returns:
             ページ番号をkeyとする内部Page map。

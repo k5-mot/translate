@@ -39,26 +39,6 @@ def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
     return page, vertical, left, fallback
 
 
-def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any] | None:
-    """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
-
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-        ref (str): Docling要素を指すJSON参照。
-
-    Returns:
-        dict[str, Any] | None: Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
-    """
-
-    value: Any = document
-    try:
-        for part in ref.removeprefix("#/").split("/"):
-            value = value[int(part)] if isinstance(value, list) else value[part]
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | None:
     """bboxを左、右、上、下が同じ向きの比較値へ正規化する。
 
@@ -173,52 +153,6 @@ def _rewrite_ref(value: Any, mapping: dict[str, str]) -> Any:
         else _rewrite_ref(item, mapping)
         for key, item in value.items()
     }
-
-
-def _unsafe_merge_refs(document: dict[str, Any]) -> set[str]:
-    """所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
-
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-
-    Returns:
-        set[str]: 所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
-    """
-
-    incoming: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-    pending: list[tuple[Any, tuple[str, ...]]] = [(document, ())]
-    while pending:
-        value, path = pending.pop()
-        if isinstance(value, list):
-            pending.extend(
-                (item, (*path, str(index))) for index, item in enumerate(value)
-            )
-        elif isinstance(value, dict):
-            for key, item in value.items():
-                if key == "$ref" and isinstance(item, str):
-                    incoming[item].append((*path, key))
-                else:
-                    pending.append((item, (*path, key)))
-    unsafe: set[str] = set()
-    for ref, paths in incoming.items():
-        parts = ref.removeprefix("#/").split("/")
-        if len(parts) > 2:
-            # Nested cell references cannot be transferred by collection reindexing alone.
-            unsafe.add("#/" + "/".join(parts[:2]))
-        owners = [
-            path
-            for path in paths
-            if not (
-                len(path) == 7
-                and tuple(parts) == path[:2]
-                and path[2] == "data"
-                and path[3] in {"table_cells", "cells"}
-                and path[-2:] == ("parent", "$ref")
-            )
-        ]
-        if len(owners) != 1 or owners[0][-3:-2] != ("children",):
-            unsafe.add(ref)
-    return unsafe
 
 
 def _merge_metadata_safe(first: dict[str, Any], second: dict[str, Any]) -> bool:
@@ -418,247 +352,317 @@ def _merge_table(  # noqa: PLR0911
     return True
 
 
-def _merge_fragments(
-    document: dict[str, Any],
-    node: Any,
-    merged: list[dict[str, str]],
-    warnings: list[dict[str, str]],
-    unsafe: set[str],
-    visited: set[int],
-) -> None:
-    """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。
+class PositionTask:
+    """対象文書と診断・走査状態を保持し、読み順補正と断片結合を実行する。"""
 
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-        node (Any): 再帰的に走査または並べ替えるNode。
-        merged (list[dict[str, str]]): 統合先または統合済みのDocument要素。
-        warnings (list[dict[str, str]]): 統合処理で追記する警告一覧。
-        unsafe (set[str]): 安全に統合できない要素参照集合。
-        visited (set[int]): 再帰走査済みNodeの識別集合。
-    """
+    def __init__(self, source: dict[str, Any]) -> None:
+        """変更前の文書を保持し、処理時には複製を補正する。
 
-    if not isinstance(node, dict) or not isinstance(node.get("children"), list):
-        return
-    if id(node) in visited:
-        return
-    visited.add(id(node))
-    children = node["children"]
-    index = 0
-    while index + 1 < len(children):
-        first_ref = (
-            children[index].get("$ref") if isinstance(children[index], dict) else None
-        )
-        second_ref = (
-            children[index + 1].get("$ref")
-            if isinstance(children[index + 1], dict)
-            else None
-        )
-        first = _resolve(document, first_ref) if isinstance(first_ref, str) else None
-        second = _resolve(document, second_ref) if isinstance(second_ref, str) else None
-        table_pair = (
-            first is not None
-            and second is not None
-            and first.get("label") == second.get("label") == "table"
-        )
-        text_pair = (
-            first is not None and second is not None and _continuous(first, second)
-        )
-        collection = "tables" if table_pair else "texts"
-        if (table_pair or text_pair) and (
-            first_ref == second_ref
-            or first_ref in unsafe
-            or second_ref in unsafe
-            or first.get("self_ref") != first_ref
-            or second.get("self_ref") != second_ref
-            or any(
-                re.fullmatch(rf"#/{collection}/(?:0|[1-9][0-9]*)", str(ref)) is None
-                for ref in (first_ref, second_ref)
+        Args:
+            source: 座標と参照を持つDocling文書。元の値は変更しない。
+        """
+        self.source = source
+
+    def run(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """文書を補正し、順序変更・結合・警告の記録を返す。
+
+        Returns:
+            補正済みDocling文書と診断JSON用の辞書。
+        """
+        self.document = copy.deepcopy(self.source)
+        self.changed: list[dict[str, Any]] = []
+        self.merged: list[dict[str, str]] = []
+        self.warnings: list[dict[str, str]] = []
+        self.merge_visited: set[int] = set()
+        self._sort_children(self.document.get("body", {}))
+        self.unsafe = self._unsafe_merge_refs()
+        self._merge_fragments(self.document.get("body", {}))
+        self.document = _compact_fragments(self.document, self.merged)
+        return self.document, {
+            "reordered": self.changed,
+            "merged": self.merged,
+            "warnings": self.warnings,
+        }
+
+    def _resolve(self, ref: str) -> dict[str, Any] | None:
+        """Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
+
+        Args:
+            ref (str): Docling要素を指すJSON参照。
+
+        Returns:
+            dict[str, Any] | None: Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
+        """
+
+        value: Any = self.document
+        try:
+            for part in ref.removeprefix("#/").split("/"):
+                value = value[int(part)] if isinstance(value, list) else value[part]
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _unsafe_merge_refs(self) -> set[str]:
+        """所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
+
+        Returns:
+            set[str]: 所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
+        """
+
+        incoming: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+        pending: list[tuple[Any, tuple[str, ...]]] = [(self.document, ())]
+        while pending:
+            value, path = pending.pop()
+            if isinstance(value, list):
+                pending.extend(
+                    (item, (*path, str(index))) for index, item in enumerate(value)
+                )
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    if key == "$ref" and isinstance(item, str):
+                        incoming[item].append((*path, key))
+                    else:
+                        pending.append((item, (*path, key)))
+        self.unsafe: set[str] = set()
+        for ref, paths in incoming.items():
+            parts = ref.removeprefix("#/").split("/")
+            if len(parts) > 2:
+                # Nested cell references cannot be transferred by collection reindexing alone.
+                self.unsafe.add("#/" + "/".join(parts[:2]))
+            owners = [
+                path
+                for path in paths
+                if not (
+                    len(path) == 7
+                    and tuple(parts) == path[:2]
+                    and path[2] == "data"
+                    and path[3] in {"table_cells", "cells"}
+                    and path[-2:] == ("parent", "$ref")
+                )
+            ]
+            if len(owners) != 1 or owners[0][-3:-2] != ("children",):
+                self.unsafe.add(ref)
+        return self.unsafe
+
+    def _merge_fragments(self, node: Any) -> None:
+        """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。
+
+        Args:
+            node (Any): 再帰的に走査または並べ替えるNode。
+        """
+
+        if not isinstance(node, dict) or not isinstance(node.get("children"), list):
+            return
+        if id(node) in self.merge_visited:
+            return
+        self.merge_visited.add(id(node))
+        children = node["children"]
+        index = 0
+        while index + 1 < len(children):
+            first_ref = (
+                children[index].get("$ref")
+                if isinstance(children[index], dict)
+                else None
             )
-            or not _merge_metadata_safe(first, second)
-        ):
-            warnings.append(
-                {
-                    "first": str(first_ref),
-                    "second": str(second_ref),
-                    "reason": "ambiguous ownership or metadata kept separate",
-                }
+            second_ref = (
+                children[index + 1].get("$ref")
+                if isinstance(children[index + 1], dict)
+                else None
             )
-            index += 1
-            continue
-        if (
-            first is not None
-            and second is not None
-            and first.get("label") == second.get("label") == "table"
-        ):
-            if _merge_table(first, second):
-                children.pop(index + 1)
-                merged.append(
+            first = self._resolve(first_ref) if isinstance(first_ref, str) else None
+            second = self._resolve(second_ref) if isinstance(second_ref, str) else None
+            table_pair = (
+                first is not None
+                and second is not None
+                and first.get("label") == second.get("label") == "table"
+            )
+            text_pair = (
+                first is not None and second is not None and _continuous(first, second)
+            )
+            collection = "tables" if table_pair else "texts"
+            if (table_pair or text_pair) and (
+                first_ref == second_ref
+                or first_ref in self.unsafe
+                or second_ref in self.unsafe
+                or first.get("self_ref") != first_ref
+                or second.get("self_ref") != second_ref
+                or any(
+                    re.fullmatch(rf"#/{collection}/(?:0|[1-9][0-9]*)", str(ref)) is None
+                    for ref in (first_ref, second_ref)
+                )
+                or not _merge_metadata_safe(first, second)
+            ):
+                self.warnings.append(
                     {
-                        "into": str(first_ref),
-                        "from": str(second_ref),
-                        "reason": "table rows and spans reconstructed",
+                        "first": str(first_ref),
+                        "second": str(second_ref),
+                        "reason": "ambiguous ownership or metadata kept separate",
                     }
                 )
+                index += 1
                 continue
-            warnings.append(
+            if (
+                first is not None
+                and second is not None
+                and first.get("label") == second.get("label") == "table"
+            ):
+                if _merge_table(first, second):
+                    children.pop(index + 1)
+                    self.merged.append(
+                        {
+                            "into": str(first_ref),
+                            "from": str(second_ref),
+                            "reason": "table rows and spans reconstructed",
+                        }
+                    )
+                    continue
+                self.warnings.append(
+                    {
+                        "first": str(first_ref),
+                        "second": str(second_ref),
+                        "reason": "ambiguous table fragments kept separate",
+                    }
+                )
+                index += 1
+                continue
+            if first is not None and second is not None and _continuous(first, second):
+                separator = (
+                    "\n" if first.get("label") in {"code", "program_listing"} else " "
+                )
+                for key in ("text", "orig"):
+                    if key == "text" or key in first:
+                        first[key] = (
+                            f"{first.get(key, '').rstrip()}{separator}{second.get(key, '').lstrip()}"
+                        )
+                if isinstance(first.get("prov"), list) and isinstance(
+                    second.get("prov"), list
+                ):
+                    first["prov"].extend(second["prov"])
+                children.pop(index + 1)
+                self.merged.append({"into": str(first_ref), "from": str(second_ref)})
+                continue
+            index += 1
+        for child in children:
+            ref = child.get("$ref") if isinstance(child, dict) else None
+            target = self._resolve(ref) if isinstance(ref, str) else None
+            if target is not None:
+                self._merge_fragments(target)
+
+    def _reading_order(self, children: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
+
+        Args:
+            children (list[dict[str, Any]]): 読み順を決定する子要素列。
+
+        Returns:
+            list[dict[str, Any]]: 座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
+        """
+
+        positioned: dict[
+            int, list[tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]]
+        ] = {}
+        unpositioned: list[tuple[int, dict[str, Any]]] = []
+        for index, child in enumerate(children):
+            ref = child.get("$ref")
+            item = self._resolve(ref) if isinstance(ref, str) else None
+            geometry = _geometry(item or {})
+            if item is None or geometry is None:
+                unpositioned.append((index, child))
+                continue
+            positioned.setdefault(int(geometry[0]), []).append(
+                (index, child, item, geometry)
+            )
+
+        ordered: list[dict[str, Any]] = []
+        for page in sorted(positioned):
+            entries = positioned[page]
+            # Merges preserve provenance: count every same-page box, including equal boxes,
+            # so neither the median width nor the left-edge candidates lose samples.
+            samples = [
+                geometry
+                for _index, _child, item, _representative in entries
+                for provenance in item["prov"]
+                if (geometry := _geometry({"prov": [provenance]})) is not None
+                and geometry[0] == page
+            ]
+            widths = [max(1.0, geometry[2] - geometry[1]) for geometry in samples]
+            tolerance = statistics.median(widths) * 0.6
+            columns: list[float] = []
+            for left in sorted(geometry[1] for geometry in samples):
+                if not columns or abs(left - columns[-1]) > tolerance:
+                    columns.append(left)
+
+            def order_key(
+                entry: tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]],
+                column_positions: tuple[float, ...] = tuple(columns),
+            ) -> tuple[int, int, float, float, float, int]:
+                """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+
+                Args:
+                    entry (tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]): 読み順、要素、幾何情報を保持するSort対象。
+                    column_positions (tuple[float, ...]): Table Cellを整列するColumn境界。
+
+                Returns:
+                    tuple[int, int, float, float, float, int]: 欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+                """
+
+                index, _child, item, geometry = entry
+                _page, left, _right, top, bottom = geometry
+                label = str(item.get("label", ""))
+                region = (
+                    0
+                    if label == "page_header"
+                    else 2
+                    if label in {"page_footer", "footnote"}
+                    else 1
+                )
+                column = min(
+                    range(len(column_positions)),
+                    key=lambda value: abs(column_positions[value] - left),
+                )
+                center = (top + bottom) / 2
+                return region, column, top, center, left, index
+
+            ordered.extend(entry[1] for entry in sorted(entries, key=order_key))
+        ordered.extend(child for _, child in sorted(unpositioned))
+        return ordered
+
+    def _sort_children(self, node: Any, visited: set[int] | None = None) -> None:
+        """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。
+
+        Args:
+            node (Any): 再帰的に走査または並べ替えるNode。
+            visited (set[int] | None): 再帰走査済みNodeの識別集合。
+        """
+
+        if not isinstance(node, dict):
+            return
+        if visited is None:
+            visited = set()
+        if id(node) in visited:
+            return
+        visited.add(id(node))
+        children = node.get("children")
+        if not isinstance(children, list):
+            return
+        before = [child.get("$ref") for child in children if isinstance(child, dict)]
+        typed_children = [child for child in children if isinstance(child, dict)]
+        children[:] = self._reading_order(typed_children)
+        after = [child.get("$ref") for child in children if isinstance(child, dict)]
+        if before != after:
+            self.changed.append(
                 {
-                    "first": str(first_ref),
-                    "second": str(second_ref),
-                    "reason": "ambiguous table fragments kept separate",
+                    "container": str(node.get("self_ref", "#/body")),
+                    "before": before,
+                    "after": after,
+                    "reason": "multi-column stable reading order",
                 }
             )
-            index += 1
-            continue
-        if first is not None and second is not None and _continuous(first, second):
-            separator = (
-                "\n" if first.get("label") in {"code", "program_listing"} else " "
-            )
-            for key in ("text", "orig"):
-                if key == "text" or key in first:
-                    first[key] = (
-                        f"{first.get(key, '').rstrip()}{separator}{second.get(key, '').lstrip()}"
-                    )
-            if isinstance(first.get("prov"), list) and isinstance(
-                second.get("prov"), list
-            ):
-                first["prov"].extend(second["prov"])
-            children.pop(index + 1)
-            merged.append({"into": str(first_ref), "from": str(second_ref)})
-            continue
-        index += 1
-    for child in children:
-        ref = child.get("$ref") if isinstance(child, dict) else None
-        target = _resolve(document, ref) if isinstance(ref, str) else None
-        if target is not None:
-            _merge_fragments(document, target, merged, warnings, unsafe, visited)
-
-
-def _reading_order(
-    document: dict[str, Any], children: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
-
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-        children (list[dict[str, Any]]): 読み順を決定する子要素列。
-
-    Returns:
-        list[dict[str, Any]]: 座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
-    """
-
-    positioned: dict[
-        int, list[tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]]
-    ] = {}
-    unpositioned: list[tuple[int, dict[str, Any]]] = []
-    for index, child in enumerate(children):
-        ref = child.get("$ref")
-        item = _resolve(document, ref) if isinstance(ref, str) else None
-        geometry = _geometry(item or {})
-        if item is None or geometry is None:
-            unpositioned.append((index, child))
-            continue
-        positioned.setdefault(int(geometry[0]), []).append(
-            (index, child, item, geometry)
-        )
-
-    ordered: list[dict[str, Any]] = []
-    for page in sorted(positioned):
-        entries = positioned[page]
-        # Merges preserve provenance: count every same-page box, including equal boxes,
-        # so neither the median width nor the left-edge candidates lose samples.
-        samples = [
-            geometry
-            for _index, _child, item, _representative in entries
-            for provenance in item["prov"]
-            if (geometry := _geometry({"prov": [provenance]})) is not None
-            and geometry[0] == page
-        ]
-        widths = [max(1.0, geometry[2] - geometry[1]) for geometry in samples]
-        tolerance = statistics.median(widths) * 0.6
-        columns: list[float] = []
-        for left in sorted(geometry[1] for geometry in samples):
-            if not columns or abs(left - columns[-1]) > tolerance:
-                columns.append(left)
-
-        def order_key(
-            entry: tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]],
-            column_positions: tuple[float, ...] = tuple(columns),
-        ) -> tuple[int, int, float, float, float, int]:
-            """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
-
-            Args:
-                entry (tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]): 読み順、要素、幾何情報を保持するSort対象。
-                column_positions (tuple[float, ...]): Table Cellを整列するColumn境界。
-
-            Returns:
-                tuple[int, int, float, float, float, int]: 欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
-            """
-
-            index, _child, item, geometry = entry
-            _page, left, _right, top, bottom = geometry
-            label = str(item.get("label", ""))
-            region = (
-                0
-                if label == "page_header"
-                else 2
-                if label in {"page_footer", "footnote"}
-                else 1
-            )
-            column = min(
-                range(len(column_positions)),
-                key=lambda value: abs(column_positions[value] - left),
-            )
-            center = (top + bottom) / 2
-            return region, column, top, center, left, index
-
-        ordered.extend(entry[1] for entry in sorted(entries, key=order_key))
-    ordered.extend(child for _, child in sorted(unpositioned))
-    return ordered
-
-
-def _sort_children(
-    document: dict[str, Any],
-    node: Any,
-    report: list[dict[str, Any]],
-    visited: set[int] | None = None,
-) -> None:
-    """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。
-
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-        node (Any): 再帰的に走査または並べ替えるNode。
-        report (list[dict[str, Any]]): 読み順補正の警告を追記するReport。
-        visited (set[int] | None): 再帰走査済みNodeの識別集合。
-    """
-
-    if not isinstance(node, dict):
-        return
-    if visited is None:
-        visited = set()
-    if id(node) in visited:
-        return
-    visited.add(id(node))
-    children = node.get("children")
-    if not isinstance(children, list):
-        return
-    before = [child.get("$ref") for child in children if isinstance(child, dict)]
-    typed_children = [child for child in children if isinstance(child, dict)]
-    children[:] = _reading_order(document, typed_children)
-    after = [child.get("$ref") for child in children if isinstance(child, dict)]
-    if before != after:
-        report.append(
-            {
-                "container": str(node.get("self_ref", "#/body")),
-                "before": before,
-                "after": after,
-                "reason": "multi-column stable reading order",
-            }
-        )
-    for child in children:
-        ref = child.get("$ref") if isinstance(child, dict) else None
-        target = _resolve(document, ref) if isinstance(ref, str) else None
-        if target is not None:
-            _sort_children(document, target, report, visited)
+        for child in children:
+            ref = child.get("$ref") if isinstance(child, dict) else None
+            target = self._resolve(ref) if isinstance(ref, str) else None
+            if target is not None:
+                self._sort_children(target, visited)
 
 
 def position(source: Path, output_dir: Path) -> Path:
@@ -672,25 +676,14 @@ def position(source: Path, output_dir: Path) -> Path:
         Path: 読み順を補正してJSONとreportを原子的に保存する。
     """
 
-    document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))
-    changed: list[dict[str, Any]] = []
-    _sort_children(document, document.get("body", {}), changed)
-    merged: list[dict[str, str]] = []
-    warnings: list[dict[str, str]] = []
-    _merge_fragments(
-        document,
-        document.get("body", {}),
-        merged,
-        warnings,
-        _unsafe_merge_refs(document),
-        set(),
-    )
-    document = _compact_fragments(document, merged)
+    document, report = PositionTask(
+        json.loads(source.read_text(encoding="utf-8"))
+    ).run()
     with temporary_task_directory(output_dir) as temporary:
         write_json(temporary / "document.json", document, atomic=False)
         write_json(
             temporary / "report.json",
-            {"reordered": changed, "merged": merged, "warnings": warnings},
+            report,
             atomic=False,
         )
     return output_dir / "document.json"

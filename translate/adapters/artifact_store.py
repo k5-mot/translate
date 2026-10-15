@@ -638,13 +638,8 @@ class ArtifactStore:
         self.record.error = processing_error
         write_model(self.record_path, self.record)
 
-    def cancel_processing(
-        self,
-    ) -> None:
-        """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。
-
-        Args:
-        """
+    def cancel_processing(self) -> None:
+        """利用者中断時に処理全体と現在のprocessing Taskをcancelledへ更新する。"""
 
         now = datetime.now(UTC)
         for index, state in enumerate(self.record.tasks):

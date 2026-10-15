@@ -1785,6 +1785,7 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 操作ごとの入力だけを渡す。Agentが渡したLLM接続の期限と終了はAgentが管理する。
 
 `DocumentLoader` はDocling文書を保持し、参照解決と共通データモデルへの変換を行う。
+`PositionTask` は文書の複製と走査済み参照・結合結果・警告を保持し、読み順補正を行う。
 `MarkdownTask` は `Pandoc` Adapterを受け取り、文書内の各Blockを変換する。
 `Pandoc` はTimeoutと確認済みの実行fileを保持し、同じインスタンス内では機能確認を繰り返さない。
 

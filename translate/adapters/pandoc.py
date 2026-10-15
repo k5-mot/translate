@@ -30,12 +30,8 @@ class Pandoc:
         self.timeout = timeout
         self.executable: str | None = None
 
-    def check(
-        self,
-    ) -> str:
+    def check(self) -> str:
         """必要なoptionとDOCX extensionを確認し、実行file pathを返す。
-
-        Args:
 
         Returns:
             str: 必要なoptionとDOCX extensionを確認し、実行file pathを返す。
