@@ -1935,7 +1935,7 @@ Embedding・LLM・Qdrantは並列要求に対応しないローカルserviceと�
 
 - UIの処理枠は既存の `ThreadPoolExecutor(max_workers=1)` を使う。
 - LLM・Embeddingは同期clientを使い、Task・Agent・batch・再試行を逐次実行する。
-- Qdrantの登録・検索も同期で実行し、batch uploadには `parallel=1` を明示する。
+- Qdrantの登録・検索も同期で実行し、batch uploadには `parallel=1` を明示する。client生成時は `check_compatibility=False` とし、別threadのversion確認要求を送らない。
 - service用の追加lockやqueueは設けない。検証・接続診断も実行中の処理に重ねず、順番に行う。
 
 生成LLM以外のHTTP接続および外部processには次の環境変数を使用する。安全上限を超える値または正でない値は設定エラーとし、黙って丸めない。

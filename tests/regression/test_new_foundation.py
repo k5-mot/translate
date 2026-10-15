@@ -265,6 +265,27 @@ def test_qdrant_registration_uses_bounded_upload_batches(
     client.upsert.assert_not_called()
 
 
+def test_qdrant_client_does_not_start_background_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同期操作と重複するSDKの背景version確認を起動しない。"""
+
+    background_thread = MagicMock()
+    monkeypatch.setattr("qdrant_client.qdrant_remote.Thread", background_thread)
+    query = MagicMock()
+    query.return_value.points = []
+    monkeypatch.setattr("qdrant_client.qdrant_remote.QdrantRemote.query_points", query)
+    assert (
+        qdrant.search(
+            Config(qdrant_uri="http://qdrant", qdrant_collection="translation"),
+            [0.0, 1.0],
+        )
+        == []
+    )
+    background_thread.assert_not_called()
+    query.assert_called_once()
+
+
 def test_document_json_uses_schema_version_one() -> None:
     """Documentの永続化Schema versionとJSON互換性を確認する。"""
 

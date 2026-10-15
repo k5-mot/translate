@@ -160,6 +160,7 @@ def _client(config: Config) -> tuple[Any, Any]:
             url=config.qdrant_uri,
             api_key=config.qdrant_api_key,
             timeout=int(config.http_request_timeout_seconds),
+            check_compatibility=False,  # 背景threadのversion確認を同期要求と重ねない。
         ),
         models,
     )
