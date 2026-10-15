@@ -31,7 +31,7 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.pipeline import InputError
-from translate.pipeline.translate import translate_pdf
+from translate.pipeline.translate import TranslatePipeline
 from translate.ui import (
     HistoryEntry,
     WorkerRegistry,
@@ -459,11 +459,8 @@ def test_processing_id_does_not_overwrite_existing_record(tmp_path: Path) -> Non
     )
 
     with pytest.raises(InputError, match="already exists"):
-        translate_pdf(
-            source,
-            config,
-            processing_id=processing_id,
-            outputs=tmp_path / "outputs",
+        TranslatePipeline(config, outputs=tmp_path / "outputs").run(
+            source, processing_id=processing_id
         )
 
 

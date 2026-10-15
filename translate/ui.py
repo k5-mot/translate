@@ -60,10 +60,10 @@ from translate.models.upgrade import (
     VersionChange,
 )
 from translate.pipeline import InputError
-from translate.pipeline.register import register_paths
-from translate.pipeline.review import review_pdfs
-from translate.pipeline.translate import translate_pdf
-from translate.pipeline.upgrade import upgrade_pdfs
+from translate.pipeline.register import RegisterPipeline
+from translate.pipeline.review import ReviewPipeline
+from translate.pipeline.translate import TranslatePipeline
+from translate.pipeline.upgrade import UpgradePipeline
 
 StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
 StructureResponse = import_module("translate.tasks.13_structure").StructureResponse
@@ -400,11 +400,7 @@ def _execute_translate(source: Path, processing_id: str) -> object:
         object: 最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
     """
 
-    return translate_pdf(
-        source,
-        load_config(),
-        processing_id=processing_id,
-    )
+    return TranslatePipeline(load_config()).run(source, processing_id=processing_id)
 
 
 def _execute_review(source: Path, translation: Path, processing_id: str) -> object:
@@ -419,11 +415,8 @@ def _execute_review(source: Path, translation: Path, processing_id: str) -> obje
         object: 最新設定を読み、UI指定IDでReview Pipelineを実行する。
     """
 
-    return review_pdfs(
-        source,
-        translation,
-        load_config(),
-        processing_id=processing_id,
+    return ReviewPipeline(load_config()).run(
+        source, translation, processing_id=processing_id
     )
 
 
@@ -441,11 +434,8 @@ def _execute_register(
         object: 最新設定を読み、UI指定IDでRegister Pipelineを実行する。
     """
 
-    return register_paths(
-        paths,
-        load_config(),
-        source_id=source_id,
-        processing_id=processing_id,
+    return RegisterPipeline(load_config()).run(
+        paths, source_id=source_id, processing_id=processing_id
     )
 
 
@@ -467,12 +457,8 @@ def _execute_upgrade(
         object: 最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
     """
 
-    return upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        load_config(),
-        processing_id=processing_id,
+    return UpgradePipeline(load_config()).run(
+        source_v1, source_v2, translation_v1, processing_id=processing_id
     )
 
 
@@ -487,11 +473,7 @@ def _resume_translate(source: Path, processing_id: str) -> object:
         object: 保存済みTranslate入力とIDでPipelineをResumeする。
     """
 
-    return translate_pdf(
-        source,
-        load_config(),
-        resume_id=processing_id,
-    )
+    return TranslatePipeline(load_config()).run(source, resume_id=processing_id)
 
 
 def _resume_review(source: Path, translation: Path, processing_id: str) -> object:
@@ -506,11 +488,8 @@ def _resume_review(source: Path, translation: Path, processing_id: str) -> objec
         object: 保存済みReview入力とIDでPipelineをResumeする。
     """
 
-    return review_pdfs(
-        source,
-        translation,
-        load_config(),
-        resume_id=processing_id,
+    return ReviewPipeline(load_config()).run(
+        source, translation, resume_id=processing_id
     )
 
 
@@ -528,11 +507,8 @@ def _resume_register(
         object: 保存済みRegister入力とIDでPipelineをResumeする。
     """
 
-    return register_paths(
-        paths,
-        load_config(),
-        source_id=source_id,
-        resume_id=processing_id,
+    return RegisterPipeline(load_config()).run(
+        paths, source_id=source_id, resume_id=processing_id
     )
 
 
@@ -554,12 +530,8 @@ def _resume_upgrade(
         object: 保存済みUpgrade入力とIDでPipelineをResumeする。
     """
 
-    return upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        load_config(),
-        resume_id=processing_id,
+    return UpgradePipeline(load_config()).run(
+        source_v1, source_v2, translation_v1, resume_id=processing_id
     )
 
 

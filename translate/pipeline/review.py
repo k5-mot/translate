@@ -52,87 +52,105 @@ class ReviewOutcome(BaseModel):
     result: Path
 
 
-def review_pdfs(
-    source: Path,
-    translation: Path,
-    config: Config,
-    *,
-    processing_id: str | None = None,
-    resume_id: str | None = None,
-    outputs: Path | None = None,
-) -> ReviewOutcome:
-    """二つのPDFを解析し、Agentが確定した一覧だけを公開する。
+class ReviewPipeline:
+    """Reviewの設定と実行記録を保持し、入力検証から成果物公開まで進める。"""
 
-    Args:
-        source: 英語原文PDF。
-        translation: 日本語訳文PDF。
-        config: 接続・予算設定。
-        processing_id: UIが発行した新規ID。
-        resume_id: 再開するID。
-        outputs: 出力root。省略時は現在の作業directoryのoutputs。
+    def __init__(self, config: Config, outputs: Path | None = None) -> None:
+        """外部接続の設定と成果物の基準ディレクトリを受け取る。
 
-    Returns:
-        処理IDと指摘・修正提案のJSON。
+        Args:
+            config: 操作で使用する接続と処理上限。
+            outputs: 出力先。省略時は実行時の作業ディレクトリ内のoutputs。
+        """
+        self.config = config
+        self.outputs = outputs
 
-    Raises:
-        InputError: 入力・IDまたは再開条件が不正な場合。
-        Exception: 前処理またはAgent操作が失敗した場合。
-    """
-    sources = {"source": source.resolve(), "translation": translation.resolve()}
-    inputs = pdf_inputs(sources)
-    validate_config(config, "review")
-    identifier = resolve_processing_id(processing_id, resume_id)
-    root = (outputs or Path.cwd() / "outputs").resolve() / translation.stem / identifier
-    record_path = root / "review.json"
-    with ProcessingLock(root):
-        if record_path.is_file():
-            record = load_model(record_path, ReviewRecord)
-            if (
-                not resume_id
-                or record.review_id != identifier
-                or record.source != inputs["source"]
-                or record.translation != inputs["translation"]
-            ):
-                raise InputError("Review ID already exists or resume inputs differ")
-        else:
-            if resume_id:
-                raise InputError("Review to resume does not exist")
-            now = datetime.now(UTC)
-            record = ReviewRecord(
-                review_id=identifier,
-                status="processing",
-                source=inputs["source"],
-                translation=inputs["translation"],
-                created_at=now,
-                updated_at=now,
-            )
-            write_model(record_path, record)
-        with processing_logging(root, config.log_level):
-            try:
-                execution = PipelineRun(ArtifactStore(record, record_path), config)
-                documents, _ = execution.prepare_documents(sources)
-                directory = root / "review" / "review"
-                execution.perform_task(
-                    TaskName.REVIEW,
-                    documents,
-                    [
-                        (
-                            directory,
-                            ReviewAgent(documents, directory, root, config).run,
-                        )
-                    ],
+    def run(
+        self,
+        source: Path,
+        translation: Path,
+        *,
+        processing_id: str | None = None,
+        resume_id: str | None = None,
+    ) -> ReviewOutcome:
+        """二つのPDFを解析し、Agentが確定した一覧だけを公開する。
+
+        Args:
+            source: 英語原文PDF。
+            translation: 日本語訳文PDF。
+            processing_id: UIが発行した新規ID。
+            resume_id: 再開するID。
+
+        Returns:
+            処理IDと指摘・修正提案のJSON。
+
+        Raises:
+            InputError: 入力・IDまたは再開条件が不正な場合。
+            Exception: 前処理またはAgent操作が失敗した場合。
+        """
+        sources = {"source": source.resolve(), "translation": translation.resolve()}
+        inputs = pdf_inputs(sources)
+        validate_config(self.config, "review")
+        identifier = resolve_processing_id(processing_id, resume_id)
+        self.root = (
+            (self.outputs or Path.cwd() / "outputs").resolve()
+            / translation.stem
+            / identifier
+        )
+        self.record_path = self.root / "review.json"
+        with ProcessingLock(self.root):
+            if self.record_path.is_file():
+                self.record = load_model(self.record_path, ReviewRecord)
+                if (
+                    not resume_id
+                    or self.record.review_id != identifier
+                    or self.record.source != inputs["source"]
+                    or self.record.translation != inputs["translation"]
+                ):
+                    raise InputError("Review ID already exists or resume inputs differ")
+            else:
+                if resume_id:
+                    raise InputError("Review to resume does not exist")
+                now = datetime.now(UTC)
+                self.record = ReviewRecord(
+                    review_id=identifier,
+                    status="processing",
+                    source=inputs["source"],
+                    translation=inputs["translation"],
+                    created_at=now,
+                    updated_at=now,
                 )
-                record.status, record.error = "succeeded", None
-                result_path = directory / "review.json"
-                record.outputs = [describe_artifact(root, result_path)]
-                record.updated_at = datetime.now(UTC)
-                write_model(record_path, record)
-            except KeyboardInterrupt:
-                ArtifactStore(record, record_path).cancel_processing()
-                raise
-    return ReviewOutcome(
-        review_id=identifier, processing_directory=root, result=result_path
-    )
+                write_model(self.record_path, self.record)
+            with processing_logging(self.root, self.config.log_level):
+                try:
+                    self.execution = PipelineRun(
+                        ArtifactStore(self.record, self.record_path), self.config
+                    )
+                    documents, _ = self.execution.prepare_documents(sources)
+                    directory = self.root / "review" / "review"
+                    self.execution.perform_task(
+                        TaskName.REVIEW,
+                        documents,
+                        [
+                            (
+                                directory,
+                                ReviewAgent(
+                                    documents, directory, self.root, self.config
+                                ).run,
+                            )
+                        ],
+                    )
+                    self.record.status, self.record.error = "succeeded", None
+                    result_path = directory / "review.json"
+                    self.record.outputs = [describe_artifact(self.root, result_path)]
+                    self.record.updated_at = datetime.now(UTC)
+                    write_model(self.record_path, self.record)
+                except KeyboardInterrupt:
+                    ArtifactStore(self.record, self.record_path).cancel_processing()
+                    raise
+        return ReviewOutcome(
+            review_id=identifier, processing_directory=self.root, result=result_path
+        )
 
 
 class ReviewAgent:

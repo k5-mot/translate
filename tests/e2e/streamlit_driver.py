@@ -351,10 +351,6 @@ if __name__ == "__main__":
     from tests.e2e import streamlit_driver as worker  # noqa: PLW0406
 
     ui.load_config = Config
-    ui.translate_pdf = _translate
-    ui.review_pdfs = _review
-    ui.register_paths = _register
-    ui.upgrade_pdfs = _upgrade
     ui._execute_translate = worker.execute_translate  # noqa: SLF001
     ui._execute_review = worker.execute_review  # noqa: SLF001
     ui._execute_register = worker.execute_register  # noqa: SLF001

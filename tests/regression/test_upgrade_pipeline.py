@@ -43,7 +43,10 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     monkeypatch.setattr(module.PipelineRun, "prepare_documents", prepare)
     identifier = str(uuid7())
     root = tmp_path / "outputs"
-    entry = module.review_pdfs if kind == "review" else module.upgrade_pdfs
+    pipeline_type = (
+        module.ReviewPipeline if kind == "review" else module.UpgradePipeline
+    )
+    pipeline = pipeline_type(config, outputs=root)
     model = ReviewRecord if kind == "review" else UpgradeRecord
     representative = paths[-1] if kind == "review" else paths[1]
     directory = root / representative.stem / identifier
@@ -52,7 +55,7 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     fail = Mock(side_effect=RuntimeError("comparison unavailable"))
     monkeypatch.setattr(agent_type, "run", fail)
     with pytest.raises(RuntimeError, match="comparison unavailable"):
-        entry(*paths, config, processing_id=identifier, outputs=root)
+        pipeline.run(*paths, processing_id=identifier)
     failed = load_model(record_path, model)
     assert failed.status == "failed"
     assert failed.outputs == []
@@ -66,7 +69,7 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
         )
 
     monkeypatch.setattr(agent_type, "run", complete)
-    entry(*paths, config, resume_id=identifier, outputs=root)
+    pipeline.run(*paths, resume_id=identifier)
     succeeded = load_model(record_path, model)
     assert succeeded.status == "succeeded"
     assert len(succeeded.outputs) == 1
@@ -78,14 +81,11 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
         "run",
         Mock(side_effect=AssertionError("completed Agent must be reused")),
     )
-    entry(
-        *paths,
-        config.model_copy(update={"openai_review_model": "changed"}),
-        resume_id=identifier,
-        outputs=root,
-    )
+    pipeline_type(
+        config.model_copy(update={"openai_review_model": "changed"}), outputs=root
+    ).run(*paths, resume_id=identifier)
     assert len(succeeded.outputs) == 1
     paths[0].write_bytes(b"changed input")
     with pytest.raises(InputError, match="inputs differ"):
-        entry(*paths, config, resume_id=identifier, outputs=root)
+        pipeline.run(*paths, resume_id=identifier)
     assert len(succeeded.outputs) == 1

@@ -25,10 +25,9 @@ from translate.common.config import Config
 from translate.models.artifacts import RegistrationRecord
 from translate.pipeline import InputError, resolve_processing_id
 from translate.pipeline.register import (
+    RegisterPipeline,
     _chunks,
-    _docling_text,
     _validate_source_id,
-    register_paths,
 )
 
 TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
@@ -56,9 +55,10 @@ def test_registration_extracts_table_cells_once(
         "translate.pipeline.register.DoclingClient.convert",
         MagicMock(return_value=(archive_bytes.getvalue(), "job", 1)),
     )
-    text = _docling_text(
-        tmp_path / "reference.pdf", Config(docling_server_url="http://docling")
+    text = RegisterPipeline(Config(docling_server_url="http://docling"))._docling_text(  # noqa: SLF001 — 本文抽出の回帰試験。
+        tmp_path / "reference.pdf"
     )
+
     assert text.count("Definition in a merged cell") == 1
     assert "Term" in text
     assert "Reference heading" in text
@@ -89,9 +89,13 @@ def test_register_resume_clears_stale_failure_and_records_embedding_cause(
         message = "最初の接続失敗。対策: 接続先を確認してください。"
         raise EmbeddingError(message)
 
-    monkeypatch.setattr("translate.pipeline.register._register_sources", first_failure)
+    monkeypatch.setattr(
+        "translate.pipeline.register.RegisterPipeline._register_sources", first_failure
+    )
     with pytest.raises(EmbeddingError):
-        register_paths([source], config, outputs=outputs, processing_id=processing_id)
+        RegisterPipeline(config, outputs=outputs).run(
+            [source], processing_id=processing_id
+        )
     record_path = outputs / "reference" / processing_id / "registration.json"
     failed = load_model(record_path, RegistrationRecord)
     assert failed.status == "failed"
@@ -107,10 +111,11 @@ def test_register_resume_clears_stale_failure_and_records_embedding_cause(
         raise EmbeddingError(message)
 
     monkeypatch.setattr(
-        "translate.pipeline.register._register_sources", resumed_failure
+        "translate.pipeline.register.RegisterPipeline._register_sources",
+        resumed_failure,
     )
     with pytest.raises(EmbeddingError):
-        register_paths([source], config, outputs=outputs, resume_id=processing_id)
+        RegisterPipeline(config, outputs=outputs).run([source], resume_id=processing_id)
     retried = load_model(record_path, RegistrationRecord)
     assert retried.status == "failed"
     assert retried.error is not None

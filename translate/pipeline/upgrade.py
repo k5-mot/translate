@@ -53,88 +53,114 @@ class UpgradeOutcome(BaseModel):
     plan: Path
 
 
-def upgrade_pdfs(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    config: Config,
-    *,
-    processing_id: str | None = None,
-    resume_id: str | None = None,
-    outputs: Path | None = None,
-) -> UpgradeOutcome:
-    """三つのPDFを比較し、文書へ適用せず変更と提案の一覧を公開する。
+class UpgradePipeline:
+    """Upgradeの設定と実行記録を保持し、入力検証から成果物公開まで進める。"""
 
-    Args:
-        source_v1: 英文旧版PDF。
-        source_v2: 英文新版PDF。
-        translation_v1: 日本語旧版PDF。
-        config: 接続とLLM予算の設定。
-        processing_id: 新規処理ID。
-        resume_id: 再開対象ID。
-        outputs: 出力root。省略時は作業directoryのoutputs。
+    def __init__(self, config: Config, outputs: Path | None = None) -> None:
+        """外部接続の設定と成果物の基準ディレクトリを受け取る。
 
-    Returns:
-        処理IDと変更・修正提案のJSON。
+        Args:
+            config: 操作で使用する接続と処理上限。
+            outputs: 出力先。省略時は実行時の作業ディレクトリ内のoutputs。
+        """
+        self.config = config
+        self.outputs = outputs
 
-    Raises:
-        InputError: 入力・ID・再開条件が不正な場合。
-        Exception: 前処理またはAgent操作の失敗。
-    """
-    sources = {
-        "source_v1": source_v1.resolve(),
-        "source_v2": source_v2.resolve(),
-        "translation_v1": translation_v1.resolve(),
-    }
-    inputs = pdf_inputs(sources)
-    validate_config(config, "upgrade")
-    identifier = resolve_processing_id(processing_id, resume_id)
-    root = (outputs or Path.cwd() / "outputs").resolve() / source_v2.stem / identifier
-    record_path = root / "upgrade.json"
-    with ProcessingLock(root):
-        if record_path.is_file():
-            record = load_model(record_path, UpgradeRecord)
-            if (
-                not resume_id
-                or record.upgrade_id != identifier
-                or any(getattr(record, role) != item for role, item in inputs.items())
-            ):
-                raise InputError("Upgrade ID already exists or resume inputs differ")
-        else:
-            if resume_id:
-                raise InputError("Upgrade to resume does not exist")
-            now = datetime.now(UTC)
-            record = UpgradeRecord(
-                upgrade_id=identifier,
-                status="processing",
-                source_v1=inputs["source_v1"],
-                source_v2=inputs["source_v2"],
-                translation_v1=inputs["translation_v1"],
-                created_at=now,
-                updated_at=now,
-            )
-            write_model(record_path, record)
-        with processing_logging(root, config.log_level):
-            try:
-                execution = PipelineRun(ArtifactStore(record, record_path), config)
-                documents, _ = execution.prepare_documents(sources)
-                directory = root / "upgrade" / "diff"
-                execution.perform_task(
-                    TaskName.DIFF,
-                    documents,
-                    [(directory, UpgradeAgent(documents, directory, config).run)],
+    def run(
+        self,
+        source_v1: Path,
+        source_v2: Path,
+        translation_v1: Path,
+        *,
+        processing_id: str | None = None,
+        resume_id: str | None = None,
+    ) -> UpgradeOutcome:
+        """三つのPDFを比較し、文書へ適用せず変更と提案の一覧を公開する。
+
+        Args:
+            source_v1: 英文旧版PDF。
+            source_v2: 英文新版PDF。
+            translation_v1: 日本語旧版PDF。
+            processing_id: 新規処理ID。
+            resume_id: 再開対象ID。
+
+        Returns:
+            処理IDと変更・修正提案のJSON。
+
+        Raises:
+            InputError: 入力・ID・再開条件が不正な場合。
+            Exception: 前処理またはAgent操作の失敗。
+        """
+        sources = {
+            "source_v1": source_v1.resolve(),
+            "source_v2": source_v2.resolve(),
+            "translation_v1": translation_v1.resolve(),
+        }
+        inputs = pdf_inputs(sources)
+        validate_config(self.config, "upgrade")
+        identifier = resolve_processing_id(processing_id, resume_id)
+        self.root = (
+            (self.outputs or Path.cwd() / "outputs").resolve()
+            / source_v2.stem
+            / identifier
+        )
+        self.record_path = self.root / "upgrade.json"
+        with ProcessingLock(self.root):
+            if self.record_path.is_file():
+                self.record = load_model(self.record_path, UpgradeRecord)
+                if (
+                    not resume_id
+                    or self.record.upgrade_id != identifier
+                    or any(
+                        getattr(self.record, role) != item
+                        for role, item in inputs.items()
+                    )
+                ):
+                    raise InputError(
+                        "Upgrade ID already exists or resume inputs differ"
+                    )
+            else:
+                if resume_id:
+                    raise InputError("Upgrade to resume does not exist")
+                now = datetime.now(UTC)
+                self.record = UpgradeRecord(
+                    upgrade_id=identifier,
+                    status="processing",
+                    source_v1=inputs["source_v1"],
+                    source_v2=inputs["source_v2"],
+                    translation_v1=inputs["translation_v1"],
+                    created_at=now,
+                    updated_at=now,
                 )
-                result_path = directory / "plan.json"
-                record.status, record.error = "succeeded", None
-                record.outputs = [describe_artifact(root, result_path)]
-                record.updated_at = datetime.now(UTC)
-                write_model(record_path, record)
-            except KeyboardInterrupt:
-                ArtifactStore(record, record_path).cancel_processing()
-                raise
-    return UpgradeOutcome(
-        upgrade_id=identifier, processing_directory=root, plan=result_path
-    )
+                write_model(self.record_path, self.record)
+            with processing_logging(self.root, self.config.log_level):
+                try:
+                    self.execution = PipelineRun(
+                        ArtifactStore(self.record, self.record_path), self.config
+                    )
+                    documents, _ = self.execution.prepare_documents(sources)
+                    directory = self.root / "upgrade" / "diff"
+                    self.execution.perform_task(
+                        TaskName.DIFF,
+                        documents,
+                        [
+                            (
+                                directory,
+                                UpgradeAgent(documents, directory, self.config).run,
+                            )
+                        ],
+                    )
+                    result_path = directory / "plan.json"
+                    self.record.status, self.record.error = "succeeded", None
+                    self.record.outputs = [describe_artifact(self.root, result_path)]
+                    self.record.updated_at = datetime.now(UTC)
+                    write_model(self.record_path, self.record)
+                except KeyboardInterrupt:
+                    ArtifactStore(self.record, self.record_path).cancel_processing()
+                    raise
+        return UpgradeOutcome(
+            upgrade_id=identifier, processing_directory=self.root, plan=result_path
+        )
 
 
 class UpgradeAgent:

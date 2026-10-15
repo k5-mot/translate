@@ -68,192 +68,273 @@ class _Source:
     input: InputFile
 
 
-def register_paths(
-    paths: list[Path],
-    config: Config,
-    *,
-    source_id: str | None = None,
-    processing_id: str | None = None,
-    resume_id: str | None = None,
-    outputs: Path | None = None,
-) -> RegistrationOutcome:
-    """入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+class RegisterPipeline:
+    """Registerの設定と実行記録を保持し、入力検証から成果物公開まで進める。"""
 
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        processing_id (str | None): 新規処理またはResume対象の処理ID。
-        resume_id (str | None): Resume対象として指定された処理ID。
-        outputs (Path | None): 成果物Root Directory。
+    def __init__(self, config: Config, outputs: Path | None = None) -> None:
+        """外部接続の設定と成果物の基準ディレクトリを受け取る。
 
-    Returns:
-        RegistrationOutcome: 入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+        Args:
+            config: 操作で使用する接続と処理上限。
+            outputs: 出力先。省略時は実行時の作業ディレクトリ内のoutputs。
+        """
+        self.config = config
+        self.outputs = outputs
+        self.embedding = EmbeddingClient(config)
 
-    Raises:
-        InputError: `at least one registration path is required`、`source-id is required for
-            multiple registration paths`、`Docling settings are required for binary
-            references`、`processing ID already exists`のいずれかと判定した場合。
-    """
+    def run(
+        self,
+        paths: list[Path],
+        *,
+        source_id: str | None = None,
+        processing_id: str | None = None,
+        resume_id: str | None = None,
+    ) -> RegistrationOutcome:
+        """入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
 
-    if not paths:
-        raise InputError("at least one registration path is required")
-    if len(paths) > 1 and source_id is None:
-        raise InputError("source-id is required for multiple registration paths")
-    if source_id is not None:
-        _validate_source_id(source_id)
-    validate_config(config, "register")
-    outputs_root = (outputs or Path.cwd() / "outputs").resolve()
-    try:
-        sources = _collect(paths, source_id, outputs_root)
-    except ValueError as error:
-        raise InputError(str(error)) from error
-    registration_id = resolve_processing_id(processing_id, resume_id)
-    top_name = source_id or _single_top_name(paths)
-    root = outputs_root / top_name / registration_id
-    record_path = root / "registration.json"
-    fingerprint = _fingerprint(sources, source_id)
-    with ProcessingLock(root), processing_logging(root, config.log_level):
-        if processing_id is not None and record_path.is_file():
-            raise InputError("processing ID already exists")
-        record = _record(
-            record_path,
-            registration_id,
-            source_id,
-            sources,
-            fingerprint,
-            config,
-            resume_id is not None,
-        )
+        Args:
+            paths (list[Path]): 列挙された入力Path。
+            source_id (str | None): 登録対象へ付与する論理Source ID。
+            processing_id (str | None): 新規処理またはResume対象の処理ID。
+            resume_id (str | None): Resume対象として指定された処理ID。
+
+        Returns:
+            RegistrationOutcome: 入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+
+        Raises:
+            InputError: `at least one registration path is required`、`source-id is required for
+                multiple registration paths`、`Docling settings are required for binary
+                references`、`processing ID already exists`のいずれかと判定した場合。
+        """
+
+        if not paths:
+            raise InputError("at least one registration path is required")
+        if len(paths) > 1 and source_id is None:
+            raise InputError("source-id is required for multiple registration paths")
+        if source_id is not None:
+            _validate_source_id(source_id)
+        validate_config(self.config, "register")
+        outputs_root = (self.outputs or Path.cwd() / "outputs").resolve()
         try:
-            if record.status == "succeeded" and record.result is not None:
-                return RegistrationOutcome(
-                    registration_id=registration_id,
-                    processing_directory=root,
-                    record=record_path,
-                )
-            _register_sources(record, record_path, sources, config)
-        except KeyboardInterrupt:
-            record.status = "cancelled"
-            record.updated_at = datetime.now(UTC)
-            write_model(record_path, record)
-            raise
-        except Exception as error:
-            record.status = "failed"
-            record.error = ProcessingError(
-                code="registration_failed",
-                message=(
-                    str(error)
-                    if isinstance(error, EmbeddingError)
-                    else "Reference registration did not complete."
-                ),
-                cause_type=type(error).__name__,
-                retryable=True,
+            sources = _collect(paths, source_id, outputs_root)
+        except ValueError as error:
+            raise InputError(str(error)) from error
+        registration_id = resolve_processing_id(processing_id, resume_id)
+        top_name = source_id or _single_top_name(paths)
+        self.root = outputs_root / top_name / registration_id
+        self.record_path = self.root / "registration.json"
+        fingerprint = _fingerprint(sources, source_id)
+        with (
+            ProcessingLock(self.root),
+            processing_logging(self.root, self.config.log_level),
+        ):
+            if processing_id is not None and self.record_path.is_file():
+                raise InputError("processing ID already exists")
+            self.record = _record(
+                self.record_path,
+                registration_id,
+                source_id,
+                sources,
+                fingerprint,
+                self.config,
+                resume_id is not None,
             )
-            record.updated_at = datetime.now(UTC)
-            write_model(record_path, record)
-            raise
-    return RegistrationOutcome(
-        registration_id=registration_id,
-        processing_directory=root,
-        record=record_path,
-    )
-
-
-def _register_sources(
-    record: RegistrationRecord,
-    record_path: Path,
-    sources: list[_Source],
-    config: Config,
-) -> None:
-    """各資料の新revisionを書込み確認し、進捗を最上位記録へ保存する。
-
-    Args:
-        record (RegistrationRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        sources (list[_Source]): Register対象として収集したSource。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-
-    Raises:
-        ValueError: `f'reference contains no extractable text:
-            {source.logical_path}'`と判定した場合。
-    """
-
-    completed = {
-        item.logical_path: item
-        for item in (record.result.sources if record.result else [])
-    }
-    results: list[RegistrationSourceResult] = []
-    for source in sources:
-        revision = _revision(source, config)
-        previous = completed.get(source.logical_path)
-        if previous is not None and previous.sha256 == source.input.sha256:
-            results.append(previous)
-            continue
-        text = _extract(source.path, config)
-        chunks = _chunks(text)
-        if not chunks:
-            raise ValueError(
-                f"reference contains no extractable text: {source.logical_path}"
-            )
-        vectors = EmbeddingClient(config).embed(chunks)
-        points = [
-            {
-                "id": str(
-                    uuid5(
-                        NAMESPACE_URL,
-                        f"{source.source_key}\0{revision}\0{index}",
+            try:
+                if self.record.status == "succeeded" and self.record.result is not None:
+                    return RegistrationOutcome(
+                        registration_id=registration_id,
+                        processing_directory=self.root,
+                        record=self.record_path,
                     )
-                ),
-                "vector": vector,
-                "payload": {
-                    "source_key": source.source_key,
-                    "revision": revision,
-                    "chunk_index": index,
-                    "logical_path": source.logical_path,
-                    "content": chunk,
-                    "content_sha256": hashlib.sha256(chunk.encode("utf-8")).hexdigest(),
-                    "chunk_schema": _CHUNK_SCHEMA,
-                    "embedding_model": config.openai_embedding_model,
-                },
-            }
-            for index, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True))
-        ]
-        with QdrantStore(config) as store:
-            written = store.upsert_revision(
-                source_key=source.source_key,
-                revision=revision,
-                points=points,
-                vector_size=len(vectors[0]),
-            )
-        results.append(
-            RegistrationSourceResult(
-                logical_path=source.logical_path,
-                sha256=source.input.sha256,
-                revision=revision,
-                point_count=len(points),
-                status="registered" if written else "unchanged",
-            )
+                self._register_sources(sources)
+            except KeyboardInterrupt:
+                self.record.status = "cancelled"
+                self.record.updated_at = datetime.now(UTC)
+                write_model(self.record_path, self.record)
+                raise
+            except Exception as error:
+                self.record.status = "failed"
+                self.record.error = ProcessingError(
+                    code="registration_failed",
+                    message=(
+                        str(error)
+                        if isinstance(error, EmbeddingError)
+                        else "Reference registration did not complete."
+                    ),
+                    cause_type=type(error).__name__,
+                    retryable=True,
+                )
+                self.record.updated_at = datetime.now(UTC)
+                write_model(self.record_path, self.record)
+                raise
+        return RegistrationOutcome(
+            registration_id=registration_id,
+            processing_directory=self.root,
+            record=self.record_path,
         )
-        record.result = RegistrationResult(
-            collection=config.qdrant_collection or "",
-            embedding_model=config.openai_embedding_model or "",
+
+    def _register_sources(
+        self,
+        sources: list[_Source],
+    ) -> None:
+        """各資料の新revisionを書込み確認し、進捗を最上位記録へ保存する。
+
+        Args:
+            sources (list[_Source]): Register対象として収集したSource。
+
+        Raises:
+            ValueError: `f'reference contains no extractable text:
+                {source.logical_path}'`と判定した場合。
+        """
+
+        completed = {
+            item.logical_path: item
+            for item in (self.record.result.sources if self.record.result else [])
+        }
+        results: list[RegistrationSourceResult] = []
+        for source in sources:
+            revision = _revision(source, self.config)
+            previous = completed.get(source.logical_path)
+            if previous is not None and previous.sha256 == source.input.sha256:
+                results.append(previous)
+                continue
+            text = self._extract(source.path)
+            chunks = _chunks(text)
+            if not chunks:
+                raise ValueError(
+                    f"reference contains no extractable text: {source.logical_path}"
+                )
+            vectors = self.embedding.embed(chunks)
+            points = [
+                {
+                    "id": str(
+                        uuid5(
+                            NAMESPACE_URL,
+                            f"{source.source_key}\0{revision}\0{index}",
+                        )
+                    ),
+                    "vector": vector,
+                    "payload": {
+                        "source_key": source.source_key,
+                        "revision": revision,
+                        "chunk_index": index,
+                        "logical_path": source.logical_path,
+                        "content": chunk,
+                        "content_sha256": hashlib.sha256(
+                            chunk.encode("utf-8")
+                        ).hexdigest(),
+                        "chunk_schema": _CHUNK_SCHEMA,
+                        "embedding_model": self.config.openai_embedding_model,
+                    },
+                }
+                for index, (chunk, vector) in enumerate(
+                    zip(chunks, vectors, strict=True)
+                )
+            ]
+            with QdrantStore(self.config) as store:
+                written = store.upsert_revision(
+                    source_key=source.source_key,
+                    revision=revision,
+                    points=points,
+                    vector_size=len(vectors[0]),
+                )
+            results.append(
+                RegistrationSourceResult(
+                    logical_path=source.logical_path,
+                    sha256=source.input.sha256,
+                    revision=revision,
+                    point_count=len(points),
+                    status="registered" if written else "unchanged",
+                )
+            )
+            self.record.result = RegistrationResult(
+                collection=self.config.qdrant_collection or "",
+                embedding_model=self.config.openai_embedding_model or "",
+                sources=results,
+                total_points=sum(item.point_count for item in results),
+            )
+            self.record.status = "processing"
+            self.record.updated_at = datetime.now(UTC)
+            write_model(self.record_path, self.record)
+        self.record.result = RegistrationResult(
+            collection=self.config.qdrant_collection or "",
+            embedding_model=self.config.openai_embedding_model or "",
             sources=results,
             total_points=sum(item.point_count for item in results),
         )
-        record.status = "processing"
-        record.updated_at = datetime.now(UTC)
-        write_model(record_path, record)
-    record.result = RegistrationResult(
-        collection=config.qdrant_collection or "",
-        embedding_model=config.openai_embedding_model or "",
-        sources=results,
-        total_points=sum(item.point_count for item in results),
-    )
-    record.status = "succeeded"
-    record.error = None
-    record.updated_at = datetime.now(UTC)
-    write_model(record_path, record)
+        self.record.status = "succeeded"
+        self.record.error = None
+        self.record.updated_at = datetime.now(UTC)
+        write_model(self.record_path, self.record)
+
+    def _extract(
+        self,
+        path: Path,
+    ) -> str:
+        """PDFを分割し、Docling本文を抽出する。
+
+        Args:
+            path (Path): 本文を抽出する登録対象FileのPath。
+
+        Returns:
+            str: PDFを分割し、Docling本文を抽出する。
+        """
+
+        with tempfile.TemporaryDirectory(
+            prefix="translate-register-"
+        ) as temporary_name:
+            temporary = Path(temporary_name)
+            parts = split_pdf(path, temporary / "parts", self.config.pdf_split_pages)
+            return "\n\n".join(self._docling_text(part) for part in parts)
+
+    def _docling_text(
+        self,
+        path: Path,
+    ) -> str:
+        """一つの文書をDoclingへ送り、本文と表セルの内容を連結する。
+
+        Args:
+            path (Path): Doclingへ送信する登録対象FileのPath。
+
+        Returns:
+            str: 通常要素の本文と、重複するgrid表現を除いた表セルの本文。
+
+        Raises:
+            ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
+                be an object`のいずれかと判定した場合。
+        """
+
+        payload, _job_id, _polls = DoclingClient(self.config).convert(path)
+        with tempfile.TemporaryDirectory(prefix="translate-docling-") as temporary_name:
+            archive_path = Path(temporary_name) / "result.zip"
+            archive_path.write_bytes(payload)
+            with zipfile.ZipFile(archive_path) as archive:
+                names = [
+                    name
+                    for name in archive.namelist()
+                    if name.casefold().endswith(".json")
+                ]
+                if len(names) != 1:
+                    raise ValueError(
+                        "Docling result must contain exactly one JSON file"
+                    )
+                value = json.loads(archive.read(names[0]).decode("utf-8"))
+        if not isinstance(value, dict):
+            raise ValueError("Docling JSON must be an object")
+        texts = [
+            str(item.get("text", "")).strip()
+            for collection in ("texts", "tables", "pictures")
+            for item in value.get(collection, [])
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        ]
+        # table_cellsは結合セルを一件で保持する。gridも走査すると同じ本文が重複する。
+        texts.extend(
+            str(cell.get("text", "")).strip()
+            for table in value.get("tables", [])
+            for cell in table.get("data", {}).get("table_cells", [])
+            if str(cell.get("text", "")).strip()
+        )
+        return "\n\n".join(texts)
 
 
 def _collect(
@@ -319,67 +400,6 @@ def _collect(
         )
         for path, logical in sorted(collected, key=lambda item: item[1])
     ]
-
-
-def _extract(path: Path, config: Config) -> str:
-    """PDFを分割し、Docling本文を抽出する。
-
-    Args:
-        path (Path): 本文を抽出する登録対象FileのPath。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-
-    Returns:
-        str: PDFを分割し、Docling本文を抽出する。
-    """
-
-    with tempfile.TemporaryDirectory(prefix="translate-register-") as temporary_name:
-        temporary = Path(temporary_name)
-        parts = split_pdf(path, temporary / "parts", config.pdf_split_pages)
-        return "\n\n".join(_docling_text(part, config) for part in parts)
-
-
-def _docling_text(path: Path, config: Config) -> str:
-    """一つの文書をDoclingへ送り、本文と表セルの内容を連結する。
-
-    Args:
-        path (Path): Doclingへ送信する登録対象FileのPath。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-
-    Returns:
-        str: 通常要素の本文と、重複するgrid表現を除いた表セルの本文。
-
-    Raises:
-        ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
-            be an object`のいずれかと判定した場合。
-    """
-
-    payload, _job_id, _polls = DoclingClient(config).convert(path)
-    with tempfile.TemporaryDirectory(prefix="translate-docling-") as temporary_name:
-        archive_path = Path(temporary_name) / "result.zip"
-        archive_path.write_bytes(payload)
-        with zipfile.ZipFile(archive_path) as archive:
-            names = [
-                name for name in archive.namelist() if name.casefold().endswith(".json")
-            ]
-            if len(names) != 1:
-                raise ValueError("Docling result must contain exactly one JSON file")
-            value = json.loads(archive.read(names[0]).decode("utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("Docling JSON must be an object")
-    texts = [
-        str(item.get("text", "")).strip()
-        for collection in ("texts", "tables", "pictures")
-        for item in value.get(collection, [])
-        if isinstance(item, dict) and str(item.get("text", "")).strip()
-    ]
-    # table_cellsは結合セルを一件で保持する。gridも走査すると同じ本文が重複する。
-    texts.extend(
-        str(cell.get("text", "")).strip()
-        for table in value.get("tables", [])
-        for cell in table.get("data", {}).get("table_cells", [])
-        if str(cell.get("text", "")).strip()
-    )
-    return "\n\n".join(texts)
 
 
 def _chunks(value: str) -> list[str]:
