@@ -123,6 +123,13 @@ class SavedLLMCalls:
                     + system
                 )
             schema = response_type.model_json_schema()
+            if self.task == "REVIEW" and operation in {"evaluate", "recheck"}:
+                # 確認済み対象IDと訳文要素IDは別物なので、生成時にも候補を限定する。
+                confirmed = schema["properties"]["reviewed_target_ids"]
+                confirmed["items"]["enum"] = [
+                    key.removeprefix("review:") for key in target_ids
+                ]
+                confirmed["minItems"] = confirmed["maxItems"] = len(target_ids)
             # 本文・用語・参考文の前に、送信する契約とnative Schemaの枠を確保する。
             overhead = len(f"{system}\n\n{contract}".encode()) + 512
             if config.llm_structured_output_mode == "json_schema":

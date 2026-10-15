@@ -14,7 +14,12 @@ from translate.adapters.llm import LLMClient, StructuredResult
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.review import AgentAction, AlignmentResponse, ReviewResponse
+from translate.models.review import (
+    AgentAction,
+    AlignmentResponse,
+    ReviewResponse,
+    ReviewTarget,
+)
 from translate.models.upgrade import DiffResponse
 from translate.pipeline import (
     InputError,
@@ -60,6 +65,59 @@ def config() -> Config:
         qdrant_uri=None,
         qdrant_collection=None,
     )
+
+
+@pytest.mark.parametrize("operation", ["evaluate", "recheck"])
+@pytest.mark.parametrize("prefix", ["review/alignment-", "translate/unit-"])
+def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    prefix: str,
+) -> None:
+    """実HTTP要求のSchemaが確認対象IDだけを許し、訳文要素IDとの混同を防ぐ。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
+    targets = [
+        ReviewTarget(
+            id=f"{prefix}{index:06}",
+            source="Document ID",
+            translation="文書ID",
+            target_ids=[f"unit-{index}"],
+            spans=[TextSpan(id=f"span-{index}", source="文書ID")],
+        )
+        for index in (1, 2)
+    ]
+    expected = [target.id for target in targets]
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = ReviewResponse(
+        reviewed_target_ids=expected
+    ).model_dump_json()
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(config, tmp_path / "review", "", "")
+            .run(
+                targets,
+                tmp_path,
+                client=client,
+                operation=operation,
+                span_owners={f"span-{index}": f"unit-{index}" for index in (1, 2)},
+            )
+        )
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        field = schema["properties"]["reviewed_target_ids"]
+        assert field["items"]["enum"] == expected
+        assert field["minItems"] == field["maxItems"] == len(expected)
+        assert result.reviewed_target_ids == expected
+    finally:
+        client.client.close()
 
 
 @pytest.mark.parametrize(
