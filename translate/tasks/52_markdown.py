@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 
 from translate.adapters.artifact_store import atomic_write_text
-from translate.adapters.pandoc import table_to_markdown
+from translate.adapters.pandoc import Pandoc
 from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -19,116 +19,163 @@ _ALERT_STYLES = {
 }
 
 
-def convert_document(
-    document: Document,
-    output: Path,
-    cover_image: Path,
-    asset_root: Path,
-    excluded_pages: set[int],
-    pandoc_timeout: float,
-) -> Path:
-    """表紙とassetを含む一つのPandoc Markdown成果を作る。
+class MarkdownTask:
+    """文書全体でPandoc接続設定を共有し、画像を含むMarkdownを生成する。"""
 
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        output (Path): 変換結果を書き込むFile Path。
-        cover_image (Path): Markdownへ埋め込む表紙画像Path。
-        asset_root (Path): 参照先Assetを検証するRoot Directory。
-        excluded_pages (set[int]): Markdown出力から除外するPage番号集合。
-        pandoc_timeout (float): Pandoc ProcessのTimeout秒数。
+    def __init__(self, pandoc: Pandoc) -> None:
+        """表構造の変換に利用するPandocを受け取る。
 
-    Returns:
-        Path: 表紙とassetを含む一つのPandoc Markdown成果を作る。
-    """
+        Args:
+            pandoc: Timeoutと機能確認結果を保持する変換Adapter。
+        """
+        self.pandoc = pandoc
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    cover_target = output.parent / "assets" / "cover.png"
-    cover_target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(cover_image, cover_target)
-    fragments = [
-        '![](assets/cover.png){width=100% fig-alt="表紙"}',
-        '```{=openxml}\n<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:br w:type="page"/></w:r></w:p>\n```',
-    ]
-    for page in document.pages:
-        if page.number in excluded_pages:
-            continue
-        fragments.extend(
-            convert_block(block, pandoc_timeout)
-            for block in sorted(page.blocks, key=lambda item: item.order)
-        )
-    for source in sorted(asset_root.rglob("*")):
-        if not source.is_file():
-            continue
-        relative = source.relative_to(asset_root)
-        if not relative.parts or relative.parts[0] != "assets":
-            continue
-        target = output.parent / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    value = "\n\n".join(fragment for fragment in fragments if fragment).rstrip()
-    atomic_write_text(output, f"{value}\n")
-    return output
+    def run(
+        self,
+        document: Document,
+        output: Path,
+        cover_image: Path,
+        asset_root: Path,
+        excluded_pages: set[int],
+    ) -> Path:
+        """表紙とassetを含む一つのPandoc Markdown成果を作る。
 
+        Args:
+            document (Document): 変換または検証対象のDocument。
+            output (Path): 変換結果を書き込むFile Path。
+            cover_image (Path): Markdownへ埋め込む表紙画像Path。
+            asset_root (Path): 参照先Assetを検証するRoot Directory。
+            excluded_pages (set[int]): Markdown出力から除外するPage番号集合。
 
-def convert_block(block: Block, pandoc_timeout: float) -> str:  # noqa: PLR0911
-    """一つのBlockをPandoc Markdown断片へ変換する。
+        Returns:
+            Path: 表紙とassetを含む一つのPandoc Markdown成果を作る。
+        """
 
-    Args:
-        block (Block): 変換または検証対象のDocument Block。
-        pandoc_timeout (float): Pandoc ProcessのTimeout秒数。
-
-    Returns:
-        str: 一つのBlockをPandoc Markdown断片へ変換する。
-    """
-
-    text = convert_text_unit(block.content) if block.content is not None else ""
-    if block.kind == "heading":
-        if block.content is not None:
-            content = block.content.model_copy(deep=True)
-            # ピリオドなしの節番号も除き、4桁以上の年度らしい接頭辞は保持する。
-            prefix = re.match(
-                r"^\s*(?:[0-9]{1,3}|[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+",
-                content.text(),
+        output.parent.mkdir(parents=True, exist_ok=True)
+        cover_target = output.parent / "assets" / "cover.png"
+        cover_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(cover_image, cover_target)
+        fragments = [
+            '![](assets/cover.png){width=100% fig-alt="表紙"}',
+            '```{=openxml}\n<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:r><w:br w:type="page"/></w:r></w:p>\n```',
+        ]
+        for page in document.pages:
+            if page.number in excluded_pages:
+                continue
+            fragments.extend(
+                self.convert_block(block)
+                for block in sorted(page.blocks, key=lambda item: item.order)
             )
-            if prefix is not None:
-                remaining = prefix.end()
-                for span in content.spans:
-                    value = span.text()
-                    span.revised = value[remaining:]
-                    remaining = max(0, remaining - len(value))
-                text = convert_text_unit(content)
-        return (
-            f"{'#' * max(1, min(6, block.level or 1))} {text} {{#{_anchor(block.id)}}}"
-        )
-    if block.kind == "list_item":
-        marker = "1." if block.ordered else "-"
-        task = "" if block.checked is None else f"[{'x' if block.checked else ' '}] "
-        return f"{'    ' * max(0, (block.level or 1) - 1)}{marker} {task}{text}"
-    if block.kind == "blockquote":
-        return "\n".join(f"> {line}" for line in text.splitlines())
-    if block.kind == "alert":
-        kind = block.alert_kind or "note"
-        label = kind.upper()
-        return f'::: {{custom-style="{_ALERT_STYLES[kind]}"}}\n**{label}:** {text}\n:::'
-    if block.kind == "code":
-        raw = block.content.text() if block.content is not None else ""
-        longest = max((len(value) for value in re.findall(r"`+", raw)), default=0)
-        fence = "`" * max(3, longest + 1)
-        return f"{fence}{block.language or ''}\n{raw}\n{fence}"
-    if block.kind == "formula":
-        return f"$$\n{block.content.text() if block.content else ''}\n$$"
-    if block.kind == "figure" and block.image is not None:
-        caption = convert_text_unit(block.image.caption) if block.image.caption else ""
-        alt = html.escape(block.image.alt_text, quote=True)
-        return f'![{caption}]({_escape_url(block.image.asset_path)}){{fig-alt="{alt}"}}'
-    if block.kind == "table":
-        return _convert_table(block, pandoc_timeout)
-    if block.kind == "footnote":
-        anchor = _anchor(block.id)
-        return f"[^{anchor}]\n\n[^{anchor}]: {text}"
-    if block.kind == "horizontal_rule":
-        return "---"
-    return text
+        for source in sorted(asset_root.rglob("*")):
+            if not source.is_file():
+                continue
+            relative = source.relative_to(asset_root)
+            if not relative.parts or relative.parts[0] != "assets":
+                continue
+            target = output.parent / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        value = "\n\n".join(fragment for fragment in fragments if fragment).rstrip()
+        atomic_write_text(output, f"{value}\n")
+        return output
+
+    def convert_block(self, block: Block) -> str:  # noqa: PLR0911
+        """一つのBlockをPandoc Markdown断片へ変換する。
+
+        Args:
+            block (Block): 変換または検証対象のDocument Block。
+
+        Returns:
+            str: 一つのBlockをPandoc Markdown断片へ変換する。
+        """
+
+        text = convert_text_unit(block.content) if block.content is not None else ""
+        if block.kind == "heading":
+            if block.content is not None:
+                content = block.content.model_copy(deep=True)
+                # ピリオドなしの節番号も除き、4桁以上の年度らしい接頭辞は保持する。
+                prefix = re.match(
+                    r"^\s*(?:[0-9]{1,3}|[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+",
+                    content.text(),
+                )
+                if prefix is not None:
+                    remaining = prefix.end()
+                    for span in content.spans:
+                        value = span.text()
+                        span.revised = value[remaining:]
+                        remaining = max(0, remaining - len(value))
+                    text = convert_text_unit(content)
+            return f"{'#' * max(1, min(6, block.level or 1))} {text} {{#{_anchor(block.id)}}}"
+        if block.kind == "list_item":
+            marker = "1." if block.ordered else "-"
+            task = (
+                "" if block.checked is None else f"[{'x' if block.checked else ' '}] "
+            )
+            return f"{'    ' * max(0, (block.level or 1) - 1)}{marker} {task}{text}"
+        if block.kind == "blockquote":
+            return "\n".join(f"> {line}" for line in text.splitlines())
+        if block.kind == "alert":
+            kind = block.alert_kind or "note"
+            label = kind.upper()
+            return f'::: {{custom-style="{_ALERT_STYLES[kind]}"}}\n**{label}:** {text}\n:::'
+        if block.kind == "code":
+            raw = block.content.text() if block.content is not None else ""
+            longest = max((len(value) for value in re.findall(r"`+", raw)), default=0)
+            fence = "`" * max(3, longest + 1)
+            return f"{fence}{block.language or ''}\n{raw}\n{fence}"
+        if block.kind == "formula":
+            return f"$$\n{block.content.text() if block.content else ''}\n$$"
+        if block.kind == "figure" and block.image is not None:
+            caption = (
+                convert_text_unit(block.image.caption) if block.image.caption else ""
+            )
+            alt = html.escape(block.image.alt_text, quote=True)
+            return f'![{caption}]({_escape_url(block.image.asset_path)}){{fig-alt="{alt}"}}'
+        if block.kind == "table":
+            return self._convert_table(block)
+        if block.kind == "footnote":
+            anchor = _anchor(block.id)
+            return f"[^{anchor}]\n\n[^{anchor}]: {text}"
+        if block.kind == "horizontal_rule":
+            return "---"
+        return text
+
+    def _convert_table(self, block: Block) -> str:
+        """TableCellをPandoc ASTへ対応付けてgrid tableを得る。
+
+        Args:
+            block (Block): 変換または検証対象のDocument Block。
+
+        Returns:
+            str: TableCellをPandoc ASTへ対応付けてgrid tableを得る。
+        """
+
+        if not block.cells:
+            return ""
+        columns = max(cell.column + 1 for cell in block.cells)
+        row_count = max(cell.row + 1 for cell in block.cells)
+        rows = [_table_row(block.cells, row, columns) for row in range(row_count)]
+        header_rows = 0
+        for row in range(row_count):
+            covering = [cell for cell in block.cells if cell.row <= row < cell.row + 1]
+            if not covering or not all(cell.header for cell in covering):
+                break
+            header_rows += 1
+        table = {
+            "t": "Table",
+            "c": [
+                ["", [], []],
+                [None, [_pandoc_plain(block.caption)] if block.caption else []],
+                [
+                    [{"t": "AlignDefault"}, {"t": "ColWidthDefault"}]
+                    for _ in range(columns)
+                ],
+                [["", [], []], rows[:header_rows]],
+                [[["", [], []], 0, [], rows[header_rows:]]],
+                [["", [], []], []],
+            ],
+        }
+        return self.pandoc.table_to_markdown(table)
 
 
 def convert_text_unit(unit: TextUnit | None) -> str:
@@ -174,42 +221,6 @@ def _convert_span(span: TextSpan) -> str:
     if span.kind == "link":
         value = f"[{value}]({_escape_url(span.href or '')})"
     return value
-
-
-def _convert_table(block: Block, timeout: float) -> str:
-    """TableCellをPandoc ASTへ対応付けてgrid tableを得る。
-
-    Args:
-        block (Block): 変換または検証対象のDocument Block。
-        timeout (float): 外部処理のTimeout秒数。
-
-    Returns:
-        str: TableCellをPandoc ASTへ対応付けてgrid tableを得る。
-    """
-
-    if not block.cells:
-        return ""
-    columns = max(cell.column + 1 for cell in block.cells)
-    row_count = max(cell.row + 1 for cell in block.cells)
-    rows = [_table_row(block.cells, row, columns) for row in range(row_count)]
-    header_rows = 0
-    for row in range(row_count):
-        covering = [cell for cell in block.cells if cell.row <= row < cell.row + 1]
-        if not covering or not all(cell.header for cell in covering):
-            break
-        header_rows += 1
-    table = {
-        "t": "Table",
-        "c": [
-            ["", [], []],
-            [None, [_pandoc_plain(block.caption)] if block.caption else []],
-            [[{"t": "AlignDefault"}, {"t": "ColWidthDefault"}] for _ in range(columns)],
-            [["", [], []], rows[:header_rows]],
-            [[["", [], []], 0, [], rows[header_rows:]]],
-            [["", [], []], []],
-        ],
-    }
-    return table_to_markdown(table, timeout)
 
 
 def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:

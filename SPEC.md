@@ -1197,7 +1197,7 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 | 項目 | 仕様 |
 |---|---|
 | 英語PDF | `.pdf` の単一fileを必須とする |
-| 開始操作 | `translate_pdf()` をbackground workerへ登録する |
+| 開始操作 | Translate用の `PipelineJob` をbackground workerへ登録する |
 | 成功時 | MarkdownとDOCXのdownloadを表示する |
 
 - UIはsource languageとtarget languageの選択欄を設けない。
@@ -1216,7 +1216,7 @@ Translate、Review、UpgradeおよびRegisterは、この順序で `st.tabs` に
 |---|---|
 | 英語原文PDF | `.pdf` の単一fileを必須とする |
 | 日本語訳文PDF | `.pdf` の単一fileを必須とする |
-| 開始操作 | `review_pdfs()` をbackground workerへ登録する |
+| 開始操作 | Review用の `PipelineJob` をbackground workerへ登録する |
 | 成功時 | 変更箇所・指摘・修正提案一覧と結果JSONのdownload。確認に必要な対応関係と未対応要素を併記 |
 
 Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二列表示する。成果物領域ではすべての修正対象箇所・指摘・修正提案を一覧表示し、previewの先頭件数制限は一覧へ適用しない。FIXは実行せず、提案を適用する操作も設けない。Markdown report専用の整形は設けない。
@@ -1227,7 +1227,7 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 |---|---|
 | 参照資料 | 1件以上のPDF upload、またはStreamlit実行環境から読めるディレクトリ |
 | `source_id` | 複数の独立file・pathでは必須、単一file・単一directoryでは任意 |
-| 開始操作 | `register_paths()` をbackground workerへ登録する |
+| 開始操作 | Register用の `PipelineJob` をbackground workerへ登録する |
 | 成功時 | collection、Embedding model、各fileの状態、Point数と合計 |
 
 - UIで「PDFを選択」と「ディレクトリを指定」を選べるようにする。ディレクトリ指定はserver側のpathを入力し、配下のPDFを再帰列挙して開始前に対象一覧を表示する。
@@ -1241,7 +1241,7 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 | 項目 | 仕様 |
 |---|---|
 | 英文v1・英文v2・日本語v1 | roleごとに1つのPDFを必須とする |
-| 開始操作 | `upgrade_pdfs()` をbackground workerへ登録する |
+| 開始操作 | Upgrade用の `PipelineJob` をbackground workerへ登録する |
 | 成功時 | 変更箇所・修正提案一覧と `plan.json` のdownload |
 
 - 3fileは明確なlabelで区別する。
@@ -1286,12 +1286,13 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 ### ⚙️ Pipeline接続契約
 
 UIは保存先をPipeline起動前に決定し、即時に処理IDを表示できる必要がある。
-そのため、次の4関数がkeyword-onlyの `processing_id: str | None = None` を受け取る。
+そのため、次の4メソッドがkeyword-onlyの `processing_id: str | None = None` を受け取る。
+接続設定と出力先はPipelineのコンストラクタで指定する。
 
-- `translate.pipeline.translate.translate_pdf()`
-- `translate.pipeline.review.review_pdfs()`
-- `translate.pipeline.register.register_paths()`
-- `translate.pipeline.upgrade.upgrade_pdfs()`
+- `translate.pipeline.translate.TranslatePipeline.run()`
+- `translate.pipeline.review.ReviewPipeline.run()`
+- `translate.pipeline.register.RegisterPipeline.run()`
+- `translate.pipeline.upgrade.UpgradePipeline.run()`
 
 処理IDの決定は次の契約に従う。
 
@@ -1782,6 +1783,10 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 `ReviewTask` は対応付けと品質評価を、`DiffTask` は版間比較を実行する。
 両者は `SavedLLMCalls` に判断規則・解析済み用語集・Call保存先を保持し、
 操作ごとの入力だけを渡す。Agentが渡したLLM接続の期限と終了はAgentが管理する。
+
+`DocumentLoader` はDocling文書を保持し、参照解決と共通データモデルへの変換を行う。
+`MarkdownTask` は `Pandoc` Adapterを受け取り、文書内の各Blockを変換する。
+`Pandoc` はTimeoutと確認済みの実行fileを保持し、同じインスタンス内では機能確認を繰り返さない。
 
 `ArtifactStore` は処理記録とその保存先を保持し、Taskの開始・成功・失敗・中断、
 および保存済み成果物の再利用判定を担当する。一般のJSON読書きやHash計算は

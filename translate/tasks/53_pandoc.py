@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from translate.adapters.pandoc import publish as publish_with_pandoc
+from translate.adapters.pandoc import Pandoc
 
 
 def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Path:
@@ -18,4 +18,4 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
         Path: Pandoc Adapterへ中間DOCXの生成を委譲する。
     """
 
-    return publish_with_pandoc(markdown, output, template, timeout)
+    return Pandoc(timeout).publish(markdown, output, template)

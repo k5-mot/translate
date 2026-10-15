@@ -46,78 +46,6 @@ TEXT_KINDS = {
 }
 
 
-def _resolve(document: dict[str, Any], ref: str) -> dict[str, Any]:
-    """Docling内部refをobjectへ解決する。
-
-    Args:
-        document: Docling document。
-        ref: `#/collection/index`形式の参照。
-
-    Returns:
-        参照先object。
-
-    Raises:
-        ValueError: 参照が不正または解決不能の場合。
-    """
-
-    value: Any = document
-    try:
-        for part in ref.removeprefix("#/").split("/"):
-            value = value[int(part)] if isinstance(value, list) else value[part]
-    except (KeyError, IndexError, TypeError, ValueError) as error:
-        msg = f"unresolved Docling ref: {ref}"
-        raise ValueError(msg) from error
-    if not isinstance(value, dict):
-        msg = f"Docling ref is not an object: {ref}"
-        raise ValueError(msg)
-    return value
-
-
-def _walk_refs(
-    document: dict[str, Any],
-    value: Any,
-    list_level: int = 0,
-    ordered: bool | None = None,
-) -> Iterator[tuple[dict[str, Any], int, bool | None]]:
-    """tree内refを文書順に展開する。
-
-    Args:
-        document: Docling document。
-        value: tree nodeまたは値。
-        list_level: 親Listから継承した階層Level。
-        ordered: 親Listが順序付きかどうか。List外ではNone。
-
-    Yields:
-        可視内容のない親を平坦化した参照先要素、親list階層、順序付きかどうかの組。
-    """
-
-    if isinstance(value, list):
-        for child in value:
-            yield from _walk_refs(document, child, list_level, ordered)
-        return
-    if not isinstance(value, dict):
-        return
-    ref = value.get("$ref")
-    target = _resolve(document, ref) if isinstance(ref, str) else value
-    label = str(target.get("label", ""))
-    children = target.get("children", [])
-    # groupは配置情報だけなので平坦化するが、可視内容を持つ親は子より先に残す。
-    if children and not _visible_content(target):
-        nested_level = (
-            list_level + 1 if label in {"list", "ordered_list"} else list_level
-        )
-        nested_ordered = (
-            label == "ordered_list" if label in {"list", "ordered_list"} else ordered
-        )
-        yield from _walk_refs(document, children, nested_level, nested_ordered)
-    elif isinstance(ref, str):
-        yield target, list_level, ordered
-        if children:
-            yield from _walk_refs(document, children, list_level, ordered)
-    else:
-        yield from _walk_refs(document, children, list_level, ordered)
-
-
 def _visible_content(item: dict[str, Any]) -> bool:
     """要素自身が失うべきでない可視内容を持つか判定する。
 
@@ -280,112 +208,6 @@ def _inline_from_item(
     href = str(hyperlink) if hyperlink is not None else None
     inline_kind: TextKind = "link" if href and kind == "text" else kind
     return _inline(ref, text, inline_kind, href, marks)
-
-
-def _caption_inlines(
-    document: dict[str, Any], item: dict[str, Any], ref: str
-) -> TextUnit | None:
-    """Doclingの新旧caption表現をInline列へ変換する。
-
-    Args:
-        document: ref解決元のDocling document。
-        item: TableItemまたはPictureItem。
-        ref: caption IDのprefix。
-
-    Returns:
-        参照先の装飾も保持したcaption Inline列。
-    """
-
-    raw = item.get("captions")
-    if not raw:
-        raw = item.get("caption") or item.get("title") or []
-    values = raw if isinstance(raw, list) else [raw]
-    result: list[TextSpan] = []
-    for index, value in enumerate(values):
-        caption_item: dict[str, Any] | None = None
-        if isinstance(value, dict):
-            nested_ref = value.get("$ref")
-            caption_item = (
-                _resolve(document, nested_ref) if isinstance(nested_ref, str) else value
-            )
-        if caption_item is not None:
-            text = str(caption_item.get("text") or "")
-            result.extend(
-                _inline_from_item(caption_item, f"{ref}/caption/{index}", text, "text")
-            )
-        elif isinstance(value, str):
-            result.extend(_inline(f"{ref}/caption/{index}", value))
-    return TextUnit(id=f"{ref}/caption", spans=result) if result else None
-
-
-def _owned_caption_refs(document: dict[str, Any]) -> set[str]:
-    """図表Blockへ内包するcaption TextItemのrefを集める。
-
-    Args:
-        document: Docling document。
-
-    Returns:
-        standalone本文として重複出力しないcaption ref集合。
-    """
-
-    # captionは図表Blockへ所有させ、body側TextItemとの二重出力を防ぐ。
-    refs: set[str] = set()
-    for collection in ("tables", "pictures"):
-        for item in document.get(collection, []):
-            if not isinstance(item, dict):
-                continue
-            raw = item.get("captions") or item.get("caption") or []
-            values = raw if isinstance(raw, list) else [raw]
-            refs.update(
-                str(value["$ref"])
-                for value in values
-                if isinstance(value, dict) and isinstance(value.get("$ref"), str)
-            )
-    return refs
-
-
-def _picture_content_refs(document: dict[str, Any]) -> set[str]:
-    """picture配下でcaptionではない重複textのrefを集める。
-
-    Args:
-        document: Docling document。
-
-    Returns:
-        Figure asset側に任せて本文出力しないtext ref集合。
-    """
-
-    parents: dict[str, str] = {}
-    picture_refs = {
-        str(item.get("self_ref"))
-        for item in document.get("pictures", [])
-        if isinstance(item, dict) and item.get("self_ref")
-    }
-    for collection in COLLECTIONS:
-        for item in document.get(collection, []):
-            if not isinstance(item, dict) or not item.get("self_ref"):
-                continue
-            parent = item.get("parent")
-            if isinstance(parent, dict) and isinstance(parent.get("$ref"), str):
-                parents[str(item["self_ref"])] = str(parent["$ref"])
-    # 親chainを辿るのは、picture直下にgroupを挟むDocling出力にも対応するため。
-    result: set[str] = set()
-    for item in document.get("texts", []):
-        if (
-            not isinstance(item, dict)
-            or item.get("label") == "caption"
-            or not item.get("self_ref")
-        ):
-            continue
-        ref = str(item["self_ref"])
-        parent = parents.get(ref, "")
-        visited: set[str] = set()
-        while parent and parent not in visited:
-            if parent in picture_refs:
-                result.add(ref)
-                break
-            visited.add(parent)
-            parent = parents.get(parent, "")
-    return result
 
 
 def _cell_text(cell: dict[str, Any]) -> str:
@@ -884,330 +706,513 @@ def _explicit_image_owners(
     return owners
 
 
-def _assign_cell_images(document: dict[str, Any], pages: dict[int, Page]) -> None:
-    """一意に確定した画像だけを表セルへ移し、body/collection由来の独立図を除く。
+class DocumentLoader:
+    """Docling文書を保持し、参照・Caption・図表を共通Documentへ変換する。"""
 
-    Args:
-        document (dict[str, Any]): 変換または検証対象のDocument。
-        pages (dict[int, Page]): Page番号または参照別のPage Data。
+    def __init__(self, document: dict[str, Any]) -> None:
+        """参照解決と構造変換の対象文書を受け取る。
 
-    Raises:
-        TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
-    """
+        Args:
+            document: Docling Serveが返したJSON object。元の値は書き換えない。
+        """
+        self.document = document
 
-    tables = {
-        str(item.get("self_ref")): item
-        for item in document.get("tables", [])
-        if isinstance(item, dict)
-    }
-    pictures = {
-        str(item.get("self_ref")): item
-        for item in document.get("pictures", [])
-        if isinstance(item, dict)
-    }
-    sources = {ref: _normalized_cells(item, ref) for ref, item in tables.items()}
-    explicit = _explicit_image_owners(sources, pictures)
-    for page in pages.values():
-        page_tables = {
-            block.id: block for block in page.blocks if block.kind == "table"
-        }
-        consumed: set[str] = set()
-        for figure in (block for block in page.blocks if block.kind == "figure"):
-            if figure.image is None:
-                raise TableImageOwnershipError(page.number, figure.id)
-            declared = explicit.get(figure.id, set())
-            if not page_tables and not declared:
-                continue
-            picture = pictures[figure.id]
-            parent = picture.get("parent")
-            parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
-            declared_ref = next(iter(declared))[0] if declared else None
-            if declared_ref is not None and declared_ref not in page_tables:
-                raise TableImageOwnershipError(page.number, figure.id)
-            with _ownership_context(page.number, figure.id):
-                box = _item_box(picture, page)
-            if box is None:
-                raise TableImageOwnershipError(page.number, figure.id)
-            containing = []
-            ambiguous_overlap = False
-            for ref in page_tables:
-                with _ownership_context(page.number, ref):
-                    table_box = _item_box(tables[ref], page)
-                if table_box is None:
-                    if declared_ref is None:
-                        raise TableImageOwnershipError(page.number, ref)
-                    if ref == declared_ref:
-                        containing.append(ref)
-                    continue
-                if _contains(table_box, box):
-                    containing.append(ref)
-                elif max(table_box[0], box[0]) < min(table_box[2], box[2]) and max(
-                    table_box[1], box[1]
-                ) < min(table_box[3], box[3]):
-                    if declared_ref is not None or parent_ref in sources:
-                        raise TableImageOwnershipError(page.number, figure.id)
-                    ambiguous_overlap = True
-            # 所属根拠のない部分重複は推測せず、独立した図として保持する。
-            if ambiguous_overlap:
-                continue
-            if len(containing) > 1:
-                raise TableImageOwnershipError(page.number, figure.id)
-            if parent_ref in sources and containing != [parent_ref]:
-                raise TableImageOwnershipError(page.number, figure.id)
-            if not containing:
-                if declared:
-                    raise TableImageOwnershipError(page.number, figure.id)
-                continue
-            ref = containing[0]
-            with _ownership_context(page.number, figure.id):
-                candidates = _geometric_cell(sources[ref], box, page)
-            if declared:
-                declared_ref, index = next(iter(declared))
-                if declared_ref != ref or (candidates and candidates != {index}):
-                    raise TableImageOwnershipError(page.number, figure.id)
-                for raw in sources[ref][index].variants:
-                    with _ownership_context(page.number, figure.id):
-                        cell_box = _cell_box(raw, page)
-                    if cell_box is not None and not _contains(cell_box, box):
-                        raise TableImageOwnershipError(page.number, figure.id)
-            elif len(candidates) == 1:
-                index = next(iter(candidates))
-            else:
-                raise TableImageOwnershipError(page.number, figure.id)
-            sources[ref][index].cell.images.append(
-                Image(
-                    id=figure.image.id,
-                    asset_path=figure.image.asset_path,
-                    width_pt=box[2] - box[0],
-                    height_pt=box[3] - box[1],
-                    alt_text=figure.image.alt_text,
-                    caption=figure.image.caption,
-                )
-            )
-            consumed.add(figure.id)
-        for ref, block in page_tables.items():
-            block.cells = [source.cell for source in sources[ref]]
-        page.blocks = [block for block in page.blocks if block.id not in consumed]
-        for order, block in enumerate(page.blocks):
-            block.order = order
+    def load(
+        self,
+    ) -> Document:
+        """Docling documentをページ順のv5 Documentへ変換する。
 
+        Args:
 
-def _block(
-    document: dict[str, Any],
-    item: dict[str, Any],
-    order: int,
-    list_level: int = 0,
-    parent_ordered: bool | None = None,
-) -> Block | None:
-    """一つのDocling要素をBlockへ変換する。
+        Returns:
+            正規化済みDocument。
 
-    Args:
-        document: ref解決元のDocling document。
-        item: Docling要素。
-        order: ページ内の文書順。
-        list_level: 親ListGroupから得た1始まり階層。
-        parent_ordered: 親ListGroupが順序付きかどうか。
+        Raises:
+            ValueError: schema、ページ、参照、要素が契約を満たさない場合。
+        """
 
-    Returns:
-        対応Block。仕様上除外する要素はNone。
-
-    Raises:
-        ValueError: 内容を持つ未知要素または欠損assetの場合。
-    """
-
-    ref = str(item.get("self_ref") or f"#/unknown/{order}")
-    label = str(item.get("label", ""))
-    if label in SKIPPED_LABELS:
-        return None
-    if label == "table":
-        return Block(
-            id=ref,
-            order=order,
-            kind="table",
-            bbox=_bbox(item),
-            caption=_caption_inlines(document, item, ref),
-            cells=_table_cells(item, ref),
-        )
-    if label == "picture":
-        image = item.get("image")
-        uri = image.get("uri") if isinstance(image, dict) else None
-        uri = uri or item.get("uri")
-        if not isinstance(uri, str) or not uri:
-            msg = f"picture asset is missing: ref={ref} label={label}"
+        if self.document.get("schema_name") != "DoclingDocument":
+            msg = f"unsupported Docling schema: {self.document.get('schema_name')!r}"
             raise ValueError(msg)
-        relative = uri.removeprefix("artifacts/").removeprefix("assets/")
-        # MERGE publishes the contents of each structured/assets directory
-        # under the run-level assets root; keep the Internal Document path
-        # relative to that root so VALIDATE/Markdown resolve the same file.
-        uri = f"assets/{relative}"
-        caption = _caption_inlines(document, item, ref)
+        pages = self._normalized_pages()
+        seen: set[str] = set()
+        caption_refs = self._owned_caption_refs()
+        index_refs = index_text_refs(self.document)
+        picture_content_refs = self._picture_content_refs()
+        # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
+        ordered_items = list(self._walk_refs(self.document.get("body", {})))
+        for collection in COLLECTIONS[:-1]:
+            values = self.document.get(collection, [])
+            if not isinstance(values, list):
+                msg = f"Docling collection must be a list: {collection}"
+                raise ValueError(msg)
+            ordered_items.extend(
+                (
+                    item,
+                    1
+                    if str(item.get("label", ""))
+                    in {"list_item", "checkbox_selected", "checkbox_unselected"}
+                    else 0,
+                    None,
+                )
+                for item in values
+                if isinstance(item, dict)
+            )
+        page_orders: dict[int, int] = dict.fromkeys(pages, 0)
+        for item, list_level, parent_ordered in ordered_items:
+            ref = str(item.get("self_ref") or "")
+            if ref in seen:
+                continue
+            seen.add(ref)
+            if ref in caption_refs or ref in picture_content_refs:
+                continue
+            if ref in index_refs:
+                continue
+            number = _page_number(item)
+            if number not in pages:
+                msg = (
+                    f"Docling element references missing page: ref={ref} page={number}"
+                )
+                raise ValueError(msg)
+            block = self._block(item, page_orders[number], list_level, parent_ordered)
+            if block is not None:
+                pages[number].blocks.append(block)
+                page_orders[number] += 1
+        self._assign_cell_images(pages)
+        return Document(
+            pages=[pages[number] for number in sorted(pages)],
+            metadata={
+                "source_schema": "DoclingDocument",
+                "source_name": str(self.document.get("name", "")),
+            },
+        )
+
+    def _resolve(self, ref: str) -> dict[str, Any]:
+        """Docling内部refをobjectへ解決する。
+
+        Args:
+            ref: `#/collection/index`形式の参照。
+
+        Returns:
+            参照先object。
+
+        Raises:
+            ValueError: 参照が不正または解決不能の場合。
+        """
+
+        value: Any = self.document
+        try:
+            for part in ref.removeprefix("#/").split("/"):
+                value = value[int(part)] if isinstance(value, list) else value[part]
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            msg = f"unresolved Docling ref: {ref}"
+            raise ValueError(msg) from error
+        if not isinstance(value, dict):
+            msg = f"Docling ref is not an object: {ref}"
+            raise ValueError(msg)
+        return value
+
+    def _walk_refs(
+        self, value: Any, list_level: int = 0, ordered: bool | None = None
+    ) -> Iterator[tuple[dict[str, Any], int, bool | None]]:
+        """tree内refを文書順に展開する。
+
+        Args:
+            value: tree nodeまたは値。
+            list_level: 親Listから継承した階層Level。
+            ordered: 親Listが順序付きかどうか。List外ではNone。
+
+        Yields:
+            可視内容のない親を平坦化した参照先要素、親list階層、順序付きかどうかの組。
+        """
+
+        if isinstance(value, list):
+            for child in value:
+                yield from self._walk_refs(child, list_level, ordered)
+            return
+        if not isinstance(value, dict):
+            return
+        ref = value.get("$ref")
+        target = self._resolve(ref) if isinstance(ref, str) else value
+        label = str(target.get("label", ""))
+        children = target.get("children", [])
+        # groupは配置情報だけなので平坦化するが、可視内容を持つ親は子より先に残す。
+        if children and not _visible_content(target):
+            nested_level = (
+                list_level + 1 if label in {"list", "ordered_list"} else list_level
+            )
+            nested_ordered = (
+                label == "ordered_list"
+                if label in {"list", "ordered_list"}
+                else ordered
+            )
+            yield from self._walk_refs(children, nested_level, nested_ordered)
+        elif isinstance(ref, str):
+            yield target, list_level, ordered
+            if children:
+                yield from self._walk_refs(children, list_level, ordered)
+        else:
+            yield from self._walk_refs(children, list_level, ordered)
+
+    def _caption_inlines(self, item: dict[str, Any], ref: str) -> TextUnit | None:
+        """Doclingの新旧caption表現をInline列へ変換する。
+
+        Args:
+            item: TableItemまたはPictureItem。
+            ref: caption IDのprefix。
+
+        Returns:
+            参照先の装飾も保持したcaption Inline列。
+        """
+
+        raw = item.get("captions")
+        if not raw:
+            raw = item.get("caption") or item.get("title") or []
+        values = raw if isinstance(raw, list) else [raw]
+        result: list[TextSpan] = []
+        for index, value in enumerate(values):
+            caption_item: dict[str, Any] | None = None
+            if isinstance(value, dict):
+                nested_ref = value.get("$ref")
+                caption_item = (
+                    self._resolve(nested_ref) if isinstance(nested_ref, str) else value
+                )
+            if caption_item is not None:
+                text = str(caption_item.get("text") or "")
+                result.extend(
+                    _inline_from_item(
+                        caption_item, f"{ref}/caption/{index}", text, "text"
+                    )
+                )
+            elif isinstance(value, str):
+                result.extend(_inline(f"{ref}/caption/{index}", value))
+        return TextUnit(id=f"{ref}/caption", spans=result) if result else None
+
+    def _owned_caption_refs(
+        self,
+    ) -> set[str]:
+        """図表Blockへ内包するcaption TextItemのrefを集める。
+
+        Args:
+
+        Returns:
+            standalone本文として重複出力しないcaption ref集合。
+        """
+
+        # captionは図表Blockへ所有させ、body側TextItemとの二重出力を防ぐ。
+        refs: set[str] = set()
+        for collection in ("tables", "pictures"):
+            for item in self.document.get(collection, []):
+                if not isinstance(item, dict):
+                    continue
+                raw = item.get("captions") or item.get("caption") or []
+                values = raw if isinstance(raw, list) else [raw]
+                refs.update(
+                    str(value["$ref"])
+                    for value in values
+                    if isinstance(value, dict) and isinstance(value.get("$ref"), str)
+                )
+        return refs
+
+    def _picture_content_refs(
+        self,
+    ) -> set[str]:
+        """picture配下でcaptionではない重複textのrefを集める。
+
+        Args:
+
+        Returns:
+            Figure asset側に任せて本文出力しないtext ref集合。
+        """
+
+        parents: dict[str, str] = {}
+        picture_refs = {
+            str(item.get("self_ref"))
+            for item in self.document.get("pictures", [])
+            if isinstance(item, dict) and item.get("self_ref")
+        }
+        for collection in COLLECTIONS:
+            for item in self.document.get(collection, []):
+                if not isinstance(item, dict) or not item.get("self_ref"):
+                    continue
+                parent = item.get("parent")
+                if isinstance(parent, dict) and isinstance(parent.get("$ref"), str):
+                    parents[str(item["self_ref"])] = str(parent["$ref"])
+        # 親chainを辿るのは、picture直下にgroupを挟むDocling出力にも対応するため。
+        result: set[str] = set()
+        for item in self.document.get("texts", []):
+            if (
+                not isinstance(item, dict)
+                or item.get("label") == "caption"
+                or not item.get("self_ref")
+            ):
+                continue
+            ref = str(item["self_ref"])
+            parent = parents.get(ref, "")
+            visited: set[str] = set()
+            while parent and parent not in visited:
+                if parent in picture_refs:
+                    result.add(ref)
+                    break
+                visited.add(parent)
+                parent = parents.get(parent, "")
+        return result
+
+    def _assign_cell_images(self, pages: dict[int, Page]) -> None:
+        """一意に確定した画像だけを表セルへ移し、body/collection由来の独立図を除く。
+
+        Args:
+            pages (dict[int, Page]): Page番号または参照別のPage Data。
+
+        Raises:
+            TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
+        """
+
+        tables = {
+            str(item.get("self_ref")): item
+            for item in self.document.get("tables", [])
+            if isinstance(item, dict)
+        }
+        pictures = {
+            str(item.get("self_ref")): item
+            for item in self.document.get("pictures", [])
+            if isinstance(item, dict)
+        }
+        sources = {ref: _normalized_cells(item, ref) for ref, item in tables.items()}
+        explicit = _explicit_image_owners(sources, pictures)
+        for page in pages.values():
+            page_tables = {
+                block.id: block for block in page.blocks if block.kind == "table"
+            }
+            consumed: set[str] = set()
+            for figure in (block for block in page.blocks if block.kind == "figure"):
+                if figure.image is None:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                declared = explicit.get(figure.id, set())
+                if not page_tables and not declared:
+                    continue
+                picture = pictures[figure.id]
+                parent = picture.get("parent")
+                parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
+                declared_ref = next(iter(declared))[0] if declared else None
+                if declared_ref is not None and declared_ref not in page_tables:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                with _ownership_context(page.number, figure.id):
+                    box = _item_box(picture, page)
+                if box is None:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                containing = []
+                ambiguous_overlap = False
+                for ref in page_tables:
+                    with _ownership_context(page.number, ref):
+                        table_box = _item_box(tables[ref], page)
+                    if table_box is None:
+                        if declared_ref is None:
+                            raise TableImageOwnershipError(page.number, ref)
+                        if ref == declared_ref:
+                            containing.append(ref)
+                        continue
+                    if _contains(table_box, box):
+                        containing.append(ref)
+                    elif max(table_box[0], box[0]) < min(table_box[2], box[2]) and max(
+                        table_box[1], box[1]
+                    ) < min(table_box[3], box[3]):
+                        if declared_ref is not None or parent_ref in sources:
+                            raise TableImageOwnershipError(page.number, figure.id)
+                        ambiguous_overlap = True
+                # 所属根拠のない部分重複は推測せず、独立した図として保持する。
+                if ambiguous_overlap:
+                    continue
+                if len(containing) > 1:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                if parent_ref in sources and containing != [parent_ref]:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                if not containing:
+                    if declared:
+                        raise TableImageOwnershipError(page.number, figure.id)
+                    continue
+                ref = containing[0]
+                with _ownership_context(page.number, figure.id):
+                    candidates = _geometric_cell(sources[ref], box, page)
+                if declared:
+                    declared_ref, index = next(iter(declared))
+                    if declared_ref != ref or (candidates and candidates != {index}):
+                        raise TableImageOwnershipError(page.number, figure.id)
+                    for raw in sources[ref][index].variants:
+                        with _ownership_context(page.number, figure.id):
+                            cell_box = _cell_box(raw, page)
+                        if cell_box is not None and not _contains(cell_box, box):
+                            raise TableImageOwnershipError(page.number, figure.id)
+                elif len(candidates) == 1:
+                    index = next(iter(candidates))
+                else:
+                    raise TableImageOwnershipError(page.number, figure.id)
+                sources[ref][index].cell.images.append(
+                    Image(
+                        id=figure.image.id,
+                        asset_path=figure.image.asset_path,
+                        width_pt=box[2] - box[0],
+                        height_pt=box[3] - box[1],
+                        alt_text=figure.image.alt_text,
+                        caption=figure.image.caption,
+                    )
+                )
+                consumed.add(figure.id)
+            for ref, block in page_tables.items():
+                block.cells = [source.cell for source in sources[ref]]
+            page.blocks = [block for block in page.blocks if block.id not in consumed]
+            for order, block in enumerate(page.blocks):
+                block.order = order
+
+    def _block(
+        self,
+        item: dict[str, Any],
+        order: int,
+        list_level: int = 0,
+        parent_ordered: bool | None = None,
+    ) -> Block | None:
+        """一つのDocling要素をBlockへ変換する。
+
+        Args:
+            item: Docling要素。
+            order: ページ内の文書順。
+            list_level: 親ListGroupから得た1始まり階層。
+            parent_ordered: 親ListGroupが順序付きかどうか。
+
+        Returns:
+            対応Block。仕様上除外する要素はNone。
+
+        Raises:
+            ValueError: 内容を持つ未知要素または欠損assetの場合。
+        """
+
+        ref = str(item.get("self_ref") or f"#/unknown/{order}")
+        label = str(item.get("label", ""))
+        if label in SKIPPED_LABELS:
+            return None
+        if label == "table":
+            return Block(
+                id=ref,
+                order=order,
+                kind="table",
+                bbox=_bbox(item),
+                caption=self._caption_inlines(item, ref),
+                cells=_table_cells(item, ref),
+            )
+        if label == "picture":
+            image = item.get("image")
+            uri = image.get("uri") if isinstance(image, dict) else None
+            uri = uri or item.get("uri")
+            if not isinstance(uri, str) or not uri:
+                msg = f"picture asset is missing: ref={ref} label={label}"
+                raise ValueError(msg)
+            relative = uri.removeprefix("artifacts/").removeprefix("assets/")
+            # MERGE publishes the contents of each structured/assets directory
+            # under the run-level assets root; keep the Internal Document path
+            # relative to that root so VALIDATE/Markdown resolve the same file.
+            uri = f"assets/{relative}"
+            caption = self._caption_inlines(item, ref)
+            return Block(
+                id=ref,
+                order=order,
+                kind="figure",
+                bbox=_bbox(item),
+                image=Image(
+                    id=f"{ref}/image-0001",
+                    asset_path=uri,
+                    alt_text=str(
+                        item.get("alt_text")
+                        or (caption.text("source") if caption is not None else "")
+                    ),
+                    caption=caption,
+                ),
+            )
+        kind = TEXT_KINDS.get(label)
+        if kind is None:
+            if not _visible_content(item):
+                return None
+            # 内容のある未知要素をparagraphへ丸めると欠損に気付けないためfail-fastする。
+            msg = (
+                f"unsupported content-bearing Docling element: ref={ref} label={label}"
+            )
+            raise ValueError(msg)
+        text = str(item.get("text") or item.get("latex") or "")
+        inline_kind: TextKind = "code" if kind in {"code", "formula"} else "text"
+        level = item.get("level") if kind == "heading" else None
+        checked = (
+            True
+            if label == "checkbox_selected"
+            else False
+            if label == "checkbox_unselected"
+            else None
+        )
         return Block(
             id=ref,
             order=order,
-            kind="figure",
+            kind=cast("BlockKind", kind),
             bbox=_bbox(item),
-            image=Image(
-                id=f"{ref}/image-0001",
-                asset_path=uri,
-                alt_text=str(
-                    item.get("alt_text")
-                    or (caption.text("source") if caption is not None else "")
-                ),
-                caption=caption,
+            content=TextUnit(
+                id=f"{ref}/content",
+                spans=_inline_from_item(item, f"{ref}/content", text, inline_kind),
             ),
+            level=int(level)
+            if isinstance(level, int)
+            else 1
+            if kind == "heading"
+            else max(1, list_level)
+            if kind == "list_item"
+            else None,
+            ordered=bool(item.get("enumerated"))
+            if "enumerated" in item
+            else bool(parent_ordered),
+            checked=checked,
+            language=str(item.get("language")) if item.get("language") else None,
         )
-    kind = TEXT_KINDS.get(label)
-    if kind is None:
-        if not _visible_content(item):
-            return None
-        # 内容のある未知要素をparagraphへ丸めると欠損に気付けないためfail-fastする。
-        msg = f"unsupported content-bearing Docling element: ref={ref} label={label}"
-        raise ValueError(msg)
-    text = str(item.get("text") or item.get("latex") or "")
-    inline_kind: TextKind = "code" if kind in {"code", "formula"} else "text"
-    level = item.get("level") if kind == "heading" else None
-    checked = (
-        True
-        if label == "checkbox_selected"
-        else False
-        if label == "checkbox_unselected"
-        else None
-    )
-    return Block(
-        id=ref,
-        order=order,
-        kind=cast("BlockKind", kind),
-        bbox=_bbox(item),
-        content=TextUnit(
-            id=f"{ref}/content",
-            spans=_inline_from_item(item, f"{ref}/content", text, inline_kind),
-        ),
-        level=int(level)
-        if isinstance(level, int)
-        else 1
-        if kind == "heading"
-        else max(1, list_level)
-        if kind == "list_item"
-        else None,
-        ordered=bool(item.get("enumerated"))
-        if "enumerated" in item
-        else bool(parent_ordered),
-        checked=checked,
-        language=str(item.get("language")) if item.get("language") else None,
-    )
 
+    def _normalized_pages(
+        self,
+    ) -> dict[int, Page]:
+        """Docling page mapを検証して内部Page mapへ変換する。
 
-def _normalized_pages(document: dict[str, Any]) -> dict[int, Page]:
-    """Docling page mapを検証して内部Page mapへ変換する。
+        Args:
 
-    Args:
-        document: Docling document。
+        Returns:
+            ページ番号をkeyとする内部Page map。
 
-    Returns:
-        ページ番号をkeyとする内部Page map。
+        Raises:
+            ValueError: Docling page mapを検証して内部Page mapへ変換する処理を完了できない場合。
+        """
 
-    Raises:
-        ValueError: Docling page mapを検証して内部Page mapへ変換する処理を完了できない場合。
-    """
-
-    raw_pages = document.get("pages")
-    if not isinstance(raw_pages, dict):
-        msg = "Docling pages must be a non-empty object"
-        raise ValueError(msg)
-    if not raw_pages:
-        origin = document.get("origin", {})
-        mimetype = origin.get("mimetype") if isinstance(origin, dict) else None
-        office_types = {
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        }
-        if mimetype not in office_types:
+        raw_pages = self.document.get("pages")
+        if not isinstance(raw_pages, dict):
             msg = "Docling pages must be a non-empty object"
             raise ValueError(msg)
-        # Office文書はDoclingがpageを返さないため、全要素を仮想ページへ載せる。
-        raw_pages = {"1": {}}
-    pages: dict[int, Page] = {}
-    for raw_number, raw_page in raw_pages.items():
-        number = int(raw_number)
-        size = raw_page.get("size", {}) if isinstance(raw_page, dict) else {}
-        pages[number] = Page(
-            number=number,
-            width=float(size["width"])
-            if isinstance(size, dict) and "width" in size
-            else None,
-            height=float(size["height"])
-            if isinstance(size, dict) and "height" in size
-            else None,
-        )
-    return pages
-
-
-def load_document(document: dict[str, Any]) -> Document:
-    """Docling documentをページ順のv5 Documentへ変換する。
-
-    Args:
-        document: Docling Serveが返したJSON object。
-
-    Returns:
-        正規化済みDocument。
-
-    Raises:
-        ValueError: schema、ページ、参照、要素が契約を満たさない場合。
-    """
-
-    if document.get("schema_name") != "DoclingDocument":
-        msg = f"unsupported Docling schema: {document.get('schema_name')!r}"
-        raise ValueError(msg)
-    pages = _normalized_pages(document)
-    seen: set[str] = set()
-    caption_refs = _owned_caption_refs(document)
-    index_refs = index_text_refs(document)
-    picture_content_refs = _picture_content_refs(document)
-    # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
-    ordered_items = list(_walk_refs(document, document.get("body", {})))
-    for collection in COLLECTIONS[:-1]:
-        values = document.get(collection, [])
-        if not isinstance(values, list):
-            msg = f"Docling collection must be a list: {collection}"
-            raise ValueError(msg)
-        ordered_items.extend(
-            (
-                item,
-                1
-                if str(item.get("label", ""))
-                in {"list_item", "checkbox_selected", "checkbox_unselected"}
-                else 0,
-                None,
+        if not raw_pages:
+            origin = self.document.get("origin", {})
+            mimetype = origin.get("mimetype") if isinstance(origin, dict) else None
+            office_types = {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            }
+            if mimetype not in office_types:
+                msg = "Docling pages must be a non-empty object"
+                raise ValueError(msg)
+            # Office文書はDoclingがpageを返さないため、全要素を仮想ページへ載せる。
+            raw_pages = {"1": {}}
+        pages: dict[int, Page] = {}
+        for raw_number, raw_page in raw_pages.items():
+            number = int(raw_number)
+            size = raw_page.get("size", {}) if isinstance(raw_page, dict) else {}
+            pages[number] = Page(
+                number=number,
+                width=float(size["width"])
+                if isinstance(size, dict) and "width" in size
+                else None,
+                height=float(size["height"])
+                if isinstance(size, dict) and "height" in size
+                else None,
             )
-            for item in values
-            if isinstance(item, dict)
-        )
-    page_orders: dict[int, int] = dict.fromkeys(pages, 0)
-    for item, list_level, parent_ordered in ordered_items:
-        ref = str(item.get("self_ref") or "")
-        if ref in seen:
-            continue
-        seen.add(ref)
-        if ref in caption_refs or ref in picture_content_refs:
-            continue
-        if ref in index_refs:
-            continue
-        number = _page_number(item)
-        if number not in pages:
-            msg = f"Docling element references missing page: ref={ref} page={number}"
-            raise ValueError(msg)
-        block = _block(document, item, page_orders[number], list_level, parent_ordered)
-        if block is not None:
-            pages[number].blocks.append(block)
-            page_orders[number] += 1
-    _assign_cell_images(document, pages)
-    return Document(
-        pages=[pages[number] for number in sorted(pages)],
-        metadata={
-            "source_schema": "DoclingDocument",
-            "source_name": str(document.get("name", "")),
-        },
-    )
+        return pages
 
 
 def load(source: Path, output_dir: Path) -> Document:
@@ -1221,7 +1226,7 @@ def load(source: Path, output_dir: Path) -> Document:
         Document: Docling JSONを共通Documentへ変換して原子的に保存する。
     """
 
-    document = load_document(json.loads(source.read_text(encoding="utf-8")))
+    document = DocumentLoader(json.loads(source.read_text(encoding="utf-8"))).load()
     with temporary_task_directory(output_dir) as temporary:
         write_model(temporary / "document.json", document, atomic=False)
     return document

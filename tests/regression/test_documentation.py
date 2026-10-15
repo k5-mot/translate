@@ -15,10 +15,11 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
+from translate.adapters.pandoc import Pandoc
 from translate.adapters.pdf import page_count
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 
-convert_document = import_module("translate.tasks.52_markdown").convert_document
+MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
 publish_pandoc = import_module("translate.tasks.53_pandoc").publish
 publish_ooxml = import_module("translate.tasks.54_ooxml").publish
 
@@ -170,13 +171,12 @@ def test_docx_cover_precedes_generated_lists(tmp_path: Path, *, has_body: bool) 
         ]
     )
     markdown = tmp_path / "markdown" / "document.md"
-    convert_document(
+    MarkdownTask(Pandoc(30)).run(
         document,
         markdown,
         PROJECT_ROOT / "translate/templates/placeholder.png",
         tmp_path / "source-assets",
         {1},
-        30,
     )
     raw, output = tmp_path / "raw.docx", tmp_path / "final" / "document.docx"
     publish_pandoc(

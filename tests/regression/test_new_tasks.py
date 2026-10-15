@@ -18,6 +18,7 @@ from translate.adapters.llm import (
     LLMInvalidResponseError,
     StructuredResult,
 )
+from translate.adapters.pandoc import Pandoc
 from translate.common.config import Config
 from translate.models.artifacts import ReviewResult
 from translate.models.document import (
@@ -40,10 +41,9 @@ from translate.models.review import (
 )
 
 _validate_entries = import_module("translate.tasks.02_unpack")._validate_entries  # noqa: SLF001
-_assign_cell_images = import_module("translate.tasks.12_load")._assign_cell_images  # noqa: SLF001
 _inline = import_module("translate.tasks.12_load")._inline  # noqa: SLF001
 _normalized_cells = import_module("translate.tasks.12_load")._normalized_cells  # noqa: SLF001
-load_document = import_module("translate.tasks.12_load").load_document
+DocumentLoader = import_module("translate.tasks.12_load").DocumentLoader
 normalize = import_module("translate.tasks.11_normalize").normalize
 MAX_VISION_PIXELS = import_module("translate.tasks.13_structure").MAX_VISION_PIXELS
 StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
@@ -56,7 +56,7 @@ _normalize_heading_levels = import_module(  # noqa: SLF001
 _schema = import_module("translate.tasks.13_structure")._schema  # noqa: SLF001
 structure_chunks = import_module("translate.tasks.13_structure")._chunks  # noqa: SLF001
 lint = import_module("translate.tasks.50_lint").lint
-convert_block = import_module("translate.tasks.52_markdown").convert_block
+MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
 review_chunks = import_module("translate.tasks.41_review")._chunks  # noqa: SLF001
 review_user_payload = import_module("translate.tasks.41_review")._user_payload  # noqa: SLF001
@@ -745,7 +745,7 @@ def test_markdown_alert_uses_bundled_word_style_name() -> None:
         content=_unit("note/content", "Reference details."),
     )
 
-    value = convert_block(block, 30.0)
+    value = MarkdownTask(Pandoc(30.0)).convert_block(block)
 
     assert value == (
         '::: {custom-style="Note / 注記"}\n**NOTE:** Reference details\\.\n:::'
@@ -775,7 +775,7 @@ def test_markdown_table_removes_dot_leaders_and_preserves_missing_value() -> Non
         ],
     )
 
-    value = convert_block(block, 30.0)
+    value = MarkdownTask(Pandoc(30.0)).convert_block(block)
 
     assert "Revenue" in value
     assert "........" not in value
@@ -805,7 +805,7 @@ def test_load_converts_minimal_docling_document() -> None:
         "body": {"children": [{"$ref": "#/texts/0"}]},
     }
 
-    document = load_document(value)
+    document = DocumentLoader(value).load()
 
     unit = document.pages[0].blocks[0].content
     assert unit is not None
@@ -891,7 +891,7 @@ def test_index_heading_does_not_discard_body_on_same_page(
     source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
     normalized = normalize(source, tmp_path / "normalized")
-    document = load_document(json.loads(normalized.read_text(encoding="utf-8")))
+    document = DocumentLoader(json.loads(normalized.read_text(encoding="utf-8"))).load()
 
     assert document.pages[0].blocks == []
     assert len(document.pages[1].blocks) == 1
@@ -1012,7 +1012,7 @@ def test_load_keeps_unowned_picture_that_partially_overlaps_table() -> None:
         ],
     }
 
-    _assign_cell_images(document, {1: page})
+    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 表セル画像の帰属を検証する。
 
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
 
@@ -1826,11 +1826,11 @@ def test_heading_number_is_removed_only_when_publishing(prefix: str) -> None:
     )
     heading = Block(id="heading", order=0, kind="heading", level=2, content=unit)
     before = heading.model_dump()
-    output = convert_block(heading, 30)
+    output = MarkdownTask(Pandoc(30)).convert_block(heading)
     assert output == "## **Title** {#heading}"
     assert heading.model_dump() == before
     paragraph = heading.model_copy(update={"kind": "paragraph"})
-    assert convert_block(paragraph, 30) != "**Title**"
+    assert MarkdownTask(Pandoc(30)).convert_block(paragraph) != "**Title**"
 
 
 def test_heading_year_without_section_punctuation_is_preserved() -> None:
@@ -1842,7 +1842,7 @@ def test_heading_year_without_section_punctuation_is_preserved() -> None:
         level=1,
         content=_unit("content", "2026 Outlook"),
     )
-    assert "2026 Outlook" in convert_block(heading, 30)
+    assert "2026 Outlook" in MarkdownTask(Pandoc(30)).convert_block(heading)
 
 
 def test_load_expands_merged_table_into_empty_grid_cells() -> None:

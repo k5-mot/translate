@@ -16,6 +16,7 @@ from translate.adapters.artifact_store import (
     sha256_file,
     write_model,
 )
+from translate.adapters.pandoc import Pandoc
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
 from translate.models.artifacts import (
@@ -44,7 +45,7 @@ create_cover = import_module("translate.tasks.51_cover").create_cover
 publish_pandoc = import_module("translate.tasks.53_pandoc").publish
 publish_ooxml = import_module("translate.tasks.54_ooxml").publish
 lint = import_module("translate.tasks.50_lint").lint
-convert_document = import_module("translate.tasks.52_markdown").convert_document
+MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
 ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
@@ -271,13 +272,14 @@ class TranslatePipeline:
                 (
                     markdown_dir,
                     partial(
-                        convert_document,
+                        MarkdownTask(
+                            Pandoc(self.config.http_request_timeout_seconds)
+                        ).run,
                         document,
                         markdown_path,
                         self.root / cover.image.relative_path,
                         merge_dir,
                         set(cover.excluded_page_numbers),
-                        self.config.http_request_timeout_seconds,
                     ),
                 )
             ],
