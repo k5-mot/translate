@@ -357,6 +357,7 @@ class ReviewAgent:
                 self.client,
                 round_number,
             )
+            first_new_group = len(self.result.groups)
             for candidate in response.groups:
                 group = AlignmentGroup(
                     id=f"alignment-{len(self.result.groups) + 1:06d}",
@@ -383,7 +384,9 @@ class ReviewAgent:
                     )
             self.call_ids.append(call_id)
             return {
-                "groups": [group.model_dump() for group in self.result.groups[-32:]]
+                "groups": [
+                    group.model_dump() for group in self.result.groups[first_new_group:]
+                ]
             }
         if action.operation not in {"evaluate", "recheck"}:
             raise InputError("Unsupported Review Agent operation")

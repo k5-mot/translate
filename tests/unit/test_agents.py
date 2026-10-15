@@ -322,6 +322,65 @@ def evaluation(*texts: str) -> ReviewResponse:
     )
 
 
+def test_review_observes_only_current_matches_and_retains_all_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """判断入力へ過去の対応を再送せず、全対応と確認範囲は成果物に保持する。"""
+    documents = {
+        "source": document(**{f"en-{index}": "Text" for index in range(32)}),
+        "translation": document(**{f"ja-{index}": "訳文" for index in range(32)}),
+    }
+
+    def evaluate_current(kwargs: dict[str, object]) -> AgentAction:
+        """直前の8組だけを観察し、累積状態にある未評価IDを選ぶ。"""
+        payload = json.loads(kwargs["user"])
+        groups = payload["observation"]["result"]["groups"]
+        targets = payload["state"]["unchecked_targets"]
+        assert len(groups) == len(targets) == 8
+        assert [f"review/{group['id']}" for group in groups] == targets
+        return AgentAction(operation="evaluate", target_ids=targets)
+
+    answers = []
+    for start in range(0, 32, 8):
+        answers.extend(
+            [
+                AgentAction(
+                    operation="match",
+                    references={
+                        "source": [f"en-{index}" for index in range(start, start + 8)],
+                        "translation": [
+                            f"ja-{index}" for index in range(start, start + 8)
+                        ],
+                    },
+                ),
+                AlignmentResponse.model_validate(
+                    {
+                        "groups": [
+                            {
+                                "source_ids": [f"en-{index}"],
+                                "translation_ids": [f"ja-{index}"],
+                                "kind": "matched",
+                            }
+                            for index in range(start, start + 8)
+                        ]
+                    }
+                ),
+                evaluate_current,
+                ReviewResponse(
+                    reviewed_target_ids=[
+                        f"review/alignment-{index + 1:06d}"
+                        for index in range(start, start + 8)
+                    ]
+                ),
+            ]
+        )
+    answers.append(AgentAction(operation="finish"))
+    scripted(monkeypatch, answers)
+    result = ReviewAgent(documents, tmp_path / "review", tmp_path, config).run()
+    assert len(result.groups) == len(result.reviewed_target_ids) == 32
+    assert not answers
+
+
 def test_review_observes_conflict_and_rechecks_then_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
