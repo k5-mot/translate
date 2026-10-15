@@ -276,9 +276,28 @@ def test_match_schema_requests_only_correspondence(
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
         assert set(schema["properties"]) == {"groups"}
-        assert {"source_ids", "translation_ids"}.issubset(
-            schema["$defs"]["AlignmentCandidate"]["required"]
-        )
+        variants = {
+            item["properties"]["kind"]["const"]: item
+            for item in schema["$defs"]["AlignmentCandidate"]["anyOf"]
+        }
+        assert set(variants) == {"matched", "source_only", "translation_only"}
+        for kind, variant in variants.items():
+            assert next(iter(variant["properties"])) == "kind"
+            assert {"source_ids", "translation_ids", "kind"}.issubset(
+                variant["required"]
+            )
+            for role in ("source", "translation"):
+                field = variant["properties"][f"{role}_ids"]
+                if kind in {"matched", f"{role}_only"}:
+                    assert field["minItems"] == 1
+                else:
+                    assert field["maxItems"] == 0
+            if kind != "matched":
+                assert "reason" in variant["required"]
+                assert variant["properties"]["reason"] == {
+                    "type": "string",
+                    "minLength": 1,
+                }
         assert [key for group in result.groups for key in group.translation_ids] == [
             "ja"
         ]

@@ -548,6 +548,8 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 
 対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。`source_ids` と `translation_ids` は省略不可とし、未対応の側は空配列を明示する。品質確認の `ReviewResponse` は `reviewed_target_ids: list[str]`、`findings: list[ReviewFinding]` と `revisions: list[ReviewRevision]` を持つ。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
 
+対応付けのNative Schemaは `kind` を先頭に置き、ID配列を生成する前に対応種別を選択させる。`matched` は両側に1件以上のIDを必要とし、`source_only` と `translation_only` は該当する側だけに1件以上のIDを持ち、反対側を空配列に限定する。未対応には空でない `reason` を必須とする。応答後も、IDの網羅性、重複、対応種別と配列の整合および未対応の理由を検証する。
+
 | Model | Field |
 |---|---|
 | `ReviewFinding` | `category: str`, `severity: Literal["info", "warning", "error"]`, `target_ids: list[str]`, `message: str` |

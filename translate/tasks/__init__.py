@@ -123,6 +123,38 @@ class SavedLLMCalls:
                     + system
                 )
             schema = response_type.model_json_schema()
+            if self.task == "REVIEW" and operation == "match":
+                # 未対応の側へIDを残す矛盾を、生成時のSchemaでも禁止する。
+                candidate = schema["$defs"]["AlignmentCandidate"]
+                variants = []
+                for kind in ("matched", "source_only", "translation_only"):
+                    # 先に両側のIDを生成すると、後からmatched以外を選べなくなる。
+                    properties = {
+                        "kind": {"const": kind},
+                        **{
+                            key: value
+                            for key, value in candidate["properties"].items()
+                            if key != "kind"
+                        },
+                    }
+                    for role in ("source", "translation"):
+                        limit = (
+                            {"minItems": 1}
+                            if kind in {"matched", f"{role}_only"}
+                            else {"maxItems": 0}
+                        )
+                        properties[f"{role}_ids"] = {
+                            **properties[f"{role}_ids"],
+                            **limit,
+                        }
+                    required = list(candidate["required"])
+                    if kind != "matched":
+                        properties["reason"] = {"type": "string", "minLength": 1}
+                        required.append("reason")
+                    variants.append(
+                        {**candidate, "properties": properties, "required": required}
+                    )
+                schema["$defs"]["AlignmentCandidate"] = {"anyOf": variants}
             if self.task == "REVIEW" and operation in {"evaluate", "recheck"}:
                 # 確認済み対象IDと訳文要素IDは別物なので、生成時にも候補を限定する。
                 confirmed = schema["properties"]["reviewed_target_ids"]
