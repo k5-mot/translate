@@ -10,6 +10,13 @@ from translate.adapters.pandoc import Pandoc
 from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+# PandocとWordが採番する要素だけ、出力用の本文から元の番号を除く。
+_HEADING_NUMBER = re.compile(r"^\s*(?:[0-9]{1,3}|[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+")
+_CAPTION_NUMBER = re.compile(
+    r"^\s*(?:Figure|Fig\.|Table|図|表)\s*[0-9]+(?:\.[0-9]+)*"
+    r"(?:\s*[:\uFF1A]\s*|\.(?:\s+|$)|\s+|$)",
+    re.IGNORECASE,
+)
 _ALERT_STYLES = {
     "note": "Note / 注記",
     "tip": "Tip / ヒント",
@@ -91,20 +98,7 @@ class MarkdownTask:
 
         text = convert_text_unit(block.content) if block.content is not None else ""
         if block.kind == "heading":
-            if block.content is not None:
-                content = block.content.model_copy(deep=True)
-                # ピリオドなしの節番号も除き、4桁以上の年度らしい接頭辞は保持する。
-                prefix = re.match(
-                    r"^\s*(?:[0-9]{1,3}|[0-9]+\.|[0-9]+(?:\.[0-9]+)+\.?)\s+",
-                    content.text(),
-                )
-                if prefix is not None:
-                    remaining = prefix.end()
-                    for span in content.spans:
-                        value = span.text()
-                        span.revised = value[remaining:]
-                        remaining = max(0, remaining - len(value))
-                    text = convert_text_unit(content)
+            text = convert_text_unit(_without_number(block.content, _HEADING_NUMBER))
             return f"{'#' * max(1, min(6, block.level or 1))} {text} {{#{_anchor(block.id)}}}"
         if block.kind == "list_item":
             marker = "1." if block.ordered else "-"
@@ -126,8 +120,8 @@ class MarkdownTask:
         if block.kind == "formula":
             return f"$$\n{block.content.text() if block.content else ''}\n$$"
         if block.kind == "figure" and block.image is not None:
-            caption = (
-                convert_text_unit(block.image.caption) if block.image.caption else ""
+            caption = convert_text_unit(
+                _without_number(block.image.caption, _CAPTION_NUMBER)
             )
             alt = html.escape(block.image.alt_text, quote=True)
             return f'![{caption}]({_escape_url(block.image.asset_path)}){{fig-alt="{alt}"}}'
@@ -165,7 +159,12 @@ class MarkdownTask:
             "t": "Table",
             "c": [
                 ["", [], []],
-                [None, [_pandoc_plain(block.caption)] if block.caption else []],
+                [
+                    None,
+                    [_pandoc_plain(_without_number(block.caption, _CAPTION_NUMBER))]
+                    if block.caption
+                    else [],
+                ],
                 [
                     [{"t": "AlignDefault"}, {"t": "ColWidthDefault"}]
                     for _ in range(columns)
@@ -176,6 +175,35 @@ class MarkdownTask:
             ],
         }
         return self.pandoc.table_to_markdown(table)
+
+
+def _without_number(unit: TextUnit | None, pattern: re.Pattern[str]) -> TextUnit | None:
+    """採番接頭辞を除いた出力用の複製を作り、残りのSpan書式を保つ。
+
+    Args:
+        unit: 原文・訳文を変更せずに公開する見出しまたはCaption。
+        pattern: 出力側で採番される接頭辞の正規表現。
+
+    Returns:
+        TextUnit | None: 一致した接頭辞を除いた複製。一致しなければ入力。
+    """
+    prefix = pattern.match(unit.text()) if unit is not None else None
+    if prefix is None or unit is None:
+        return unit
+    content = unit.model_copy(deep=True)
+    remaining = prefix.end()
+    spans = []
+    for span in content.spans:
+        value = "\n" if span.kind == "line_break" else span.text()
+        if remaining >= len(value):
+            remaining -= len(value)
+            continue
+        if remaining:
+            span.revised = value[remaining:]
+            remaining = 0
+        spans.append(span)
+    content.spans = spans
+    return content
 
 
 def convert_text_unit(unit: TextUnit | None) -> str:

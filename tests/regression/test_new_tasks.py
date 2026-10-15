@@ -1845,6 +1845,74 @@ def test_heading_year_without_section_punctuation_is_preserved() -> None:
     assert "2026 Outlook" in MarkdownTask(Pandoc(30)).convert_block(heading)
 
 
+@pytest.mark.parametrize(
+    ("kind", "prefix"),
+    [
+        ("figure", "図 1 "),
+        ("figure", "Figure 2: "),
+        ("figure", "Fig. 3. "),
+        ("table", "表1\uff1a"),
+        ("table", "Table 2.1: "),
+    ],
+)
+def test_caption_number_is_removed_only_when_publishing(kind: str, prefix: str) -> None:
+    """図表の採番をPandocへ委ね、原文と訳文のCaptionを変更しない。"""
+    caption = TextUnit(
+        id="caption",
+        spans=[
+            TextSpan(
+                id="label", source="original", translated=prefix, marks=["strong"]
+            ),
+            TextSpan(
+                id="title", source="title", translated="説明 2026", marks=["emphasis"]
+            ),
+        ],
+    )
+    block = Block(
+        id="block",
+        order=0,
+        kind=kind,
+        image=Image(id="image", asset_path="assets/image.png", caption=caption),
+        caption=caption,
+        cells=[
+            TableCell(id="cell", row=0, column=0, content=_unit("celltext", "data"))
+        ],
+    )
+    before = block.model_dump()
+    pandoc = MagicMock(spec=Pandoc)
+    value = MarkdownTask(pandoc).convert_block(block)
+    if kind == "figure":
+        assert value.startswith("![*説明 2026*]")
+    else:
+        table = pandoc.table_to_markdown.call_args.args[0]
+        assert table["c"][1] == [
+            None,
+            [{"t": "Plain", "c": [{"t": "Str", "c": "説明 2026"}]}],
+        ]
+    assert block.model_dump() == before
+
+
+@pytest.mark.parametrize(
+    "caption",
+    ["Table of contents", "図の説明 1", "Figure 1st example", "Figure 2.1st example"],
+)
+def test_unnumbered_caption_is_preserved(caption: str) -> None:
+    """採番接頭辞に一致しないCaption本文を保持する。"""
+    block = Block(
+        id="figure",
+        order=0,
+        kind="figure",
+        image=Image(
+            id="image", asset_path="image.png", caption=_unit("caption", caption)
+        ),
+    )
+    assert (
+        MarkdownTask(Pandoc(30))
+        .convert_block(block)
+        .startswith(f"![{caption.replace('.', r'\.')}]")
+    )
+
+
 def test_load_expands_merged_table_into_empty_grid_cells() -> None:
     """結合セル本文を起点だけに保存し、被覆セルは空Spanで保持する。"""
     item = {
