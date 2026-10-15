@@ -581,29 +581,45 @@ class PositionTask:
             samples = [
                 geometry
                 for _index, _child, item, _representative in entries
+                if item.get("label") not in {"page_header", "page_footer", "footnote"}
                 for provenance in item["prov"]
                 if (geometry := _geometry({"prov": [provenance]})) is not None
                 and geometry[0] == page
             ]
             widths = [max(1.0, geometry[2] - geometry[1]) for geometry in samples]
-            tolerance = statistics.median(widths) * 0.6
+            tolerance = statistics.median(widths or [1.0]) * 0.6
             columns: list[float] = []
             for left in sorted(geometry[1] for geometry in samples):
                 if not columns or abs(left - columns[-1]) > tolerance:
                     columns.append(left)
+            columns = columns or [0.0]
+            column_ranges: dict[float, tuple[float, float]] = {}
+            for _page, left, _right, top, bottom in samples:
+                column = min(columns, key=lambda position: abs(position - left))
+                first, last = column_ranges.get(column, (top, bottom))
+                column_ranges[column] = min(first, top), max(last, bottom)
+            # 上下に重ならない中央見出しは別の段ではなく、本文より前の領域として読む。
+            bands: list[tuple[float, float]] = []
+            for top, bottom in sorted(column_ranges.values()):
+                if bands and top <= bands[-1][1]:
+                    bands[-1] = bands[-1][0], max(bands[-1][1], bottom)
+                else:
+                    bands.append((top, bottom))
 
             def order_key(
                 entry: tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]],
                 column_positions: tuple[float, ...] = tuple(columns),
-            ) -> tuple[int, int, float, float, float, int]:
-                """欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+                vertical_bands: tuple[tuple[float, float], ...] = tuple(bands),
+            ) -> tuple[int, int, int, float, float, float, int]:
+                """欄外種別、縦方向の領域、段、縦位置を比較し、同位置では元の順序を保つ。
 
                 Args:
                     entry (tuple[int, dict[str, Any], dict[str, Any], tuple[float, ...]]): 読み順、要素、幾何情報を保持するSort対象。
                     column_positions (tuple[float, ...]): Table Cellを整列するColumn境界。
+                    vertical_bands: 縦方向に重なる段をまとめた領域。
 
                 Returns:
-                    tuple[int, int, float, float, float, int]: 欄外種別、最寄りの段、縦位置を順に比較し、同位置では元の順序を保つkeyを作る。
+                    tuple: 欄外種別、領域、段、座標、元の順序を比較するkey。
                 """
 
                 index, _child, item, geometry = entry
@@ -621,7 +637,8 @@ class PositionTask:
                     key=lambda value: abs(column_positions[value] - left),
                 )
                 center = (top + bottom) / 2
-                return region, column, top, center, left, index
+                band = sum(end < top for _start, end in vertical_bands)
+                return region, band, column, top, center, left, index
 
             ordered.extend(entry[1] for entry in sorted(entries, key=order_key))
         ordered.extend(child for _, child in sorted(unpositioned))

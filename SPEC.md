@@ -1788,6 +1788,8 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 
 `DocumentLoader` はDocling文書を保持し、参照解決と共通データモデルへの変換を行う。
 `PositionTask` は文書の複製と走査済み参照・結合結果・警告を保持し、読み順補正を行う。
+段組は欄外のHeader・Footer・脚注を除いて判定し、縦方向に重なる段は左から右へ読む。
+上下に分かれた領域は上から下へ並べ、中央配置の見出しを下方の本文より後ろへ送らない。
 `MarkdownTask` は `Pandoc` Adapterを受け取り、文書内の各Blockを変換する。
 `Pandoc` はTimeoutと確認済みの実行fileを保持し、同じインスタンス内では機能確認を繰り返さない。
 
