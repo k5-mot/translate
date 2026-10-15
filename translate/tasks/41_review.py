@@ -328,12 +328,13 @@ class ReviewTask:
                 },
                 "\n".join(target.source for target in targets),
                 ReviewResponse,
-                '{"reviewed_target_ids":["target id"],'
-                '"findings":[{"category":"accuracy","severity":"warning","target_ids":["unit id"],"message":"reason"}],'
-                '"revisions":[{"target_id":"unit id","edits":[{"span_id":"span id","text":"replacement"}]}]}. '
+                "Return reviewed_target_ids, findings and revisions. "
+                "Each finding has category, severity (info/warning/error), target_ids and message. "
+                "Each revision has target_id and edits; each edit has span_id and text. "
                 "reviewed_target_ids must contain every input targets[].id exactly once, including targets with no findings. "
                 "Copy the full id verbatim, including translate/, review/ and /part- prefixes or suffixes. "
                 "Finding.target_ids and Revision.target_id instead refer to input targets[].target_ids (TextUnit IDs). "
+                'When all input targets are correct, return {"reviewed_target_ids":[all input target IDs],"findings":[],"revisions":[]}. '
                 "Return only concrete findings and proposed edits.",
                 validate,
             )

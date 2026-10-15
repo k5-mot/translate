@@ -555,6 +555,8 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 
 Pydanticで形状を検証できたFindingとRevisionは `ReviewResult` に保持する。未知のFinding対象IDは診断情報へ記録し、Document変更へ使用しない。applicationが決定的なIDを付与し、Callの対象ID順、各応答内の出現順で結果を集約する。
 
+品質評価の出力説明には、問題がない場合の `findings=[]`、`revisions=[]` を示す。正常な対象は確認済みIDへ記録し、指摘や修正候補を埋めるために問題を作らない。
+
 FIXは `ReviewResult.revisions` の順序でRevisionを処理し、次の規則を決定的に適用する。
 
 - 未知の `target_id` はRevision全体を `unknown_target` で拒否する。
