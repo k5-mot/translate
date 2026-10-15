@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image as PILImage
 
-from translate.adapters.glossary import relevant_glossary
+from translate.adapters.glossary import Glossary
 from translate.adapters.llm import (
     LLMClient,
     LLMInputExceededError,
@@ -28,7 +28,6 @@ from translate.models.document import (
     TableCell,
     TextSpan,
     TextUnit,
-    iter_text_units,
 )
 from translate.models.review import (
     ReviewFinding,
@@ -509,7 +508,7 @@ def test_translation_ignores_ids_from_other_calls(
         "",
     )
 
-    assert [unit.spans[0].translated for _, unit in iter_text_units(result)] == [
+    assert [unit.spans[0].translated for _, unit in result.text_units()] == [
         "正しいA",
         "正しいB",
     ]
@@ -1426,14 +1425,17 @@ def test_glossary_keeps_only_terms_found_in_english_source() -> None:
         "VLM,Vision Language Model,VLM,視覚言語モデル\n"
     )
 
-    selected = relevant_glossary(
-        glossary,
+    catalog = Glossary(glossary)
+    selected = catalog.select(
         "The application uses an API; partial must not trigger a shorter term.",
     )
 
     assert "API,Application Programming Interface" in selected
     assert "ART,Artillery" not in selected
     assert "VLM,Vision Language Model" not in selected
+    next_selection = catalog.select("The VLM processes an image.")
+    assert "VLM,Vision Language Model" in next_selection
+    assert "API,Application Programming Interface" not in next_selection
 
 
 def test_glossary_keeps_complete_matching_rows_within_byte_limit() -> None:
@@ -1445,7 +1447,7 @@ def test_glossary_keeps_complete_matching_rows_within_byte_limit() -> None:
     )
     source = " ".join(f"TERM{index}" for index in range(20))
 
-    selected = relevant_glossary(glossary, source, maximum_bytes=180)
+    selected = Glossary(glossary).select(source, maximum_bytes=180)
 
     assert len(selected.encode("utf-8")) <= 180
     assert selected.startswith("english-short,english-long")

@@ -1,7 +1,7 @@
 """REVIEWの修正候補を決定的に反映するFIX Task。"""
 
 from translate.models.artifacts import FixResult, ReviewResult, RevisionOutcome
-from translate.models.document import Document, TextUnit, text_unit_index
+from translate.models.document import Document, TextUnit
 from translate.models.review import Revision
 
 
@@ -17,7 +17,7 @@ def apply_revisions(document: Document, review: ReviewResult) -> FixResult:
     """
 
     updated = document.model_copy(deep=True)
-    units = text_unit_index(updated)
+    units = updated.unit_index()
     changed_spans: set[str] = set()
     outcomes: list[RevisionOutcome] = []
     for revision in review.revisions:

@@ -1,81 +1,55 @@
-"""LLMへ渡す用語集を英語原文に現れる項目だけへ絞る。"""
+"""用語集CSVを保持し、英語原文に該当する行をLLM入力へ選択する。"""
 
 import csv
 import io
 from functools import lru_cache
 
 
-def relevant_glossary(
-    glossary: str, source: str, maximum_bytes: int | None = None
-) -> str:
-    """英語名が原文に現れ、入力枠へ収まる完全なCSV行だけを返す。
+class Glossary:
+    """parse済みの用語集と検索対象列を保持する。"""
 
-    Args:
-        glossary (str): 対象文書へ適用するCSV形式の用語集。
-        source (str): 変換または検証対象の入力Source。
-        maximum_bytes (int | None): Payloadへ含められるUTF-8 Byte数の上限。
+    def __init__(self, contents: str) -> None:
+        """CSVを読み、英語表記の列を確定する。
 
-    Returns:
-        str: 英語名が原文に現れ、入力枠へ収まる完全なCSV行だけを返す。
-    """
+        Args:
+            contents: 用語集CSVの全文。
+        """
+        self.rows = _rows(contents) if contents.strip() else ()
+        self.header = self.rows[0] if self.rows else ()
+        self.indexes = [
+            index
+            for index, name in enumerate(self.header)
+            if name.strip().casefold() in {"english-short", "english-long"}
+        ]
 
-    rows = _rows(glossary) if glossary.strip() and source.strip() else ()
-    if not rows:
-        return ""
-    header = rows[0]
-    normalized = [value.strip().casefold() for value in header]
-    indexes = [
-        index
-        for index, name in enumerate(normalized)
-        if name in {"english-short", "english-long"}
-    ]
-    if not indexes:
-        return ""
-    folded_source = source.casefold()
-    selected = [
-        row
-        for row in rows[1:]
-        if any(
-            index < len(row) and _contains_term(folded_source, row[index])
-            for index in indexes
-        )
-    ]
-    if not selected:
-        return ""
-    if maximum_bytes is not None:
-        return _bounded_csv(header, selected, maximum_bytes)
-    output = io.StringIO(newline="")
-    writer = csv.writer(output, lineterminator="\n")
-    writer.writerows([header, *selected])
-    return output.getvalue()
+    def select(self, source: str, maximum_bytes: int | None = None) -> str:
+        """原文に現れる用語を完全なCSV行単位で入力枠へ収める。
 
+        Args:
+            source: 用語を検索する英語原文。
+            maximum_bytes: UTF-8 byte上限。省略時は制限しない。
 
-def _bounded_csv(
-    header: tuple[str, ...], rows: list[tuple[str, ...]], maximum_bytes: int
-) -> str:
-    """CSVの行境界を壊さず、先に定義された用語からbyte上限へ収める。
-
-    Args:
-        header (tuple[str, ...]): 出力CSVのHeader行。
-        rows (list[tuple[str, ...]]): CSVまたは比較表示を構成する行。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        str: CSVの行境界を壊さず、先に定義された用語からbyte上限へ収める。
-    """
-
-    if maximum_bytes <= 0:
-        return ""
-    header_text = _csv_row(header)
-    size = len(header_text.encode("utf-8"))
-    selected: list[str] = []
-    for row in rows:
-        row_text = _csv_row(row)
-        row_size = len(row_text.encode("utf-8"))
-        if size + row_size <= maximum_bytes:
-            selected.append(row_text)
-            size += row_size
-    return f"{header_text}{''.join(selected)}" if selected else ""
+        Returns:
+            str: Headerと該当行。該当行がない場合は空文字。
+        """
+        if not source.strip() or not self.indexes:
+            return ""
+        header = _csv_row(self.header)
+        size = len(header.encode("utf-8"))
+        selected: list[str] = []
+        folded_source = source.casefold()
+        for row in self.rows[1:]:
+            if not any(
+                index < len(row) and _contains_term(folded_source, row[index])
+                for index in self.indexes
+            ):
+                continue
+            text = _csv_row(row)
+            row_size = len(text.encode("utf-8"))
+            if maximum_bytes is None or size + row_size <= maximum_bytes:
+                selected.append(text)
+                size += row_size
+        return header + "".join(selected) if selected else ""
 
 
 def _csv_row(row: tuple[str, ...]) -> str:

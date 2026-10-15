@@ -32,7 +32,7 @@ from translate.models.artifacts import (
     TaskName,
     UnpackManifest,
 )
-from translate.models.document import Document, TextUnit, iter_text_units
+from translate.models.document import Document, TextUnit
 from translate.models.review import AgentAction
 
 
@@ -239,7 +239,7 @@ def agent_units(documents: dict[str, Document]) -> dict[str, dict[str, TextUnit]
     return {
         role: {
             unit.id: unit
-            for _, unit in iter_text_units(document)
+            for _, unit in document.text_units()
             if unit.text("source").strip()
         }
         for role, document in documents.items()

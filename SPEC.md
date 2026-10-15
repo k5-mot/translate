@@ -1772,7 +1772,7 @@ tests/
 | Task | 文書処理の依存関係と、その処理内で共有する設定・状態 |
 | Adapter | 接続設定、client、外部形式の解釈および入出力。`EmbeddingClient` はbatch要求を、`QdrantStore` はcollectionへの登録・検索と接続の解放を管理する |
 | UI | 画面の入力、履歴、workerへの起動依頼と結果の表示 |
-| データモデル | 検証済みデータと、そのデータ自身の参照・変換操作 |
+| データモデル | 検証済みデータと、そのデータ自身の参照・変換操作。`Document.text_units()` と `unit_index()` が本文・Caption・表セルを扱い、`ReviewTarget.from_document()` が翻訳文書からレビュー対象を作る |
 
 継承よりオブジェクトの組合せを優先する。共通化のためだけの基底クラス、
 factory、DI framework、旧関数へ転送するだけの互換wrapperは設けない。
@@ -1783,7 +1783,7 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 
 `adapters/artifact_store.py` は一つの処理IDにつき一つの `.lock` を処理中だけ保持する。個々のTask file、LLM Call fileおよび最終成果物にlockを追加しない。最上位の処理記録、成功済みLLM Callの `response.json` と `call.json`、および最終公開fileは、同じdirectoryの一時fileから置換して途中書込みを見せない。Task用の一時ディレクトリ内の各fileは通常の書込みとし、成功後だけディレクトリを公開する。各fileの `fsync`、多重の一時fileおよび旧Taskディレクトリのbackupは必須としない。既存Taskが無効な場合だけ再生成し、成功済みTaskはfingerprintとhashで再利用する。ディレクトリの退避と配置を一つの原子操作と見なしてはならない。`models/artifacts.py` は保存するPydanticモデルの定義だけを持ち、file I/Oを行わない。
 
-`adapters/glossary.py` はCSVという外部形式を解釈し、原文に現れる用語だけをLLM入力のbyte上限内へ抽出する。用語集の読込み先や適用規則をPipelineへ散らさず、このmoduleにまとめる。
+`adapters/glossary.py` の `Glossary` はparse済みのCSVと検索対象列を保持し、`select()` で原文に現れる用語だけをLLM入力のbyte上限内へ抽出する。用語集の読込み先や適用規則をPipelineへ散らさず、このクラスにまとめる。
 
 `common/config.py` の `Config` は `pydantic_settings.BaseSettings` を直接継承する。`_EnvironmentConfig` と `BaseModel` への再変換を設けない。`load_config()` が現在の作業directoryの `.env` を指定して `Config` を生成し、同名のprocess環境変数を優先する。数値範囲と型はfield定義で検証する。環境変数の組合せ、token予算、操作ごとの必須項目、および任意のRAG設定の完全性は `validate_config(config, operation)` 一つで扱い、`require_translate()`、`require_review()`、`require_register()` など用途別の検証関数へ分けない。設定エラーは `ConfigError` としてUIへ返す。外部clientの生成、Artifactの読書きおよびPipelineの実行は行わない。
 

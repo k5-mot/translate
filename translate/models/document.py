@@ -143,41 +143,35 @@ class Document(DocumentModel):
     pages: list[Page] = Field(default_factory=list)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
+    def text_units(self) -> Iterator[tuple[str, TextUnit]]:
+        """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
 
-def iter_text_units(document: Document) -> Iterator[tuple[str, TextUnit]]:
-    """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+        Yields:
+            tuple[str, TextUnit]: 文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+        """
 
-    Args:
-        document (Document): 変換または検証対象のDocument。
+        for page in sorted(self.pages, key=lambda item: item.number):
+            for block in sorted(page.blocks, key=lambda item: item.order):
+                if block.content is not None:
+                    role = "heading" if block.kind == "heading" else "body"
+                    yield role, block.content
+                if block.caption is not None:
+                    yield "caption", block.caption
+                if block.image is not None and block.image.caption is not None:
+                    yield "caption", block.image.caption
+                for cell in sorted(
+                    block.cells, key=lambda item: (item.row, item.column)
+                ):
+                    yield "table_cell", cell.content
+                    for image in cell.images:
+                        if image.caption is not None:
+                            yield "caption", image.caption
 
-    Yields:
-        tuple[str: 文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
-    """
+    def unit_index(self) -> dict[str, TextUnit]:
+        """FIXと検証で使用するTextUnit IDの索引を作る。
 
-    for page in sorted(document.pages, key=lambda item: item.number):
-        for block in sorted(page.blocks, key=lambda item: item.order):
-            if block.content is not None:
-                role = "heading" if block.kind == "heading" else "body"
-                yield role, block.content
-            if block.caption is not None:
-                yield "caption", block.caption
-            if block.image is not None and block.image.caption is not None:
-                yield "caption", block.image.caption
-            for cell in sorted(block.cells, key=lambda item: (item.row, item.column)):
-                yield "table_cell", cell.content
-                for image in cell.images:
-                    if image.caption is not None:
-                        yield "caption", image.caption
+        Returns:
+            dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
+        """
 
-
-def text_unit_index(document: Document) -> dict[str, TextUnit]:
-    """FIXと検証で使用するTextUnit IDの索引を作る。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-
-    Returns:
-        dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
-    """
-
-    return {unit.id: unit for _, unit in iter_text_units(document)}
+        return {unit.id: unit for _, unit in self.text_units()}

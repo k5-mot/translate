@@ -16,7 +16,7 @@ from translate.adapters.artifact_store import (
     load_reusable_llm_response,
 )
 from translate.adapters.embedding import EmbeddingClient
-from translate.adapters.glossary import relevant_glossary
+from translate.adapters.glossary import Glossary
 from translate.adapters.llm import LLMClient, LLMInputExceededError
 from translate.adapters.qdrant import QdrantStore
 from translate.models.artifacts import LLMCallArtifact, LLMTaskName
@@ -120,7 +120,7 @@ def saved_request[ResponseT: BaseModel](
                 )
             )
         budget = config.review_input_tokens - overhead
-        selected = relevant_glossary(glossary, query, max(0, budget // 3))
+        selected = Glossary(glossary).select(query, max(0, budget // 3))
         references = []
         if (
             operation in {"evaluate", "recheck"}

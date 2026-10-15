@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from zipfile import ZipFile
 
-from translate.models.document import Document, iter_text_units
+from translate.models.document import Document
 
 
 def main() -> None:
@@ -19,8 +19,8 @@ def main() -> None:
     if not final_path.is_file():
         final_path = root / "translation/translate/document.json"
     final = Document.model_validate_json(final_path.read_text(encoding="utf-8"))
-    before = [unit for _, unit in iter_text_units(source)]
-    after = [unit for _, unit in iter_text_units(final)]
+    before = [unit for _, unit in source.text_units()]
+    after = [unit for _, unit in final.text_units()]
     assert len(source.pages) == len(final.pages)
     assert [unit.id for unit in before] == [unit.id for unit in after]
     assert len({unit.id for unit in after}) == len(after)

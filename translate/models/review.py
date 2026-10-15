@@ -1,10 +1,10 @@
 """対応付け、検査、レビューおよび修正候補のモデル。"""
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from translate.models.document import Document, TextSpan, iter_text_units
+from translate.models.document import Document, TextSpan
 
 
 class ReviewModel(BaseModel):
@@ -49,6 +49,29 @@ class ReviewTarget(ReviewModel):
     translation: str
     target_ids: list[str] = Field(default_factory=list)
     spans: list[TextSpan] = Field(default_factory=list)
+
+    @classmethod
+    def from_document(cls, document: Document) -> list[Self]:
+        """Translate後のDocument内IDからREVIEWの対象を作る。
+
+        Args:
+            document (Document): 変換または検証対象のDocument。
+
+        Returns:
+            list[ReviewTarget]: Translate後のDocument内IDからREVIEWの対象を作る。
+        """
+
+        return [
+            cls(
+                id=f"translate/{unit.id}",
+                source=unit.text("source"),
+                translation=unit.text("revised"),
+                target_ids=[unit.id],
+                spans=unit.spans,
+            )
+            for _, unit in document.text_units()
+            if unit.text("source").strip()
+        ]
 
 
 class Finding(ReviewModel):
@@ -111,26 +134,3 @@ class ReviewResponse(ReviewModel):
     reviewed_target_ids: list[str] = Field(default_factory=list)
     findings: list[ReviewFinding] = Field(default_factory=list)
     revisions: list[ReviewRevision] = Field(default_factory=list)
-
-
-def targets_from_document(document: Document) -> list[ReviewTarget]:
-    """Translate後のDocument内IDからREVIEWの対象を作る。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-
-    Returns:
-        list[ReviewTarget]: Translate後のDocument内IDからREVIEWの対象を作る。
-    """
-
-    return [
-        ReviewTarget(
-            id=f"translate/{unit.id}",
-            source=unit.text("source"),
-            translation=unit.text("revised"),
-            target_ids=[unit.id],
-            spans=unit.spans,
-        )
-        for _, unit in iter_text_units(document)
-        if unit.text("source").strip()
-    ]

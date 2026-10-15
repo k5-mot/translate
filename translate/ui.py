@@ -51,19 +51,8 @@ from translate.models.artifacts import (
     TaskName,
     TranslationRecord,
 )
-from translate.models.document import (
-    Block,
-    Document,
-    TextLayer,
-    TextUnit,
-    iter_text_units,
-    text_unit_index,
-)
-from translate.models.review import (
-    AlignmentResponse,
-    ReviewResponse,
-    targets_from_document,
-)
+from translate.models.document import Block, Document, TextLayer, TextUnit
+from translate.models.review import AlignmentResponse, ReviewResponse, ReviewTarget
 from translate.models.upgrade import (
     DiffResponse,
     UpgradePlan,
@@ -1499,9 +1488,7 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
     if document is None:
         return None
     sources = {
-        span.id: span.source
-        for _, unit in iter_text_units(document)
-        for span in unit.spans
+        span.id: span.source for _, unit in document.text_units() for span in unit.spans
     }
     confirmed = _latest_verified_call(root, TaskName.TRANSLATE)
     if confirmed is not None:
@@ -1607,8 +1594,8 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
             root, ["preprocess/translation/load/document.json"]
         )
         if source is not None and translated is not None:
-            source_units = text_unit_index(source)
-            translated_units = text_unit_index(translated)
+            source_units = source.unit_index()
+            translated_units = translated.unit_index()
             groups = []
             for call in sorted(
                 _llm_calls(root, TaskName.REVIEW), key=lambda item: item.round
@@ -1638,7 +1625,7 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
         ],
     )
     if document is not None:
-        for target in targets_from_document(document):
+        for target in ReviewTarget.from_document(document):
             value = (target.source, target.translation)
             values[target.id] = value
             values.update(dict.fromkeys(target.target_ids, value))
@@ -1723,8 +1710,8 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
         outcome.revision_id for outcome in fixed.outcomes if outcome.status == "applied"
     }
     target_ids = [item.target_id for item in review.revisions if item.id in applied]
-    before_units = text_unit_index(before)
-    after_units = text_unit_index(fixed.document)
+    before_units = before.unit_index()
+    after_units = fixed.document.unit_index()
     target_ids = [
         item for item in target_ids if item in before_units and item in after_units
     ]
@@ -1866,7 +1853,7 @@ def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
     call = _latest_call(root, TaskName.DIFF, "processing") or _latest_verified_call(
         root, TaskName.DIFF
     )
-    known = text_unit_index(document)
+    known = document.unit_index()
     return [
         key
         for reference in (call.target_ids if call else [])
@@ -1941,9 +1928,9 @@ def _upgrade_context(root: Path) -> tuple[str, str, str] | None:  # noqa: PLR091
     )
     if not changes:
         return None
-    source_v1_units = text_unit_index(source_v1)
-    source_v2_units = text_unit_index(source_v2)
-    translation_v1_units = text_unit_index(translation_v1)
+    source_v1_units = source_v1.unit_index()
+    source_v2_units = source_v2.unit_index()
+    translation_v1_units = translation_v1.unit_index()
     rows: list[tuple[str, str, str, str]] = []
     for change in changes[:3]:
         value_v1 = _unit_text(change.source_v1_ids, source_v1_units, "source")
@@ -2434,7 +2421,7 @@ def _render_upgrade_output(entry: HistoryEntry, record: UpgradeRecord) -> None:
         for role in ("source_v1", "source_v2", "translation_v1")
     }
     indices = {
-        role: text_unit_index(document) if document else {}
+        role: document.unit_index() if document else {}
         for role, document in documents.items()
     }
     for artifact in record.outputs:

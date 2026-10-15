@@ -20,7 +20,7 @@ from translate.adapters.artifact_store import (
     write_model,
 )
 from translate.adapters.embedding import EmbeddingClient
-from translate.adapters.glossary import relevant_glossary
+from translate.adapters.glossary import Glossary
 from translate.adapters.llm import (
     LLMClient,
     LLMError,
@@ -31,7 +31,7 @@ from translate.adapters.llm import (
 from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
-from translate.models.document import Document, TextSpan, iter_text_units
+from translate.models.document import Document, TextSpan
 
 TranslationContext = dict[str, tuple[str, str]]
 
@@ -119,7 +119,7 @@ def translate(
             )
         span_index = {
             span.id: span
-            for _, unit in iter_text_units(updated)
+            for _, unit in updated.text_units()
             for span in unit.spans
             if span.kind not in {"code", "line_break"}
         }
@@ -187,7 +187,7 @@ def _chunks(
             and span.translated is None
             and span.revised is None
         ]
-        for _, unit in iter_text_units(document)
+        for _, unit in document.text_units()
     ]
     groups = [group for group in groups if group]
     chunks: list[list[TextSpan]] = []
@@ -320,8 +320,8 @@ def _execute(
             return [(call_id, response)]
     source = "\n".join(span.source for span in spans)
     payload_budget = config.translate_input_tokens - len(rules.encode("utf-8")) - 2048
-    selected_glossary = relevant_glossary(
-        glossary, source, maximum_bytes=max(0, payload_budget // 3)
+    selected_glossary = Glossary(glossary).select(
+        source, maximum_bytes=max(0, payload_budget // 3)
     )
     rag = _rag_context(config, source)
     previous = _previous_attempts(call_directory)

@@ -33,7 +33,7 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.models.document import Document
-from translate.models.review import targets_from_document
+from translate.models.review import ReviewTarget
 from translate.pipeline import (
     InputError,
     perform_task,
@@ -213,7 +213,7 @@ def _translate_locked(
     document = load_model(translation_dir / "document.json", Document)
 
     review_dir = root / "review" / "review"
-    targets = targets_from_document(document)
+    targets = ReviewTarget.from_document(document)
     reused = run(
         TaskName.REVIEW,
         targets,
