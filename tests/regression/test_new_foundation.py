@@ -94,6 +94,20 @@ def test_config_environment_overrides_dotenv(
     assert config.pdf_split_pages == 7
 
 
+def test_http_timeout_allows_3000_seconds_from_dotenv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """長時間のHTTP応答待ちを.envで設定でき、上限超過は拒否する。"""
+
+    monkeypatch.delenv("HTTP_REQUEST_TIMEOUT_SECONDS", raising=False)
+    (tmp_path / ".env").write_text(
+        "HTTP_REQUEST_TIMEOUT_SECONDS=3000\n", encoding="utf-8"
+    )
+    assert load_config(tmp_path).http_request_timeout_seconds == 3000
+    with pytest.raises(ValidationError):
+        Config(http_request_timeout_seconds=3001)
+
+
 def test_adapter_log_level_comes_from_dotenv(tmp_path: Path) -> None:
     """Adapterのログlevelを.envで変更できることを確認する。"""
 
