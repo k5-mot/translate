@@ -3,11 +3,19 @@
 import html
 import re
 import shutil
+from collections import Counter
 from pathlib import Path
 
 from translate.adapters.artifact_store import atomic_write_text
 from translate.adapters.pandoc import Pandoc
-from translate.models.document import Block, Document, TableCell, TextSpan, TextUnit
+from translate.models.document import (
+    Block,
+    Document,
+    Page,
+    TableCell,
+    TextSpan,
+    TextUnit,
+)
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # PandocとWordが採番する要素だけ、出力用の本文から元の番号を除く。
@@ -17,6 +25,7 @@ _CAPTION_NUMBER = re.compile(
     r"(?:\s*[:\uFF1A]\s*|\.(?:\s+|$)|\s+|$)",
     re.IGNORECASE,
 )
+_FOOTNOTE_NUMBER = re.compile(r"^\s*([0-9]+|[*†‡]+)\s+")
 _ALERT_STYLES = {
     "note": "Note / 注記",
     "tip": "Tip / ヒント",
@@ -36,6 +45,7 @@ class MarkdownTask:
             pandoc: Timeoutと機能確認結果を保持する変換Adapter。
         """
         self.pandoc = pandoc
+        self.footnote_references: dict[str, str] = {}
 
     def run(
         self,
@@ -69,6 +79,7 @@ class MarkdownTask:
         for page in document.pages:
             if page.number in excluded_pages:
                 continue
+            self._link_footnotes(page)
             fragments.extend(
                 self.convert_block(block)
                 for block in sorted(page.blocks, key=lambda item: item.order)
@@ -86,6 +97,37 @@ class MarkdownTask:
         atomic_write_text(output, f"{value}\n")
         return output
 
+    def _link_footnotes(self, page: Page) -> None:
+        """同じページで一意に対応する元番号と独立した本文参照だけを結び付ける。
+
+        Args:
+            page: 脚注と参照元を含む公開対象ページ。
+        """
+        self.footnote_references = {}
+        notes = [
+            (block, block.content, match)
+            for block in page.blocks
+            if block.kind == "footnote" and block.content is not None
+            if (match := _FOOTNOTE_NUMBER.match(block.content.text("source")))
+        ]
+        counts = Counter(match[1] for _, _, match in notes)
+        for note, content, marker in notes:
+            current = _FOOTNOTE_NUMBER.match(content.text())
+            if counts[marker[1]] != 1 or not current or current[1] != marker[1]:
+                continue
+            candidates = [
+                span
+                for block in page.blocks
+                if block.kind not in {"footnote", "code", "formula"}
+                and block.content is not None
+                for index, span in enumerate(block.content.spans)
+                if span.kind == "text"
+                and (index > 0 or "superscript" in span.marks)
+                and span.source.strip() == span.text().strip() == marker[1]
+            ]
+            if len(candidates) == 1:
+                self.footnote_references[candidates[0].id] = _anchor(note.id)
+
     def convert_block(self, block: Block) -> str:  # noqa: PLR0911
         """一つのBlockをPandoc Markdown断片へ変換する。
 
@@ -96,9 +138,12 @@ class MarkdownTask:
             str: 一つのBlockをPandoc Markdown断片へ変換する。
         """
 
-        text = convert_text_unit(block.content) if block.content is not None else ""
+        text = convert_text_unit(block.content, self.footnote_references)
         if block.kind == "heading":
-            text = convert_text_unit(_without_number(block.content, _HEADING_NUMBER))
+            text = convert_text_unit(
+                _without_number(block.content, _HEADING_NUMBER),
+                self.footnote_references,
+            )
             return f"{'#' * max(1, min(6, block.level or 1))} {text} {{#{_anchor(block.id)}}}"
         if block.kind == "list_item":
             marker = "1." if block.ordered else "-"
@@ -129,7 +174,13 @@ class MarkdownTask:
             return self._convert_table(block)
         if block.kind == "footnote":
             anchor = _anchor(block.id)
-            return f"[^{anchor}]\n\n[^{anchor}]: {text}"
+            if anchor in self.footnote_references.values():
+                text = convert_text_unit(
+                    _without_number(block.content, _FOOTNOTE_NUMBER)
+                )
+                return f"[^{anchor}]: " + text.replace("\n", "\n    ")
+            # shortcut: 参照が曖昧な脚注は元番号付き段落を保持し、抽出で参照を特定できたら脚注化する。
+            return f'::: {{custom-style="Footnote Block Text"}}\n{text}\n:::'
         if block.kind == "horizontal_rule":
             return "---"
         return text
@@ -206,11 +257,14 @@ def _without_number(unit: TextUnit | None, pattern: re.Pattern[str]) -> TextUnit
     return content
 
 
-def convert_text_unit(unit: TextUnit | None) -> str:
+def convert_text_unit(
+    unit: TextUnit | None, footnote_references: dict[str, str] | None = None
+) -> str:
     """TextUnitの最終層と書式をPandoc inline記法へ変換する。
 
     Args:
         unit (TextUnit | None): 変換または検証対象のTextUnit。
+        footnote_references: 本文Span IDと一意に対応した脚注anchor。
 
     Returns:
         str: TextUnitの最終層と書式をPandoc inline記法へ変換する。
@@ -218,7 +272,11 @@ def convert_text_unit(unit: TextUnit | None) -> str:
 
     if unit is None:
         return ""
-    return "".join(_convert_span(span) for span in unit.spans)
+    references = footnote_references or {}
+    return "".join(
+        f"[^{references[span.id]}]" if span.id in references else _convert_span(span)
+        for span in unit.spans
+    )
 
 
 def _convert_span(span: TextSpan) -> str:

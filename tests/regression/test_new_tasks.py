@@ -70,6 +70,54 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+@pytest.mark.parametrize("ambiguity", [None, "missing", "body", "footnote", "number"])
+def test_markdown_links_original_footnote_marker_once(
+    tmp_path: Path, ambiguity: str | None
+) -> None:
+    """一意な本文参照だけをWord脚注へ置き換え、曖昧な元番号や通常の数字は残す。"""
+    body = _unit("body", "Version 1. ", "バージョン1。 ")
+    if ambiguity not in {"missing", "number"}:
+        body.spans.append(TextSpan(id="body/marker", source="1"))
+    blocks = [
+        Block(id="body", kind="paragraph", order=0, content=body),
+        Block(
+            id="note",
+            kind="footnote",
+            order=1,
+            content=_unit("note", "1 Footnote.", "1 脚注。"),
+        ),
+    ]
+    if ambiguity in {"body", "footnote"}:
+        duplicate = blocks[0 if ambiguity == "body" else 1].model_copy(deep=True)
+        duplicate.id = "duplicate"
+        duplicate.order = 2
+        duplicate.content.id = "duplicate/content"
+        for index, span in enumerate(duplicate.content.spans):
+            span.id = f"duplicate/{index}"
+        blocks.append(duplicate)
+    if ambiguity == "number":
+        blocks.append(
+            Block(id="number", kind="paragraph", order=2, content=_unit("number", "1"))
+        )
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    original = document.model_dump()
+    cover = tmp_path / "cover.png"
+    PILImage.new("RGB", (1, 1)).save(cover)
+    output = tmp_path / "markdown/document.md"
+    MarkdownTask(Pandoc(30)).run(document, output, cover, tmp_path / "assets", set())
+    text = output.read_text(encoding="utf-8")
+    assert "バージョン1。" in text
+    assert document.model_dump() == original
+    if ambiguity is None:
+        assert "バージョン1。 [^note]" in text
+        assert "[^note]: 脚注。" in text
+        assert "\n\n[^note]\n" not in text
+        assert "1 脚注。" not in text
+    else:
+        assert "[^" not in text
+        assert "1 脚注。" in text
+
+
 def _unit(identifier: str, source: str, translated: str | None = None) -> TextUnit:
     """Test用の一Span TextUnitを作る。"""
 
