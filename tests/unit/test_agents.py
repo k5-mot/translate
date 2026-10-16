@@ -14,6 +14,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMConnectionError,
     LLMError,
+    LLMInputExceededError,
     LLMInvalidResponseError,
     StructuredResult,
 )
@@ -58,6 +59,73 @@ def document(**units: str) -> Document:
             )
         ]
     )
+
+
+@pytest.mark.parametrize("operation", ["overview", "read"])
+@pytest.mark.parametrize("count", [1, 9])
+def test_agent_fits_observation_without_cutting_units(
+    config: Config, monkeypatch: pytest.MonkeyPatch, operation: str, count: int
+) -> None:
+    """状態とSchema込みの上限を守り、候補本文を切らず後続の閲覧位置を保持する。"""
+    client = LLMClient(config.model_copy(update={"review_input_tokens": 11264}))
+    units = agent_units(
+        {
+            "source": document(
+                **{
+                    f"unit-{i}": "文脈を保持する。" * (500 if count == 1 else 150)
+                    for i in range(13)
+                }
+            )
+        }
+    )
+    items = [
+        {"role": "source", "id": key, "text": unit.text("source")}
+        for key, unit in list(units["source"].items())[4 : 4 + count]
+    ]
+    observation = {
+        "action": {"operation": operation, "offset": 4},
+        "result": {"items": items, "total": 13, "next_offset": None},
+    }
+    original = json.dumps(observation, ensure_ascii=False)
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = AgentAction(
+        operation="overview"
+    ).model_dump_json()
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        if count == 1:
+            with pytest.raises(LLMInputExceededError):
+                choose_action(
+                    client,
+                    "Compare documents.",
+                    {"roles": ["source"], "pending_counts": {"source": 13}},
+                    observation,
+                    units,
+                )
+            create.assert_not_called()
+            return
+        action = choose_action(
+            client,
+            "Compare documents.",
+            {"roles": ["source"], "pending_counts": {"source": 13}},
+            observation,
+            units,
+        )
+        assert action.operation == "overview"
+        create.assert_called_once()
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])[
+            "observation"
+        ]["result"]
+        assert 0 < len(sent["items"]) < len(items)
+        assert sent["items"] == items[: len(sent["items"])]
+        assert sent["next_offset"] == 4 + len(sent["items"])
+        assert sent["total"] == 13
+        assert json.dumps(observation, ensure_ascii=False) == original
+    finally:
+        client.client.close()
 
 
 @pytest.fixture
