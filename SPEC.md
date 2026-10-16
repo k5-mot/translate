@@ -400,7 +400,8 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 #### 🧩 STRUCTURE
 
 - 基本単位は1ページとする。
-- 変更が必要なBlockの `StructurePatch` だけを返す。
+- 入力で見出しになっているBlockはすべて、変更の有無によらず `kind` を明示した `StructurePatch` を返す。抽出時の分類を前提にせず、通常の説明文は段落へ戻す。他のBlockは変更が必要なpatchだけを返す。
+- 見出しの判定漏れは既存のLLM応答訂正枠へ返し、未確認のまま成功させない。保存済みCallも同じ網羅性を検証し、判定漏れがある応答は再利用しない。
 - Block本文の再出力を要求しない。
 - 先頭ページは表紙として扱い、その見出しを本文の見出し履歴とページ境界の階層補正へ使用しない。本文の階層は本文中の見出しと章節番号から判断する。
 - 数字の章節番号で始まる本文見出しは、番号の深さをlevelへ反映する（`1`・`7`は1、`7.1`は2）。先頭の整数は1〜3桁とし、4桁の年号を章番号として扱わない。対応するlevelの上限は6とする。
@@ -419,7 +420,7 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 | `caption_source_id` | `str \| None` |
 
 `level`、`alert_kind` および `caption_source_id` は該当する変更がない場合に省略できる。Pydantic検証後、既存Blockと整合するpatchだけを適用する。
-`caption` は `BlockKind` ではない。LLMが `kind="caption"` を返した場合は応答全体を失敗させず、そのpatchの `kind` だけを未指定として扱う。Captionの関連付けには `caption_source_id` を使用する。
+`caption` は `BlockKind` ではない。LLMが `kind="caption"` を返した場合は、そのpatchの `kind` だけを未指定として扱う。元のBlockが見出しなら判定漏れとして訂正を求める。Captionの関連付けには `caption_source_id` を使用する。
 対象の図表に既存Captionがある場合は、`caption_source_id` による移動を適用せず、既存Captionと移動元本文を保持して診断情報へ記録する。
 Captionの移動先は図・表に限定し、補正後も見出しである要素をCaptionへ移す応答は適用しない。Captionが見出しに誤分類されている場合は、同じ応答で段落への補正を指定する。種別の補正を先に適用し、patchの並び順によってCaptionの所属を変えない。
 

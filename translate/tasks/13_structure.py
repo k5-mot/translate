@@ -203,6 +203,25 @@ class StructureTask:
         """
 
         target_ids = [block.id for block in blocks]
+        headings = {block.id for block in blocks if block.kind == "heading"}
+
+        def validate(response: StructureResponse) -> None:
+            """既存の見出し候補を未確認のまま残す応答を訂正対象にする。
+
+            Args:
+                response: LLMまたは保存済みCallの構造判定。
+
+            Raises:
+                ValueError: 種別の明示的な判定がない見出し候補がある場合。
+            """
+            missing = headings - {
+                patch.block_id for patch in response.patches if patch.kind is not None
+            }
+            if missing:
+                raise ValueError(
+                    f"Classify every existing heading with an explicit kind; missing={sorted(missing)}"
+                )
+
         call_id = llm_call_id("STRUCTURE", target_ids, lineage)
         call_directory = self.task_directory / "calls" / call_id
         fingerprint = canonical_hash(
@@ -220,7 +239,12 @@ class StructureTask:
             response_type=StructureResponse,
         )
         if reusable is not None:
-            return [(call_id, reusable[1])]
+            try:
+                validate(reusable[1])
+            except ValueError:
+                pass
+            else:
+                return [(call_id, reusable[1])]
         artifact = begin_llm_call(
             call_directory,
             call_id=call_id,
@@ -235,7 +259,9 @@ class StructureTask:
                 model=self.config.openai_structure_model or "",
                 response_type=StructureResponse,
                 system=(
-                    "Inspect the page image and return only necessary structural patches. "
+                    "Inspect the page image and explicitly classify every existing heading, "
+                    "including unchanged headings. Existing kinds are extraction candidates, not confirmed facts. "
+                    "Demote ordinary body sentences to paragraph. For other blocks return only necessary patches. "
                     "Never rewrite text or IDs. Caption is not a block kind; associate a "
                     "caption only with caption_source_id. Heading levels are document-global; "
                     "do not reset them at a page boundary.\n\n" + self.rules
@@ -250,12 +276,13 @@ class StructureTask:
                 contract=(
                     '{"patches":[{"block_id":string,"kind"?:string,"level"?:integer,'
                     '"alert_kind"?:string,"caption_source_id"?:string}]}. '
-                    f"At most {len(blocks)} patches."
+                    f"At most {len(blocks)} patches. Explicit kind is required for every existing heading."
                 ),
                 native_schema=_schema(len(blocks)),
                 input_tokens=self.config.structure_input_tokens,
                 output_tokens=self.config.structure_output_tokens,
                 image=image,
+                validate=validate,
             )
         except (LLMInputExceededError, LLMOutputExceededError) as error:
             if len(blocks) < 2 or depth >= self.config.llm_split_max_depth:

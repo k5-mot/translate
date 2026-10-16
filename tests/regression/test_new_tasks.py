@@ -1432,6 +1432,89 @@ def test_structure_does_not_normalize_same_page_heading_reset() -> None:
     assert diagnostics == []
 
 
+@pytest.mark.parametrize("cached_omission", [False, True])
+def test_structure_requires_classification_of_every_existing_heading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cached_omission: bool
+) -> None:
+    """Doclingの誤った見出しを未確認で残す応答は訂正させ、本文を変えず段落へ戻す。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(
+        openai_base_url="http://127.0.0.1:1/v1",
+        openai_structure_model="model",
+        llm_structured_output_mode="json_schema",
+        llm_retry_attempts=2,
+    )
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="title",
+                        order=0,
+                        kind="heading",
+                        level=1,
+                        content=_unit("title/content", "6 Footnotes"),
+                    ),
+                    Block(
+                        id="body",
+                        order=1,
+                        kind="heading",
+                        level=6,
+                        content=_unit("body/content", "Read the reference document. 1"),
+                    ),
+                ],
+            )
+        ]
+    )
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = LLMClient(config)
+    responses = []
+    for patches in (
+        [StructurePatch(block_id="title", kind="heading", level=1)],
+        [
+            StructurePatch(block_id="title", kind="heading", level=1),
+            StructurePatch(block_id="body", kind="paragraph"),
+        ],
+    ):
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = StructureResponse(
+            patches=patches
+        ).model_dump_json()
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+    if cached_omission:
+        monkeypatch.setattr(
+            module,
+            "load_reusable_llm_response",
+            MagicMock(
+                return_value=(
+                    None,
+                    StructureResponse(
+                        patches=[
+                            StructurePatch(block_id="title", kind="heading", level=1)
+                        ]
+                    ),
+                )
+            ),
+        )
+    result = module.StructureTask(config, directory, "rules").run(
+        document, tmp_path / "source.pdf", tmp_path
+    )
+    assert create.call_count == 2
+    assert result.pages[0].blocks[1].kind == "paragraph"
+    assert result.pages[0].blocks[1].content == document.pages[0].blocks[1].content
+    assert document.pages[0].blocks[1].kind == "heading"
+    feedback = create.call_args.kwargs["messages"][-1]["content"][0]["text"]
+    assert "missing=['body']" in feedback
+
+
 def test_structure_keeps_cover_out_of_body_heading_hierarchy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
