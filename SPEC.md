@@ -142,18 +142,18 @@ Upgradeは改訂による変更箇所を確認する操作とする。英文旧�
 | POSITION | Docling Schema JSON・原本PDF | Path | `document.json`, `report.json` |
 | NORMALIZE | 位置補正済みJSON | Path | `document.json`, `report.json` |
 | LOAD | 正規化済みJSON | `Document` | `document.json` |
-| STRUCTURE | `Document`, 原本PDF, 規則 | `Document` | `document.json`, `pages/page-*.json`, `calls/*/` |
+| STRUCTURE | `Document`, 原本PDF, 原本asset, 規則 | `Document` | `document.json`, `pages/page-*.json`, `calls/*/`, `assets/` |
 | TRANSLATE | `Document`, 規則, 用語集 | `Document` | `document.json`, `chunks/*.json`, `calls/*/` |
 | REVIEW | 原文と訳文、対応候補または確定対象、規則、用語集 | `ReviewResult` | `review.json`, `chunks/*.json`, `calls/*/` |
 | DIFF | 英文旧版・新版と日本語旧版、Agentが選んだ対象 | `UpgradePlan` | `plan.json`, `calls/*/` |
 | FIX | `Document`, `ReviewResult` | `FixResult` | `document.json`, `outcomes.json` |
-| LINT | `Document`, 原本asset | `LintResult` | `report.json` |
+| LINT | `Document`, STRUCTUREのasset | `LintResult` | `report.json` |
 | COVER | 入力PDF | `CoverResult` | `cover.png`, `manifest.json` |
 | MARKDOWN | `Document`, `CoverResult`, asset | MarkdownのPath | `document.ja.md`, `assets/` |
 | PANDOC | Markdown, template | 中間DOCXのPath | `document.raw.docx` |
 | OOXML | 中間DOCX | DOCXのPath | `document.ja.docx` |
 
-MERGEの `assets/` を原本assetの正本とする。後続Taskはこれを変更せず、MARKDOWNだけが公開用の `assets/` へ複製する。
+MERGEの `assets/` を原本assetの正本とする。STRUCTUREはこれを自身の `assets/` へ複製し、画像から数式と確認した領域の切出し画像を追加する。後続TaskはSTRUCTUREのassetを参照し、MARKDOWNが公開用の `assets/` へ複製する。以前のTaskの成果物は変更しない。
 
 NORMALIZEは入力PDFから抽出された目次・図一覧・表一覧の見出しと項目を出力対象から除外する。同じページの短い本文・表・画像・コードも保持し、本文の長さを基準にページ全体を削除しない。Doclingの`document_index`ラベルだけでは削除せず、リーダー付き項目、または一覧見出しと表のページ参照を確認する。目次と確認できない要素は表・画像・本文として保持する。NORMALIZEとLOADは同じ判定を使用する。公開時にPANDOCが出力DOCXへ生成する一覧は保持する。
 
@@ -400,8 +400,8 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 #### 🧩 STRUCTURE
 
 - 基本単位は1ページとする。
-- 入力で見出しになっているBlockはすべて、変更の有無によらず `kind` を明示した `StructurePatch` を返す。抽出時の分類を前提にせず、通常の説明文は段落へ戻す。他のBlockは変更が必要なpatchだけを返す。
-- 見出しの判定漏れは既存のLLM応答訂正枠へ返し、未確認のまま成功させない。保存済みCallも同じ網羅性を検証し、判定漏れがある応答は再利用しない。
+- 入力で見出しまたは1セルの表になっているBlockはすべて、変更の有無によらず `kind` を明示した `StructurePatch` を返す。抽出時の分類を前提にせず、通常の説明文は段落へ戻す。他のBlockは変更が必要なpatchだけを返す。
+- 見出し・1セル表の判定漏れは既存のLLM応答訂正枠へ返し、未確認のまま成功させない。保存済みCallも同じ網羅性を検証し、判定漏れがある応答は再利用しない。
 - Block本文の再出力を要求しない。
 - 先頭ページは表紙として扱い、その見出しを本文の見出し履歴とページ境界の階層補正へ使用しない。本文の階層は本文中の見出しと章節番号から判断する。
 - 数字の章節番号で始まる本文見出しは、番号の深さをlevelへ反映する（`1`・`7`は1、`7.1`は2）。先頭の整数は1〜3桁とし、4桁の年号を章番号として扱わない。対応するlevelの上限は6とする。
@@ -427,6 +427,8 @@ Captionの移動先は図・表に限定し、補正後も見出しである要�
 LOADは結合セルを通常セルの矩形格子へ展開する。結合範囲の左上セルに本文と画像を一度だけ配置し、残りのセルを空欄とする。横結合・縦結合とも同じ規則とし、元の行数・列数と読み順を保持する。空欄は意図した表構造として扱い、翻訳対象へ含めない。結合範囲が重複して本文の配置を一意に決められない場合は構造エラーとし、本文を捨てたり重複させたりしない。
 表と画像が一部だけ重なり、親参照またはセル参照による所属根拠がない場合、LOADは画像を表へ移さず独立した図として保持する。明示的な所属根拠と座標が矛盾する場合は処理を失敗させる。
 提案された `kind` に必要な `content`、`level`、`alert_kind`、`image` または `cells` が既存Blockとpatchに存在しない場合は、その `kind` 変更だけを適用せず診断情報へ記録する。
+
+1セルの表が数式だけの領域と確認された場合は、セルの `TextUnit` をIDと原文を保ったままBlockの `content` へ移す。複数セル、独立した本文、Captionまたは画像を持つ表はこの変換の対象外とする。新たに数式と確認されたBlockは原本PDFの領域を300 DPI・2 ptの余白で切り出し、`assets/formulas/` へ保存する。`Image` に実寸と参照先を保持し、数式Spanはコードとして翻訳対象外にする。既に数式として抽出された要素は従来の数式表現を保持する。
 
 #### 🌐 TRANSLATE
 
@@ -463,12 +465,12 @@ LLM失敗は出力token上限、応答byte上限、入力/context上限、timeou
 
 ### 🧹 公開前検査と表紙
 
-LINTは最終DocumentとMERGEの原本assetを対象に、次を決定的に検査する。
+LINTは最終DocumentとSTRUCTUREのassetを対象に、次を決定的に検査する。
 
 - Page、Block、TextUnit、TextSpan、ImageおよびTableCellのIDがDocument内で一意である。
 - Page番号とBlockの読み順が矛盾しない。
 - Blockの `kind` に必要なfieldが存在する。
-- asset pathが相対pathであり、`..` を含まず、MERGEの原本assetとして存在する。
+- asset pathが相対pathであり、`..` を含まず、STRUCTUREのassetとして存在する。
 - TableCellのrowとcolumnが0以上であり、同じ座標のセルが重複せず、各行の列数が揃う。結合セルを展開した空欄を正しいセルとして扱い、本文や画像が欠落・重複していない。
 - Document内の参照IDが存在し、参照先の種類が正しい。
 
@@ -503,6 +505,7 @@ Upgradeで確認済みの対象への新規比較や不完全な再確認を選�
 - 図表Captionの先頭にある `図 1 `、`表1：`、`Figure 1: `、`Fig. 1. `、`Table 2.1: ` のようなラベルと番号は、Pandocの自動採番との重複を避けるため出力時に除く。Captionの説明中の数字、通常本文および箇条書きの数字は変更しない。
 - 番号の除去は公開用の複製に適用する。照合とResumeに使う `Document` の原文・訳文は変更しない。
 - 脚注は同じページの元番号と本文中の独立した参照Spanが一意に対応し、訳文にも同じ番号が残る場合にPandocの脚注参照へ変換する。この場合だけ脚注本文の元番号を公開用の複製から除き、本文末尾へ参照番号を重ねて追加しない。参照が欠落・重複して対応を特定できない場合は、元番号と本文を `Footnote Block Text` styleの段落として保持し、参照を捏造しない。
+- 原本画像を持つ数式はPNGのDPI情報を保持し、実寸を基準にPandocが本文幅へ収める。原本の書式や枠も画像に含まれるため、数式styleの枠を重ねない。文字抽出の誤りを推測で置換しない。画像を持たない数式はPandocの数式記法で出力する。
 
 ### 📦 DOCXの生成と公開
 
@@ -683,6 +686,8 @@ LOADは解析結果から `Document` を作成する。STRUCTUREは見出しな�
 | `language` | `str \| None` |
 | `alert_kind` | `AlertKind \| None` |
 
+`bbox` は表示ページの左上を原点としたleft・top・right・bottomのpt座標とする。LOADはDoclingの座標原点を変換し、既存の幾何検証を適用する。画像の切出し時には、旧成果物のtopがbottomより大きいBOTTOMLEFT座標も変換して扱う。
+
 Block種類ごとの主な使用項目は次のとおりとする。
 
 | `kind` | 使用項目 |
@@ -692,7 +697,7 @@ Block種類ごとの主な使用項目は次のとおりとする。
 | `list_item` | `content`, `level`, `ordered`, `checked` |
 | `alert` | `content`, `alert_kind` |
 | `code` | `content`, `language` |
-| `formula` | `content` |
+| `formula` | `content`。原本画像で保持する場合は `image` も持つ |
 | `figure` | `image` |
 | `table` | `caption`, `cells` |
 | `horizontal_rule` | 追加項目なし |

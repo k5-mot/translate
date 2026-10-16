@@ -3,6 +3,7 @@
 import json
 import math
 import re
+import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,9 @@ from translate.models.document import (
     BlockKind,
     Document,
     Page,
+)
+from translate.models.document import (
+    Image as DocumentImage,
 )
 
 # ローカルGemma VLMで安定して処理できる実測上限にpage画像を収める。
@@ -121,6 +125,11 @@ class StructureTask:
         if self.config.openai_structure_model is None:
             raise ValueError("structure model is required")
         self.task_directory.mkdir(parents=True, exist_ok=True)
+        original_assets = processing_directory / "converter" / "merge" / "assets"
+        if original_assets.is_dir():
+            shutil.copytree(
+                original_assets, self.task_directory / "assets", dirs_exist_ok=True
+            )
         diagnostics_path = processing_directory / "task-structure.json"
         diagnostics: list[str] = []
         _write_diagnostics(diagnostics_path, diagnostics)
@@ -137,6 +146,9 @@ class StructureTask:
             used_call_ids: list[str] = []
             self.heading_history: list[dict[str, object]] = []
             for page in updated.pages:
+                native_formulas = {
+                    block.id for block in page.blocks if block.kind == "formula"
+                }
                 page_responses: list[tuple[str, StructureResponse]] = []
                 image = self.task_directory / "pages" / f"page-{page.number:04d}.png"
                 if not image.is_file():
@@ -160,6 +172,9 @@ class StructureTask:
                     )
                 used_call_ids.extend(call_id for call_id, _ in page_responses)
                 _apply_page(page, page_responses, diagnostics)
+                for block in page.blocks:
+                    if block.kind == "formula" and block.id not in native_formulas:
+                        self._preserve_formula(block, page, source_pdf)
                 self.heading_history.extend(_page_heading_history(page))
                 del self.heading_history[:-8]
                 write_model(
@@ -179,6 +194,50 @@ class StructureTask:
             return updated
         finally:
             client.client.close()
+
+    def _preserve_formula(self, block: Block, page: Page, source: Path) -> None:
+        """文字抽出では再現できない数式を原本画像と物理寸法で保持する。
+
+        Args:
+            block: 画像から新たに数式と判定されたBlock。
+            page: 左上原点のBlock座標とページ寸法。
+            source: 切出し元の原本PDF。
+
+        Raises:
+            ValueError: 数式の領域またはページ寸法が欠損・不正な場合。
+        """
+        if block.bbox is None or page.width is None or page.height is None:
+            raise ValueError(
+                "Formula image requires page dimensions and a bounding box"
+            )
+        left, top, right, bottom = block.bbox
+        # 旧LOAD成果物はDoclingのBOTTOMLEFT座標をそのまま保存していた。
+        if top > bottom:
+            top, bottom = page.height - top, page.height - bottom
+        if not (
+            all(
+                math.isfinite(value) for value in (*block.bbox, page.width, page.height)
+            )
+            and 0 <= left < right <= page.width
+            and 0 <= top < bottom <= page.height
+        ):
+            raise ValueError("Formula image bounds must lie within the page")
+        # 字形の端を切らないよう2 ptの余白を付け、数式には印刷用の300 DPIを使う。
+        clip = (
+            max(0, left - 2),
+            max(0, top - 2),
+            min(page.width, right + 2),
+            min(page.height, bottom + 2),
+        )
+        relative = f"assets/formulas/{canonical_hash(block.id)}.png"
+        render_page(source, page.number, self.task_directory / relative, 300, clip=clip)
+        block.image = DocumentImage(
+            id=f"{block.id}/formula-image",
+            asset_path=relative,
+            alt_text="数式 (原本画像)",
+            width_pt=clip[2] - clip[0],
+            height_pt=clip[3] - clip[1],
+        )
 
     def _execute(
         self,
@@ -203,23 +262,28 @@ class StructureTask:
         """
 
         target_ids = [block.id for block in blocks]
-        headings = {block.id for block in blocks if block.kind == "heading"}
+        required_kinds = {
+            block.id
+            for block in blocks
+            if block.kind == "heading"
+            or (block.kind == "table" and len(block.cells) == 1)
+        }
 
         def validate(response: StructureResponse) -> None:
-            """既存の見出し候補を未確認のまま残す応答を訂正対象にする。
+            """見出し候補と1セル表を未確認のまま残す応答を訂正対象にする。
 
             Args:
                 response: LLMまたは保存済みCallの構造判定。
 
             Raises:
-                ValueError: 種別の明示的な判定がない見出し候補がある場合。
+                ValueError: 見出しまたは1セル表の明示的な種別判定がない場合。
             """
-            missing = headings - {
+            missing = required_kinds - {
                 patch.block_id for patch in response.patches if patch.kind is not None
             }
             if missing:
                 raise ValueError(
-                    f"Classify every existing heading with an explicit kind; missing={sorted(missing)}"
+                    f"Classify every existing heading and single-cell table with an explicit kind; missing={sorted(missing)}"
                 )
 
         call_id = llm_call_id("STRUCTURE", target_ids, lineage)
@@ -259,8 +323,8 @@ class StructureTask:
                 model=self.config.openai_structure_model or "",
                 response_type=StructureResponse,
                 system=(
-                    "Inspect the page image and explicitly classify every existing heading, "
-                    "including unchanged headings. Existing kinds are extraction candidates, not confirmed facts. "
+                    "Inspect the page image and explicitly classify every existing heading and single-cell table, "
+                    "including unchanged ones. Existing kinds are extraction candidates, not confirmed facts. "
                     "Demote ordinary body sentences to paragraph. For other blocks return only necessary patches. "
                     "Never rewrite text or IDs. Caption is not a block kind; associate a "
                     "caption only with caption_source_id. Heading levels are document-global; "
@@ -276,7 +340,7 @@ class StructureTask:
                 contract=(
                     '{"patches":[{"block_id":string,"kind"?:string,"level"?:integer,'
                     '"alert_kind"?:string,"caption_source_id"?:string}]}. '
-                    f"At most {len(blocks)} patches. Explicit kind is required for every existing heading."
+                    f"At most {len(blocks)} patches. Explicit kind is required for every existing heading and single-cell table."
                 ),
                 native_schema=_schema(len(blocks)),
                 input_tokens=self.config.structure_input_tokens,
@@ -438,6 +502,8 @@ def _block_payload(block: Block) -> dict[str, object]:
         "kind": block.kind,
         "text": text,
         "level": block.level,
+        "bbox": block.bbox,
+        "cell_count": len(block.cells),
     }
 
 
@@ -489,6 +555,14 @@ def _apply_page(
                     f"{call_id} invalid_kind {patch.block_id} {patch.kind}"
                 )
             elif patch.kind is not None:
+                if patch.kind == "formula":
+                    if block.kind == "table":
+                        block.content = block.cells[0].content
+                        block.cells = []
+                    if block.content is not None:
+                        for span in block.content.spans:
+                            if span.kind != "line_break":
+                                span.kind = "code"
                 block.kind = patch.kind
             if patch.level is not None and block.kind == "heading":
                 block.level = patch.level
@@ -639,6 +713,23 @@ def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
     kind = patch.kind
     if kind is None:
         return True
+    formula_cell = (
+        kind == "formula"
+        and block.kind == "table"
+        and len(block.cells) == 1
+        and not block.cells[0].images
+        and block.content is None
+        and block.image is None
+        and block.caption is None
+    )
+    if kind == "formula" and block.kind == "table" and not formula_cell:
+        return False
+    if (
+        kind == "formula"
+        and block.kind != "formula"
+        and (block.bbox is None or block.caption is not None)
+    ):
+        return False
     # 章節番号付きの見出しを段落化すると、Wordの採番と目次から章が欠落する。
     if (
         block.kind == "heading"
@@ -658,7 +749,7 @@ def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
         "footnote",
     }
     return not (
-        (content_required and block.content is None)
+        (content_required and block.content is None and not formula_cell)
         or (kind == "heading" and patch.level is None and block.level is None)
         or (kind == "alert" and patch.alert_kind is None and block.alert_kind is None)
         or (kind == "figure" and block.image is None)

@@ -115,6 +115,7 @@ class Block(DocumentModel):
     id: str = Field(min_length=1)
     order: int = Field(ge=0)
     kind: BlockKind
+    # LOADは表示ページの左上原点へ正規化し、left/top/right/bottomをptで保持する。
     bbox: tuple[float, float, float, float] | None = None
     content: TextUnit | None = None
     caption: TextUnit | None = None

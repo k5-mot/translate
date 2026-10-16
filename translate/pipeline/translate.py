@@ -167,7 +167,11 @@ class TranslatePipeline:
         structure_dir = self.root / "preprocess" / "structure"
         reused = run(
             TaskName.STRUCTURE,
-            {"document": document, "source": self.record.source.sha256},
+            {
+                "document": document,
+                "source": self.record.source.sha256,
+                "assets": _tree_hash(merge_dir / "assets"),
+            },
             [
                 (
                     structure_dir,
@@ -246,8 +250,8 @@ class TranslatePipeline:
         lint_dir = self.root / "publisher" / "lint"
         run(
             TaskName.LINT,
-            {"document": document, "assets": _tree_hash(merge_dir / "assets")},
-            [(lint_dir, partial(_lint_and_write, document, merge_dir, lint_dir))],
+            {"document": document, "assets": _tree_hash(structure_dir / "assets")},
+            [(lint_dir, partial(_lint_and_write, document, structure_dir, lint_dir))],
         )
         if not load_model(lint_dir / "report.json", LintResult).valid:
             self._stop("lint_failed", "Document structure is not publishable.")
@@ -266,7 +270,7 @@ class TranslatePipeline:
             {
                 "document": document,
                 "cover": cover,
-                "assets": _tree_hash(merge_dir / "assets"),
+                "assets": _tree_hash(structure_dir / "assets"),
             },
             [
                 (
@@ -278,7 +282,7 @@ class TranslatePipeline:
                         document,
                         markdown_path,
                         self.root / cover.image.relative_path,
-                        merge_dir,
+                        structure_dir,
                         set(cover.excluded_page_numbers),
                     ),
                 )

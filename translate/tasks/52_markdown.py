@@ -162,9 +162,9 @@ class MarkdownTask:
             longest = max((len(value) for value in re.findall(r"`+", raw)), default=0)
             fence = "`" * max(3, longest + 1)
             return f"{fence}{block.language or ''}\n{raw}\n{fence}"
-        if block.kind == "formula":
+        if block.kind == "formula" and block.image is None:
             return f"$$\n{block.content.text() if block.content else ''}\n$$"
-        if block.kind == "figure" and block.image is not None:
+        if block.kind in {"figure", "formula"} and block.image is not None:
             caption = convert_text_unit(
                 _without_number(block.image.caption, _CAPTION_NUMBER)
             )

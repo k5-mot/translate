@@ -8,8 +8,10 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+import pypdfium2 as pdfium
 import pytest
 from PIL import Image as PILImage
+from PIL import ImageChops
 
 from tests import successful_review
 from translate.adapters.glossary import Glossary
@@ -20,6 +22,7 @@ from translate.adapters.llm import (
     StructuredResult,
 )
 from translate.adapters.pandoc import Pandoc
+from translate.adapters.pdf import render_page
 from translate.common.config import Config
 from translate.models.artifacts import ReviewResult
 from translate.models.document import (
@@ -131,6 +134,201 @@ def _unit(identifier: str, source: str, translated: str | None = None) -> TextUn
             )
         ],
     )
+
+
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_render_page_clips_in_display_coordinates(
+    tmp_path: Path, rotation: int
+) -> None:
+    """回転ページでも左上原点の切出しが全体画像の同じ領域と一致する。"""
+    source = tmp_path / "source.pdf"
+    picture = PILImage.new("RGB", (100, 80), "white")
+    picture.paste("black", (10, 20, 40, 60))
+    picture.save(source, resolution=72)
+    if rotation:
+        with pdfium.PdfDocument(source) as pdf:
+            page = pdf[0]
+            page.set_rotation(rotation)
+            page.close()
+            pdf.save(tmp_path / "rotated.pdf")
+        source = tmp_path / "rotated.pdf"
+    render_page(source, 1, tmp_path / "full.png", 72)
+    assert render_page(source, 1, tmp_path / "clip.png", 72, clip=(10, 20, 40, 60)) == (
+        30,
+        40,
+    )
+    with (
+        PILImage.open(tmp_path / "full.png") as full,
+        PILImage.open(tmp_path / "clip.png") as clipped,
+    ):
+        assert clipped.info["dpi"] == pytest.approx((72, 72), abs=0.01)
+        assert (
+            ImageChops.difference(full.crop((10, 20, 40, 60)), clipped).getbbox()
+            is None
+        )
+    for invalid in (
+        (-1, 0, 10, 10),
+        (0, 10, 10, 5),
+        (0, 0, 101, 10),
+        (0, float("nan"), 10, 20),
+    ):
+        with pytest.raises(ValueError, match="clip"):
+            render_page(source, 1, tmp_path / "invalid.png", 72, clip=invalid)
+    assert not (tmp_path / "invalid.png").exists()
+
+
+@pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
+def test_load_normalizes_block_coordinates_for_formula_image(origin: str) -> None:
+    """Doclingの座標原点が違っても、原本画像の同じ領域を指すBlockに変換する。"""
+    result = DocumentLoader(
+        {
+            "schema_name": "DoclingDocument",
+            "pages": {"1": {"size": {"width": 100, "height": 80}}},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": "Equation",
+                    "prov": [
+                        {
+                            "page_no": 1,
+                            "bbox": {
+                                "l": 10,
+                                "r": 40,
+                                "t": 20 if origin == "TOPLEFT" else 60,
+                                "b": 60 if origin == "TOPLEFT" else 20,
+                                "coord_origin": origin,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    ).load()
+    assert result.pages[0].blocks[0].bbox == (10, 20, 40, 60)
+
+
+@pytest.mark.parametrize("legacy_coordinates", [False, True])
+def test_structure_preserves_misclassified_formula_as_source_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, legacy_coordinates: bool
+) -> None:
+    """1セル数式の原文IDを保持し、Task所有画像・Lint・Markdown・再開まで通す。"""
+    source, assets = tmp_path / "source.pdf", tmp_path / "converter/merge/assets"
+    picture = PILImage.new("RGB", (100, 80), "white")
+    picture.paste("black", (10, 20, 40, 60))
+    picture.save(source, resolution=72)
+    assets.mkdir(parents=True)
+    picture.save(assets / "original.png")
+    table = Block(
+        id="table",
+        kind="table",
+        order=0,
+        bbox=(10, 60, 40, 20) if legacy_coordinates else (10, 20, 40, 60),
+        cells=[
+            TableCell(
+                id="cell", row=0, column=0, content=_unit("cell-content", "E=mcଶ")
+            )
+        ],
+    )
+    native = Block(
+        id="native",
+        kind="formula",
+        order=1,
+        content=TextUnit(
+            id="native/content",
+            spans=[TextSpan(id="native/span", kind="code", source="E=mc^2")],
+        ),
+    )
+    document = Document(
+        pages=[Page(number=1, width=100, height=80, blocks=[table, native])]
+    )
+    before = document.model_dump()
+    module = import_module("translate.tasks.13_structure")
+    client = MagicMock()
+    client.structured.return_value = StructuredResult(
+        StructureResponse(patches=[StructurePatch(block_id="table", kind="formula")]),
+        1,
+        100,
+        20,
+    )
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+    directory = tmp_path / "structure"
+    task = module.StructureTask(
+        Config(openai_structure_model="model"), directory, "rules"
+    )
+    result = task.run(document, source, tmp_path)
+    formula = result.pages[0].blocks[0]
+    assert formula.kind == "formula"
+    assert not formula.cells
+    assert formula.content.id == "cell-content"
+    assert formula.content.spans[0].kind == "code"
+    assert formula.content.text("source") == "E=mcଶ"
+    assert formula.image is not None
+    assert (directory / formula.image.asset_path).is_file()
+    assert (directory / "assets/original.png").read_bytes() == (
+        assets / "original.png"
+    ).read_bytes()
+    assert result.pages[0].blocks[1].image is None
+    assert lint(result, directory).valid
+    markdown = tmp_path / "markdown/document.md"
+    MarkdownTask(Pandoc(30)).run(
+        result, markdown, assets / "original.png", directory, set()
+    )
+    text = markdown.read_text(encoding="utf-8")
+    assert formula.image.asset_path in text
+    assert 'custom-style="数式ブロック"' not in text
+    assert "E=mcଶ" not in text
+    assert "$$\nE=mc^2\n$$" in text
+    assert (markdown.parent / formula.image.asset_path).read_bytes() == (
+        directory / formula.image.asset_path
+    ).read_bytes()
+    assert document.model_dump() == before
+    assert task.run(document, source, tmp_path) == result
+    client.structured.assert_called_once()
+
+
+@pytest.mark.parametrize("extra", ["cell", "image", "caption", "geometry", "content"])
+def test_structure_keeps_tables_that_cannot_be_preserved_as_one_formula(
+    extra: str,
+) -> None:
+    """複数セル・画像・Captionを失う変換や、切出し領域のない表の数式化を拒否する。"""
+    block = Block(
+        id="table",
+        kind="table",
+        order=0,
+        bbox=(10, 20, 40, 60),
+        cells=[
+            TableCell(
+                id="cell", row=0, column=0, content=_unit("cell-content", "Equation")
+            )
+        ],
+    )
+    if extra == "cell":
+        block.cells.append(
+            TableCell(id="other", row=0, column=1, content=_unit("other", "Other"))
+        )
+    elif extra == "image":
+        block.cells[0].images.append(Image(id="image", asset_path="assets/image.png"))
+    elif extra == "caption":
+        block.caption = _unit("caption", "Caption")
+    elif extra == "content":
+        block.content = _unit("body", "Additional text")
+    else:
+        block.bbox = None
+    before = block.model_dump()
+    _apply_page(
+        Page(number=1, blocks=[block]),
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=[StructurePatch(block_id="table", kind="formula")]
+                ),
+            )
+        ],
+        [],
+    )
+    assert block.model_dump() == before
 
 
 def _translation_document(spans: list[TextSpan]) -> Document:
@@ -1433,10 +1631,15 @@ def test_structure_does_not_normalize_same_page_heading_reset() -> None:
 
 
 @pytest.mark.parametrize("cached_omission", [False, True])
-def test_structure_requires_classification_of_every_existing_heading(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cached_omission: bool
+@pytest.mark.parametrize("candidate_kind", ["heading", "table"])
+def test_structure_requires_classification_of_required_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_kind: str,
+    *,
+    cached_omission: bool,
 ) -> None:
-    """Doclingの誤った見出しを未確認で残す応答は訂正させ、本文を変えず段落へ戻す。"""
+    """見出しと1セル表を未確認で残す応答は訂正させ、原文とIDを保持する。"""
     module = import_module("translate.tasks.13_structure")
     config = Config(
         openai_base_url="http://127.0.0.1:1/v1",
@@ -1459,9 +1662,21 @@ def test_structure_requires_classification_of_every_existing_heading(
                     Block(
                         id="body",
                         order=1,
-                        kind="heading",
-                        level=6,
-                        content=_unit("body/content", "Read the reference document. 1"),
+                        kind=candidate_kind,
+                        level=6 if candidate_kind == "heading" else None,
+                        content=_unit("body/content", "Read the reference document. 1")
+                        if candidate_kind == "heading"
+                        else None,
+                        cells=[
+                            TableCell(
+                                id="cell",
+                                row=0,
+                                column=0,
+                                content=_unit("cell/content", "Value"),
+                            )
+                        ]
+                        if candidate_kind == "table"
+                        else [],
                     ),
                 ],
             )
@@ -1476,7 +1691,10 @@ def test_structure_requires_classification_of_every_existing_heading(
         [StructurePatch(block_id="title", kind="heading", level=1)],
         [
             StructurePatch(block_id="title", kind="heading", level=1),
-            StructurePatch(block_id="body", kind="paragraph"),
+            StructurePatch(
+                block_id="body",
+                kind="paragraph" if candidate_kind == "heading" else "table",
+            ),
         ],
     ):
         response = MagicMock()
@@ -1508,9 +1726,12 @@ def test_structure_requires_classification_of_every_existing_heading(
         document, tmp_path / "source.pdf", tmp_path
     )
     assert create.call_count == 2
-    assert result.pages[0].blocks[1].kind == "paragraph"
+    assert result.pages[0].blocks[1].kind == (
+        "paragraph" if candidate_kind == "heading" else "table"
+    )
     assert result.pages[0].blocks[1].content == document.pages[0].blocks[1].content
-    assert document.pages[0].blocks[1].kind == "heading"
+    assert result.pages[0].blocks[1].cells == document.pages[0].blocks[1].cells
+    assert document.pages[0].blocks[1].kind == candidate_kind
     feedback = create.call_args.kwargs["messages"][-1]["content"][0]["text"]
     assert "missing=['body']" in feedback
 

@@ -83,37 +83,6 @@ def _page_number(item: dict[str, Any]) -> int:
     return 1
 
 
-def _bbox(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
-    """provenanceのbboxを数値tupleへ変換する。
-
-    Args:
-        item: Docling要素。
-
-    Returns:
-        left、top、right、bottom。利用不能ならNone。
-    """
-
-    provenance = item.get("prov")
-    if (
-        not isinstance(provenance, list)
-        or not provenance
-        or not isinstance(provenance[0], dict)
-    ):
-        return None
-    box = provenance[0].get("bbox")
-    if not isinstance(box, dict):
-        return None
-    try:
-        return (
-            float(box["l"]),
-            float(box["t"]),
-            float(box["r"]),
-            float(box["b"]),
-        )
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
 def _inline(
     ref: str,
     text: str,
@@ -772,6 +741,13 @@ class DocumentLoader:
                 raise ValueError(msg)
             block = self._block(item, page_orders[number], list_level, parent_ordered)
             if block is not None:
+                provenance = item.get("prov")
+                if (
+                    isinstance(provenance, list)
+                    and provenance
+                    and isinstance(provenance[0], dict)
+                ):
+                    block.bbox = _top_left_box(provenance[0].get("bbox"), pages[number])
                 pages[number].blocks.append(block)
                 page_orders[number] += 1
         self._assign_cell_images(pages)
@@ -1088,7 +1064,6 @@ class DocumentLoader:
                 id=ref,
                 order=order,
                 kind="table",
-                bbox=_bbox(item),
                 caption=self._caption_inlines(item, ref),
                 cells=_table_cells(item, ref),
             )
@@ -1109,7 +1084,6 @@ class DocumentLoader:
                 id=ref,
                 order=order,
                 kind="figure",
-                bbox=_bbox(item),
                 image=Image(
                     id=f"{ref}/image-0001",
                     asset_path=uri,
@@ -1143,7 +1117,6 @@ class DocumentLoader:
             id=ref,
             order=order,
             kind=cast("BlockKind", kind),
-            bbox=_bbox(item),
             content=TextUnit(
                 id=f"{ref}/content",
                 spans=_inline_from_item(item, f"{ref}/content", text, inline_kind),
