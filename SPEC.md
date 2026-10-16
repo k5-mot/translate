@@ -1819,7 +1819,7 @@ factory、DI framework、旧関数へ転送するだけの互換wrapperは設け
 
 `common/config.py` の `Config` は `pydantic_settings.BaseSettings` を直接継承する。`_EnvironmentConfig` と `BaseModel` への再変換を設けない。`load_config()` が現在の作業directoryの `.env` を指定して `Config` を生成し、同名のprocess環境変数を優先する。数値範囲と型はfield定義で検証する。環境変数の組合せ、token予算、操作ごとの必須項目、および任意のRAG設定の完全性は `validate_config(config, operation)` 一つで扱い、`require_translate()`、`require_review()`、`require_register()` など用途別の検証関数へ分けない。設定エラーは `ConfigError` としてUIへ返す。外部clientの生成、Artifactの読書きおよびPipelineの実行は行わない。
 
-`common/logger.py` は標準Libraryの `logging` で `translate` Loggerを設定する。`LOG_LEVEL` の既定値は `INFO` とする。ログの保存先はPipelineが確定した処理ディレクトリ直下の `app.log` とし、`LOG_FILEPATH` による保存先の指定は設けない。ファイルには日次ローテーションと7世代の保持を適用し、ローテーション後のログも同じ処理ディレクトリへ保存する。同じログを標準エラーにも出力する。formatには時刻、level、file名、行番号、関数名およびmessageを含める。標準エラーのhandlerはprocess内で一度だけ初期化する。file handlerは処理開始時に設定し、終了時に閉じて外す。同じ処理への再設定でhandlerを重複追加せず、別の処理IDのログを混在させない。Resumeでは既存ログへ追記する。処理ディレクトリが確定する前のログは標準エラーだけへ出力する。専用のLogger subclassや `LogRecord` を変更するfilter、ANSI色付けは設けない。本文、認証情報、Vector、応答payloadは記録せず、開始、完了、再試行、失敗の種別と件数を記録する。
+`common/logger.py` は標準Libraryの `logging` で `translate` Loggerを設定する。`LOG_LEVEL` の既定値は `INFO` とする。ログの保存先はPipelineが確定した処理ディレクトリ直下の `app.log` とし、`LOG_FILEPATH` による保存先の指定は設けない。ファイルには日次ローテーションと7世代の保持を適用し、ローテーション後のログも同じ処理ディレクトリへ保存する。同じログを標準エラーにも出力する。formatには時刻、level、file名、行番号、関数名およびmessageを含める。標準エラーのhandlerはprocess内で一度だけ初期化する。file handlerは処理開始時に設定し、終了時に閉じて外す。同じ処理への再設定でhandlerを重複追加せず、別の処理IDのログを混在させない。Resumeでは既存ログへ追記する。処理ディレクトリが確定する前のログは標準エラーだけへ出力する。専用のLogger subclassや `LogRecord` を変更するfilter、ANSI色付けは設けない。本文、認証情報、Vector、応答payloadは記録せず、開始、完了、再試行、失敗の種別と件数を記録する。例外による中断時は、例外型と発生箇所のfile名・行番号・関数名を記録する。例外本文とsource行はログに含めない。
 
 rootの `main.py` は `translate.ui.main` を呼び出す。UIは4つのPipelineをbackground workerから実行する。
 

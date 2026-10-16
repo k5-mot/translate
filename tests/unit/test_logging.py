@@ -1,6 +1,7 @@
 """処理IDごとのログ分離とhandlerの寿命を検証する。"""
 
 import logging
+import re
 from collections.abc import Iterator
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -81,4 +82,9 @@ def test_logging_closes_on_failure_without_exception_payload(
     assert application_logger.handlers == handlers
     output = (tmp_path / "app.log").read_text(encoding="utf-8")
     assert "ValueError" in output
+    assert re.search(
+        r"location=test_logging\.py:\d+:"
+        r"test_logging_closes_on_failure_without_exception_payload",
+        output,
+    )
     assert "secret-payload" not in output

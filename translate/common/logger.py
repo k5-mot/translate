@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from logging.handlers import TimedRotatingFileHandler
@@ -54,8 +55,15 @@ def processing_logging(directory: Path, level: str) -> Iterator[None]:
         logger.info("処理開始")
         yield
     except BaseException as error:
-        # 例外本文には入力文書や認証情報が入り得るため、種別だけを記録する。
-        logger.error("処理中断 type=%s", type(error).__name__)  # noqa: TRY400
+        # 例外本文やsource行には機密情報が入り得るため、種別と発生位置だけを残す。
+        frame = traceback.extract_tb(error.__traceback__, limit=-1)[0]
+        logger.error(  # noqa: TRY400
+            "処理中断 type=%s location=%s:%d:%s",
+            type(error).__name__,
+            Path(frame.filename).name,
+            frame.lineno,
+            frame.name,
+        )
         raise
     else:
         logger.info("処理完了")
