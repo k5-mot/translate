@@ -1607,10 +1607,14 @@ def test_upgrade_reselects_after_diff_response_validation_fails(
     assert result.reviewed_source_v2_ids == ["new1", "new2"]
 
 
-def test_upgrade_halves_scope_after_input_budget_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+@pytest.mark.parametrize("failure", [LLMInputExceededError, LLMInvalidResponseError])
+def test_upgrade_halves_scope_after_diff_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    failure: type[Exception],
 ) -> None:
-    """入力予算超過後は許容対象数を半減し、残りの英文を確認する。"""
+    """DIFF失敗後は許容対象数を半減し、残りの英文を確認する。"""
     documents = {
         "source_v1": document(old1="First", old2="Second"),
         "source_v2": document(new1="First", new2="Second"),
@@ -1629,8 +1633,8 @@ def test_upgrade_halves_scope_after_input_budget_failure(
         nonlocal calls
         calls += 1
         if calls == 1:
-            message = "Selected document scope exceeds budget"
-            raise LLMInputExceededError(message)
+            message = "Selected document scope failed"
+            raise failure(message)
         references = {
             role: [unit.id for unit in values] for role, values in units.items()
         }

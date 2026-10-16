@@ -358,6 +358,11 @@ class UpgradeAgent:
                             f"Select at most {max_reference_ids} document units."
                         }
                     except LLMInvalidResponseError:
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 2:
+                            max_reference_ids = max(
+                                2, min(max_reference_ids - 1, selected_count // 2)
+                            )
                         for role, opposite in (
                             ("source_v1", "source_v2"),
                             ("source_v2", "source_v1"),
@@ -371,7 +376,12 @@ class UpgradeAgent:
                                 one_sided_failures[role] += 1
                         observation = {
                             "error": "The comparison returned an invalid response after its validation retry. "
-                            "No result was accepted. Inspect context and select a different or smaller group."
+                            "No result was accepted. "
+                            + (
+                                f"Select at most {max_reference_ids} document units."
+                                if selected_count > 2
+                                else "Select a different or smaller group."
+                            )
                         }
                     except InputError as error:
                         observation = {"error": str(error)}
