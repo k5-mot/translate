@@ -330,6 +330,8 @@ LLM応答モデルは処理内容に応じて `StructureResponse`、`Translation
 対象IDの参照先、確認範囲、操作ごとの完了条件などの説明は、すべてのstructured output方式でpromptへ含める。`json_schema` でも型定義だけに置き換えず、操作説明とSchemaの両方を入力予算へ計上する。
 REVIEWの品質確認・再確認では、`json_schema` の `assessments[].target_id` を今回の比較対象IDのenumに限定し、判定件数を比較対象数へ固定する。各対象を一度ずつ評価させ、重複・欠落、判定と修正案の整合およびSpanの所属を応答受信後も検証する。
 
+DIFFでは旧原文・新原文・旧訳の参照IDを、それぞれ今回選択した入力IDのenumに限定する。選択した要素がない側の参照は空の一覧とし、対応する旧訳が候補内にない場合も旧訳IDを捏造しない。確認済み英文IDの件数は選択範囲に合わせ、応答受信後にも所属・重複・網羅性を検証する。
+
 生成LLMは一つのOpenAI互換endpointを使用する。Embeddingと別のendpointを設定できるが、model別の振り分け、実行時の切替およびfailoverはスコープ外とする。
 
 #### 💾 LLM Call進捗とResume

@@ -137,6 +137,24 @@ class SavedLLMCalls:
                     "enum"
                 ] = [key.removeprefix("review:") for key in target_ids]
                 confirmed["minItems"] = confirmed["maxItems"] = len(target_ids)
+            if self.task == "DIFF":
+                # 同じ形のIDでも文書ごとに意味が異なるため、選択したrole内に限定する。
+                for role in ("source_v1", "source_v2", "translation_v1"):
+                    ids = [
+                        key.removeprefix(f"{role}:")
+                        for key in target_ids
+                        if key.startswith(f"{role}:")
+                    ]
+                    selected_ids = schema["$defs"]["DiffChange"]["properties"][
+                        f"{role}_ids"
+                    ]
+                    selected_ids["maxItems"] = len(ids)
+                    if ids:
+                        selected_ids["items"]["enum"] = ids
+                    if role != "translation_v1":
+                        reviewed = schema["properties"][f"reviewed_{role}_ids"]
+                        reviewed["items"] = selected_ids["items"]
+                        reviewed["minItems"] = reviewed["maxItems"] = len(ids)
             # 本文・用語・参考文の前に、送信する契約とnative Schemaの枠を確保する。
             overhead = len(f"{system}\n\n{contract}".encode()) + 512
             if config.llm_structured_output_mode == "json_schema":

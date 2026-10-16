@@ -1046,6 +1046,69 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     assert len(calls) == before + 1
 
 
+@pytest.mark.parametrize(
+    "empty_role", [None, "source_v1", "source_v2", "translation_v1"]
+)
+def test_diff_schema_limits_ids_to_each_selected_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    empty_role: str | None,
+) -> None:
+    """旧原文・新原文・旧訳のIDを混用せず、空の文書側には参照を生成させない。"""
+    documents = {
+        "source_v1": document(old="First"),
+        "source_v2": document(new="First"),
+        "translation_v1": document(ja="一つ目"),
+    }
+    units = {
+        role: [] if role == empty_role else list(doc.unit_index().values())
+        for role, doc in documents.items()
+    }
+    expected = {role: [unit.id for unit in values] for role, values in units.items()}
+
+    def answer(kwargs: dict[str, object]) -> DiffResponse:
+        """送信Schemaの候補制約を検査して、入力に整合する応答を返す。"""
+        schema = kwargs["native_schema"]
+        fields = schema["$defs"]["DiffChange"]["properties"]
+        for role, ids in expected.items():
+            selected = fields[f"{role}_ids"]
+            if ids:
+                assert selected["items"]["enum"] == ids
+            else:
+                assert selected["maxItems"] == 0
+            if role != "translation_v1":
+                reviewed = schema["properties"][f"reviewed_{role}_ids"]
+                assert reviewed["minItems"] == reviewed["maxItems"] == len(ids)
+                if ids:
+                    assert reviewed["items"]["enum"] == ids
+        return DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "kind": {"source_v1": "added", "source_v2": "deleted"}.get(
+                            empty_role, "unchanged"
+                        ),
+                        **{f"{role}_ids": ids for role, ids in expected.items()},
+                        "summary": "選択範囲の比較",
+                    }
+                ],
+                "reviewed_source_v1_ids": expected["source_v1"],
+                "reviewed_source_v2_ids": expected["source_v2"],
+            }
+        )
+
+    scripted(monkeypatch, [answer])
+    client = LLMClient(config)
+    try:
+        task = import_module("translate.tasks.21_diff").DiffTask(
+            client, tmp_path, "", ""
+        )
+        task.run(units, "match", 0)
+    finally:
+        client.client.close()
+
+
 def test_upgrade_advances_translation_candidates_after_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:

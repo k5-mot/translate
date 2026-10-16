@@ -112,6 +112,8 @@ class DiffTask:
             '"summary":"change and proposed action or uncertainty","suggested_translation":null}],'
             '"reviewed_source_v1_ids":["id"],"reviewed_source_v2_ids":["id"]}. '
             "Cover every selected English ID exactly once. Propose Japanese edits for added/modified text. "
+            "Use only IDs from the corresponding input role. Leave translation_v1_ids empty "
+            "when no supplied translation matches. "
             "Keep unchanged only for coverage. Do not create a complete document.",
             validate,
         )
