@@ -302,6 +302,11 @@ class UpgradeAgent:
                         observation = {
                             "error": "Selected scope exceeds the budget. Select fewer units."
                         }
+                    except LLMInvalidResponseError:
+                        observation = {
+                            "error": "The comparison returned an invalid response after its validation retry. "
+                            "No result was accepted. Inspect context and select a different or smaller group."
+                        }
                     except InputError as error:
                         observation = {"error": str(error)}
                     round_number += 1

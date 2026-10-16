@@ -1342,6 +1342,109 @@ def test_upgrade_advances_translation_candidates_after_confirmation(
     assert len(calls) == before + 1
 
 
+def test_upgrade_reselects_after_diff_response_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+) -> None:
+    """不正Diff応答の対象を保持し、Agentの再選択後に比較を完了する。"""
+    documents = {
+        "source_v1": document(old1="First", old2="Second"),
+        "source_v2": document(new1="First", new2="Second"),
+        "translation_v1": document(ja1="一つ目", ja2="二つ目"),
+    }
+    diff_task = import_module("translate.pipeline.upgrade").DiffTask
+    calls = 0
+
+    def diff_run(
+        _task: object,
+        units: dict[str, list[TextUnit]],
+        _operation: str,
+        round_number: int,
+    ) -> tuple[str, DiffResponse]:
+        """最初のDiffを失敗させ、その後は指定範囲を変更なしと確認する。"""
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            message = "Invalid structured response"
+            raise LLMInvalidResponseError(message)
+        references = {
+            role: [unit.id for unit in selected] for role, selected in units.items()
+        }
+        return (
+            f"call-{round_number}",
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "unchanged",
+                            **{f"{role}_ids": ids for role, ids in references.items()},
+                            "summary": "変更なし",
+                        }
+                    ],
+                    "reviewed_source_v1_ids": references["source_v1"],
+                    "reviewed_source_v2_ids": references["source_v2"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(diff_task, "run", diff_run)
+
+    def choose_first(_kwargs: dict[str, object]) -> AgentAction:
+        """失敗する最初の比較対象を指定する。"""
+        return AgentAction(
+            operation="match",
+            references={
+                "source_v1": ["old1"],
+                "source_v2": ["new1"],
+                "translation_v1": ["ja1"],
+            },
+        )
+
+    def retry_failed(kwargs: dict[str, object]) -> AgentAction:
+        """失敗を採用せず、確定済み結果と未確認対象を保つ。"""
+        value = json.loads(kwargs["user"])
+        assert "invalid response" in value["observation"]["result"]["error"].lower()
+        assert value["state"]["pending_ids"] == {
+            "source_v1": ["old1", "old2"],
+            "source_v2": ["new1", "new2"],
+        }
+        assert value["state"]["confirmed_count"] == 0
+        return choose_first(kwargs)
+
+    def choose_second(kwargs: dict[str, object]) -> AgentAction:
+        """初回範囲の成功後、未確認範囲へ進む。"""
+        value = json.loads(kwargs["user"])
+        assert value["state"]["pending_ids"] == {
+            "source_v1": ["old2"],
+            "source_v2": ["new2"],
+        }
+        return AgentAction(
+            operation="match",
+            references={
+                "source_v1": ["old2"],
+                "source_v2": ["new2"],
+                "translation_v1": ["ja2"],
+            },
+        )
+
+    scripted(
+        monkeypatch,
+        [
+            choose_first,
+            retry_failed,
+            choose_first,
+            choose_second,
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    assert calls == 3
+    assert result.reviewed_source_v1_ids == ["old1", "old2"]
+    assert result.reviewed_source_v2_ids == ["new1", "new2"]
+
+
 def test_upgrade_can_refresh_overview_between_thirteen_groups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
