@@ -231,9 +231,9 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
-                # 片側だけの比較が3回続けて失敗した場合、反対版に残りがない要素を確定する。
+                # 片側だけが残り、比較失敗または無進捗が続いた場合は対応未確認で記録する。
                 if (
-                    one_sided_failures["source_v1"] >= 3
+                    (one_sided_failures["source_v1"] >= 3 or idle_steps >= 12)
                     and not pending["source_v2"]
                     and pending["source_v1"]
                 ):
@@ -251,7 +251,7 @@ class UpgradeAgent:
                     one_sided_failures["source_v1"] = 0
                     continue
                 if (
-                    one_sided_failures["source_v2"] >= 3
+                    (one_sided_failures["source_v2"] >= 3 or idle_steps >= 12)
                     and not pending["source_v1"]
                     and pending["source_v2"]
                 ):

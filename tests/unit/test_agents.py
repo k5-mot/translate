@@ -1336,6 +1336,50 @@ def test_upgrade_classifies_one_sided_units_after_repeated_diff_failures(
     )
 
 
+def test_upgrade_classifies_one_sided_units_after_idle_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """相手版が確認済みの残りを無進捗が続いた後に対応未確認で記録する。"""
+    documents = {
+        "source_v1": document(old1="Kept", old2="Removed"),
+        "source_v2": document(new="Kept"),
+        "translation_v1": document(ja="旧訳"),
+    }
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source_v1": ["old1"], "source_v2": ["new"]},
+        ),
+        DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "kind": "unchanged",
+                        "source_v1_ids": ["old1"],
+                        "source_v2_ids": ["new"],
+                        "summary": "同じ内容",
+                    }
+                ],
+                "reviewed_source_v1_ids": ["old1"],
+                "reviewed_source_v2_ids": ["new"],
+            }
+        ),
+        *[AgentAction(operation="overview") for _ in range(12)],
+        AgentAction(operation="finish"),
+    ]
+    scripted(monkeypatch, answers)
+
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    assert len(result.changes) == 1
+    assert result.changes[0].kind == "deleted"
+    assert result.changes[0].source_v1_ids == ["old2"]
+    assert result.changes[0].translation_v1_ids == []
+    assert "未確認" in result.changes[0].summary
+    assert result.reviewed_source_v1_ids == ["old1", "old2"]
+    assert result.reviewed_source_v2_ids == ["new"]
+
+
 @pytest.mark.parametrize(
     "empty_role", [None, "source_v1", "source_v2", "translation_v1"]
 )
