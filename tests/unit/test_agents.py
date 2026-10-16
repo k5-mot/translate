@@ -344,6 +344,14 @@ def test_upgrade_action_reselects_within_reduced_reference_limit(
         assert sum(map(len, action.references.values())) == 2
         assert create.call_count == 2
         assert "Previous response validation failed" in str(create.call_args_list[1])
+        role_limits = create.call_args.kwargs["response_format"]["json_schema"][
+            "schema"
+        ]["properties"]["references"]["properties"]
+        assert {role: value["maxItems"] for role, value in role_limits.items()} == {
+            "source_v1": 1,
+            "source_v2": 1,
+            "translation_v1": 0,
+        }
     finally:
         client.client.close()
 

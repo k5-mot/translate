@@ -290,10 +290,11 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
+    per_role_limit = max(1, maximum_references // len(units)) if upgrade else 32
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
-            "total document IDs from all roles."
+            f"total document IDs from all roles and at most {per_role_limit} per role."
         )
 
     def validate(action: AgentAction) -> None:
@@ -337,6 +338,15 @@ def choose_action(
                     f"Upgrade {action.operation} requires 1 to {maximum_references} "
                     "document unit IDs total across all roles in references"
                 )
+        if (
+            upgrade
+            and action.operation in {"match", "evaluate", "recheck"}
+            and any(len(ids) > per_role_limit for ids in action.references.values())
+        ):
+            raise ValueError(
+                f"Upgrade {action.operation} allows at most {per_role_limit} "
+                "document unit IDs per role"
+            )
         if action.operation in {"evaluate", "recheck"} and "unchecked_targets" in state:
             if not 1 <= len(action.target_ids) <= 32:
                 raise ValueError(
@@ -366,7 +376,7 @@ def choose_action(
         references[role] = {
             "type": "array",
             "items": {"type": "string", **({"enum": visible} if visible else {})},
-            "maxItems": 32 if visible else 0,
+            "maxItems": per_role_limit if visible else 0,
         }
     schema["properties"]["references"] = {
         "type": "object",
@@ -389,7 +399,7 @@ def choose_action(
                 "recheck revisits a previous result. Use at most 32 IDs per operation. "
                 + (
                     f"For Upgrade match/evaluate/recheck, use at most {maximum_references} "
-                    "IDs total across all roles. "
+                    f"IDs total across all roles and at most {per_role_limit} per role. "
                     if upgrade
                     else ""
                 )
