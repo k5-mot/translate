@@ -297,6 +297,57 @@ def test_agent_validates_only_used_action_arguments(
         client.client.close()
 
 
+def test_upgrade_action_reselects_within_reduced_reference_limit(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """入力予算から下げたUpgrade対象数を超える操作を同じ訂正枠で選び直す。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
+    units = agent_units(
+        {
+            "source_v1": document(old1="Old one", old2="Old two"),
+            "source_v2": document(new1="New one", new2="New two"),
+            "translation_v1": document(),
+        }
+    )
+    state = {
+        "roles": list(units),
+        "pending_counts": {role: len(values) for role, values in units.items()},
+        "pending_ids": {role: list(values) for role, values in units.items()},
+        "translation_candidates": [],
+        "confirmed_count": 0,
+        "max_reference_ids": 2,
+    }
+    responses = []
+    for references in (
+        {"source_v1": ["old1", "old2"], "source_v2": ["new1"]},
+        {"source_v1": ["old1"], "source_v2": ["new1"]},
+    ):
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = AgentAction(
+            operation="match", references=references
+        ).model_dump_json()
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        action = choose_action(
+            client,
+            "Compare English source_v1/source_v2 and Japanese translation_v1.",
+            state,
+            {},
+            units,
+        )
+        assert sum(map(len, action.references.values())) == 2
+        assert create.call_count == 2
+        assert "Previous response validation failed" in str(create.call_args_list[1])
+    finally:
+        client.client.close()
+
+
 def test_agent_overview_includes_bounded_content() -> None:
     """IDだけの一覧でAgentが探索を繰り返さないよう、予算内で本文も提示する。"""
     units = agent_units(
@@ -675,8 +726,8 @@ def test_review_observes_only_current_matches_and_retains_all_results(
 ) -> None:
     """概要を再取得しながら13群を完了し、直近の観察と全確認範囲を保持する。"""
     documents = {
-        "source": document(**{f"en-{index}": "Text" for index in range(104)}),
-        "translation": document(**{f"ja-{index}": "訳文" for index in range(104)}),
+        "source": document(**{f"en-{index}": "Text" for index in range(78)}),
+        "translation": document(**{f"ja-{index}": "訳文" for index in range(78)}),
     }
 
     def evaluate_current(kwargs: dict[str, object]) -> AgentAction:
@@ -684,21 +735,27 @@ def test_review_observes_only_current_matches_and_retains_all_results(
         payload = json.loads(kwargs["user"])
         groups = payload["observation"]["result"]["groups"]
         targets = payload["state"]["unchecked_targets"]
-        assert len(groups) == len(targets) == 8
+        assert len(groups) == len(targets) == 6
         assert [f"review/{group['id']}" for group in groups] == targets
         return AgentAction(operation="evaluate", target_ids=targets)
 
+    def review_current(kwargs: dict[str, object]) -> ReviewResponse:
+        """各Review Callが実際に受け取った対象IDへ応答する。"""
+        payload = json.loads(kwargs["user"])
+        target_ids = [target["id"] for target in payload["targets"]]
+        return successful_review(*target_ids)
+
     answers = []
-    for start in range(0, 104, 8):
+    for start in range(0, 78, 6):
         answers.extend(
             [
                 AgentAction(operation="overview"),
                 AgentAction(
                     operation="match",
                     references={
-                        "source": [f"en-{index}" for index in range(start, start + 8)],
+                        "source": [f"en-{index}" for index in range(start, start + 6)],
                         "translation": [
-                            f"ja-{index}" for index in range(start, start + 8)
+                            f"ja-{index}" for index in range(start, start + 6)
                         ],
                     },
                 ),
@@ -710,23 +767,18 @@ def test_review_observes_only_current_matches_and_retains_all_results(
                                 "translation_ids": [f"ja-{index}"],
                                 "kind": "matched",
                             }
-                            for index in range(start, start + 8)
+                            for index in range(start, start + 6)
                         ]
                     }
                 ),
                 evaluate_current,
-                successful_review(
-                    *[
-                        f"review/alignment-{index + 1:06d}"
-                        for index in range(start, start + 8)
-                    ]
-                ),
+                review_current,
             ]
         )
     answers.append(AgentAction(operation="finish"))
     scripted(monkeypatch, answers)
     result = ReviewAgent(documents, tmp_path / "review", tmp_path, config).run()
-    assert len(result.groups) == len(result.reviewed_target_ids) == 104
+    assert len(result.groups) == len(result.reviewed_target_ids) == 78
     assert not answers
 
 
@@ -1500,6 +1552,139 @@ def test_upgrade_reselects_after_diff_response_validation_fails(
     assert calls == 3
     assert result.reviewed_source_v1_ids == ["old1", "old2"]
     assert result.reviewed_source_v2_ids == ["new1", "new2"]
+
+
+def test_upgrade_halves_scope_after_input_budget_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """入力予算超過後は許容対象数を半減し、残りの英文を確認する。"""
+    documents = {
+        "source_v1": document(old1="First", old2="Second"),
+        "source_v2": document(new1="First", new2="Second"),
+        "translation_v1": document(),
+    }
+    diff_task = import_module("translate.pipeline.upgrade").DiffTask
+    calls = 0
+
+    def diff_run(
+        _task: object,
+        units: dict[str, list[TextUnit]],
+        _operation: str,
+        round_number: int,
+    ) -> tuple[str, DiffResponse]:
+        """初回の対象群を入力超過にし、縮小後は選択範囲を変更なしとする。"""
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            message = "Selected document scope exceeds budget"
+            raise LLMInputExceededError(message)
+        references = {
+            role: [unit.id for unit in values] for role, values in units.items()
+        }
+        return (
+            f"call-{round_number}",
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "unchanged",
+                            "source_v1_ids": references["source_v1"],
+                            "source_v2_ids": references["source_v2"],
+                            "summary": "変更なし",
+                        }
+                    ],
+                    "reviewed_source_v1_ids": references["source_v1"],
+                    "reviewed_source_v2_ids": references["source_v2"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(diff_task, "run", diff_run)
+
+    def first_action(_kwargs: dict[str, object]) -> AgentAction:
+        """最初に予算を超える4件を選ぶ。"""
+        return AgentAction(
+            operation="match",
+            references={
+                "source_v1": ["old1", "old2"],
+                "source_v2": ["new1", "new2"],
+            },
+        )
+
+    def reduced_action(kwargs: dict[str, object]) -> AgentAction:
+        """縮小後の上限と、次の判断へ渡す予算エラーを確認する。"""
+        value = json.loads(kwargs["user"])
+        assert value["state"]["max_reference_ids"] == 2
+        assert "at most 2" in value["observation"]["result"]["error"]
+        return AgentAction(
+            operation="match",
+            references={"source_v1": ["old1"], "source_v2": ["new1"]},
+        )
+
+    def remaining_action(kwargs: dict[str, object]) -> AgentAction:
+        """縮小後も残りの英文がAgentの次の判断に含まれる。"""
+        value = json.loads(kwargs["user"])
+        assert value["state"]["max_reference_ids"] == 2
+        assert value["state"]["pending_ids"]["source_v1"] == ["old2"]
+        assert value["state"]["pending_ids"]["source_v2"] == ["new2"]
+        return AgentAction(
+            operation="match",
+            references={"source_v1": ["old2"], "source_v2": ["new2"]},
+        )
+
+    scripted(
+        monkeypatch,
+        [
+            first_action,
+            reduced_action,
+            remaining_action,
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    assert calls == 3
+    assert result.reviewed_source_v1_ids == ["old1", "old2"]
+    assert result.reviewed_source_v2_ids == ["new1", "new2"]
+
+
+def test_upgrade_stops_when_minimum_scope_exceeds_input_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """最小の一対も予算に収まらない場合は同じ比較を再実行しない。"""
+    diff_task = import_module("translate.pipeline.upgrade").DiffTask
+
+    def fail_diff(
+        _task: object,
+        _units: dict[str, list[TextUnit]],
+        _operation: str,
+        _round_number: int,
+    ) -> tuple[str, DiffResponse]:
+        """最小の比較範囲を入力超過として返す。"""
+        message = "Selected document scope exceeds budget"
+        raise LLMInputExceededError(message)
+
+    monkeypatch.setattr(diff_task, "run", fail_diff)
+    scripted(
+        monkeypatch,
+        [
+            AgentAction(
+                operation="match",
+                references={"source_v1": ["old"], "source_v2": ["new"]},
+            )
+        ],
+    )
+
+    with pytest.raises(InputError, match="minimum two-unit DIFF scope"):
+        UpgradeAgent(
+            {
+                "source_v1": document(old="First"),
+                "source_v2": document(new="First"),
+                "translation_v1": document(),
+            },
+            tmp_path,
+            config,
+        ).run()
 
 
 def test_upgrade_can_refresh_overview_between_thirteen_groups(

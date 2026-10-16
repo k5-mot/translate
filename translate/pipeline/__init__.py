@@ -288,6 +288,13 @@ def choose_action(
         "available when unchecked_targets is nonempty. recheck requires nonempty target_ids "
         "of a previous Review result. For Upgrade, evaluate and recheck use references."
     )
+    upgrade = {"source_v1", "source_v2"}.issubset(units)
+    maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
+    if upgrade:
+        contract += (
+            f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
+            "total document IDs from all roles."
+        )
 
     def validate(action: AgentAction) -> None:
         """現在の状態で実行できない操作を既存の応答訂正枠へ返す。
@@ -315,13 +322,21 @@ def choose_action(
             raise ValueError(
                 "Use exact document IDs from pending_ids or observation results; do not shorten or invent IDs"
             )
-        if (
-            action.operation in {"read", "match"}
-            and not 1 <= sum(map(len, action.references.values())) <= 32
-        ):
-            raise ValueError(
-                "read and match require 1 to 32 observed document unit IDs in references"
+        reference_count = sum(map(len, action.references.values()))
+        if action.operation in {"read", "match"}:
+            limit = (
+                maximum_references if upgrade and action.operation == "match" else 32
             )
+            if not 1 <= reference_count <= limit:
+                raise ValueError(
+                    f"{action.operation} requires 1 to {limit} document unit IDs in references"
+                )
+        elif upgrade and action.operation in {"evaluate", "recheck"}:
+            if not 1 <= reference_count <= maximum_references:
+                raise ValueError(
+                    f"Upgrade {action.operation} requires 1 to {maximum_references} "
+                    "document unit IDs total across all roles in references"
+                )
         if action.operation in {"evaluate", "recheck"} and "unchecked_targets" in state:
             if not 1 <= len(action.target_ids) <= 32:
                 raise ValueError(
@@ -372,7 +387,13 @@ def choose_action(
                 "search finds candidate IDs in role using query. match confirms correspondence between references; "
                 "evaluate checks matched target_ids (Review) or compares references (Upgrade); "
                 "recheck revisits a previous result. Use at most 32 IDs per operation. "
-                "Read or search when correspondence is unclear. Finish only when all pending counts are zero. "
+                + (
+                    f"For Upgrade match/evaluate/recheck, use at most {maximum_references} "
+                    "IDs total across all roles. "
+                    if upgrade
+                    else ""
+                )
+                + "Read or search when correspondence is unclear. Finish only when all pending counts are zero. "
                 "For Review, unmatched_ids have already been checked but no counterpart was found. "
                 "They are not pending and do not block finish; zero unmatched IDs is not required. "
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "

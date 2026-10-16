@@ -216,6 +216,7 @@ class UpgradeAgent:
             idle_steps = 0
             group_steps: dict[str, int] = {}
             one_sided_failures = {"source_v1": 0, "source_v2": 0}
+            max_reference_ids = 32
             observation: object = {"restored_operations": len(restored)}
             while True:
                 covered = {
@@ -280,6 +281,7 @@ class UpgradeAgent:
                         if key not in assigned_translation
                     ][:8],
                     "confirmed_count": len(self.confirmed),
+                    "max_reference_ids": max_reference_ids,
                 }
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Upgrade Agent reached its step or time limit")
@@ -337,8 +339,17 @@ class UpgradeAgent:
                     try:
                         observation = self._execute(action, round_number)
                     except (LLMInputExceededError, LLMOutputExceededError):
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count <= 2:
+                            raise InputError(
+                                "The minimum two-unit DIFF scope exceeds the input/output budget"
+                            ) from None
+                        max_reference_ids = max(
+                            2, min(max_reference_ids - 1, selected_count // 2)
+                        )
                         observation = {
-                            "error": "Selected scope exceeds the budget. Select fewer units."
+                            "error": "Selected scope exceeds the budget. "
+                            f"Select at most {max_reference_ids} document units."
                         }
                     except LLMInvalidResponseError:
                         for role, opposite in (
