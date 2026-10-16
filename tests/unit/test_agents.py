@@ -1231,6 +1231,51 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     assert len(calls) == before + 1
 
 
+def test_diff_schema_limits_changes_to_selected_english_units(
+    config: Config, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DIFFの変更項目数を選択英文ID数に制限し、過大出力を防ぐ。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = json.dumps(
+        {
+            "changes": [
+                {
+                    "kind": "deleted",
+                    "source_v1_ids": ["old"],
+                    "translation_v1_ids": ["ja"],
+                    "summary": "見出しが削除された",
+                }
+            ],
+            "reviewed_source_v1_ids": ["old"],
+            "reviewed_source_v2_ids": [],
+        }
+    )
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        module = import_module("translate.tasks.21_diff")
+        module.DiffTask(client, tmp_path, "", "").run(
+            {
+                "source_v1": [document(old="Chapter Title").pages[0].blocks[0].content],
+                "source_v2": [],
+                "translation_v1": [
+                    document(ja="11.1 章のタイトル").pages[0].blocks[0].content
+                ],
+            },
+            "match",
+            0,
+        )
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        assert schema["properties"]["changes"]["maxItems"] == 1
+    finally:
+        client.client.close()
+
+
 @pytest.mark.parametrize(
     ("remaining_role", "change_kind"),
     [("source_v1", "deleted"), ("source_v2", "added")],

@@ -139,6 +139,10 @@ class SavedLLMCalls:
                 confirmed["minItems"] = confirmed["maxItems"] = len(target_ids)
             if self.task == "DIFF":
                 # 同じ形のIDでも文書ごとに意味が異なるため、選択したrole内に限定する。
+                schema["properties"]["changes"]["maxItems"] = sum(
+                    len([key for key in target_ids if key.startswith(f"{role}:")])
+                    for role in ("source_v1", "source_v2")
+                )
                 for role in ("source_v1", "source_v2", "translation_v1"):
                     ids = [
                         key.removeprefix(f"{role}:")
