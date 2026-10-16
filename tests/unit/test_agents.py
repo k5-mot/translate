@@ -1172,6 +1172,63 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
 
 
 @pytest.mark.parametrize(
+    ("remaining_role", "change_kind"),
+    [("source_v1", "deleted"), ("source_v2", "added")],
+)
+def test_upgrade_classifies_one_sided_units_after_repeated_diff_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    remaining_role: str,
+    change_kind: str,
+) -> None:
+    """片側比較が3回失敗した残りを追加・削除として記録し、旧訳対応を推測しない。"""
+    documents = {
+        "source_v1": document(
+            **({"old": "Removed"} if remaining_role == "source_v1" else {})
+        ),
+        "source_v2": document(
+            **({"new": "Added"} if remaining_role == "source_v2" else {})
+        ),
+        "translation_v1": document(ja="旧訳"),
+    }
+
+    def failed_diff(_kwargs: dict[str, object]) -> BaseModel:
+        """DIFFが構造化応答を3回続けて返せない状況を再現する。"""
+        message = "Invalid diff response"
+        raise LLMInvalidResponseError(message)
+
+    answers = [
+        item
+        for _ in range(3)
+        for item in (
+            AgentAction(
+                operation="match",
+                references={
+                    remaining_role: ["old" if remaining_role == "source_v1" else "new"]
+                },
+            ),
+            failed_diff,
+        )
+    ]
+    answers.append(AgentAction(operation="finish"))
+    scripted(monkeypatch, answers)
+
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    assert len(result.changes) == 1
+    assert result.changes[0].kind == change_kind
+    assert result.changes[0].translation_v1_ids == []
+    assert "未確認" in result.changes[0].summary
+    assert result.reviewed_source_v1_ids == list(
+        agent_units({"source_v1": documents["source_v1"]})["source_v1"]
+    )
+    assert result.reviewed_source_v2_ids == list(
+        agent_units({"source_v2": documents["source_v2"]})["source_v2"]
+    )
+
+
+@pytest.mark.parametrize(
     "empty_role", [None, "source_v1", "source_v2", "translation_v1"]
 )
 def test_diff_schema_limits_ids_to_each_selected_document(

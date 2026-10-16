@@ -215,6 +215,7 @@ class UpgradeAgent:
             round_number = max((call.round for call in restored), default=-1) + 1
             idle_steps = 0
             group_steps: dict[str, int] = {}
+            one_sided_failures = {"source_v1": 0, "source_v2": 0}
             observation: object = {"restored_operations": len(restored)}
             while True:
                 covered = {
@@ -229,6 +230,43 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
+                # 片側だけの比較が3回続けて失敗した場合、反対版に残りがない要素を確定する。
+                if (
+                    one_sided_failures["source_v1"] >= 3
+                    and not pending["source_v2"]
+                    and pending["source_v1"]
+                ):
+                    self.confirmed.extend(
+                        (
+                            f"unmatched-v1-{round_number}-{index}",
+                            DiffChange(
+                                kind="deleted",
+                                source_v1_ids=[identifier],
+                                summary="新版に対応する英文はありません。旧訳との対応は未確認です。",
+                            ),
+                        )
+                        for index, identifier in enumerate(pending["source_v1"], 1)
+                    )
+                    one_sided_failures["source_v1"] = 0
+                    continue
+                if (
+                    one_sided_failures["source_v2"] >= 3
+                    and not pending["source_v1"]
+                    and pending["source_v2"]
+                ):
+                    self.confirmed.extend(
+                        (
+                            f"unmatched-v2-{round_number}-{index}",
+                            DiffChange(
+                                kind="added",
+                                source_v2_ids=[identifier],
+                                summary="旧版に対応する英文はありません。旧訳との対応は未確認です。",
+                            ),
+                        )
+                        for index, identifier in enumerate(pending["source_v2"], 1)
+                    )
+                    one_sided_failures["source_v2"] = 0
+                    continue
                 assigned_translation = {
                     key for _, item in self.confirmed for key in item.translation_v1_ids
                 }
@@ -303,12 +341,25 @@ class UpgradeAgent:
                             "error": "Selected scope exceeds the budget. Select fewer units."
                         }
                     except LLMInvalidResponseError:
+                        for role, opposite in (
+                            ("source_v1", "source_v2"),
+                            ("source_v2", "source_v1"),
+                        ):
+                            selected = set(action.references.get(role, []))
+                            if (
+                                selected
+                                and selected.issubset(pending[role])
+                                and not pending[opposite]
+                            ):
+                                one_sided_failures[role] += 1
                         observation = {
                             "error": "The comparison returned an invalid response after its validation retry. "
                             "No result was accepted. Inspect context and select a different or smaller group."
                         }
                     except InputError as error:
                         observation = {"error": str(error)}
+                    else:
+                        one_sided_failures = {"source_v1": 0, "source_v2": 0}
                     round_number += 1
                 observation = {"action": action.model_dump(), "result": observation}
                 after = sum(
