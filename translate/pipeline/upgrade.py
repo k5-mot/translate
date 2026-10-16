@@ -283,7 +283,7 @@ class UpgradeAgent:
                     "confirmed_count": len(self.confirmed),
                     "max_reference_ids": max_reference_ids,
                 }
-                if idle_steps >= 12 or time.monotonic() >= deadline:
+                if idle_steps >= 36 or time.monotonic() >= deadline:
                     raise TimeoutError("Upgrade Agent reached its step or time limit")
                 try:
                     action = choose_action(

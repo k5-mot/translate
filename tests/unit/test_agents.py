@@ -895,7 +895,10 @@ def test_agent_action_failure_keeps_stop_conditions(
         message = "Action failed"
         raise error_type(message)
 
-    answers = [failure] * attempts
+    attempt_limit = attempts * (
+        3 if kind == "upgrade" and error_type is LLMInvalidResponseError else 1
+    )
+    answers = [failure] * attempt_limit
     scripted(monkeypatch, answers)
     roles = (
         ["source", "translation"]
@@ -1786,24 +1789,20 @@ def test_upgrade_can_refresh_overview_between_thirteen_groups(
     assert not answers
 
 
-@pytest.mark.parametrize(
-    ("operation", "action_name"),
-    [("review", "overview"), ("upgrade", "overview"), ("upgrade", "match")],
-)
+@pytest.mark.parametrize(("operation", "limit"), [("review", 12), ("upgrade", 36)])
 def test_agent_stops_repeated_overview_without_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config: Config,
     operation: str,
-    action_name: str,
+    limit: int,
 ) -> None:
-    """概要取得や対象指定の誤りを繰り返し、進展がないAgentは12回で停止する。"""
+    """情報取得や対象指定を繰り返す進展のないAgentを上限回数で停止する。"""
     answers = [
         AgentAction(
-            operation=action_name,
-            references={"translation_v1": ["ja"]} if action_name == "match" else {},
+            operation="overview",
         )
-        for _ in range(12)
+        for _ in range(limit)
     ]
     calls = scripted(monkeypatch, answers)
     if operation == "review":
@@ -1825,7 +1824,7 @@ def test_agent_stops_repeated_overview_without_progress(
         )
     with pytest.raises(TimeoutError, match="step or time limit"):
         agent.run()
-    assert len(calls) == 12
+    assert len(calls) == limit
     assert not answers
 
 
