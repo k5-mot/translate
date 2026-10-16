@@ -268,13 +268,20 @@ class ReviewAgent:
                 }
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
-                action = choose_action(
-                    self.client,
-                    "Review English source against Japanese translation and propose edits.",
-                    state,
-                    observation,
-                    self.units,
-                )
+                try:
+                    action = choose_action(
+                        self.client,
+                        "Review English source against Japanese translation and propose edits.",
+                        state,
+                        observation,
+                        self.units,
+                    )
+                except LLMInvalidResponseError:
+                    observation = {
+                        "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
+                    }
+                    idle_steps += 1
+                    continue
                 if action.operation == "finish":
                     if any(pending.values()) or unchecked or self.conflicts:
                         raise InputError(

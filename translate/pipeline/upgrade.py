@@ -17,6 +17,7 @@ from translate.adapters.artifact_store import (
 from translate.adapters.llm import (
     LLMClient,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputExceededError,
 )
 from translate.common.config import Config, validate_config
@@ -244,13 +245,20 @@ class UpgradeAgent:
                 }
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Upgrade Agent reached its step or time limit")
-                action = choose_action(
-                    self.client,
-                    "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
-                    state,
-                    observation,
-                    self.units,
-                )
+                try:
+                    action = choose_action(
+                        self.client,
+                        "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
+                        state,
+                        observation,
+                        self.units,
+                    )
+                except LLMInvalidResponseError:
+                    observation = {
+                        "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
+                    }
+                    idle_steps += 1
+                    continue
                 if action.operation == "finish":
                     if any(pending.values()):
                         raise InputError(

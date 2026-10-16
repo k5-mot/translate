@@ -730,6 +730,132 @@ def test_review_observes_only_current_matches_and_retains_all_results(
     assert not answers
 
 
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+def test_agent_recovers_invalid_action_without_losing_confirmed_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, kind: str
+) -> None:
+    """不正な次操作を実行せず、成功済み対象を保って残りの対象を確認する。"""
+    role = "source" if kind == "review" else "source_v1"
+    roles = (
+        [role, "translation"]
+        if kind == "review"
+        else [role, "source_v2", "translation_v1"]
+    )
+    documents = {name: document() for name in roles}
+    documents[role] = document(first="First", second="Second")
+
+    def result(key: str) -> BaseModel:
+        """原文だけに存在する選択対象を確認済みとして返す。"""
+        if kind == "review":
+            return AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": [key],
+                            "translation_ids": [],
+                            "kind": "source_only",
+                            "reason": "対応訳なし",
+                        }
+                    ]
+                }
+            )
+        return DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "source_v1_ids": [key],
+                        "kind": "deleted",
+                        "summary": "新版から削除",
+                        "suggested_translation": None,
+                    }
+                ],
+                "reviewed_source_v1_ids": [key],
+                "reviewed_source_v2_ids": [],
+            }
+        )
+
+    def failed_action(kwargs: dict[str, object]) -> BaseModel:
+        """操作選択の応答訂正を使い切った失敗を再現する。"""
+        assert kwargs["response_type"] is AgentAction
+        message = "Invalid action after validation retry"
+        raise LLMInvalidResponseError(message)
+
+    def reselect(kwargs: dict[str, object]) -> AgentAction:
+        """失敗の通知と未確認数を確認し、残る対象だけを選ぶ。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["state"]["pending_counts"][role] == 1
+        assert "invalid" in payload["observation"]["error"].lower()
+        return AgentAction(operation="match", references={role: ["second"]})
+
+    answers = [
+        AgentAction(operation="match", references={role: ["first"]}),
+        result("first"),
+        failed_action,
+        reselect,
+        result("second"),
+        AgentAction(operation="finish"),
+    ]
+    scripted(monkeypatch, answers)
+    agent = (
+        ReviewAgent(documents, tmp_path, tmp_path, config)
+        if kind == "review"
+        else UpgradeAgent(documents, tmp_path, config)
+    )
+    output = agent.run()
+    assert not answers
+    assert len(output.groups if kind == "review" else output.changes) == 2
+    artifacts = [
+        load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
+    ]
+    assert len(artifacts) == 2
+    assert all(call.status == "succeeded" for call in artifacts)
+
+
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        (LLMInvalidResponseError, TimeoutError, 12),
+        (LLMConnectionError, LLMConnectionError, 1),
+    ],
+)
+def test_agent_action_failure_keeps_stop_conditions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    kind: str,
+    case: tuple[type[LLMError], type[Exception], int],
+) -> None:
+    """操作選択の契約不正は12回で止め、接続障害を選び直しで再送しない。"""
+    error_type, expected, attempts = case
+
+    def failure(kwargs: dict[str, object]) -> BaseModel:
+        """実行操作へ進む前のAgent判断を指定された例外で失敗させる。"""
+        assert kwargs["response_type"] is AgentAction
+        message = "Action failed"
+        raise error_type(message)
+
+    answers = [failure] * attempts
+    scripted(monkeypatch, answers)
+    roles = (
+        ["source", "translation"]
+        if kind == "review"
+        else ["source_v1", "source_v2", "translation_v1"]
+    )
+    documents = {role: document(unit="Text") for role in roles}
+    agent = (
+        ReviewAgent(documents, tmp_path, tmp_path, config)
+        if kind == "review"
+        else UpgradeAgent(documents, tmp_path, config)
+    )
+    with pytest.raises(expected):
+        agent.run()
+    assert not answers
+    assert not list(tmp_path.glob("calls/*/call.json"))
+    assert not (tmp_path / "review.json").exists()
+    assert not (tmp_path / "plan.json").exists()
+
+
 def test_review_agent_reselects_after_invalid_operation_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
