@@ -183,11 +183,13 @@ class UpgradeAgent:
     def run(self) -> UpgradePlan:
         """Agentが対象と比較・再確認を選択し、英文の全範囲を確認する。
 
+        無効な対象指定は確定済み対応を変えずに理由を返し、既存のstep上限内で選び直す。
+
         Returns:
             未変更を除く変更一覧と全確認範囲。
 
         Raises:
-            InputError: 参照・対応・終了条件が不正な場合。
+            InputError: 復元したCallの対応または終了条件が不正な場合。
             TimeoutError: 判断回数またはTask期限を超えた場合。
             LLMError: 外部要求が失敗した場合。
         """
@@ -285,6 +287,8 @@ class UpgradeAgent:
                         observation = {
                             "error": "Selected scope exceeds the budget. Select fewer units."
                         }
+                    except InputError as error:
+                        observation = {"error": str(error)}
                     round_number += 1
                 observation = {"action": action.model_dump(), "result": observation}
                 after = sum(

@@ -1109,10 +1109,14 @@ def test_diff_schema_limits_ids_to_each_selected_document(
         client.client.close()
 
 
+@pytest.mark.parametrize("rejected", [None, "match", "evaluate", "used_translation"])
 def test_upgrade_advances_translation_candidates_after_confirmation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    rejected: str | None,
 ) -> None:
-    """確定した旧訳を次の候補から除き、別の英文との重複対応と再開時の再提示を防ぐ。"""
+    """確定済み対象の再選択を訂正し、旧訳の重複対応を防いで比較・再開を完了する。"""
     documents = {
         "source_v1": document(old1="First", old2="Second"),
         "source_v2": document(new1="First", new2="Second"),
@@ -1155,12 +1159,38 @@ def test_upgrade_advances_translation_candidates_after_confirmation(
                 ),
             ]
         )
+    if rejected:
+        references = {
+            "source_v1": ["old2" if rejected == "used_translation" else "old1"],
+            "source_v2": ["new2" if rejected == "used_translation" else "new1"],
+            "translation_v1": ["ja1"],
+        }
+
+        def after_rejection(kwargs: dict[str, object]) -> AgentAction:
+            """拒否理由を受け取り、確定済み対応を維持したまま次の組へ進める。"""
+            value = json.loads(kwargs["user"])
+            assert "recheck" in value["observation"]["result"]["error"].lower()
+            assert value["state"]["pending_ids"] == {
+                "source_v1": ["old2"],
+                "source_v2": ["new2"],
+            }
+            assert value["state"]["translation_candidates"] == ["ja2"]
+            return select_candidates(kwargs)
+
+        answers[2:3] = [
+            AgentAction(
+                operation="match" if rejected == "used_translation" else rejected,
+                references=references,
+            ),
+            after_rejection,
+        ]
     answers.append(select_candidates)
     calls = scripted(monkeypatch, answers)
     result = UpgradeAgent(documents, tmp_path, config).run()
     assert not result.changes
     assert result.reviewed_source_v1_ids == ["old1", "old2"]
     assert result.reviewed_source_v2_ids == ["new1", "new2"]
+    assert len(completed_agent_calls(tmp_path)) == 2
     assert not answers
     before = len(calls)
     answers.append(select_candidates)
@@ -1210,12 +1240,25 @@ def test_upgrade_can_refresh_overview_between_thirteen_groups(
     assert not answers
 
 
-@pytest.mark.parametrize("operation", ["review", "upgrade"])
+@pytest.mark.parametrize(
+    ("operation", "action_name"),
+    [("review", "overview"), ("upgrade", "overview"), ("upgrade", "match")],
+)
 def test_agent_stops_repeated_overview_without_progress(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, operation: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    operation: str,
+    action_name: str,
 ) -> None:
-    """対象の確認を進めず概要取得だけを繰り返すAgentは12回で停止する。"""
-    answers = [AgentAction(operation="overview") for _ in range(12)]
+    """概要取得や対象指定の誤りを繰り返し、進展がないAgentは12回で停止する。"""
+    answers = [
+        AgentAction(
+            operation=action_name,
+            references={"translation_v1": ["ja"]} if action_name == "match" else {},
+        )
+        for _ in range(12)
+    ]
     calls = scripted(monkeypatch, answers)
     if operation == "review":
         agent = ReviewAgent(
