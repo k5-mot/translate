@@ -504,6 +504,8 @@ OOXMLはその中間DOCXを読み、本文のstyle参照、数式のstyle、お�
 
 生成DOCXの見出し番号はWordの見出しstyleのアウトライン番号で表示し、本文には同じ番号を埋め込まない。OOXMLは見出しstyleの採番設定を残す。目次・図一覧・表一覧はPANDOCのfieldから生成し、原本から抽出した一覧を重ねない。
 
+OOXMLは表の各行へ `w:cantSplit` を設定し、1ページに収まる行を途中で改ページしない。余白が足りない場合は行全体を次ページへ移し、セル内の識別子や本文の分断を避ける。1行が1ページを超える場合はWordの標準動作に従って複数ページへ流す。表の見出し行には `w:keepNext` を設定し、見出しだけを前ページ末尾へ残さない。セル内容と繰返し見出しの設定は保持する。
+
 ### 🔗 原文と訳文の対応付け
 
 Review Agentが入力Documentの要素IDを対応付け、結果をREVIEWの成果物へ保存する。独立したALIGN、CHECK、最終CHECKのTaskと成果物は設けない。
@@ -2125,3 +2127,5 @@ uv run playwright install chromium
 - [Streamlit `st.progress` API reference](https://docs.streamlit.io/develop/api-reference/status/st.progress)
 - [Streamlit `st.markdown` API reference](https://docs.streamlit.io/develop/api-reference/text/st.markdown)
 - [Streamlit App testing](https://docs.streamlit.io/develop/concepts/app-testing)
+- [Microsoft Open XML: CantSplit](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.cantsplit?view=openxml-3.0.1)
+- [Microsoft Open XML: KeepNext](https://learn.microsoft.com/en-us/dotnet/api/documentformat.openxml.wordprocessing.keepnext?view=openxml-3.0.1)

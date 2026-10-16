@@ -22,6 +22,7 @@ from translate.models.document import Block, Document, Page, TextSpan, TextUnit
 MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
 publish_pandoc = import_module("translate.tasks.53_pandoc").publish
 publish_ooxml = import_module("translate.tasks.54_ooxml").publish
+finalize_document = import_module("translate.tasks.54_ooxml")._finalize_document  # noqa: SLF001
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
@@ -198,6 +199,34 @@ def test_docx_cover_precedes_generated_lists(tmp_path: Path, *, has_body: bool) 
     else:
         assert root.find(".//w:instrText", ns) is None
         assert len(body) == 2  # 表紙の段落と文書全体のsection設定。
+
+
+@pytest.mark.parametrize(
+    "properties", ["", '<w:trPr><w:tblHeader/><w:cantSplit w:val="0"/></w:trPr>']
+)
+def test_docx_keeps_table_rows_together_without_changing_cells(properties: str) -> None:
+    """短い表行の改ページ分割を禁止し、既存の見出し設定とセル内容を保持する。"""
+    word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    value = (
+        f'<w:document xmlns:w="{word}"><w:body><w:tbl><w:tr>{properties}'
+        "<w:tc><w:p><w:r><w:t>page_split_09</w:t></w:r></w:p></w:tc>"
+        "</w:tr></w:tbl></w:body></w:document>"
+    ).encode()
+    once = finalize_document(value, {}, {})
+    twice = finalize_document(once, {}, {})
+    document = ET.fromstring(twice)  # noqa: S314 — 固定fixtureだけを解析する。
+    namespace = {"w": word}
+    row = document.find(".//w:tr", namespace)
+    assert row is not None
+    flags = row.findall("w:trPr/w:cantSplit", namespace)
+    assert len(flags) == 1
+    assert flags[0].get(f"{{{word}}}val") == "true"
+    assert (row.find("w:trPr/w:tblHeader", namespace) is not None) == bool(properties)
+    keep_next = row.find(".//w:pPr/w:keepNext", namespace)
+    assert (keep_next is not None) == bool(properties)
+    if keep_next is not None:
+        assert keep_next.get(f"{{{word}}}val") == "true"
+    assert [node.text for node in row.findall(".//w:t", namespace)] == ["page_split_09"]
 
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is required")

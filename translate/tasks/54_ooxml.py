@@ -132,7 +132,7 @@ def _finalize_document(
     mappings: dict[str, str],
     names: dict[str, str],
 ) -> bytes:
-    """本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。
+    """本文のstyle参照・一覧fieldを整え、表の行途中での改ページを抑止する。
 
     Args:
         value (bytes): Style参照を更新するDocument XMLのByte列。
@@ -140,7 +140,7 @@ def _finalize_document(
         names (dict[str, str]): Style IDと表示名の対応表。
 
     Returns:
-        bytes: 本文のstyle参照と図表一覧fieldをtemplate定義へ合わせる。
+        bytes: Style・一覧field・表行の改ページ設定を整えたDocument XML。
     """
 
     namespace = {
@@ -189,6 +189,29 @@ def _finalize_document(
                         first.insert(0, properties)
                     ET.SubElement(properties, f"{_WORD}pageBreakBefore")
             break
+    # 1ページに収まる表行はまとめて移動し、セル内の識別子をページ間で分断しない。
+    for row in document.findall(".//w:tr", namespace):
+        properties = row.find("w:trPr", namespace)
+        if properties is None:
+            properties = ET.Element(f"{_WORD}trPr")
+            row.insert(0, properties)
+        keep_row = properties.find("w:cantSplit", namespace)
+        if keep_row is None:
+            keep_row = ET.SubElement(properties, f"{_WORD}cantSplit")
+        keep_row.set(f"{_WORD}val", "true")
+        header = properties.find("w:tblHeader", namespace)
+        if header is None or header.get(f"{_WORD}val") in {"0", "false", "off"}:
+            continue
+        # 見出し行だけが前ページ末尾に残らないよう、最初の本文行とつなぐ。
+        for paragraph in row.findall(".//w:p", namespace):
+            properties = paragraph.find("w:pPr", namespace)
+            if properties is None:
+                properties = ET.Element(f"{_WORD}pPr")
+                paragraph.insert(0, properties)
+            keep_next = properties.find("w:keepNext", namespace)
+            if keep_next is None:
+                keep_next = ET.SubElement(properties, f"{_WORD}keepNext")
+            keep_next.set(f"{_WORD}val", "true")
     for style in document.findall(".//w:pStyle", namespace):
         current = style.get(f"{_WORD}val")
         if current in mappings:
