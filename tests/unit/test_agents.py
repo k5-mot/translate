@@ -1046,6 +1046,65 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     assert len(calls) == before + 1
 
 
+def test_upgrade_advances_translation_candidates_after_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """確定した旧訳を次の候補から除き、別の英文との重複対応と再開時の再提示を防ぐ。"""
+    documents = {
+        "source_v1": document(old1="First", old2="Second"),
+        "source_v2": document(new1="First", new2="Second"),
+        "translation_v1": document(ja1="一つ目", ja2="二つ目"),
+    }
+
+    def select_candidates(kwargs: dict[str, object]) -> AgentAction:
+        """Agentへ渡された未確認英文と先頭の旧訳候補を選ぶ。"""
+        state = json.loads(kwargs["user"])["state"]
+        if not any(state["pending_counts"].values()):
+            assert state["translation_candidates"] == []
+            return AgentAction(operation="finish")
+        return AgentAction(
+            operation="match",
+            references={
+                **{role: ids[:1] for role, ids in state["pending_ids"].items()},
+                "translation_v1": state["translation_candidates"][:1],
+            },
+        )
+
+    answers = []
+    for index in (1, 2):
+        answers.extend(
+            [
+                select_candidates,
+                DiffResponse.model_validate(
+                    {
+                        "changes": [
+                            {
+                                "kind": "unchanged",
+                                "source_v1_ids": [f"old{index}"],
+                                "source_v2_ids": [f"new{index}"],
+                                "translation_v1_ids": [f"ja{index}"],
+                                "summary": "変更なし",
+                            }
+                        ],
+                        "reviewed_source_v1_ids": [f"old{index}"],
+                        "reviewed_source_v2_ids": [f"new{index}"],
+                    }
+                ),
+            ]
+        )
+    answers.append(select_candidates)
+    calls = scripted(monkeypatch, answers)
+    result = UpgradeAgent(documents, tmp_path, config).run()
+    assert not result.changes
+    assert result.reviewed_source_v1_ids == ["old1", "old2"]
+    assert result.reviewed_source_v2_ids == ["new1", "new2"]
+    assert not answers
+    before = len(calls)
+    answers.append(select_candidates)
+    assert UpgradeAgent(documents, tmp_path, config).run() == result
+    assert len(calls) == before + 1
+
+
 def test_upgrade_can_refresh_overview_between_thirteen_groups(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:

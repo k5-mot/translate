@@ -226,11 +226,18 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
+                assigned_translation = {
+                    key for _, item in self.confirmed for key in item.translation_v1_ids
+                }
                 state: dict[str, object] = {
                     "roles": list(self.units),
                     "pending_counts": {role: len(ids) for role, ids in pending.items()},
                     "pending_ids": {role: ids[:8] for role, ids in pending.items()},
-                    "translation_candidates": list(self.units["translation_v1"])[:8],
+                    "translation_candidates": [
+                        key
+                        for key in self.units["translation_v1"]
+                        if key not in assigned_translation
+                    ][:8],
                     "confirmed_count": len(self.confirmed),
                 }
                 if idle_steps >= 12 or time.monotonic() >= deadline:
