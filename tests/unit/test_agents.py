@@ -1141,10 +1141,9 @@ def test_upgrade_covers_unchanged_but_only_lists_changes(
     )
 
     def after_overview(kwargs: dict[str, object]) -> AgentAction:
-        """確認済み英文を概要から除き、旧訳の参照は維持する。"""
+        """確認済み英文と対応済み旧訳を新しい比較の概要から除く。"""
         items = json.loads(kwargs["user"])["observation"]["result"]["items"]
-        assert {item["role"] for item in items} == {"translation_v1"}
-        assert {item["id"] for item in items} == {"ja", "keep", "remove"}
+        assert items == []
         return AgentAction(operation="finish")
 
     answers = [
@@ -1285,7 +1284,26 @@ def test_upgrade_advances_translation_candidates_after_confirmation(
                 ),
             ]
         )
-    if rejected:
+    if rejected is None:
+
+        def after_overview(kwargs: dict[str, object]) -> AgentAction:
+            """未確認の各文書候補だけを表示し、使用済み旧訳は本文取得できる。"""
+            items = json.loads(kwargs["user"])["observation"]["result"]["items"]
+            assert {(item["role"], item["id"]) for item in items} == {
+                ("source_v1", "old2"),
+                ("source_v2", "new2"),
+                ("translation_v1", "ja2"),
+            }
+            return AgentAction(operation="read", references={"translation_v1": ["ja1"]})
+
+        def after_read(kwargs: dict[str, object]) -> AgentAction:
+            """候補から除いた旧訳も再確認用に読めることを確認して比較を進める。"""
+            items = json.loads(kwargs["user"])["observation"]["result"]["items"]
+            assert [item["text"] for item in items] == ["一つ目"]
+            return select_candidates(kwargs)
+
+        answers[2:3] = [AgentAction(operation="overview"), after_overview, after_read]
+    else:
         references = {
             "source_v1": ["old2" if rejected == "used_translation" else "old1"],
             "source_v2": ["new2" if rejected == "used_translation" else "new1"],

@@ -278,7 +278,14 @@ class UpgradeAgent:
                     visible = (
                         {
                             role: {
-                                key: values[key] for key in pending.get(role, values)
+                                key: unit
+                                for key, unit in values.items()
+                                if key
+                                not in (
+                                    assigned_translation
+                                    if role == "translation_v1"
+                                    else covered[role]
+                                )
                             }
                             for role, values in self.units.items()
                         }
