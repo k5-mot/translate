@@ -1770,3 +1770,55 @@ def test_agent_stops_repeated_overview_without_progress(
         agent.run()
     assert len(calls) == 12
     assert not answers
+
+
+@pytest.mark.parametrize("operation", ["review", "upgrade"])
+def test_agent_retries_action_from_state_when_observation_exceeds_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    operation: str,
+) -> None:
+    """大きすぎる前回結果を捨てても保持済み状態からAgentを完了できる。"""
+    module = import_module(f"translate.pipeline.{operation}")
+    observations = []
+
+    def choose_action(
+        _client: LLMClient,
+        _purpose: str,
+        _state: dict[str, object],
+        observation: object,
+        _units: dict[str, dict[str, TextUnit]],
+    ) -> AgentAction:
+        """一回目は前回結果を大きくし、二回目で保持状態から終了する。"""
+        observations.append(observation)
+        if len(observations) == 1:
+            error = "action context exceeds input limit"
+            raise LLMInputExceededError(error)
+        assert observation == {
+            "error": (
+                "Previous result exceeded the action input budget. "
+                "No action was executed; choose from the current state."
+            )
+        }
+        return AgentAction(operation="finish")
+
+    monkeypatch.setattr(module, "choose_action", choose_action)
+    documents = (
+        {"source": document(), "translation": document()}
+        if operation == "review"
+        else {
+            "source_v1": document(),
+            "source_v2": document(),
+            "translation_v1": document(),
+        }
+    )
+    agent = (
+        ReviewAgent(documents, tmp_path, tmp_path, config)
+        if operation == "review"
+        else UpgradeAgent(documents, tmp_path, config)
+    )
+
+    agent.run()
+
+    assert len(observations) == 2

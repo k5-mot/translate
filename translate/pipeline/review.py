@@ -276,6 +276,12 @@ class ReviewAgent:
                         observation,
                         self.units,
                     )
+                except LLMInputExceededError:
+                    observation = {
+                        "error": "Previous result exceeded the action input budget. No action was executed; choose from the current state."
+                    }
+                    idle_steps += 1
+                    continue
                 except LLMInvalidResponseError:
                     observation = {
                         "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
