@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import BaseModel
 
+from tests import successful_review
 from translate.adapters.artifact_store import load_model
 from translate.adapters.llm import (
     LLMClient,
@@ -167,9 +168,21 @@ def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
     expected = [target.id for target in targets]
     response = MagicMock()
     response.choices = [MagicMock(finish_reason="stop")]
-    response.choices[0].message.content = ReviewResponse(
-        reviewed_target_ids=expected
-    ).model_dump_json()
+    response.choices[0].message.content = json.dumps(
+        {
+            "assessments": [
+                {
+                    "target_id": key,
+                    "reason": "適切な訳文",
+                    "verdict": "correct",
+                    "edits": [],
+                    "category": None,
+                    "severity": None,
+                }
+                for key in expected
+            ]
+        }
+    )
     response.usage = None
     create = MagicMock(return_value=response)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
@@ -186,8 +199,11 @@ def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
             )
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
-        field = schema["properties"]["reviewed_target_ids"]
-        assert field["items"]["enum"] == expected
+        field = schema["properties"]["assessments"]
+        assert (
+            schema["$defs"]["ReviewAssessment"]["properties"]["target_id"]["enum"]
+            == expected
+        )
         assert field["minItems"] == field["maxItems"] == len(expected)
         assert result.reviewed_target_ids == expected
     finally:
@@ -522,19 +538,16 @@ def evaluation(*texts: str) -> ReviewResponse:
     """同じSpanの競合候補、または確定候補を返す。"""
     return ReviewResponse.model_validate(
         {
-            "reviewed_target_ids": ["review/alignment-000001"],
-            "findings": [
+            "assessments": [
                 {
+                    "target_id": "review/alignment-000001",
+                    "reason": "数値を原文に合わせる",
+                    "verdict": "issue",
                     "category": "accuracy",
                     "severity": "warning",
-                    "target_ids": ["ja2"],
-                    "message": "数値を原文に合わせる",
+                    "edits": [{"span_id": "ja2/span", "text": text} for text in texts],
                 }
-            ],
-            "revisions": [
-                {"target_id": "ja2", "edits": [{"span_id": "ja2/span", "text": text}]}
-                for text in texts
-            ],
+            ]
         }
     )
 
@@ -617,9 +630,7 @@ def test_review_recovers_unmatched_units_and_resumes(
             operation="evaluate",
             target_ids=["review/alignment-000003", "review/alignment-000004"],
         ),
-        ReviewResponse(
-            reviewed_target_ids=["review/alignment-000003", "review/alignment-000004"]
-        ),
+        successful_review(*["review/alignment-000003", "review/alignment-000004"]),
         AgentAction(operation="finish"),
     ]
     calls = scripted(monkeypatch, answers)
@@ -704,8 +715,8 @@ def test_review_observes_only_current_matches_and_retains_all_results(
                     }
                 ),
                 evaluate_current,
-                ReviewResponse(
-                    reviewed_target_ids=[
+                successful_review(
+                    *[
                         f"review/alignment-{index + 1:06d}"
                         for index in range(start, start + 8)
                     ]
@@ -762,7 +773,7 @@ def test_review_agent_reselects_after_invalid_operation_response(
             }
         ),
         AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-        ReviewResponse(reviewed_target_ids=["review/alignment-000001"]),
+        successful_review(*["review/alignment-000001"]),
         AgentAction(operation="match", references={"translation": ["ja2"]}),
         AlignmentResponse.model_validate(
             {
@@ -932,9 +943,9 @@ def test_agent_rejects_premature_finish(
 def test_invalid_review_edit_is_failed_before_cache_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
-    """選択group内でも別TextUnitのSpanを編集する応答を成功保存しない。"""
+    """選択した比較対象に属さないSpanの修正を成功保存しない。"""
     bad = evaluation("二つ。")
-    bad.revisions[0].target_id = "ja1"
+    bad.assessments[0].edits[0].span_id = "unknown/span"
     answers = [
         AgentAction(
             operation="match",

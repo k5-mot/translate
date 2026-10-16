@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image as PILImage
 
+from tests import successful_review
 from translate.adapters.glossary import Glossary
 from translate.adapters.llm import (
     LLMClient,
@@ -31,9 +32,8 @@ from translate.models.document import (
     TextUnit,
 )
 from translate.models.review import (
-    ReviewFinding,
+    ReviewAssessment,
     ReviewResponse,
-    ReviewRevision,
     ReviewTarget,
     ReviewTextEdit,
     Revision,
@@ -1591,10 +1591,8 @@ def test_review_reserves_json_envelope_for_split_target(
             )
             assert total <= values["input_tokens"]
             return StructuredResult(
-                ReviewResponse(
-                    reviewed_target_ids=[
-                        target["id"] for target in json.loads(user)["targets"]
-                    ]
+                successful_review(
+                    *[target["id"] for target in json.loads(user)["targets"]]
                 ),
                 1,
                 100,
@@ -1627,95 +1625,153 @@ def test_review_reserves_json_envelope_for_split_target(
     assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
 
 
-def test_review_discards_identical_model_items(
+def test_review_maps_assessments_to_owned_units_and_reuses_response(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """同一候補を除き、入力中の別名だけを安全にTextUnit IDへ直す。"""
-
-    finding = ReviewFinding(
+    """比較対象とSpan所有先から提案を復元し、正常対象は一覧へ出さず再開できる。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="model",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    client = LLMClient(config)
+    correct = ReviewTarget(
+        id="translate/literal",
+        source="item_name",
+        translation="item_name",
+        target_ids=["literal"],
+        spans=[TextSpan(id="literal/span", source="item_name")],
+    )
+    target = ReviewTarget(
+        id="review/target",
+        source="One. Two.",
+        translation="一つ。三つ。",
+        target_ids=["unit-a", "unit-b"],
+        spans=[
+            TextSpan(id="span-a", source="一つ。"),
+            TextSpan(id="span-b", source="三つ。"),
+        ],
+    )
+    response = successful_review(correct.id, target.id)
+    response.assessments[1] = ReviewAssessment(
+        target_id=target.id,
+        reason="数値の誤訳",
+        verdict="issue",
+        edits=[ReviewTextEdit(span_id="span-b", text="二つ。")],
         category="accuracy",
         severity="error",
-        target_ids=["target"],
-        message="誤訳",
     )
-    revision = ReviewRevision(
-        target_id="span",
-        edits=[ReviewTextEdit(span_id="span", text="正しい訳")],
-    )
-
-    class Client:
-        def __init__(self, config: Config) -> None:
-            """共通要求が参照する設定を保持する。"""
-            self.config = config
-            self.client = MagicMock()
-
-        def structured(self, **_values: object) -> StructuredResult[ReviewResponse]:
-            """重複と異なる指摘・修正候補を返す。"""
-
-            return StructuredResult(
-                ReviewResponse(
-                    reviewed_target_ids=["target", "other-target"],
-                    findings=[
-                        finding,
-                        finding,
-                        finding.model_copy(update={"message": "用語違い"}),
-                    ],
-                    revisions=[
-                        revision,
-                        revision,
-                        revision.model_copy(
-                            update={
-                                "target_id": "target",
-                                "edits": [
-                                    ReviewTextEdit(span_id="span", text="別の訳")
-                                ],
-                            }
-                        ),
-                        ReviewRevision(
-                            target_id="other-target",
-                            edits=[ReviewTextEdit(span_id="span", text="誤った対象")],
-                        ),
-                    ],
-                ),
-                1,
-                100,
-                10,
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = response.model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    task = ReviewTask(config, tmp_path / "review", "", "")
+    try:
+        result = task.run(
+            [correct, target],
+            tmp_path,
+            client=client,
+            span_owners={
+                "literal/span": "literal",
+                "span-a": "unit-a",
+                "span-b": "unit-b",
+            },
+        )
+        assert result.reviewed_target_ids == [correct.id, target.id]
+        assert [(item.target_ids, item.message) for item in result.findings] == [
+            (["unit-b"], "数値の誤訳")
+        ]
+        assert [(item.target_id, item.edits[0].text) for item in result.revisions] == [
+            ("unit-b", "二つ。")
+        ]
+        assert (
+            task.run(
+                [correct, target],
+                tmp_path,
+                client=client,
+                span_owners={
+                    "literal/span": "literal",
+                    "span-a": "unit-a",
+                    "span-b": "unit-b",
+                },
             )
+            == result
+        )
+        create.assert_called_once()
+    finally:
+        client.client.close()
 
-    monkeypatch.setattr("translate.tasks.41_review.LLMClient", Client)
-    target = ReviewTarget(
-        id="target",
-        source="source",
-        translation="訳",
-        target_ids=["unit"],
-        spans=[TextSpan(id="span", source="source", translated="訳")],
-    )
-    other = ReviewTarget(
-        id="other-target",
-        source="other",
-        translation="別訳",
-        target_ids=["other-unit"],
-        spans=[TextSpan(id="other-span", source="other", translated="別訳")],
-    )
-    result = ReviewTask(
-        Config(openai_base_url="http://llm", openai_review_model="model"),
-        tmp_path / "review",
-        "",
-        "",
-    ).run([target, other], tmp_path)
 
-    assert [item.message for item in result.findings] == ["誤訳", "用語違い"]
-    assert [item.target_ids for item in result.findings] == [["unit"], ["unit"]]
-    assert [item.edits[0].text for item in result.revisions] == [
-        "正しい訳",
-        "別の訳",
-        "誤った対象",
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "correct_edit",
+        "correct_category",
+        "missing_category",
+        "missing_severity",
+        "foreign_span",
+    ],
+)
+def test_review_retries_inconsistent_assessment_before_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_kind: str
+) -> None:
+    """判定と分類・修正案の矛盾や別対象のSpanを訂正し、有効な応答だけを保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    targets = [
+        ReviewTarget(
+            id=f"translate/{key}",
+            source="Original",
+            translation="訳",
+            target_ids=[key],
+            spans=[TextSpan(id=f"{key}/span", source="Original", translated="訳")],
+        )
+        for key in ("first", "second")
     ]
-    assert [item.target_id for item in result.revisions] == [
-        "unit",
-        "unit",
-        "other-target",
-    ]
+    valid = successful_review(*(target.id for target in targets))
+    invalid = valid.model_copy(deep=True)
+    item = invalid.assessments[0]
+    if invalid_kind == "correct_edit":
+        item.edits = [ReviewTextEdit(span_id="first/span", text="修正")]
+    elif invalid_kind == "correct_category":
+        item.category = "accuracy"
+    else:
+        item.verdict = "issue"
+        item.category = None if invalid_kind == "missing_category" else "accuracy"
+        item.severity = None if invalid_kind == "missing_severity" else "error"
+        if invalid_kind == "foreign_span":
+            item.edits = [ReviewTextEdit(span_id="second/span", text="別対象の修正")]
+    completions = []
+    for response in (invalid, valid):
+        completion = MagicMock()
+        completion.choices = [MagicMock(finish_reason="stop")]
+        completion.choices[0].message.content = response.model_dump_json()
+        completion.usage = None
+        completions.append(completion)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=completions)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            targets, tmp_path, client=client
+        )
+        assert result.findings == result.revisions == []
+        assert create.call_count == 2
+        saved = ReviewResponse.model_validate_json(
+            next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
+        )
+        assert saved == valid
+    finally:
+        client.client.close()
 
 
 def test_review_drops_optional_context_to_fit_target() -> None:
@@ -1755,10 +1811,8 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
                 message = "provider context limit"
                 raise LLMInputExceededError(message)
             return StructuredResult(
-                response=ReviewResponse(
-                    reviewed_target_ids=[
-                        target["id"] for target in json.loads(user)["targets"]
-                    ]
+                response=successful_review(
+                    *[target["id"] for target in json.loads(user)["targets"]]
                 ),
                 attempts=1,
                 input_tokens=100,
@@ -1804,11 +1858,14 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     ]
     assert len(successful) > 1
     assert all(
-        ReviewResponse.model_validate_json(
-            (tmp_path / "calls" / artifact["call_id"] / "response.json").read_text(
-                encoding="utf-8"
-            )
-        ).reviewed_target_ids
+        [
+            item.target_id
+            for item in ReviewResponse.model_validate_json(
+                (tmp_path / "calls" / artifact["call_id"] / "response.json").read_text(
+                    encoding="utf-8"
+                )
+            ).assessments
+        ]
         == [key.removeprefix("review:") for key in artifact["target_ids"]]
         for artifact in successful
     )
@@ -1942,7 +1999,9 @@ def test_load_expands_merged_table_into_empty_grid_cells() -> None:
     )
 
 
-@pytest.mark.parametrize("reviewed_ids", [[], ["unit"]])
+@pytest.mark.parametrize(
+    "reviewed_ids", [[], ["unit"], ["translate/unit", "translate/unit"]]
+)
 def test_review_retries_coverage_error_before_publishing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reviewed_ids: list[str]
 ) -> None:
@@ -1964,15 +2023,13 @@ def test_review_retries_coverage_error_before_publishing(
     )
     invalid = MagicMock()
     invalid.choices = [MagicMock(finish_reason="stop")]
-    invalid.choices[0].message.content = ReviewResponse(
-        reviewed_target_ids=reviewed_ids
+    invalid.choices[0].message.content = successful_review(
+        *reviewed_ids
     ).model_dump_json()
     invalid.usage = None
     valid = MagicMock()
     valid.choices = [MagicMock(finish_reason="stop")]
-    valid.choices[0].message.content = ReviewResponse(
-        reviewed_target_ids=[target.id]
-    ).model_dump_json()
+    valid.choices[0].message.content = successful_review(*[target.id]).model_dump_json()
     valid.usage = None
     create = MagicMock(side_effect=[invalid, valid])
     monkeypatch.setattr(client.client.chat.completions, "create", create)
@@ -1988,7 +2045,7 @@ def test_review_retries_coverage_error_before_publishing(
         )
         assert call["status"] == "succeeded"
         assert call["attempts"] == 2
-        assert "confirm every requested target" in str(create.call_args_list[1])
+        assert "assess every requested target" in str(create.call_args_list[1])
     finally:
         client.client.close()
 
@@ -2026,8 +2083,8 @@ def test_review_trims_rag_using_complete_native_prompt_budget(
     monkeypatch.setattr("translate.tasks.QdrantStore", MagicMock(return_value=store))
     completion = MagicMock()
     completion.choices = [MagicMock(finish_reason="stop")]
-    completion.choices[0].message.content = ReviewResponse(
-        reviewed_target_ids=[target.id]
+    completion.choices[0].message.content = successful_review(
+        *[target.id]
     ).model_dump_json()
     completion.usage = None
     create = MagicMock(return_value=completion)

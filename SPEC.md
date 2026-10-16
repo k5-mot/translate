@@ -328,7 +328,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 LLM応答モデルは処理内容に応じて `StructureResponse`、`TranslationResponse`、`AlignmentResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、その操作に必要な結果だけを表す。
 
 対象IDの参照先、確認範囲、操作ごとの完了条件などの説明は、すべてのstructured output方式でpromptへ含める。`json_schema` でも型定義だけに置き換えず、操作説明とSchemaの両方を入力予算へ計上する。
-REVIEWの品質確認・再確認では、`json_schema` の `reviewed_target_ids` を今回の確認対象IDのenumに限定し、件数を確認対象数へ固定する。訳文要素IDとの取り違えを生成時にも防ぎ、重複・欠落と参照先の検証は応答受信後も行う。
+REVIEWの品質確認・再確認では、`json_schema` の `assessments[].target_id` を今回の比較対象IDのenumに限定し、判定件数を比較対象数へ固定する。各対象を一度ずつ評価させ、重複・欠落、判定と修正案の整合およびSpanの所属を応答受信後も検証する。
 
 生成LLMは一つのOpenAI互換endpointを使用する。Embeddingと別のendpointを設定できるが、model別の振り分け、実行時の切替およびfailoverはスコープ外とする。
 
@@ -554,21 +554,20 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 
 `FixResult` は更新した `Document` と `RevisionOutcome` の一覧を保持する。適用できない候補は本文の状態として保存せず、`RevisionOutcome` に理由とともに記録する。
 
-対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。`source_ids` と `translation_ids` は省略不可とし、未対応の側は空配列を明示する。品質確認の `ReviewResponse` は `reviewed_target_ids: list[str]`、`findings: list[ReviewFinding]` と `revisions: list[ReviewRevision]` を持つ。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
+対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。`source_ids` と `translation_ids` は省略不可とし、未対応の側は空配列を明示する。品質確認の `ReviewResponse` は `assessments: list[ReviewAssessment]` を持つ。各比較対象について、判定理由、正常・問題ありの結論、および修正案を一つにまとめる。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
 
-対応付けのNative Schemaは `kind` を先頭に置き、ID配列を生成する前に対応種別を選択させる。`matched` は両側に1件以上のIDを必要とし、`source_only` と `translation_only` は該当する側だけに1件以上のIDを持ち、反対側を空配列に限定する。未対応には空でない `reason` を必須とする。応答後も、IDの網羅性、重複、対応種別と配列の整合および未対応の理由を検証する。
+対応付けのNative Schemaは `reason` を先頭に置き、内容の対応を説明してから対応種別とIDを選択させる。`matched` は両側に1件以上のIDを必要とし、`source_only` と `translation_only` は該当する側だけに1件以上のIDを持ち、反対側を空配列に限定する。未対応には空でない `reason` を必須とする。応答後も、IDの網羅性、重複、対応種別と配列の整合および未対応の理由を検証する。
 
 | Model | Field |
 |---|---|
-| `ReviewFinding` | `category: str`, `severity: Literal["info", "warning", "error"]`, `target_ids: list[str]`, `message: str` |
-| `ReviewRevision` | `target_id: str`, `edits: list[ReviewTextEdit]` |
+| `ReviewAssessment` | `target_id: str`, `reason: str`, `verdict: Literal["correct", "issue"]`, `edits: list[ReviewTextEdit]`, `category: str \| None`, `severity: Literal["info", "warning", "error"] \| None` |
 | `ReviewTextEdit` | `span_id: str`, `text: str` |
 
-`ReviewFinding`、`ReviewRevision` および `ReviewTextEdit` はLLM応答専用modelとし、いずれも `ConfigDict(extra="ignore")` を使用する。永続化用の `TextEdit` を `ReviewResponse` の検証へ流用してはならない。
+`ReviewAssessment` および `ReviewTextEdit` はLLM応答専用modelとし、いずれも `ConfigDict(extra="ignore")` を使用する。永続化用の `TextEdit` を `ReviewResponse` の検証へ流用してはならない。
 
-Pydanticで形状を検証できたFindingとRevisionは `ReviewResult` に保持する。未知のFinding対象IDは診断情報へ記録し、Document変更へ使用しない。applicationが決定的なIDを付与し、Callの対象ID順、各応答内の出現順で結果を集約する。
+形状と対象の網羅性を検証した判定から、applicationが `Finding` と `Revision` を作る。`ReviewAssessment.target_id` は入力の `ReviewTarget.id` を参照し、未知・重複・欠落した比較対象や、その比較対象に属さないSpanの修正を成功応答として保存しない。修正するSpanの所有 `TextUnit` ごとにEditをまとめるため、LLMへ訳文要素IDの再指定を求めない。指摘だけの場合は比較対象の訳文要素を指摘先とする。applicationが決定的なIDを付け、Callの対象順と応答内の順序で結果を集約する。
 
-品質評価の出力説明には、問題がない場合の `findings=[]`、`revisions=[]` を示す。正常な対象は確認済みIDへ記録し、指摘や修正候補を埋めるために問題を作らない。
+正常な対象は `verdict="correct"`、`edits=[]`、`category=null`、`severity=null` とする。問題がある対象は `verdict="issue"` とし、空でない分類、重要度および具体的な理由を返す。修正案を確定できない場合は空のEditを許容する。正常な対象は最終結果の確認済みIDにだけ記録し、指摘や修正候補を埋めるために問題を作らない。最終結果の `findings` と `revisions` は、全対象が正常なら空配列となる。
 
 FIXは `ReviewResult.revisions` の順序でRevisionを処理し、次の規則を決定的に適用する。
 

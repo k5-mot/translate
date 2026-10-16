@@ -1259,13 +1259,16 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
         response = _verified_response(root, TaskName.REVIEW, confirmed)
         if not isinstance(response, ReviewResponse):
             return None
-        revisions = {item.target_id: item for item in response.revisions}
+        revisions = {
+            item.target_id.split("/part-", 1)[0]: item
+            for item in response.assessments
+            if item.edits
+        }
         target_ids = [
             key
             for item in confirmed.target_ids
             if (key := item.removeprefix("review:").split("/part-", 1)[0]) in targets
         ]
-        # Revisionは対応groupではなく訳文のTextUnit IDを参照する。
         target_ids = [key for key in revisions if key in targets] or target_ids
         before = [(item, targets[item][1]) for item in target_ids]
         after = [

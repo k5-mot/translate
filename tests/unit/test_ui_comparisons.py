@@ -497,10 +497,13 @@ def test_review_comparison_resolves_agent_ids_and_revision_units(
         call_dir / "response.json",
         ReviewResponse.model_validate(
             {
-                "reviewed_target_ids": ["review/alignment-000001"],
-                "revisions": [
+                "assessments": [
                     {
-                        "target_id": "unit",
+                        "target_id": "review/alignment-000001",
+                        "reason": "訳文を修正する",
+                        "verdict": "issue",
+                        "category": "accuracy",
+                        "severity": "warning",
                         "edits": [{"span_id": "span-unit", "text": "修正案"}],
                     }
                 ],
@@ -523,7 +526,10 @@ def test_review_comparison_resolves_agent_ids_and_revision_units(
             updated_at=now,
         ),
     )
-    assert _review_comparison(tmp_path) == ("[unit]\n現在訳", "[unit]\n修正案")
+    assert _review_comparison(tmp_path) == (
+        "[review/alignment-000001]\n現在訳",
+        "[review/alignment-000001]\n修正案",
+    )
 
 
 def test_review_preview_reads_alignment_response(tmp_path: Path) -> None:

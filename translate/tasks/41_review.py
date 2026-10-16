@@ -74,7 +74,7 @@ class ReviewTask:
             round_number: Agent操作の連番。
             publish: Translateの全対象完了時だけ最終結果を公開する。
             client: Agentから共有する接続と期限。省略時はTask用に作成する。
-            span_owners: 比較Reviewで厳密検証するSpan IDと所有TextUnit IDの対応。
+            span_owners: Span IDと所有TextUnit IDの対応。単一要素の対象は入力から補う。
 
         Returns:
             ReviewResult: ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。
@@ -95,6 +95,11 @@ class ReviewTask:
             client.deadline = time.monotonic() + self.config.llm_task_deadline_seconds
         try:
             responses: list[tuple[str, ReviewResponse, list[ReviewTarget]]] = []
+            owners = dict(span_owners or {})
+            for target in targets:
+                if len(target.target_ids) == 1:
+                    for span in target.spans:
+                        owners.setdefault(span.id, target.target_ids[0])
             # System、Schemaおよびmessage形式へ2,048 bytesを予約する。
             overhead = len(self.rules.encode("utf-8")) + 2048
             payload_budget = self.config.review_input_tokens - overhead
@@ -116,110 +121,54 @@ class ReviewTask:
                         depth=0,
                         operation=operation,
                         round_number=round_number,
-                        span_owners=span_owners,
+                        span_owners=owners,
                     )
                 )
             findings: list[Finding] = []
             revisions: list[Revision] = []
             chunks_directory = self.task_directory / "chunks"
             for call_id, response, chunk in responses:
-                seen_findings: set[str] = set()
-                seen_revisions: set[str] = set()
                 write_model(chunks_directory / f"{call_id}.json", response)
-                target_ids = {
-                    target_id for target in chunk for target_id in target.target_ids
-                }
-                span_ids = {span.id for target in chunk for span in target.spans}
-                aliases: dict[str, str] = {}
-                spans_by_target: dict[str, set[str]] = {}
-                for target in chunk:
-                    if len(target.target_ids) != 1:
+                by_id = {target.id: target for target in chunk}
+                chunk_findings: list[Finding] = []
+                chunk_revisions: list[Revision] = []
+                for index, item in enumerate(response.assessments, start=1):
+                    if item.category is None or item.severity is None:
                         continue
-                    unit_id = target.target_ids[0]
-                    aliases[target.id] = unit_id
-                    owned_spans = spans_by_target.setdefault(unit_id, set())
-                    for span in target.spans:
-                        aliases[span.id] = unit_id
-                        owned_spans.add(span.id)
-                for index, item in enumerate(
-                    response.findings[: self.config.review_max_findings], start=1
-                ):
-                    normalized_ids = list(
-                        dict.fromkeys(
-                            target_id
-                            if target_id in target_ids
-                            else aliases.get(target_id, target_id)
-                            for target_id in item.target_ids
+                    target = by_id[item.target_id]
+                    edits_by_unit: dict[str, list[TextEdit]] = {}
+                    for edit in item.edits:
+                        owner = owners[edit.span_id]
+                        edits_by_unit.setdefault(owner, []).append(
+                            TextEdit(span_id=edit.span_id, text=edit.text)
                         )
-                    )
-                    key = item.model_copy(
-                        update={"target_ids": normalized_ids}
-                    ).model_dump_json()
-                    if key in seen_findings:
-                        continue
-                    seen_findings.add(key)
-                    unknown = [
-                        target_id
-                        for target_id in normalized_ids
-                        if target_id not in target_ids
-                    ]
-                    diagnostics.extend(
-                        f"{call_id} unknown_target {target_id}" for target_id in unknown
-                    )
-                    findings.append(
+                    chunk_findings.append(
                         Finding(
                             id=f"review/{call_id}/finding-{index:04d}",
                             category=item.category,
                             severity=item.severity,
-                            target_ids=normalized_ids,
-                            message=item.message,
+                            target_ids=list(edits_by_unit) or target.target_ids,
+                            message=item.reason,
                         )
                     )
-                if len(response.findings) > self.config.review_max_findings:
+                    for owner, edits in edits_by_unit.items():
+                        if len(edits) > self.config.review_max_edits_per_revision:
+                            diagnostics.append(f"{call_id} edits_limit {owner}")
+                        chunk_revisions.append(
+                            Revision(
+                                id=f"review/{call_id}/revision-{len(chunk_revisions) + 1:04d}",
+                                target_id=owner,
+                                edits=edits[
+                                    : self.config.review_max_edits_per_revision
+                                ],
+                            )
+                        )
+                if len(chunk_findings) > self.config.review_max_findings:
                     diagnostics.append(f"{call_id} findings_limit")
-                for index, item in enumerate(
-                    response.revisions[: self.config.review_max_revisions], start=1
-                ):
-                    edits = item.edits[: self.config.review_max_edits_per_revision]
-                    target_id = item.target_id
-                    alias = (
-                        aliases.get(target_id) if target_id not in target_ids else None
-                    )
-                    if (
-                        alias is not None
-                        and edits
-                        and all(
-                            edit.span_id in spans_by_target[alias] for edit in edits
-                        )
-                    ):
-                        target_id = alias
-                    key = item.model_copy(
-                        update={"target_id": target_id, "edits": edits}
-                    ).model_dump_json()
-                    if key in seen_revisions:
-                        continue
-                    seen_revisions.add(key)
-                    if target_id not in target_ids:
-                        diagnostics.append(f"{call_id} unknown_target {target_id}")
-                    diagnostics.extend(
-                        f"{call_id} unknown_span {edit.span_id}"
-                        for edit in edits
-                        if edit.span_id not in span_ids
-                    )
-                    if len(item.edits) > self.config.review_max_edits_per_revision:
-                        diagnostics.append(f"{call_id} edits_limit {item.target_id}")
-                    revisions.append(
-                        Revision(
-                            id=f"review/{call_id}/revision-{index:04d}",
-                            target_id=target_id,
-                            edits=[
-                                TextEdit(span_id=edit.span_id, text=edit.text)
-                                for edit in edits
-                            ],
-                        )
-                    )
-                if len(response.revisions) > self.config.review_max_revisions:
+                if len(chunk_revisions) > self.config.review_max_revisions:
                     diagnostics.append(f"{call_id} revisions_limit")
+                findings.extend(chunk_findings[: self.config.review_max_findings])
+                revisions.extend(chunk_revisions[: self.config.review_max_revisions])
             result = ReviewResult(
                 targets=targets,
                 reviewed_target_ids=[target.id for target in targets],
@@ -264,7 +213,7 @@ class ReviewTask:
             depth: 現在の分割深度。
             operation: evaluateまたはrecheck。
             round_number: Agentが選んだ再確認の連番。
-            span_owners: 比較Reviewで検証するSpanの所有先。TranslateではFIXが検証する。
+            span_owners: 修正対象の所属を検証するSpan IDとTextUnit IDの対応。
 
         Returns:
             Call ID、応答、対応する入力対象の組。
@@ -282,38 +231,37 @@ class ReviewTask:
                 response: Schema検証済み応答。
 
             Raises:
-                ValueError: 確認漏れ、未知IDまたは重複IDがある場合。
+                ValueError: 対象の欠落・重複、判定の矛盾、または所属外のSpan修正がある場合。
             """
-            if sorted(response.reviewed_target_ids) != sorted(target_ids):
+            if sorted(item.target_id for item in response.assessments) != sorted(
+                target_ids
+            ):
                 raise ValueError(
-                    "REVIEW response must confirm every requested target exactly once"
+                    "REVIEW response must assess every requested target exactly once"
                 )
-
-            if span_owners is not None:
-                selected_units = {
-                    key for target in targets for key in target.target_ids
-                }
-                selected_spans = {
-                    span.id for target in targets for span in target.spans
-                }
+            by_id = {target.id: target for target in targets}
+            for item in response.assessments:
+                if item.verdict == "correct":
+                    if (
+                        item.edits
+                        or item.category is not None
+                        or item.severity is not None
+                    ):
+                        raise ValueError(
+                            "Correct targets require empty edits and null category and severity"
+                        )
+                    continue
+                if not (item.category or "").strip() or item.severity is None:
+                    raise ValueError("Issues require category and severity")
+                target = by_id[item.target_id]
+                selected_spans = {span.id for span in target.spans}
                 if any(
-                    not finding.target_ids
-                    or not set(finding.target_ids).issubset(selected_units)
-                    for finding in response.findings
-                ):
-                    raise ValueError("Finding references an unselected unit")
-                if any(
-                    revision.target_id not in selected_units
-                    or not revision.edits
-                    or any(
-                        edit.span_id not in selected_spans
-                        or span_owners.get(edit.span_id) != revision.target_id
-                        for edit in revision.edits
-                    )
-                    for revision in response.revisions
+                    edit.span_id not in selected_spans
+                    or (span_owners or {}).get(edit.span_id) not in target.target_ids
+                    for edit in item.edits
                 ):
                     raise ValueError(
-                        "Revision references an unselected or unowned span"
+                        "Assessment references an unselected or unowned span"
                     )
 
         try:
@@ -328,14 +276,15 @@ class ReviewTask:
                 },
                 "\n".join(target.source for target in targets),
                 ReviewResponse,
-                "Return reviewed_target_ids, findings and revisions. "
-                "Each finding has category, severity (info/warning/error), target_ids and message. "
-                "Each revision has target_id and edits; each edit has span_id and text. "
-                "reviewed_target_ids must contain every input targets[].id exactly once, including targets with no findings. "
-                "Copy the full id verbatim, including translate/, review/ and /part- prefixes or suffixes. "
-                "Finding.target_ids and Revision.target_id instead refer to input targets[].target_ids (TextUnit IDs). "
-                'When all input targets are correct, return {"reviewed_target_ids":[all input target IDs],"findings":[],"revisions":[]}. '
-                "Return only concrete findings and proposed edits.",
+                "Return assessments, one object for each input targets[].id, in input order. "
+                "Each assessment contains target_id (the complete input targets[].id), reason (one brief sentence), "
+                "verdict (correct or issue), and edits (span_id and replacement text). "
+                "For an issue, also provide category and severity (info, warning or error); for correct use null for both. "
+                "Compare the original source with all current spans[].text for that target. "
+                "Use correct when the current translation needs no change; then edits must be empty. "
+                "Use issue only for a concrete defect, and propose replacements for the affected spans. "
+                "A correctly preserved technical identifier is correct, even though it is English. "
+                "Ordinary English prose left untranslated is an issue. Explain the conclusion in Japanese.",
                 validate,
             )
         except (LLMInputExceededError, LLMOutputExceededError):

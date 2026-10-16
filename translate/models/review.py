@@ -99,15 +99,6 @@ class Revision(ReviewModel):
     edits: list[TextEdit] = Field(default_factory=list)
 
 
-class ReviewFinding(ReviewModel):
-    """IDをapplicationが補う前のLLM指摘。"""
-
-    category: str
-    severity: Literal["info", "warning", "error"]
-    target_ids: list[str] = Field(default_factory=list)
-    message: str
-
-
 class ReviewTextEdit(ReviewModel):
     """LLM応答内のSpan修正。"""
 
@@ -115,11 +106,15 @@ class ReviewTextEdit(ReviewModel):
     text: str
 
 
-class ReviewRevision(ReviewModel):
-    """LLM応答内のTextUnit修正候補。"""
+class ReviewAssessment(ReviewModel):
+    """一つの比較対象の判定と修正案。正常な対象の分類と重要度は空とする。"""
 
     target_id: str
-    edits: list[ReviewTextEdit] = Field(default_factory=list)
+    reason: str = Field(min_length=1)
+    verdict: Literal["correct", "issue"]
+    edits: list[ReviewTextEdit]
+    category: str | None
+    severity: Literal["info", "warning", "error"] | None
 
 
 class AlignmentResponse(ReviewModel):
@@ -129,8 +124,6 @@ class AlignmentResponse(ReviewModel):
 
 
 class ReviewResponse(ReviewModel):
-    """品質評価操作から受け取る確認範囲・指摘・修正提案。"""
+    """各比較対象を一度ずつ判定した品質評価の応答。"""
 
-    reviewed_target_ids: list[str] = Field(default_factory=list)
-    findings: list[ReviewFinding] = Field(default_factory=list)
-    revisions: list[ReviewRevision] = Field(default_factory=list)
+    assessments: list[ReviewAssessment]
