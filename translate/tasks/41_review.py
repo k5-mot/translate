@@ -409,7 +409,11 @@ class ReviewTask:
             "For every group, first name the actual source text and corresponding translation text in reason, "
             "or briefly state which content has no counterpart. "
             "Then select the kind and the IDs that belong to those texts. "
-            "Do not use generic reasons such as matched content.",
+            "Do not use generic reasons such as matched content. "
+            "Keep separate table cells separate: an identifier, its description, and its value are distinct content, even in the same row. "
+            "A group with multiple units is valid only when those units are split fragments of the SAME content expressed on the other side. "
+            "Account for the content of EVERY selected unit on BOTH sides; do not absorb an unmatched unit into a related match. "
+            "If the identifier itself has no counterpart in this candidate pool, leave it source_only or translation_only.",
             validate,
         )
 

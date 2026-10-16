@@ -523,6 +523,8 @@ Review Agentが入力Documentの要素IDを対応付け、結果をREVIEWの成�
 
 `AlignmentGroup` は `id`、`source_ids: list[str]`、`translation_ids: list[str]`、`kind: Literal["matched", "source_only", "translation_only"]`、`reason: str | None` を持つ。1対多・多対1を含む対応は同じgroupで表し、元の読み順と参照を保持する。未対応の場合は `reason` に対応を確定できない理由を記録し、一覧へ表示する。存在しないID、矛盾する重複対応、未確認対象の黙示的な除外を禁止する。
 
+同じ表の行にある識別子・説明・値は別々の内容として対応付ける。複数要素をまとめるのは、同じ内容の分割・結合を表す場合とし、両側の全要素の内容を対応根拠に含める。選択した候補に相手がない要素は未対応として残し、関連する説明の対応へ吸収しない。この判断はLLMが行い、文字列一致や文字数による品質判定は追加しない。
+
 対応済みgroupから `ReviewTarget` を作り、Agentが品質確認対象として選ぶ。未対応groupもUIの一覧へ表示する。Translateは同じDocumentの原文・訳文IDから対象を直接作成し、別文書間の対応付けを必要としない。
 
 ### 🛠️ Reviewと修正
