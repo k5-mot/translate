@@ -10,6 +10,79 @@ PositionTask = import_module("translate.tasks.10_position").PositionTask
 
 
 @pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
+@pytest.mark.parametrize("same_column", [False, True])
+@pytest.mark.parametrize(
+    "pairs",
+    [
+        [
+            ("7.1.1.1", "見出し 4"),
+            ("7.1.1.1.1", "見出し 5"),
+            ("7.1.1.1.1.1", "見出し 6"),
+        ],
+        [("Timeout", "30 s"), ("Retry", "3"), ("Owner", "Team")],
+    ],
+)
+def test_position_preserves_key_value_order_and_boundaries(
+    origin: str, pairs: list[tuple[str, str]], *, same_column: bool
+) -> None:
+    """キー・値を行順に保ち、同じ行の断片だけを結合して別行の内容を混ぜない。"""
+    texts = []
+    values = [value for pair in pairs for value in pair]
+    for index, value in enumerate(values):
+        left = 36 if same_column or index % 2 == 0 else 101
+        top = 100 + (index * 16 if same_column else index // 2 * 24)
+        upper, lower = (
+            (top, top + 10) if origin == "TOPLEFT" else (842 - top, 832 - top)
+        )
+        texts.append(
+            {
+                "self_ref": f"#/texts/{index}",
+                "parent": {"$ref": "#/groups/0"},
+                "children": [],
+                "label": "text",
+                "text": value,
+                "orig": value,
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "bbox": {
+                            "l": left,
+                            "r": left + 40,
+                            "t": upper,
+                            "b": lower,
+                            "coord_origin": origin,
+                        },
+                    }
+                ],
+            }
+        )
+    source = {
+        "body": {"children": [{"$ref": "#/groups/0"}]},
+        "groups": [
+            {
+                "self_ref": "#/groups/0",
+                "parent": {"$ref": "#/body"},
+                "label": "key_value_area",
+                "children": [{"$ref": item["self_ref"]} for item in texts],
+            }
+        ],
+        "texts": texts,
+    }
+    result, report = PositionTask(source).run()
+    expected = values if same_column else [" ".join(pair) for pair in pairs]
+    assert [item["text"] for item in result["texts"]] == expected
+    assert [item["orig"] for item in result["texts"]] == expected
+    assert result["groups"][0]["children"] == [
+        {"$ref": f"#/texts/{index}"} for index in range(len(expected))
+    ]
+    assert all(item["parent"] == {"$ref": "#/groups/0"} for item in result["texts"])
+    assert [item["text"] for item in source["texts"]] == values
+    assert len(report["merged"]) == (0 if same_column else len(pairs))
+    assert report["reordered"] == []
+    assert PositionTask(result).run()[0] == result
+
+
+@pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
 @pytest.mark.parametrize(
     ("right_column", "expected"),
     [

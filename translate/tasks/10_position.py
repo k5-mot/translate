@@ -69,15 +69,18 @@ def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | 
         return None
 
 
-def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。
+def _continuous(
+    first: dict[str, Any], second: dict[str, Any], *, same_line: bool = False
+) -> bool:
+    """同じページ・本文種別の断片が、領域に応じた結合方向で隣接するか調べる。
 
     Args:
         first (dict[str, Any]): 連続性を判定する先行要素。
         second (dict[str, Any]): 連続性を判定する後続要素。
+        same_line: キー・値領域では同行の左右だけを判定し、それ以外は縦の連続性を調べる。
 
     Returns:
-        bool: 同じページ・同じ本文種別で、横方向の重なりと縦の間隔が結合条件を満たすか判定する。
+        結合方向の座標条件と本文種別が一致する場合にTrue。
     """
 
     labels = {str(first.get("label", "")), str(second.get("label", ""))}
@@ -91,8 +94,17 @@ def _continuous(first: dict[str, Any], second: dict[str, Any]) -> bool:
     first_box, second_box = _tail_geometry(first), _geometry(second)
     if first_box is None or second_box is None or first_box[0] != second_box[0]:
         return False
-    _, left_a, right_a, _, bottom_a = first_box
-    _, left_b, right_b, top_b, _ = second_box
+    _, left_a, right_a, top_a, bottom_a = first_box
+    _, left_b, right_b, top_b, bottom_b = second_box
+    if same_line:
+        overlap = max(0.0, min(bottom_a, bottom_b) - max(top_a, top_b))
+        height = max(1.0, min(bottom_a - top_a, bottom_b - top_b))
+        # 小さい方の文字高さの7割以上が重なる、左から右への本文断片だけを結合する。
+        return (
+            labels <= {"text", "paragraph"}
+            and overlap / height >= 0.7
+            and right_a <= left_b
+        )
     overlap = max(0.0, min(right_a, right_b) - max(left_a, left_b))
     narrow = max(1.0, min(right_a - left_a, right_b - left_b))
     # Note 3: Require strong horizontal overlap and a small vertical gap.
@@ -576,7 +588,7 @@ class PositionTask:
         return self.unsafe
 
     def _merge_fragments(self, node: Any) -> None:
-        """隣接する本文・表の断片を条件付きで結合し、曖昧な表は残して警告を記録する。
+        """キー・値領域の本文は同行だけを結合し、他の本文・表は縦の連続性から結合する。
 
         Args:
             node (Any): 再帰的に走査または並べ替えるNode。
@@ -608,7 +620,11 @@ class PositionTask:
                 and first.get("label") == second.get("label") == "table"
             )
             text_pair = (
-                first is not None and second is not None and _continuous(first, second)
+                first is not None
+                and second is not None
+                and _continuous(
+                    first, second, same_line=node.get("label") == "key_value_area"
+                )
             )
             collection = "tables" if table_pair else "texts"
             if (table_pair or text_pair) and (
@@ -656,7 +672,7 @@ class PositionTask:
                 )
                 index += 1
                 continue
-            if first is not None and second is not None and _continuous(first, second):
+            if first is not None and second is not None and text_pair:
                 separator = (
                     "\n" if first.get("label") in {"code", "program_listing"} else " "
                 )
@@ -776,7 +792,7 @@ class PositionTask:
         return ordered
 
     def _sort_children(self, node: Any, visited: set[int] | None = None) -> None:
-        """各参照treeの子要素を読み順へ並べ替え、変更前後の参照列をreportへ記録する。
+        """キー・値領域の順序を保ち、他の子要素の並べ替えをreportへ記録する。
 
         Args:
             node (Any): 再帰的に走査または並べ替えるNode。
@@ -795,7 +811,12 @@ class PositionTask:
             return
         before = [child.get("$ref") for child in children if isinstance(child, dict)]
         typed_children = [child for child in children if isinstance(child, dict)]
-        children[:] = self._reading_order(typed_children)
+        # 項目名と値を段組として並べ替えると、行ごとの対応が失われる。
+        children[:] = (
+            typed_children
+            if node.get("label") == "key_value_area"
+            else self._reading_order(typed_children)
+        )
         after = [child.get("$ref") for child in children if isinstance(child, dict)]
         if before != after:
             self.changed.append(
