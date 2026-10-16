@@ -296,11 +296,11 @@ Agentの判断要求は、処理状態・観察結果・指示・応答Schemaを
 
 | 値 | 動作 |
 |---|---|
-| `json_object` | 既定。endpointへJSON objectの生成を要求し、compact contractをpromptに含める |
+| `json_object` | 既定。endpointへJSON objectの生成を要求し、compact contractをpromptに含める。ローカルendpointでnative schema互換性を確認できない場合に使用する |
 | `json_schema` | endpointのnative JSON Schema機能を使用する |
 | `prompt` | response formatを指定せず、promptだけでJSON objectを要求する |
 
-endpointの機能推測による方式の自動切替は行わない。選択した方式をendpointが受理しない場合は設定エラーとして扱う。いずれの方式でも、受信したJSONは最終的に `json.loads` とPydantic応答モデルで検証する。
+endpointの機能推測による方式の自動切替は行わない。`json_schema` は接続先がnative JSON Schema要求を受け付けることを確認した環境でのみ設定する。通常は `json_object` を使用する。選択した方式をendpointが受理しない場合はエラーとして扱う。いずれの方式でも、受信したJSONは最終的に `json.loads` とPydantic応答モデルで検証する。
 
 structured outputには次の環境変数と安全上限を設ける。
 
