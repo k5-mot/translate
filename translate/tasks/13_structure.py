@@ -28,6 +28,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMError,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputExceededError,
 )
 from translate.adapters.pdf import render_page
@@ -352,6 +353,18 @@ class StructureTask:
             if len(blocks) < 2 or depth >= self.config.llm_split_max_depth:
                 fail_llm_call(call_directory, artifact, error, attempts=1)
                 raise
+            split = True
+        except LLMInvalidResponseError as error:
+            if len(blocks) < 2 or depth >= self.config.llm_split_max_depth:
+                fail_llm_call(call_directory, artifact, error, attempts=1)
+                raise
+            split = True
+        except LLMError as error:
+            fail_llm_call(call_directory, artifact, error, attempts=1)
+            raise
+        else:
+            split = False
+        if split:
             middle = len(blocks) // 2
             groups = (blocks[:middle], blocks[middle:])
             child_ids = [
@@ -360,7 +373,7 @@ class StructureTask:
                 )
                 for index, group in enumerate(groups)
             ]
-            mark_split_llm_call(call_directory, artifact, child_ids)
+            artifact = mark_split_llm_call(call_directory, artifact, child_ids)
             values: list[tuple[str, StructureResponse]] = []
             for index, group in enumerate(groups):
                 values.extend(
@@ -373,9 +386,6 @@ class StructureTask:
                     )
                 )
             return values
-        except LLMError as error:
-            fail_llm_call(call_directory, artifact, error, attempts=1)
-            raise
         complete_llm_call(
             call_directory,
             artifact,

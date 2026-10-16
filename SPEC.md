@@ -313,7 +313,7 @@ structured outputには次の環境変数と安全上限を設ける。
 | `REVIEW_MAX_REVISIONS` | 32 | 32 | 1応答のRevision数 |
 | `REVIEW_MAX_EDITS_PER_REVISION` | 16 | 16 | 1RevisionのEdit数 |
 
-STRUCTUREのpatch数は入力Block数以下、TRANSLATEのtranslation数は入力 `TextSpan` 数以下とし、上記のchunk上限も超えてはならない。件数超過は応答全体ではなく、上限を超えた項目を不正として診断情報へ記録する。
+STRUCTUREのpatch数は入力Block数以下、TRANSLATEのtranslation数は入力 `TextSpan` 数以下とし、上記のchunk上限も超えてはならない。件数超過は応答全体ではなく、上限を超えた項目を不正として診断情報へ記録する。STRUCTUREのCallが検証再試行後も不正な場合は、同一ページ内で対象Blockを二分し、親Callを `split` として記録して子Callで続行する。最小Blockまたは最大分割深度で再度失敗した場合は失敗とする。通信・認証など対象の縮小で解消しないエラーは分割せず伝播する。
 
 native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内部の `Document` Schemaを渡してはならない。また、Pydanticの `model_json_schema()` を無加工でendpointへ渡さず、次の制約を満たす縮約Schemaを生成する。
 

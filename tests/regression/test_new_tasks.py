@@ -19,6 +19,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMInputExceededError,
     LLMInvalidResponseError,
+    LLMProviderError,
     StructuredResult,
 )
 from translate.adapters.pandoc import Pandoc
@@ -1734,6 +1735,103 @@ def test_structure_requires_classification_of_required_candidates(
     assert document.pages[0].blocks[1].kind == candidate_kind
     feedback = create.call_args.kwargs["messages"][-1]["content"][0]["text"]
     assert "missing=['body']" in feedback
+
+
+def test_structure_splits_blocks_after_invalid_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """構造化応答が再試行後も不正なら、対象Blockを分割して処理する。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(
+        openai_base_url="http://127.0.0.1:1/v1",
+        openai_structure_model="model",
+        llm_structured_output_mode="json_schema",
+        llm_retry_attempts=2,
+    )
+    blocks = [
+        Block(
+            id=f"block-{index}",
+            order=index,
+            kind="paragraph",
+            content=_unit(f"block-{index}/content", f"Text {index}"),
+        )
+        for index in range(2)
+    ]
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = MagicMock()
+    invalid = LLMInvalidResponseError("Invalid structure response")
+    invalid.attempts = 2
+    client.structured.side_effect = [
+        invalid,
+        StructuredResult(
+            response=StructureResponse(patches=[]),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=10,
+        ),
+        StructuredResult(
+            response=StructureResponse(patches=[]),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=10,
+        ),
+    ]
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    result = module.StructureTask(
+        config.model_copy(update={"structure_max_blocks": 2}), directory, "rules"
+    ).run(document, tmp_path / "source.pdf", tmp_path)
+
+    assert [block.id for block in result.pages[0].blocks] == [
+        block.id for block in blocks
+    ]
+    calls = [
+        json.loads((path.parent / "call.json").read_text(encoding="utf-8"))
+        for path in directory.glob("calls/*/call.json")
+    ]
+    assert any(call["status"] == "split" for call in calls)
+    assert sum(call["status"] == "split" for call in calls) == 1
+    assert sum(call["status"] == "succeeded" for call in calls) == 2
+
+
+def test_structure_does_not_split_after_other_llm_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """認証や通信などの失敗は対象を分割しても直らないため、そのまま伝える。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(openai_structure_model="model")
+    blocks = [
+        Block(
+            id=f"block-{index}",
+            order=index,
+            kind="paragraph",
+            content=_unit(f"block-{index}/content", f"Text {index}"),
+        )
+        for index in range(2)
+    ]
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = MagicMock()
+    error = LLMProviderError("Endpoint returned an unexpected API error")
+    error.attempts = 2
+    client.structured.side_effect = error
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    with pytest.raises(LLMProviderError):
+        module.StructureTask(config, directory, "rules").run(
+            document, tmp_path / "source.pdf", tmp_path
+        )
+
+    assert client.structured.call_count == 1
+    call = json.loads(
+        next(directory.glob("calls/*/call.json")).read_text(encoding="utf-8")
+    )
+    assert call["status"] == "failed"
 
 
 def test_structure_keeps_cover_out_of_body_heading_hierarchy(
