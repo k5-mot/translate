@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+from pydantic import ValidationError
 
 from translate.adapters.artifact_store import ArtifactStore, load_model, write_model
 from translate.adapters.llm import LLMInvalidResponseError
@@ -20,6 +21,13 @@ from translate.models.artifacts import (
 from translate.models.document import Document, TextSpan
 from translate.models.review import ReviewAssessment, ReviewResponse, ReviewTarget
 from translate.pipeline import PipelineRun
+
+
+def test_llm_split_depth_allows_smaller_retry_scopes() -> None:
+    """LLMの不正応答を縮小再試行できる分割深度を10まで許可する。"""
+    assert Config(_env_file=None).llm_split_max_depth == 10
+    with pytest.raises(ValidationError):
+        Config(_env_file=None, llm_split_max_depth=11)
 
 
 def test_task_reuses_matching_input_and_rebuilds_corrupt_artifact(
