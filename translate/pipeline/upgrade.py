@@ -231,6 +231,8 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
+                if not any(pending.values()) and idle_steps >= 12:
+                    break
                 # 片側だけが残り、比較失敗または無進捗が続いた場合は対応未確認で記録する。
                 if (
                     (one_sided_failures["source_v1"] >= 3 or idle_steps >= 12)

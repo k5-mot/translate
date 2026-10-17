@@ -1380,6 +1380,47 @@ def test_upgrade_classifies_one_sided_units_after_idle_steps(
     assert result.reviewed_source_v2_ids == ["new"]
 
 
+def test_upgrade_finishes_after_covered_sources_make_no_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """全英文が確認済みなら、12回無進捗の後にAgentの終了宣言を待たず確定する。"""
+    documents = {
+        "source_v1": document(old="Original"),
+        "source_v2": document(new="Original"),
+        "translation_v1": document(ja="原文"),
+    }
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source_v1": ["old"], "source_v2": ["new"]},
+        ),
+        DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "kind": "unchanged",
+                        "source_v1_ids": ["old"],
+                        "source_v2_ids": ["new"],
+                        "summary": "変更なし",
+                    }
+                ],
+                "reviewed_source_v1_ids": ["old"],
+                "reviewed_source_v2_ids": ["new"],
+            }
+        ),
+        *[AgentAction(operation="overview") for _ in range(12)],
+    ]
+    scripted(monkeypatch, answers)
+
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    assert not answers
+    assert result.changes == []
+    assert result.reviewed_source_v1_ids == ["old"]
+    assert result.reviewed_source_v2_ids == ["new"]
+    assert (tmp_path / "plan.json").is_file()
+
+
 @pytest.mark.parametrize(
     "empty_role", [None, "source_v1", "source_v2", "translation_v1"]
 )
