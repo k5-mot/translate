@@ -14,6 +14,7 @@ from translate.adapters.artifact_store import (
 from translate.adapters.llm import (
     LLMClient,
     LLMInputExceededError,
+    LLMInvalidResponseError,
     LLMOutputExceededError,
 )
 from translate.common.config import Config
@@ -287,7 +288,11 @@ class ReviewTask:
                 "Ordinary English prose left untranslated is an issue. Explain the conclusion in Japanese.",
                 validate,
             )
-        except (LLMInputExceededError, LLMOutputExceededError):
+        except (
+            LLMInputExceededError,
+            LLMInvalidResponseError,
+            LLMOutputExceededError,
+        ):
             groups = (
                 _retry_groups(targets)
                 if depth < self.config.llm_split_max_depth
