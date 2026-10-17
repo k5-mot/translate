@@ -536,12 +536,12 @@ def test_llm_reports_output_token_limit_with_setting(
         )
 
 
-@pytest.mark.parametrize("invalid_count", [1, 2])
-def test_llm_limits_invalid_json_to_one_retry(
+@pytest.mark.parametrize("invalid_count", [1, 2, 3])
+def test_llm_retries_invalid_json_until_configured_attempt_limit(
     monkeypatch: pytest.MonkeyPatch,
     invalid_count: int,
 ) -> None:
-    """JSON不正は一度だけ再試行し、通信再試行枠が残っていても停止する。"""
+    """JSON不正も設定された総試行回数まで再試行する。"""
 
     client = LLMClient(
         Config(
@@ -565,7 +565,7 @@ def test_llm_limits_invalid_json_to_one_retry(
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
 
-    if invalid_count == 2:
+    if invalid_count == 3:
         with pytest.raises(LLMInvalidResponseError) as failure:
             client.structured(
                 task="TRANSLATE",
@@ -577,7 +577,7 @@ def test_llm_limits_invalid_json_to_one_retry(
                 native_schema=TranslationResponse.model_json_schema(),
                 output_tokens=128,
             )
-        assert failure.value.attempts == create.call_count == 2
+        assert failure.value.attempts == create.call_count == 3
     else:
         result = client.structured(
             task="TRANSLATE",
@@ -589,7 +589,7 @@ def test_llm_limits_invalid_json_to_one_retry(
             native_schema=TranslationResponse.model_json_schema(),
             output_tokens=128,
         )
-        assert result.attempts == create.call_count == 2
+        assert result.attempts == create.call_count == invalid_count + 1
         assert result.response.translations[0].text == "意図的に空白"
 
 

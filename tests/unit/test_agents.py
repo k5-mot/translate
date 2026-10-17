@@ -493,7 +493,7 @@ def test_match_rejects_inconsistent_groups_before_saving(
                 client,
                 0,
             )
-        assert create.call_count == 2
+        assert create.call_count == 3
         assert not list(tmp_path.glob("calls/*/response.json"))
     finally:
         client.client.close()

@@ -161,7 +161,6 @@ class LLMClient:
             self.deadline if self.deadline is not None else float("inf"),
         )
         feedback = ""
-        invalid_responses = 0
         last_error: LLMError | None = None
         last_cause: Exception | None = None
         logger.info("LLM開始 task=%s model=%s", task, model)
@@ -233,8 +232,7 @@ class LLMClient:
                     "LLM応答がJSON形式または契約に適合しません。対策: "
                     "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
                 )
-                invalid_responses += 1
-                if invalid_responses >= 2 or attempt >= self.config.llm_retry_attempts:
+                if attempt >= self.config.llm_retry_attempts:
                     break
                 if isinstance(error, ValidationError):
                     detail = "; ".join(
