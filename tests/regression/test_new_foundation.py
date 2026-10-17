@@ -680,6 +680,49 @@ def test_embedding_sdk_preserves_order_and_auth(
     assert payload["encoding_format"] == "float"
 
 
+def test_embedding_retries_temporary_server_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一時的なHTTP 500後も同じEmbedding batchを再試行する。"""
+    attempts = 0
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        """二回の一時HTTP 500後にEmbedding結果を返す。"""
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx2.Response(500, request=request)
+        return httpx2.Response(
+            200,
+            json={
+                "object": "list",
+                "model": "embedding-model",
+                "data": [{"object": "embedding", "index": 0, "embedding": [1.0]}],
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            },
+            request=request,
+        )
+
+    def make_client(**kwargs: object) -> OpenAI:
+        """Embedding用SDKのHTTP transportをmockへ置き換える。"""
+        return OpenAI(
+            **kwargs, http_client=httpx2.Client(transport=httpx2.MockTransport(handle))
+        )
+
+    monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
+    monkeypatch.setattr("translate.adapters.embedding.time.sleep", lambda _: None)
+    vectors = EmbeddingClient(
+        Config(
+            _env_file=None,
+            openai_base_url="http://llm",
+            openai_embedding_model="embedding-model",
+        )
+    ).embed(["one"])
+
+    assert vectors == [[1.0]]
+    assert attempts == 3
+
+
 def test_llm_call_index_rejects_duplicate_ids() -> None:
     """集約進捗の正本となる採用Call一覧に重複を許可しない。"""
 
