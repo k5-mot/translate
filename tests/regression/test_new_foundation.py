@@ -723,6 +723,52 @@ def test_embedding_retries_temporary_server_errors(
     assert attempts == 3
 
 
+def test_embedding_honors_retry_after_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP 429のRetry-Afterで示された待機時間を下回らない。"""
+    attempts = 0
+    delays: list[float] = []
+
+    def handle(request: httpx2.Request) -> httpx2.Response:
+        """最初のEmbedding要求へRetry-Afterを返す。"""
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx2.Response(429, headers={"retry-after": "17"}, request=request)
+        return httpx2.Response(
+            200,
+            json={
+                "object": "list",
+                "model": "embedding-model",
+                "data": [{"object": "embedding", "index": 0, "embedding": [1.0]}],
+                "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            },
+            request=request,
+        )
+
+    def make_client(**kwargs: object) -> OpenAI:
+        """Embedding用SDKのHTTP transportをmockへ置き換える。"""
+        return OpenAI(
+            **kwargs, http_client=httpx2.Client(transport=httpx2.MockTransport(handle))
+        )
+
+    monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
+    monkeypatch.setattr("translate.adapters.embedding.time.sleep", delays.append)
+    monkeypatch.setattr("translate.adapters.embedding.random.uniform", lambda *_: 0)
+    vectors = EmbeddingClient(
+        Config(
+            _env_file=None,
+            openai_base_url="http://llm",
+            openai_embedding_model="embedding-model",
+        )
+    ).embed(["one"])
+
+    assert vectors == [[1.0]]
+    assert attempts == 2
+    assert delays == [17.0]
+
+
 def test_llm_call_index_rejects_duplicate_ids() -> None:
     """集約進捗の正本となる採用Call一覧に重複を許可しない。"""
 

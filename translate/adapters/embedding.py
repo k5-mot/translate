@@ -4,6 +4,7 @@ import logging
 import math
 import random
 import time
+from contextlib import suppress
 
 from openai import (
     APIConnectionError,
@@ -158,14 +159,18 @@ class EmbeddingClient:
                             "model名とendpointのサーバーログを確認してください。"
                         )
                     raise EmbeddingError(message) from error
-                delay = min(2 ** (attempt - 1), max(0.0, deadline - time.monotonic()))
+                delay = random.uniform(0, 2 ** (attempt - 1))  # noqa: S311
+                if isinstance(error, APIStatusError):
+                    with suppress(KeyError, ValueError):
+                        delay = max(delay, float(error.response.headers["retry-after"]))
+                delay = min(delay, max(0.0, deadline - time.monotonic()))
                 logger.warning("Embedding再試行 attempt=%d status=%s", attempt, status)
                 if delay <= 0:
                     raise EmbeddingError(
                         "Embedding処理の期限に達しました。対策: "
                         "EXTERNAL_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
                     ) from error
-                time.sleep(random.uniform(0, delay))  # noqa: S311
+                time.sleep(delay)
             except APIResponseValidationError as error:
                 logger.warning("Embedding失敗 type=APIResponseValidationError")
                 raise EmbeddingError(
