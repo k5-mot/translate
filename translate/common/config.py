@@ -39,7 +39,7 @@ class Config(BaseSettings):
     qdrant_collection: str | None = None
 
     http_retry_attempts: int = Field(default=3, gt=0, le=3)
-    http_request_timeout_seconds: float = Field(default=300, gt=0, le=3000)
+    http_request_timeout_seconds: float = Field(default=3000, gt=0, le=3000)
     external_task_deadline_seconds: float = Field(default=21600, gt=0, le=21600)
 
     llm_context_tokens: int = Field(default=30208, gt=0)

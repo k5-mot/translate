@@ -100,6 +100,7 @@ def test_http_timeout_allows_3000_seconds_from_dotenv(
     """長時間のHTTP応答待ちを.envで設定でき、上限超過は拒否する。"""
 
     monkeypatch.delenv("HTTP_REQUEST_TIMEOUT_SECONDS", raising=False)
+    assert Config().http_request_timeout_seconds == 3000
     (tmp_path / ".env").write_text(
         "HTTP_REQUEST_TIMEOUT_SECONDS=3000\n", encoding="utf-8"
     )
