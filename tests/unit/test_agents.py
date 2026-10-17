@@ -493,7 +493,7 @@ def test_match_rejects_inconsistent_groups_before_saving(
                 client,
                 0,
             )
-        assert create.call_count == 3
+        assert create.call_count == config.llm_retry_attempts
         assert not list(tmp_path.glob("calls/*/response.json"))
     finally:
         client.client.close()
@@ -709,15 +709,25 @@ def test_review_recovers_unmatched_units_and_resumes(
     assert len(calls) == before + 1
 
 
-def test_review_cannot_rematch_confirmed_units(
+def test_review_agent_recovers_from_invalid_match_action(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
     """未対応の再探索を許しても、確定した対応の再割当ては拒否する。"""
     action = AgentAction(
         operation="match", references={"source": ["en"], "translation": ["ja1", "ja2"]}
     )
-    scripted(monkeypatch, [action, matched(), action])
-    with pytest.raises(InputError, match="confirmed correspondence"):
+    scripted(
+        monkeypatch,
+        [
+            action,
+            matched(),
+            action,
+            AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+            successful_review("review/alignment-000001"),
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = (
         ReviewAgent(
             {
                 "source": document(en="Text"),
@@ -727,6 +737,8 @@ def test_review_cannot_rematch_confirmed_units(
             tmp_path,
             config,
         ).run()
+    )
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
 
 
 def test_review_observes_only_current_matches_and_retains_all_results(

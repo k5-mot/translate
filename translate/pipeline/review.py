@@ -329,6 +329,10 @@ class ReviewAgent:
                         observation = {
                             "error": "Selected scope exceeds the budget. Select fewer units or targets."
                         }
+                    except InputError as error:
+                        observation = {
+                            "error": f"{error}. No action was executed; choose valid references from the current state."
+                        }
                     except LLMInvalidResponseError:
                         observation = {
                             "error": "The operation returned an invalid response after its validation retry. "
