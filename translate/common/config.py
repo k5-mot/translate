@@ -54,7 +54,7 @@ class Config(BaseSettings):
     review_input_tokens: int = Field(default=8192, gt=0)
     review_output_tokens: int = Field(default=4096, gt=0)
     review_max_targets: int = Field(default=32, gt=0, le=32)
-    llm_retry_attempts: int = Field(default=3, gt=0, le=3)
+    llm_retry_attempts: int = Field(default=5, gt=0, le=5)
     llm_split_max_depth: int = Field(default=6, gt=0, le=6)
     llm_request_timeout_seconds: float = Field(default=1800, gt=0, le=1800)
     llm_task_deadline_seconds: float = Field(default=21600, gt=0, le=21600)

@@ -537,7 +537,7 @@ def test_llm_reports_output_token_limit_with_setting(
         )
 
 
-@pytest.mark.parametrize("invalid_count", [1, 2, 3])
+@pytest.mark.parametrize("invalid_count", [1, 2, 3, 4, 5])
 def test_llm_retries_invalid_json_until_configured_attempt_limit(
     monkeypatch: pytest.MonkeyPatch,
     invalid_count: int,
@@ -548,7 +548,7 @@ def test_llm_retries_invalid_json_until_configured_attempt_limit(
         Config(
             openai_base_url="http://llm",
             llm_structured_output_mode="prompt",
-            llm_retry_attempts=3,
+            llm_retry_attempts=5,
         )
     )
     completion = MagicMock()
@@ -566,7 +566,7 @@ def test_llm_retries_invalid_json_until_configured_attempt_limit(
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
 
-    if invalid_count == 3:
+    if invalid_count == 5:
         with pytest.raises(LLMInvalidResponseError) as failure:
             client.structured(
                 task="TRANSLATE",
@@ -578,7 +578,7 @@ def test_llm_retries_invalid_json_until_configured_attempt_limit(
                 native_schema=TranslationResponse.model_json_schema(),
                 output_tokens=128,
             )
-        assert failure.value.attempts == create.call_count == 3
+        assert failure.value.attempts == create.call_count == 5
     else:
         result = client.structured(
             task="TRANSLATE",
