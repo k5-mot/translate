@@ -797,7 +797,12 @@ def test_review_observes_only_current_matches_and_retains_all_results(
         )
     answers.append(AgentAction(operation="finish"))
     scripted(monkeypatch, answers)
-    result = ReviewAgent(documents, tmp_path / "review", tmp_path, config).run()
+    result = ReviewAgent(
+        documents,
+        tmp_path / "review",
+        tmp_path,
+        config.model_copy(update={"review_input_tokens": 100_000}),
+    ).run()
     assert len(result.groups) == len(result.reviewed_target_ids) == 78
     assert not answers
 

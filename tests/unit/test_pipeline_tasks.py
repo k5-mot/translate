@@ -90,6 +90,7 @@ def test_review_splits_target_after_invalid_llm_response(
     parent_id = "parent-call"
 
     def fixed_call_id(*_args: object, **_kwargs: object) -> str:
+        """再試行先を親Callと対応付ける固定IDを返す。"""
         return parent_id
 
     monkeypatch.setattr(module, "llm_call_id", fixed_call_id)
@@ -126,6 +127,7 @@ def test_review_splits_target_after_invalid_llm_response(
     calls = 0
 
     def request(*args: object) -> tuple[str, ReviewResponse]:
+        """最初の応答を失敗させ、縮小後のReview対象には成功応答を返す。"""
         nonlocal calls
         calls += 1
         if calls == 1:
