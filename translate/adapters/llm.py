@@ -202,8 +202,11 @@ class LLMClient:
                     self.config.llm_response_max_bytes,
                 )
                 validated = response_type.model_validate(parsed)
-                if validate is not None:
-                    validate(validated)
+                try:
+                    if validate is not None:
+                        validate(validated)
+                except ValueError as error:
+                    raise _invalid_response_validation() from error
                 logger.info(
                     "LLM完了 task=%s attempt=%d input_tokens=%s output_tokens=%s",
                     task,
@@ -228,25 +231,12 @@ class LLMClient:
                 ValidationError,
             ) as error:
                 last_cause = error
-                last_error = LLMInvalidResponseError(
-                    "LLM応答がJSON形式または契約に適合しません。対策: "
-                    "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
-                )
+                last_error = _invalid_response_validation()
                 if attempt >= self.config.llm_retry_attempts:
                     break
-                if isinstance(error, ValidationError):
-                    detail = "; ".join(
-                        f"{'.'.join(map(str, item['loc']))}: {item['type']}"
-                        for item in error.errors(include_input=False)
-                    )
-                else:
-                    detail = (
-                        str(error)
-                        if type(error) is ValueError
-                        else type(error).__name__
-                    )
                 feedback = (
-                    f"\n\nPrevious response validation failed: {detail[:1024]}. "
+                    f"\n\nPrevious response validation failed: "
+                    f"{_validation_detail(error)[:1024]}. "
                     "Return one complete JSON object matching the contract exactly."
                 )
             except APITimeoutError as error:
@@ -416,6 +406,24 @@ class LLMClient:
         if not self._api_key:
             payload["extra_headers"] = {"Authorization": Omit()}
         return payload
+
+
+def _invalid_response_validation() -> LLMInvalidResponseError:
+    """応答のparseまたは契約検証失敗を利用者向け例外へ変換する。"""
+    return LLMInvalidResponseError(
+        "LLM応答がJSON形式または契約に適合しません。対策: "
+        "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
+    )
+
+
+def _validation_detail(error: Exception) -> str:
+    """検証失敗を再試行Promptへ含められる短い診断へ変換する。"""
+    if isinstance(error, ValidationError):
+        return "; ".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['type']}"
+            for item in error.errors(include_input=False)
+        )
+    return str(error) if type(error) is ValueError else type(error).__name__
 
 
 def _reject_length_finish(
