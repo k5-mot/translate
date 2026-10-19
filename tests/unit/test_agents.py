@@ -172,14 +172,14 @@ def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
         {
             "assessments": [
                 {
-                    "target_id": key,
+                    "target_id": str(index),
                     "reason": "適切な訳文",
                     "verdict": "correct",
                     "edits": [],
                     "category": None,
                     "severity": None,
                 }
-                for key in expected
+                for index, _ in enumerate(expected, 1)
             ]
         }
     )
@@ -200,10 +200,9 @@ def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
         )
         schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
         field = schema["properties"]["assessments"]
-        assert (
-            schema["$defs"]["ReviewAssessment"]["properties"]["target_id"]["enum"]
-            == expected
-        )
+        assert schema["$defs"]["ReviewAssessment"]["properties"]["target_id"][
+            "enum"
+        ] == [str(index) for index in range(1, len(expected) + 1)]
         assert field["minItems"] == field["maxItems"] == len(expected)
         assert result.reviewed_target_ids == expected
     finally:

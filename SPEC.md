@@ -329,7 +329,7 @@ native JSON Schemaへ渡すSchemaはLLM応答専用の浅いSchemaとし、内�
 LLM応答モデルは処理内容に応じて `StructureResponse`、`TranslationResponse`、`AlignmentResponse`、`ReviewResponse` および `DiffResponse` を定義する。これらは永続化モデルから分離し、その操作に必要な結果だけを表す。
 
 対象IDの参照先、確認範囲、操作ごとの完了条件などの説明は、すべてのstructured output方式でpromptへ含める。`json_schema` でも型定義だけに置き換えず、操作説明とSchemaの両方を入力予算へ計上する。
-REVIEWの品質確認・再確認では、`json_schema` の `assessments[].target_id` を今回の比較対象IDのenumに限定し、判定件数を比較対象数へ固定する。各対象を一度ずつ評価させ、重複・欠落、判定と修正案の整合およびSpanの所属を応答受信後も検証する。
+REVIEWの品質確認・再確認では、LLMへの要求内で対象IDを短い連番に置き換え、`json_schema` の `assessments[].target_id` をその連番enumに限定する。応答を検証・保存する前に元の対象IDへ戻し、成果物には元IDを保持する。判定件数を比較対象数へ固定し、各対象を一度ずつ評価させ、重複・欠落、判定と修正案の整合およびSpanの所属を応答受信後も検証する。
 
 DIFFでは旧原文・新原文・旧訳の参照IDを、それぞれ今回選択した入力IDのenumに限定する。`changes` 配列の最大件数も選択した旧版・新版の英文ID合計に制限する。選択した要素がない側の参照は空の一覧とし、対応する旧訳が候補内にない場合も旧訳IDを捏造しない。確認済み英文IDの件数は選択範囲に合わせ、応答受信後にも所属・重複・網羅性を検証する。
 

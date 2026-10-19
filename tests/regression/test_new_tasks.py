@@ -2500,6 +2500,54 @@ def test_review_retries_coverage_error_before_publishing(
         client.client.close()
 
 
+def test_review_uses_short_response_ids_and_restores_original_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """長いReview対象IDを要求内で短縮し、検証済み成果物では元IDを保つ。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        llm_structured_output_mode="json_schema",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id="translate/#/texts/16/content/part-0003",
+        source="Original sentence.",
+        translation="訳文",
+        target_ids=["unit"],
+        spans=[
+            TextSpan(id="unit/span", source="Original sentence.", translated="訳文")
+        ],
+    )
+    client = LLMClient(config)
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = successful_review("1").model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        saved = ReviewResponse.model_validate_json(
+            next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
+        )
+        assert sent["targets"][0]["id"] == "1"
+        assert schema["$defs"]["ReviewAssessment"]["properties"]["target_id"][
+            "enum"
+        ] == ["1"]
+        assert saved.assessments[0].target_id == target.id
+        assert result.reviewed_target_ids == [target.id]
+    finally:
+        client.client.close()
+
+
 def test_review_trims_rag_using_complete_native_prompt_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
