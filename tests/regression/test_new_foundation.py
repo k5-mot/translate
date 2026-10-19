@@ -86,12 +86,15 @@ def test_config_environment_overrides_dotenv(
 ) -> None:
     """process環境変数が.envより優先されることを確認する。"""
 
-    (tmp_path / ".env").write_text("PDF_SPLIT_PAGES=5\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "PDF_SPLIT_PAGES=5\nHTTP_RETRY_ATTEMPTS=6\n", encoding="utf-8"
+    )
 
     monkeypatch.setenv("PDF_SPLIT_PAGES", "7")
     config = load_config(tmp_path)
 
     assert config.pdf_split_pages == 7
+    assert config.http_retry_attempts == 6
 
 
 def test_http_timeout_allows_3000_seconds_from_dotenv(
@@ -726,15 +729,15 @@ def test_embedding_retries_temporary_server_errors(
 def test_embedding_honors_retry_after_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """HTTP 429のRetry-Afterで示された待機時間を下回らない。"""
+    """HTTP 429を最大試行回数でもRetry-After後に再試行する。"""
     attempts = 0
     delays: list[float] = []
 
     def handle(request: httpx2.Request) -> httpx2.Response:
-        """最初のEmbedding要求へRetry-Afterを返す。"""
+        """五回のHTTP 429後にEmbedding結果を返す。"""
         nonlocal attempts
         attempts += 1
-        if attempts == 1:
+        if attempts <= 5:
             return httpx2.Response(429, headers={"retry-after": "17"}, request=request)
         return httpx2.Response(
             200,
@@ -759,14 +762,15 @@ def test_embedding_honors_retry_after_header(
     vectors = EmbeddingClient(
         Config(
             _env_file=None,
+            http_retry_attempts=6,
             openai_base_url="http://llm",
             openai_embedding_model="embedding-model",
         )
     ).embed(["one"])
 
     assert vectors == [[1.0]]
-    assert attempts == 2
-    assert delays == [17.0]
+    assert attempts == 6
+    assert delays == [17.0] * 5
 
 
 def test_llm_call_index_rejects_duplicate_ids() -> None:

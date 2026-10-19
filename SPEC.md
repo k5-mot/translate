@@ -2016,8 +2016,8 @@ Embedding・LLM・Qdrantは並列要求に対応しないローカルserviceと�
 
 | 環境変数 | 既定値 | 安全上限 | 対象 |
 |---|---:|---:|---|
-| `HTTP_RETRY_ATTEMPTS` | 5 | 5 | 初回を含むHTTP送信の総試行回数 |
-| `HTTP_REQUEST_TIMEOUT_SECONDS` | 300 | 3,000 | Docling・Embedding・Qdrantの1回のHTTP要求およびPandoc processのtimeout |
+| `HTTP_RETRY_ATTEMPTS` | 6 | 6 | 初回を含むHTTP送信の総試行回数 |
+| `HTTP_REQUEST_TIMEOUT_SECONDS` | 3,000 | 3,000 | Docling・Embedding・Qdrantの1回のHTTP要求およびPandoc processのtimeout |
 | `EXTERNAL_TASK_DEADLINE_SECONDS` | 21,600 | 21,600 | Doclingの送信・poll・取得およびPandocを含む1 Task全体 |
 
 - transport error、timeout、HTTP 408、HTTP 429およびHTTP 5xxだけを再試行する。
