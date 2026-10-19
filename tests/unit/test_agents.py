@@ -727,17 +727,15 @@ def test_review_agent_recovers_from_invalid_match_action(
             AgentAction(operation="finish"),
         ],
     )
-    result = (
-        ReviewAgent(
-            {
-                "source": document(en="Text"),
-                "translation": document(ja1="訳", ja2="文"),
-            },
-            tmp_path / "review",
-            tmp_path,
-            config,
-        ).run()
-    )
+    result = ReviewAgent(
+        {
+            "source": document(en="Text"),
+            "translation": document(ja1="訳", ja2="文"),
+        },
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
     assert result.reviewed_target_ids == ["review/alignment-000001"]
 
 
