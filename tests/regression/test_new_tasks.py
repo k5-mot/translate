@@ -2503,7 +2503,7 @@ def test_review_retries_coverage_error_before_publishing(
 def test_review_uses_short_response_ids_and_restores_original_ids(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """長いReview対象IDを要求内で短縮し、検証済み成果物では元IDを保つ。"""
+    """対象IDとSpan IDを要求内で短縮し、検証済み成果物では元IDを保つ。"""
     config = Config(
         openai_base_url="http://llm",
         openai_llm_base_url=None,
@@ -2524,7 +2524,18 @@ def test_review_uses_short_response_ids_and_restores_original_ids(
     client = LLMClient(config)
     completion = MagicMock()
     completion.choices = [MagicMock(finish_reason="stop")]
-    completion.choices[0].message.content = successful_review("1").model_dump_json()
+    completion.choices[0].message.content = ReviewResponse(
+        assessments=[
+            ReviewAssessment(
+                target_id="1",
+                reason="訳語を修正",
+                verdict="issue",
+                edits=[ReviewTextEdit(span_id="s1", text="識別子")],
+                category="accuracy",
+                severity="warning",
+            )
+        ]
+    ).model_dump_json()
     completion.usage = None
     create = MagicMock(return_value=completion)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
@@ -2539,11 +2550,17 @@ def test_review_uses_short_response_ids_and_restores_original_ids(
             next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
         )
         assert sent["targets"][0]["id"] == "1"
+        assert sent["targets"][0]["spans"][0]["span_id"] == "s1"
         assert schema["$defs"]["ReviewAssessment"]["properties"]["target_id"][
             "enum"
         ] == ["1"]
+        assert schema["$defs"]["ReviewTextEdit"]["properties"]["span_id"]["enum"] == [
+            "s1"
+        ]
         assert saved.assessments[0].target_id == target.id
+        assert saved.assessments[0].edits[0].span_id == target.spans[0].id
         assert result.reviewed_target_ids == [target.id]
+        assert result.revisions[0].edits[0].span_id == target.spans[0].id
     finally:
         client.client.close()
 

@@ -280,6 +280,7 @@ class ReviewTask:
                 "Return assessments, one object for each input targets[].id, in input order. "
                 "Each assessment contains target_id (the complete input targets[].id), reason (one brief sentence), "
                 "verdict (correct or issue), and edits (span_id and replacement text). "
+                "Each edits[].span_id must exactly match an input targets[].spans[].span_id. "
                 "For an issue, also provide category and severity (info, warning or error); for correct use null for both. "
                 "Compare the original source with all current spans[].text for that target. "
                 "Use correct when the current translation needs no change; then edits must be empty. "
