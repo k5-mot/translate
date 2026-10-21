@@ -1,15 +1,15 @@
 """単一OpenAI互換endpointへのstructured output要求。"""
 
-from __future__ import annotations
-
 import base64
 import json
 import logging
 import mimetypes
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from pathlib import Path
+from typing import Any, cast
 
 from openai import (
     APIConnectionError,
@@ -20,14 +20,10 @@ from openai import (
     Omit,
     OpenAI,
 )
+from openai.types.chat import ChatCompletion
 from pydantic import BaseModel, ValidationError
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from openai.types.chat import ChatCompletion
-
-    from translate.common.config import Config
+from translate.common.config import Config
 
 MESSAGE_OVERHEAD_BYTES = 256
 logger = logging.getLogger(__name__)
@@ -35,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 class LLMError(RuntimeError):
     """LLM要求が完了せず、利用者向けの原因と対策を持つ。"""
+
+    attempts: int = 1
 
 
 class LLMOutputExceededError(LLMError):
@@ -91,7 +89,7 @@ class LLMClient:
     """生成LLMの接続、再試行、JSON parseおよびPydantic検証を隠蔽する。"""
 
     def __init__(self, config: Config) -> None:
-        """単一endpoint設定を保持し、送信はstructuredまで遅延する。
+        """生成LLM用endpoint設定を保持し、送信はstructuredまで遅延する。
 
         Args:
             config (Config): 接続先、上限値および処理Optionを保持する設定。
@@ -100,13 +98,20 @@ class LLMClient:
             ValueError: `OpenAI-compatible base URL is required`と判定した場合。
         """
 
-        if config.openai_base_url is None:
+        base_url = config.openai_llm_base_url or config.openai_base_url
+        if base_url is None:
             raise ValueError("OpenAI-compatible base URL is required")
         self.config = config
+        self.deadline: float | None = None
+        self._api_key = (
+            config.openai_llm_api_key
+            if config.openai_llm_base_url
+            else config.openai_api_key
+        )
         # SDKは認証値を要求するが、ローカルの無認証endpointへは送らない。
         self.client = OpenAI(
-            api_key=config.openai_api_key or "local-no-auth",
-            base_url=config.openai_base_url,
+            api_key=self._api_key or "local-no-auth",
+            base_url=base_url,
             timeout=config.llm_request_timeout_seconds,
             max_retries=0,
         )
@@ -124,6 +129,7 @@ class LLMClient:
         input_tokens: int | None = None,
         output_tokens: int,
         image: Path | None = None,
+        validate: Callable[[ResponseT], None] | None = None,
     ) -> StructuredResult[ResponseT]:
         """一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
 
@@ -138,6 +144,7 @@ class LLMClient:
             input_tokens (int | None): Providerが報告した入力Token数。
             output_tokens (int): Providerが報告した出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
+            validate: 対象IDなどの応答契約を検証する関数。ValueErrorはSchema不正と同じ再試行枠を使う。
 
         Returns:
             StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
@@ -149,8 +156,10 @@ class LLMClient:
         """
 
         _validate_contract(native_schema, contract, self.config)
-        deadline = time.monotonic() + self.config.llm_task_deadline_seconds
-        validation_retried = False
+        deadline = min(
+            time.monotonic() + self.config.llm_task_deadline_seconds,
+            self.deadline if self.deadline is not None else float("inf"),
+        )
         feedback = ""
         last_error: LLMError | None = None
         last_cause: Exception | None = None
@@ -176,7 +185,13 @@ class LLMClient:
                 image=image,
             )
             try:
-                response = self.client.chat.completions.create(**cast("Any", payload))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LLMTimeoutError("LLM Task deadline exceeded")
+                response = self.client.chat.completions.create(
+                    **cast("Any", payload),
+                    timeout=min(self.config.llm_request_timeout_seconds, remaining),
+                )
                 content, finish_reason, used_input_tokens, used_output_tokens = (
                     _response(response)
                 )
@@ -187,6 +202,8 @@ class LLMClient:
                     self.config.llm_response_max_bytes,
                 )
                 validated = response_type.model_validate(parsed)
+                if validate is not None:
+                    validate(validated)
                 logger.info(
                     "LLM完了 task=%s attempt=%d input_tokens=%s output_tokens=%s",
                     task,
@@ -201,6 +218,7 @@ class LLMClient:
                     output_tokens=used_output_tokens,
                 )
             except (LLMInputExceededError, LLMOutputExceededError) as error:
+                error.attempts = attempt
                 logger.warning("LLM失敗 task=%s type=%s", task, type(error).__name__)
                 raise
             except (
@@ -214,11 +232,11 @@ class LLMClient:
                     "LLM応答がJSON形式または契約に適合しません。対策: "
                     "LLM_STRUCTURED_OUTPUT_MODEとmodelの対応を確認してください。"
                 )
-                if validation_retried or attempt >= self.config.llm_retry_attempts:
+                if attempt >= self.config.llm_retry_attempts:
                     break
-                validation_retried = True
                 feedback = (
-                    "\n\nThe previous response was invalid JSON or violated the contract. "
+                    f"\n\nPrevious response validation failed: "
+                    f"{_validation_detail(error)[:1024]}. "
                     "Return one complete JSON object matching the contract exactly."
                 )
             except APITimeoutError as error:
@@ -232,7 +250,7 @@ class LLMClient:
             except APIConnectionError as error:
                 last_cause = error
                 last_error = LLMConnectionError(
-                    "LLM endpointへ接続できません。対策: OPENAI_BASE_URLと"
+                    "LLM endpointへ接続できません。対策: OPENAI_LLM_BASE_URLまたはOPENAI_BASE_URLと"
                     "endpointの稼働・ネットワークを確認してください。"
                 )
                 if attempt >= self.config.llm_retry_attempts:
@@ -275,6 +293,7 @@ class LLMClient:
                 "LLM_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
             )
         logger.warning("LLM失敗 task=%s type=%s", task, type(last_error).__name__)
+        last_error.attempts = attempt
         raise last_error from last_cause
 
     def _payload(
@@ -304,7 +323,7 @@ class LLMClient:
         """
 
         mode = self.config.llm_structured_output_mode
-        system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
+        system_text = f"{system}\n\n{contract}"
         user_content: str | list[dict[str, object]] = user
         if image is not None:
             mime = mimetypes.guess_type(image.name)[0] or "image/png"
@@ -325,12 +344,14 @@ class LLMClient:
                 {"role": "user", "content": user_content},
             ],
             ### default
-            "temperature": 0.0,
+            "reasoning_effort": "none",
+            "temperature": 0.7,
             "top_p": 0.80,
             "extra_body": {
                 "top_k": 20,
                 "min_p": 0.0,
-                "presence_penalty": 1.5,
+                # 別の対象でも同じID断片や訳語が必要なため、出現済み語を抑制しない。
+                "presence_penalty": 0.0,
                 "repetition_penalty": 1.01,
                 "enable_thinking": False,
                 "preserve_thinking": False,
@@ -382,9 +403,19 @@ class LLMClient:
                     "schema": native_schema,
                 },
             }
-        if not self.config.openai_api_key:
+        if not self._api_key:
             payload["extra_headers"] = {"Authorization": Omit()}
         return payload
+
+
+def _validation_detail(error: Exception) -> str:
+    """検証失敗を再試行Promptへ含められる短い診断へ変換する。"""
+    if isinstance(error, ValidationError):
+        return "; ".join(
+            f"{'.'.join(map(str, item['loc']))}: {item['type']}"
+            for item in error.errors(include_input=False)
+        )
+    return str(error) if type(error) is ValueError else type(error).__name__
 
 
 def _reject_length_finish(
@@ -443,7 +474,7 @@ def _validate_input_size(
 
     if maximum_bytes is None:
         return
-    system_text = system if mode == "json_schema" else f"{system}\n\n{contract}"
+    system_text = f"{system}\n\n{contract}"
     schema_text = (
         json.dumps(native_schema, ensure_ascii=False, separators=(",", ":"))
         if mode == "json_schema"
@@ -478,6 +509,7 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         marker in message
         for marker in (
             "context length",
+            "context size has been exceeded",
             "context_length_exceeded",
             "maximum context",
             "prompt is too long",
@@ -509,7 +541,7 @@ def _provider_error(error: APIStatusError) -> LLMError:
     if status in {401, 403}:
         return LLMAuthenticationError(
             f"LLM認証・権限エラー (HTTP {status})。対策: "
-            "OPENAI_API_KEYとendpointの権限を確認してください。"
+            "OPENAI_LLM_API_KEYまたはOPENAI_API_KEYとendpointの権限を確認してください。"
         )
     if status == 429:
         return LLMRateLimitError(

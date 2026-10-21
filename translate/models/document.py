@@ -1,13 +1,9 @@
 """全Taskが共有する文書モデル。"""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Iterator
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 TextKind = Literal["text", "code", "link", "line_break"]
 TextMark = Literal[
@@ -103,13 +99,11 @@ class Image(DocumentModel):
 
 
 class TableCell(DocumentModel):
-    """表内の結合範囲起点となる一つのセル。"""
+    """結合を展開した通常gridの一つのセル。"""
 
     id: str = Field(min_length=1)
     row: int = Field(ge=0)
     column: int = Field(ge=0)
-    rowspan: int = Field(default=1, ge=1)
-    colspan: int = Field(default=1, ge=1)
     header: bool = False
     content: TextUnit
     images: list[Image] = Field(default_factory=list)
@@ -121,6 +115,7 @@ class Block(DocumentModel):
     id: str = Field(min_length=1)
     order: int = Field(ge=0)
     kind: BlockKind
+    # LOADは表示ページの左上原点へ正規化し、left/top/right/bottomをptで保持する。
     bbox: tuple[float, float, float, float] | None = None
     content: TextUnit | None = None
     caption: TextUnit | None = None
@@ -149,41 +144,35 @@ class Document(DocumentModel):
     pages: list[Page] = Field(default_factory=list)
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
+    def text_units(self) -> Iterator[tuple[str, TextUnit]]:
+        """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
 
-def iter_text_units(document: Document) -> Iterator[tuple[str, TextUnit]]:
-    """文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+        Yields:
+            tuple[str, TextUnit]: 文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
+        """
 
-    Args:
-        document (Document): 変換または検証対象のDocument。
+        for page in sorted(self.pages, key=lambda item: item.number):
+            for block in sorted(page.blocks, key=lambda item: item.order):
+                if block.content is not None:
+                    role = "heading" if block.kind == "heading" else "body"
+                    yield role, block.content
+                if block.caption is not None:
+                    yield "caption", block.caption
+                if block.image is not None and block.image.caption is not None:
+                    yield "caption", block.image.caption
+                for cell in sorted(
+                    block.cells, key=lambda item: (item.row, item.column)
+                ):
+                    yield "table_cell", cell.content
+                    for image in cell.images:
+                        if image.caption is not None:
+                            yield "caption", image.caption
 
-    Yields:
-        tuple[str: 文書内の本文、見出し、Captionおよび表セルを読み順で列挙する。
-    """
+    def unit_index(self) -> dict[str, TextUnit]:
+        """FIXと検証で使用するTextUnit IDの索引を作る。
 
-    for page in sorted(document.pages, key=lambda item: item.number):
-        for block in sorted(page.blocks, key=lambda item: item.order):
-            if block.content is not None:
-                role = "heading" if block.kind == "heading" else "body"
-                yield role, block.content
-            if block.caption is not None:
-                yield "caption", block.caption
-            if block.image is not None and block.image.caption is not None:
-                yield "caption", block.image.caption
-            for cell in sorted(block.cells, key=lambda item: (item.row, item.column)):
-                yield "table_cell", cell.content
-                for image in cell.images:
-                    if image.caption is not None:
-                        yield "caption", image.caption
+        Returns:
+            dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
+        """
 
-
-def text_unit_index(document: Document) -> dict[str, TextUnit]:
-    """FIXと検証で使用するTextUnit IDの索引を作る。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-
-    Returns:
-        dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
-    """
-
-    return {unit.id: unit for _, unit in iter_text_units(document)}
+        return {unit.id: unit for _, unit in self.text_units()}

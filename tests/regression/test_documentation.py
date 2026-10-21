@@ -9,13 +9,20 @@ import re
 import shutil
 import tokenize
 import zipfile
+from importlib import import_module
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
 
+from translate.adapters.pandoc import Pandoc
 from translate.adapters.pdf import page_count
-from translate.tasks.publisher.docx import publish
+from translate.models.document import Block, Document, Page, TextSpan, TextUnit
+
+MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
+publish_pandoc = import_module("translate.tasks.53_pandoc").publish
+publish_ooxml = import_module("translate.tasks.54_ooxml").publish
+finalize_document = import_module("translate.tasks.54_ooxml")._finalize_document  # noqa: SLF001
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # Linterや型検査の制御指定だけでは、関数の目的説明を代替できない。
@@ -24,6 +31,8 @@ ENV_NAMES = {
     "LOG_LEVEL",
     "OPENAI_BASE_URL",
     "OPENAI_API_KEY",
+    "OPENAI_LLM_BASE_URL",
+    "OPENAI_LLM_API_KEY",
     "OPENAI_STRUCTURE_MODEL",
     "OPENAI_REVIEW_MODEL",
     "OPENAI_TRANSLATION_MODEL",
@@ -60,8 +69,6 @@ ENV_NAMES = {
     "HTTP_RETRY_ATTEMPTS",
     "HTTP_REQUEST_TIMEOUT_SECONDS",
     "EXTERNAL_TASK_DEADLINE_SECONDS",
-    "LIBRETRANSLATE_URL",
-    "LIBRETRANSLATE_API_KEY",
     "QDRANT_API_KEY",
     "QDRANT_URI",
     "QDRANT_COLLECTION",
@@ -142,6 +149,87 @@ def test_bundled_docx_template_has_english_page_furniture() -> None:
 
 
 @pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is required")
+@pytest.mark.parametrize("has_body", [True, False])
+def test_docx_cover_precedes_generated_lists(tmp_path: Path, *, has_body: bool) -> None:
+    """実Pandoc経由で表紙・改ページ・自動一覧・本文の順序を保持する。"""
+    document = Document(
+        pages=[
+            Page(
+                number=2 if has_body else 1,
+                blocks=[
+                    Block(
+                        id="heading",
+                        kind="heading",
+                        order=0,
+                        level=1,
+                        content=TextUnit(
+                            id="title",
+                            spans=[TextSpan(id="title-span", source="Body heading")],
+                        ),
+                    )
+                ],
+            )
+        ]
+    )
+    markdown = tmp_path / "markdown" / "document.md"
+    MarkdownTask(Pandoc(30)).run(
+        document,
+        markdown,
+        PROJECT_ROOT / "translate/templates/placeholder.png",
+        tmp_path / "source-assets",
+        {1},
+    )
+    raw, output = tmp_path / "raw.docx", tmp_path / "final" / "document.docx"
+    publish_pandoc(
+        markdown, raw, PROJECT_ROOT / "translate/templates/template.docx", 30
+    )
+    publish_ooxml(raw, output)
+    with zipfile.ZipFile(output) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))  # noqa: S314
+    ns = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    body = root.find("w:body", ns)
+    assert body is not None
+    assert body[0].find(".//w:drawing", ns) is not None
+    if has_body:
+        assert body[1].find(".//w:pageBreakBefore", ns) is not None
+        assert body[1].find(".//w:instrText", ns) is not None
+        assert (
+            sum("Body heading" in "".join(element.itertext()) for element in body) == 1
+        )
+    else:
+        assert root.find(".//w:instrText", ns) is None
+        assert len(body) == 2  # 表紙の段落と文書全体のsection設定。
+
+
+@pytest.mark.parametrize(
+    "properties", ["", '<w:trPr><w:tblHeader/><w:cantSplit w:val="0"/></w:trPr>']
+)
+def test_docx_keeps_table_rows_together_without_changing_cells(properties: str) -> None:
+    """短い表行の改ページ分割を禁止し、既存の見出し設定とセル内容を保持する。"""
+    word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+    value = (
+        f'<w:document xmlns:w="{word}"><w:body><w:tbl><w:tr>{properties}'
+        "<w:tc><w:p><w:r><w:t>page_split_09</w:t></w:r></w:p></w:tc>"
+        "</w:tr></w:tbl></w:body></w:document>"
+    ).encode()
+    once = finalize_document(value, {}, {})
+    twice = finalize_document(once, {}, {})
+    document = ET.fromstring(twice)  # noqa: S314 — 固定fixtureだけを解析する。
+    namespace = {"w": word}
+    row = document.find(".//w:tr", namespace)
+    assert row is not None
+    flags = row.findall("w:trPr/w:cantSplit", namespace)
+    assert len(flags) == 1
+    assert flags[0].get(f"{{{word}}}val") == "true"
+    assert (row.find("w:trPr/w:tblHeader", namespace) is not None) == bool(properties)
+    keep_next = row.find(".//w:pPr/w:keepNext", namespace)
+    assert (keep_next is not None) == bool(properties)
+    if keep_next is not None:
+        assert keep_next.get(f"{{{word}}}val") == "true"
+    assert [node.text for node in row.findall(".//w:t", namespace)] == ["page_split_09"]
+
+
+@pytest.mark.skipif(shutil.which("pandoc") is None, reason="pandoc is required")
 def test_docx_publication_applies_template_styles_and_embeds_images(
     tmp_path: Path,
 ) -> None:
@@ -150,9 +238,11 @@ def test_docx_publication_applies_template_styles_and_embeds_images(
     markdown = PROJECT_ROOT / "translate/templates/sample.md"
     template = PROJECT_ROOT / "translate/templates/template.docx"
     placeholder = PROJECT_ROOT / "translate/templates/placeholder.png"
-    output = tmp_path / "sample.docx"
+    raw = tmp_path / "pandoc" / "sample.raw.docx"
+    output = tmp_path / "ooxml" / "sample.docx"
 
-    publish(markdown, output, template, 30.0)
+    publish_pandoc(markdown, raw, template, 30.0)
+    publish_ooxml(raw, output)
 
     word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     namespaces = {"w": word}

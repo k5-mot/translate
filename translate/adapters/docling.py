@@ -1,18 +1,14 @@
 """Docling Serveの非同期変換interface。"""
 
-from __future__ import annotations
-
 import logging
 import random
 import time
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import httpx
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from translate.common.config import Config
+from translate.common.config import Config
 
 _CONTENT_TYPES = {
     ".pdf": "application/pdf",

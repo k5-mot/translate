@@ -95,7 +95,7 @@ def _upload(page: Page, tab_name: str, labels: list[str], paths: list[Path]) -> 
             uploader.locator('input[type="file"]').set_input_files(path)
             try:
                 uploader.get_by_text(path.name, exact=True).wait_for(
-                    state="attached", timeout=10_000
+                    state="attached", timeout=30_000
                 )
                 break
             except PlaywrightTimeoutError:
@@ -212,7 +212,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
             "source-v1.pdf",
             "source-v2.pdf",
             "translation-v1.pdf",
-            "reference.txt",
+            "reference.pdf",
         )
     }
     for path in files.values():
@@ -237,6 +237,7 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
     )
     _wait_for_success(page, previous_url)
     _assert_translation_downloads_outside_progress(page)
+    translation_id = page.url.split("processing=")[-1]
 
     _open_settings(page)
     page.get_by_role("tab", name="Review").click()
@@ -264,7 +265,36 @@ def test_streamlit_runs_translate_review_upgrade_and_register(
 
     _open_settings(page)
     page.get_by_role("tab", name="Register").click()
-    _upload(page, "Register", ["参照資料"], [files["reference.txt"]])
+    _upload(page, "Register", ["参照資料"], [files["reference.pdf"]])
     previous_url = page.url
     page.get_by_role("button", name="登録を開始").click()
     _wait_for_success(page, previous_url)
+
+    _assert_history_actions(page, translation_id)
+
+
+def _assert_history_actions(page: Page, translation_id: str) -> None:
+    """別の履歴への右クリック削除とキーボード操作を検査する。"""
+    # 選択中のRegisterとは別のTranslate履歴を右クリックで削除する。
+    current_url = page.url
+    history = page.locator(".history-open").filter(has_text=translation_id)
+    history.click(button="right")
+    page.get_by_role("menuitem", name="削除", exact=True).click()
+    expect(page.get_by_text(translation_id, exact=True)).not_to_be_visible()
+    confirmation = page.get_by_role("checkbox", name="成果物と保存済み入力を削除する")
+    expect(confirmation).to_be_visible()
+    page.get_by_text("成果物と保存済み入力を削除する", exact=True).click()
+    expect(confirmation).to_be_checked()
+    page.get_by_role("button", name="削除", exact=True).click()
+    expect(page.locator(".history-open").filter(has_text=translation_id)).to_have_count(
+        0
+    )
+    assert page.url == current_url
+
+    # 同じ操作メニューをキーボードで開閉できる。
+    current = page.locator(".history-open").first
+    current.focus()
+    current.press("Shift+F10")
+    expect(page.get_by_role("menuitem", name="削除", exact=True)).to_be_visible()
+    page.get_by_role("menuitem", name="削除", exact=True).press("Escape")
+    expect(page.get_by_role("menuitem", name="削除", exact=True)).not_to_be_visible()

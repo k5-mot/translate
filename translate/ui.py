@@ -1,7 +1,5 @@
 """Translate、Review、Register、Upgradeを操作するStreamlit UI。"""
 
-from __future__ import annotations
-
 import difflib
 import hashlib
 import html
@@ -10,37 +8,39 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
+from importlib import import_module
+from multiprocessing.connection import Connection, wait
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 import streamlit as st
 from pydantic import BaseModel, ConfigDict
+from streamlit.runtime.uploaded_file_manager import UploadedFile
 from uuid_utils import uuid7
 
-from translate.adapters.embedding import EmbeddingError
-from translate.adapters.llm import LLMError
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     ArtifactError,
+    ArtifactStore,
     ProcessingInUseError,
-    atomic_write_bytes,
-    cancel_processing,
     load_model,
     replace_path,
     sha256_file,
     write_model,
 )
+from translate.adapters.embedding import EmbeddingError
+from translate.adapters.llm import LLMError
 from translate.common.config import ConfigError, load_config
-from translate.common.logger import configure_adapter_logging
+from translate.common.logger import configure_logging
 from translate.models.artifacts import (
-    AlignmentResult,
     ArtifactFile,
-    CheckResult,
     DoclingProgress,
     FixResult,
     LLMCallArtifact,
@@ -51,37 +51,29 @@ from translate.models.artifacts import (
     TaskName,
     TranslationRecord,
 )
-from translate.models.document import (
-    Block,
-    Document,
-    TextLayer,
-    TextUnit,
-    iter_text_units,
-    text_unit_index,
+from translate.models.document import Block, Document, TextLayer, TextUnit
+from translate.models.review import AlignmentResponse, ReviewResponse, ReviewTarget
+from translate.models.upgrade import (
+    DiffResponse,
+    UpgradePlan,
+    UpgradeRecord,
+    VersionChange,
 )
-from translate.models.review import ReviewResponse
-from translate.models.upgrade import UpgradePlan, UpgradeRecord
 from translate.pipeline import InputError
-from translate.pipeline.register import register_paths
-from translate.pipeline.review import review_pdfs
-from translate.pipeline.translate import translate_pdf
-from translate.pipeline.upgrade import upgrade_pdfs
-from translate.tasks.preprocess.structure import StructurePatch, StructureResponse
-from translate.tasks.review.check import targets_from_document
-from translate.tasks.translation.translate import TranslationResponse
+from translate.pipeline.register import RegisterPipeline
+from translate.pipeline.review import ReviewPipeline
+from translate.pipeline.translate import TranslatePipeline
+from translate.pipeline.upgrade import UpgradePipeline
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-    from multiprocessing.connection import Connection
-    from multiprocessing.process import BaseProcess
-
-    from streamlit.runtime.uploaded_file_manager import UploadedFile
+StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
+StructureResponse = import_module("translate.tasks.13_structure").StructureResponse
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 ProcessingKind = Literal["translate", "review", "register", "upgrade"]
 ProcessingRecord = TranslationRecord | ReviewRecord | RegistrationRecord | UpgradeRecord
 TaskStage = tuple[str, TaskName, str | None]
 
-_REGISTER_SUFFIXES = {".pdf", ".docx", ".pptx", ".md", ".markdown", ".txt"}
+_REGISTER_SUFFIXES = {".pdf"}
 _TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 _LOGO_PATH = Path(__file__).with_name("assets") / "translate-logo.svg"
 _MARKDOWN_IMAGE_BLOCK = re.compile(
@@ -90,16 +82,90 @@ _MARKDOWN_IMAGE_BLOCK = re.compile(
 )
 
 
+# 一つのイベントで対象IDと操作を送る。右クリックとキーボード操作は同じメニューを使う。
+_HISTORY_COMPONENT = {
+    "html": "<div class='history-list' aria-label='処理履歴'></div>",
+    "css": """
+.history-list { display:flex; flex-direction:column; gap:0.25rem; color:var(--st-text-color); }
+.history-row { position:relative; border-radius:0.4rem; }
+.history-row.selected { background:var(--st-secondary-background-color); }
+.history-open { width:100%; text-align:left; padding:0.5rem; }
+.history-list button { font:inherit; color:inherit; background:transparent; border:0; cursor:pointer; border-radius:0.3rem; }
+.history-list button:focus-visible { outline:2px solid var(--st-primary-color); }
+.history-list button:disabled { cursor:not-allowed; opacity:0.5; }
+.history-menu { padding:0.5rem; border:1px solid var(--st-border-color); background:var(--st-background-color); }
+.history-menu[hidden] { display:none; }
+""",
+    "js": """
+// 履歴をtextContentで描画し、文書名をHTMLとして解釈しない。
+export default function(component) {
+  const {parentElement, data, setTriggerValue} = component;
+  const root = parentElement.querySelector(".history-list");
+  const signature = JSON.stringify(data);
+  if (root.dataset.signature === signature) return;
+  root.dataset.signature = signature;
+  root.replaceChildren();
+  for (const item of data.entries) {
+    const row = document.createElement("div");
+    row.className = "history-row" + (item.id === data.selected ? " selected" : "");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "history-open";
+    button.textContent = (item.active ? "⏳ " : "") + item.label;
+    button.setAttribute("aria-haspopup", "menu");
+    button.setAttribute("aria-expanded", "false");
+    button.title = "右クリックまたはShift+F10で操作メニュー";
+    const menu = document.createElement("div");
+    menu.className = "history-menu";
+    menu.setAttribute("role", "menu");
+    menu.hidden = root.dataset.openId !== item.id;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "削除";
+    remove.setAttribute("role", "menuitem");
+    remove.disabled = item.active;
+    menu.append(remove);
+    // 他の行のメニューを閉じ、現在の行の削除操作へフォーカスする。
+    const openMenu = (event) => {
+      event.preventDefault();
+      for (const old of root.querySelectorAll(".history-menu")) old.hidden = true;
+      for (const old of root.querySelectorAll(".history-open")) old.setAttribute("aria-expanded", "false");
+      root.dataset.openId = item.id;
+      menu.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      if (!remove.disabled) remove.focus();
+    };
+    row.oncontextmenu = openMenu;
+    // Shift+F10・メニューキーで開き、Escapeで元の行へ戻す。
+    row.onkeydown = (event) => {
+      if ((event.shiftKey && event.key === "F10") || event.key === "ContextMenu") openMenu(event);
+      if (event.key === "Escape") {
+        delete root.dataset.openId;
+        menu.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        button.focus();
+      }
+    };
+    button.onclick = () => setTriggerValue("event", {id:item.id, action:"select"});
+    remove.onclick = () => setTriggerValue("event", {id:item.id, action:"delete"});
+    row.append(button, menu);
+    root.append(row);
+  }
+}
+""",
+}
+
+
 def _task_stages(
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
 ) -> tuple[TaskStage, ...]:
-    """処理種類とbackendに対応する固定Task列を返す。
+    """処理種類に対応する表示stage列を返す。
 
     Args:
         record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
 
     Returns:
-        tuple[TaskStage, ...]: 処理種類とbackendに対応する固定Task列を返す。
+        tuple[TaskStage, ...]: 処理種類に対応する表示stage列を返す。
     """
 
     common: tuple[TaskStage, ...] = (
@@ -112,41 +178,20 @@ def _task_stages(
         ("LOAD", TaskName.LOAD, None),
     )
     if isinstance(record, ReviewRecord):
-        return (
-            *common,
-            ("ALIGN", TaskName.ALIGN, None),
-            ("CHECK", TaskName.CHECK, "review/check/findings.json"),
-            ("REVIEW", TaskName.REVIEW, None),
-            ("REPORT", TaskName.REPORT, None),
-        )
-    translation_task = (
-        TaskName.TRANSLATE if record.backend == "llm" else TaskName.TRANSLATE_LITE
-    )
-    translation_label = translation_task.value.replace("_", "-")
-    review_and_publish: tuple[TaskStage, ...] = (
-        (translation_label, translation_task, None),
-        ("CHECK (初回)", TaskName.CHECK, "review/check/findings.json"),
-        ("REVIEW", TaskName.REVIEW, None),
-        ("FIX", TaskName.FIX, None),
-        ("CHECK (最終)", TaskName.CHECK, "review/check/final-findings.json"),
-        ("LINT", TaskName.LINT, None),
-        ("COVER", TaskName.COVER, None),
-        ("MARKDOWN", TaskName.MARKDOWN, None),
-        ("DOCX", TaskName.DOCX, None),
-    )
+        return (*common, ("Review Agent", TaskName.REVIEW, None))
     if isinstance(record, UpgradeRecord):
-        return (
-            *common,
-            ("STRUCTURE", TaskName.STRUCTURE, None),
-            ("ALIGN", TaskName.ALIGN, None),
-            ("DIFF", TaskName.DIFF, None),
-            ("REUSE", TaskName.REUSE, None),
-            *review_and_publish,
-        )
+        return (*common, ("Upgrade Agent", TaskName.DIFF, None))
     return (
         *common,
         ("STRUCTURE", TaskName.STRUCTURE, None),
-        *review_and_publish,
+        ("TRANSLATE", TaskName.TRANSLATE, None),
+        ("REVIEW", TaskName.REVIEW, None),
+        ("FIX", TaskName.FIX, None),
+        ("LINT", TaskName.LINT, None),
+        ("COVER", TaskName.COVER, None),
+        ("MARKDOWN", TaskName.MARKDOWN, None),
+        ("PANDOC", TaskName.PANDOC, None),
+        ("OOXML", TaskName.OOXML, None),
     )
 
 
@@ -234,7 +279,8 @@ class WorkerRegistry:
                 return
             if receiver.poll():
                 name, message = receiver.recv()
-                raise WorkerError(f"{name}: {message}" if message else name)
+                if name:
+                    raise WorkerError(f"{name}: {message}" if message else name)
             if process.exitcode != 0:
                 raise WorkerError(
                     f"workerが終了しました (exit code {process.exitcode})"
@@ -272,11 +318,11 @@ class WorkerRegistry:
                 process.terminate()
         else:
             process.terminate()
-        process.join(timeout=5)
-        if process.is_alive():
+        stopped = wait([process.sentinel], timeout=5)
+        if not stopped:
             process.kill()
-            process.join(timeout=5)
-        return not process.is_alive()
+            stopped = wait([process.sentinel], timeout=5)
+        return bool(stopped)
 
     def future(self, processing_id: str) -> Future[object] | None:
         """処理IDに対応するFutureをthread-safeに取得する。
@@ -313,7 +359,7 @@ def _run_worker(operation: Callable[[], object], sender: Connection) -> None:
     """子processでPipelineを実行し、許可した例外だけ本文を返す。"""
 
     try:
-        configure_adapter_logging(load_config().log_level)
+        configure_logging(load_config().log_level)
         operation()
     except (
         LLMError,
@@ -325,6 +371,9 @@ def _run_worker(operation: Callable[[], object], sender: Connection) -> None:
         sender.send((type(error).__name__, str(error)))
     except Exception as error:  # noqa: BLE001 - 予期外失敗は型名だけ親processへ返す。
         sender.send((type(error).__name__, ""))
+    else:
+        # Windowsではpeerの切断だけでもpollがTrueとなるため、成功も明示する。
+        sender.send(("", ""))
     finally:
         sender.close()
 
@@ -340,188 +389,47 @@ def worker_registry() -> WorkerRegistry:
     return WorkerRegistry()
 
 
-def _execute_translate(source: Path, backend: str, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
+@dataclass(frozen=True, slots=True)
+class PipelineJob:
+    """操作・入力Path・処理IDを保持し、子processで最新設定を読んで実行する。"""
 
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        backend (str): 翻訳に使用するBackend名。
-        processing_id (str): 新規処理またはResume対象の処理ID。
+    kind: ProcessingKind
+    paths: tuple[Path, ...]
+    processing_id: str
+    source_id: str | None = None
+    resuming: bool = False
 
-    Returns:
-        object: 最新設定を読み、UI指定IDでTranslate Pipelineを実行する。
-    """
+    def __call__(self) -> object:
+        """新規実行または再開を、対応するPipelineへ渡す。
 
-    return translate_pdf(
-        source,
-        load_config(),
-        backend=backend,
-        processing_id=processing_id,
-    )
+        Returns:
+            操作に対応する成果物情報。
 
-
-def _execute_review(source: Path, translation: Path, processing_id: str) -> object:
-    """最新設定を読み、UI指定IDでReview Pipelineを実行する。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでReview Pipelineを実行する。
-    """
-
-    return review_pdfs(
-        source,
-        translation,
-        load_config(),
-        processing_id=processing_id,
-    )
-
-
-def _execute_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """最新設定を読み、UI指定IDでRegister Pipelineを実行する。
-
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでRegister Pipelineを実行する。
-    """
-
-    return register_paths(
-        paths,
-        load_config(),
-        source_id=source_id,
-        processing_id=processing_id,
-    )
-
-
-def _execute_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    backend: str,
-    processing_id: str,
-) -> object:
-    """最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
-
-    Args:
-        source_v1 (Path): 比較基準にする英文v1。
-        source_v2 (Path): 変更を反映する英文v2。
-        translation_v1 (Path): 比較基準にする日本語v1。
-        backend (str): 翻訳に使用するBackend名。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 最新設定を読み、UI指定IDでUpgrade Pipelineを実行する。
-    """
-
-    return upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        load_config(),
-        backend=backend,
-        processing_id=processing_id,
-    )
-
-
-def _resume_translate(source: Path, backend: str, processing_id: str) -> object:
-    """保存済みTranslate入力とIDでPipelineをResumeする。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        backend (str): 翻訳に使用するBackend名。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みTranslate入力とIDでPipelineをResumeする。
-    """
-
-    return translate_pdf(
-        source,
-        load_config(),
-        backend=backend,
-        resume_id=processing_id,
-    )
-
-
-def _resume_review(source: Path, translation: Path, processing_id: str) -> object:
-    """保存済みReview入力とIDでPipelineをResumeする。
-
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みReview入力とIDでPipelineをResumeする。
-    """
-
-    return review_pdfs(
-        source,
-        translation,
-        load_config(),
-        resume_id=processing_id,
-    )
-
-
-def _resume_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """保存済みRegister入力とIDでPipelineをResumeする。
-
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みRegister入力とIDでPipelineをResumeする。
-    """
-
-    return register_paths(
-        paths,
-        load_config(),
-        source_id=source_id,
-        resume_id=processing_id,
-    )
-
-
-def _resume_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    backend: str,
-    processing_id: str,
-) -> object:
-    """保存済みUpgrade入力とIDでPipelineをResumeする。
-
-    Args:
-        source_v1 (Path): 比較基準にする英文v1。
-        source_v2 (Path): 変更を反映する英文v2。
-        translation_v1 (Path): 比較基準にする日本語v1。
-        backend (str): 翻訳に使用するBackend名。
-        processing_id (str): 新規処理またはResume対象の処理ID。
-
-    Returns:
-        object: 保存済みUpgrade入力とIDでPipelineをResumeする。
-    """
-
-    return upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        load_config(),
-        backend=backend,
-        resume_id=processing_id,
-    )
+        Raises:
+            InputError: 操作の種類またはPipelineの入力・再開条件が不正な場合。
+            ValueError: 操作に必要な入力Pathの数が一致しない場合。
+            Exception: 設定検証やPipelineの実行に失敗した場合。
+        """
+        config = load_config()
+        options = {
+            "resume_id" if self.resuming else "processing_id": self.processing_id
+        }
+        if self.kind == "translate":
+            (source,) = self.paths
+            return TranslatePipeline(config).run(source, **options)
+        if self.kind == "review":
+            source, translation = self.paths
+            return ReviewPipeline(config).run(source, translation, **options)
+        if self.kind == "upgrade":
+            source_v1, source_v2, translation_v1 = self.paths
+            return UpgradePipeline(config).run(
+                source_v1, source_v2, translation_v1, **options
+            )
+        if self.kind == "register":
+            return RegisterPipeline(config).run(
+                list(self.paths), source_id=self.source_id, **options
+            )
+        raise InputError("Unknown processing kind")
 
 
 def _safe_upload_name(name: str, suffixes: set[str]) -> str:
@@ -544,7 +452,9 @@ def _safe_upload_name(name: str, suffixes: set[str]) -> str:
         or name in {".", ".."}
         or "/" in name
         or "\\" in name
-        or any(ord(character) < 32 for character in name)
+        or any(ord(character) < 32 or character in '<>:"|?*' for character in name)
+        or name.endswith((" ", "."))
+        or Path(name).is_reserved()
     ):
         raise InputError("upload name must be a safe file basename")
     if Path(name).suffix.casefold() not in suffixes:
@@ -586,7 +496,8 @@ def _stage_uploads(
     try:
         for uploaded, relative_path in uploads:
             target = temporary / relative_path
-            atomic_write_bytes(target, uploaded.getvalue())
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(uploaded.getvalue())
             staged.append(target)
         replace_path(temporary, destination)
     except BaseException:
@@ -637,14 +548,14 @@ def _stage_review(
 
 
 def _stage_register(uploads: list[UploadedFile], processing_id: str) -> list[Path]:
-    """Register入力をupload順のdirectoryと原のbasenameで保存する。
+    """Register入力を保存し、ディレクトリ選択時は相対pathを保持する。
 
     Args:
         uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        list[Path]: Register入力をupload順のdirectoryと原のbasenameで保存する。
+        list[Path]: Register入力を保存し、ディレクトリ選択時は相対pathを保持する。
 
     Raises:
         InputError: `at most 100 registration files can be uploaded`、`registration uploads
@@ -653,14 +564,30 @@ def _stage_register(uploads: list[UploadedFile], processing_id: str) -> list[Pat
 
     if len(uploads) > 100:
         raise InputError("at most 100 registration files can be uploaded")
-    names = [_safe_upload_name(upload.name, _REGISTER_SUFFIXES) for upload in uploads]
-    if len(names) != len(set(names)):
-        raise InputError("registration uploads contain duplicate basenames")
-    values = [
-        (upload, Path("register") / f"{index:04d}" / name)
-        for index, (upload, name) in enumerate(zip(uploads, names, strict=True), 1)
-    ]
-    return _stage_uploads(processing_id, values)
+    names = [upload.name for upload in uploads]
+    if len(names) != len({name.casefold() for name in names}):
+        raise InputError("registration uploads contain duplicate basenames or paths")
+    directory_upload = any("/" in name for name in names)
+    values = []
+    for index, upload in enumerate(uploads, 1):
+        parts = upload.name.split("/")
+        if directory_upload and len(parts) < 2:
+            raise InputError("directory and individual file uploads cannot be mixed")
+        for part in parts[:-1]:
+            _safe_upload_name(part, {Path(part).suffix.casefold()})
+        _safe_upload_name(parts[-1], _REGISTER_SUFFIXES)
+        relative = Path("register") / (
+            Path(*parts) if directory_upload else Path(f"{index:04d}") / parts[0]
+        )
+        values.append((upload, relative))
+    staged = _stage_uploads(processing_id, values)
+    if directory_upload:
+        # Pipelineには元のroot directoryを渡し、同名の子fileも相対pathで区別する。
+        root = Path.cwd() / ".translate-ui" / processing_id / "register"
+        return [
+            root / name for name in sorted({value.split("/")[0] for value in names})
+        ]
+    return staged
 
 
 def _stage_upgrade(
@@ -698,118 +625,6 @@ def _stage_upgrade(
     ]
     staged = _stage_uploads(processing_id, values)
     return staged[0], staged[1], staged[2]
-
-
-def _start_translate(
-    upload: UploadedFile, backend: str, registry: WorkerRegistry
-) -> str:
-    """Translate入力を保存し、background workerへ登録する。
-
-    Args:
-        upload (UploadedFile): 保存または照合するUpload File。
-        backend (str): 翻訳に使用するBackend名。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Translate入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    source = _stage_translate(upload, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_translate, source, backend, processing_id),
-    )
-    return processing_id
-
-
-def _start_review(
-    source_upload: UploadedFile,
-    translation_upload: UploadedFile,
-    registry: WorkerRegistry,
-) -> str:
-    """Review二入力を保存し、background workerへ登録する。
-
-    Args:
-        source_upload (UploadedFile): Review原文のUpload File。
-        translation_upload (UploadedFile): Review訳文のUpload File。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Review二入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    source, translation = _stage_review(
-        source_upload, translation_upload, processing_id
-    )
-    registry.submit(
-        processing_id,
-        partial(_execute_review, source, translation, processing_id),
-    )
-    return processing_id
-
-
-def _start_register(
-    uploads: list[UploadedFile],
-    source_id: str | None,
-    registry: WorkerRegistry,
-) -> str:
-    """Register入力を保存し、background workerへ登録する。
-
-    Args:
-        uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Register入力を保存し、background workerへ登録する。
-
-    Raises:
-        InputError: `at least one registration file is required`、`source_id is required for
-            multiple registration files`のいずれかと判定した場合。
-    """
-
-    if not uploads:
-        raise InputError("at least one registration file is required")
-    if len(uploads) > 1 and not source_id:
-        raise InputError("source_id is required for multiple registration files")
-    processing_id = str(uuid7())
-    paths = _stage_register(uploads, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_register, paths, source_id or None, processing_id),
-    )
-    return processing_id
-
-
-def _start_upgrade(
-    source_v1: UploadedFile,
-    source_v2: UploadedFile,
-    translation_v1: UploadedFile,
-    backend: str,
-    registry: WorkerRegistry,
-) -> str:
-    """Upgrade三入力を保存し、background workerへ登録する。
-
-    Args:
-        source_v1 (UploadedFile): 比較基準にする英文v1。
-        source_v2 (UploadedFile): 変更を反映する英文v2。
-        translation_v1 (UploadedFile): 比較基準にする日本語v1。
-        backend (str): 翻訳に使用するBackend名。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        str: Upgrade三入力を保存し、background workerへ登録する。
-    """
-
-    processing_id = str(uuid7())
-    paths = _stage_upgrade(source_v1, source_v2, translation_v1, processing_id)
-    registry.submit(
-        processing_id,
-        partial(_execute_upgrade, *paths, backend, processing_id),
-    )
-    return processing_id
 
 
 def _history_entries(outputs: Path | None = None) -> list[HistoryEntry]:
@@ -921,130 +736,6 @@ def _select_processing(processing_id: str) -> None:
     st.rerun()
 
 
-def _render_translate_form(registry: WorkerRegistry) -> None:
-    """Translateのuploadとbackend選択を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
-    backend = st.selectbox("翻訳backend", ["llm", "libretranslate"])
-    submitted = st.button(
-        "翻訳を開始",
-        disabled=upload is None,
-        type="primary",
-        key="start-translate",
-    )
-    if submitted and upload is not None:
-        try:
-            _select_processing(_start_translate(upload, backend, registry))
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_review_form(registry: WorkerRegistry) -> None:
-    """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
-    translation = st.file_uploader(
-        "日本語訳文PDF", type=["pdf"], key="review-translation"
-    )
-    submitted = st.button(
-        "レビューを開始",
-        disabled=source is None or translation is None,
-        type="primary",
-        key="start-review",
-    )
-    if submitted and source is not None and translation is not None:
-        try:
-            _select_processing(_start_review(source, translation, registry))
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_register_form(registry: WorkerRegistry) -> None:
-    """Registerの複数fileとsource_id入力を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    uploads = st.file_uploader(
-        "参照資料",
-        type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
-        accept_multiple_files=True,
-        key="register-sources",
-    )
-    source_id = st.text_input("source_id")
-    needs_source_id = len(uploads) > 1 and not source_id.strip()
-    submitted = st.button(
-        "登録を開始",
-        disabled=not uploads or needs_source_id or len(uploads) > 100,
-        type="primary",
-        key="start-register",
-    )
-    if needs_source_id:
-        st.caption("複数fileの登録ではsource_idが必要です。")
-    if len(uploads) > 100:
-        st.caption("一度に登録できるfileは100件までです。")
-    if submitted:
-        try:
-            _select_processing(
-                _start_register(uploads, source_id.strip() or None, registry)
-            )
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
-def _render_upgrade_form(registry: WorkerRegistry) -> None:
-    """Upgradeの英文二版、日本語旧版およびbackend選択を表示する。
-
-    Args:
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    source_v1 = st.file_uploader("英文v1 PDF", type=["pdf"], key="upgrade-source-v1")
-    source_v2 = st.file_uploader("英文v2 PDF", type=["pdf"], key="upgrade-source-v2")
-    translation_v1 = st.file_uploader(
-        "日本語v1 PDF", type=["pdf"], key="upgrade-translation-v1"
-    )
-    backend = st.selectbox(
-        "Upgrade翻訳backend",
-        ["llm", "libretranslate"],
-        key="upgrade-backend",
-    )
-    ready = all(value is not None for value in (source_v1, source_v2, translation_v1))
-    submitted = st.button(
-        "Upgradeを開始",
-        disabled=not ready,
-        type="primary",
-        key="start-upgrade",
-    )
-    if (
-        submitted
-        and source_v1 is not None
-        and source_v2 is not None
-        and translation_v1 is not None
-    ):
-        try:
-            _select_processing(
-                _start_upgrade(
-                    source_v1,
-                    source_v2,
-                    translation_v1,
-                    backend,
-                    registry,
-                )
-            )
-        except (InputError, OSError) as error:
-            st.error(str(error))
-
-
 def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
     """左sidebarの縦並び一覧から処理を選択し、選択IDを返す。
 
@@ -1062,49 +753,46 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
         st.subheader("処理履歴", icon=":material/history:")
         if not valid_entries and not invalid_entries:
             st.caption("処理履歴はありません。")
-        for entry in valid_entries:
-            processing_id = entry.processing_id
-            if processing_id is not None and st.button(
-                _entry_label(entry),
-                key=f"history-{processing_id}",
-                type="primary" if processing_id == selected_id else "tertiary",
-                icon=":material/progress_activity:"
-                if entry.record is not None and entry.record.status == "processing"
-                else None,
-                width="stretch",
-            ):
-                _select_processing(processing_id)
+        # workerやテストからのimport時にはRuntimeがないため、初回描画時だけ登録する。
+        if "_history-renderer" not in st.session_state:
+            st.session_state["_history-renderer"] = st.components.v2.component(
+                "translate_history",
+                html=_HISTORY_COMPONENT["html"],
+                css=_HISTORY_COMPONENT["css"],
+                js=_HISTORY_COMPONENT["js"],
+            )
+        event = st.session_state["_history-renderer"](
+            key="history-list",
+            data={
+                "selected": selected_id,
+                "entries": [
+                    {
+                        "id": entry.processing_id,
+                        "label": _entry_label(entry),
+                        "active": entry.record is not None
+                        and entry.record.status == "processing",
+                    }
+                    for entry in valid_entries
+                ],
+            },
+            on_event_change=lambda: (
+                None
+            ),  # Triggerの到着で再描画し、下で対象IDを検証する。
+        ).event
+        if isinstance(event, dict):
+            identifier = event.get("id")
+            target = next(
+                (entry for entry in valid_entries if entry.processing_id == identifier),
+                None,
+            )
+            if target is not None:
+                if event.get("action") == "select":
+                    _select_processing(identifier)
+                elif event.get("action") == "delete":
+                    st.session_state["pending-delete"] = identifier
         for entry in invalid_entries:
             st.warning(f"{entry.error} {entry.record_path}")
     return selected_id
-
-
-def _render_future_state(processing_id: str, registry: WorkerRegistry) -> None:
-    """Artifact公開前の待機・準備状態またはworker失敗を表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    future = registry.future(processing_id)
-    st.progress(0.0, text="0 / ? Task — 準備 — preparing")
-    if future is None:
-        current = "処理記録の公開待ち"
-    elif not future.running() and not future.done():
-        current = "workerの開始待ち"
-    elif not future.done():
-        current = "Pipelineを準備中"
-    else:
-        current = "workerの結果を確認中"
-    with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
-        st.write("更新時刻: -")
-        st.caption("LLM進捗はまだありません。")
-    st.caption(current)
-    if future is None:
-        st.info("処理記録が見つかりません。")
-    elif future.done():
-        _render_future_error(future)
 
 
 def _render_future_error(future: Future[object]) -> None:
@@ -1159,6 +847,7 @@ def _llm_call_directory(root: Path, task: TaskName) -> Path | None:
         ],
         TaskName.TRANSLATE: [root / "translation/translate/calls"],
         TaskName.REVIEW: [root / "review/review/calls"],
+        TaskName.DIFF: [root / "upgrade/diff/calls"],
     }.get(task, [])
     return next((directory for directory in candidates if directory.is_dir()), None)
 
@@ -1224,7 +913,14 @@ def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
 
 def _verified_response(
     root: Path, task: TaskName, call: LLMCallArtifact
-) -> StructureResponse | TranslationResponse | ReviewResponse | None:
+) -> (
+    StructureResponse
+    | TranslationResponse
+    | AlignmentResponse
+    | ReviewResponse
+    | DiffResponse
+    | None
+):
     """確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
 
     Args:
@@ -1233,7 +929,7 @@ def _verified_response(
         call (LLMCallArtifact): 応答Fileを検証するLLM Call Artifact。
 
     Returns:
-        StructureResponse | TranslationResponse | ReviewResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
+        StructureResponse | TranslationResponse | AlignmentResponse | ReviewResponse | DiffResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
     """
 
     if call.status not in {"succeeded", "partial"} or call.response_sha256 is None:
@@ -1245,7 +941,10 @@ def _verified_response(
     models = {
         TaskName.STRUCTURE: StructureResponse,
         TaskName.TRANSLATE: TranslationResponse,
-        TaskName.REVIEW: ReviewResponse,
+        TaskName.REVIEW: AlignmentResponse
+        if call.operation == "match"
+        else ReviewResponse,
+        TaskName.DIFF: DiffResponse,
     }
     model = models.get(task)
     try:
@@ -1400,9 +1099,7 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
     if document is None:
         return None
     sources = {
-        span.id: span.source
-        for _, unit in iter_text_units(document)
-        for span in unit.spans
+        span.id: span.source for _, unit in document.text_units() for span in unit.spans
     }
     confirmed = _latest_verified_call(root, TaskName.TRANSLATE)
     if confirmed is not None:
@@ -1482,7 +1179,7 @@ def _structure_comparison(root: Path) -> tuple[str, str] | None:
 def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
     """Review対象をIDで取得する。
 
-    検証済みALIGNまたはDocumentから、原文と現在訳を対象IDごとに取得する。
+    検証済みREVIEW結果またはDocumentから、原文と現在訳を対象IDごとに取得する。
 
     Args:
         root (Path): 処理成果物のルートディレクトリ。
@@ -1492,29 +1189,54 @@ def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
     """
 
     values: dict[str, tuple[str, str]] = {}
-    for relative in ("review/align/alignment.json", "upgrade/align/result.json"):
-        path = root / relative
-        if not path.is_file():
-            continue
+    path = root / "review/review/review.json"
+    if path.is_file():
         try:
-            alignment = load_model(path, AlignmentResult)
+            reviewed = load_model(path, ReviewResult)
         except ArtifactError:
-            continue
-        for target in alignment.targets:
+            reviewed = ReviewResult()
+        for target in reviewed.targets:
             value = (target.source, target.translation)
             values[target.id] = value
             values.update(dict.fromkeys(target.target_ids, value))
+    else:
+        source = _load_first_document(root, ["preprocess/source/load/document.json"])
+        translated = _load_first_document(
+            root, ["preprocess/translation/load/document.json"]
+        )
+        if source is not None and translated is not None:
+            source_units = source.unit_index()
+            translated_units = translated.unit_index()
+            groups = []
+            for call in sorted(
+                _llm_calls(root, TaskName.REVIEW), key=lambda item: item.round
+            ):
+                response = _verified_response(root, TaskName.REVIEW, call)
+                if call.operation == "match" and isinstance(
+                    response, AlignmentResponse
+                ):
+                    groups.extend(response.groups)
+            for index, group in enumerate(groups, 1):
+                if group.kind != "matched":
+                    continue
+                original = _unit_text(group.source_ids, source_units, "source")
+                translation = _unit_text(
+                    group.translation_ids, translated_units, "source"
+                )
+                if original is None or translation is None:
+                    continue
+                value = (original, translation)
+                values[f"review/alignment-{index:06d}"] = value
+                values.update(dict.fromkeys(group.translation_ids, value))
     document = _load_first_document(
         root,
         [
             "review/fix/document.json",
             "translation/translate/document.json",
-            "translation/translate-lite/document.json",
-            "upgrade/reuse/document.json",
         ],
     )
     if document is not None:
-        for target in targets_from_document(document):
+        for target in ReviewTarget.from_document(document):
             value = (target.source, target.translation)
             values[target.id] = value
             values.update(dict.fromkeys(target.target_ids, value))
@@ -1537,8 +1259,17 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
         response = _verified_response(root, TaskName.REVIEW, confirmed)
         if not isinstance(response, ReviewResponse):
             return None
-        revisions = {item.target_id: item for item in response.revisions}
-        target_ids = [item for item in confirmed.target_ids if item in targets]
+        revisions = {
+            item.target_id.split("/part-", 1)[0]: item
+            for item in response.assessments
+            if item.edits
+        }
+        target_ids = [
+            key
+            for item in confirmed.target_ids
+            if (key := item.removeprefix("review:").split("/part-", 1)[0]) in targets
+        ]
+        target_ids = [key for key in revisions if key in targets] or target_ids
         before = [(item, targets[item][1]) for item in target_ids]
         after = [
             (
@@ -1553,7 +1284,11 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
     active = _latest_call(root, TaskName.REVIEW, "processing")
     if active is None:
         return None
-    target_ids = [item for item in active.target_ids if item in targets]
+    target_ids = [
+        key
+        for item in active.target_ids
+        if (key := item.removeprefix("review:").split("/part-", 1)[0]) in targets
+    ]
     return (
         _comparison_text([(item, targets[item][1]) for item in target_ids]),
         "処理中 (確定結果なし)",
@@ -1576,8 +1311,6 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
         root,
         [
             "translation/translate/document.json",
-            "translation/translate-lite/document.json",
-            "upgrade/reuse/document.json",
         ],
     )
     if not outcomes_path.is_file() or not review_path.is_file() or before is None:
@@ -1591,8 +1324,8 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
         outcome.revision_id for outcome in fixed.outcomes if outcome.status == "applied"
     }
     target_ids = [item.target_id for item in review.revisions if item.id in applied]
-    before_units = text_unit_index(before)
-    after_units = text_unit_index(fixed.document)
+    before_units = before.unit_index()
+    after_units = fixed.document.unit_index()
     target_ids = [
         item for item in target_ids if item in before_units and item in after_units
     ]
@@ -1701,24 +1434,22 @@ def _review_context(root: Path) -> tuple[str, str] | None:
         tuple[str, str] | None: 同一ReviewTargetの英語原文と日本語訳を返す。
     """
 
-    path = root / "review/align/alignment.json"
-    if not path.is_file():
-        return None
-    try:
-        alignment = load_model(path, AlignmentResult)
-    except ArtifactError:
-        return None
-    by_id = {target.id: target for target in alignment.targets}
+    targets = _review_targets(root)
+    by_id = {key: value for key, value in targets.items() if key.startswith("review/")}
     call = _latest_call(root, TaskName.REVIEW, "processing") or _latest_call(
         root, TaskName.REVIEW, "succeeded"
     )
-    target_ids = call.target_ids if call is not None else list(by_id)[:3]
-    target_ids = [item for item in target_ids if item in by_id]
-    if not target_ids:
+    requested = (
+        [item.removeprefix("review:").split("/part-", 1)[0] for item in call.target_ids]
+        if call
+        else []
+    )
+    selected = [key for key in requested if key in by_id] or list(by_id)[:3]
+    if not selected:
         return None
     return (
-        _comparison_text([(item, by_id[item].source) for item in target_ids]),
-        _comparison_text([(item, by_id[item].translation) for item in target_ids]),
+        _comparison_text([(key, by_id[key][0]) for key in selected]),
+        _comparison_text([(key, by_id[key][1]) for key in selected]),
     )
 
 
@@ -1733,28 +1464,15 @@ def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
         list[str]: Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。
     """
 
-    calls = [
-        (task, call)
-        for task in (TaskName.TRANSLATE, TaskName.REVIEW)
-        for call in _llm_calls(root, task)
-    ]
-    active = [(task, call) for task, call in calls if call.status == "processing"]
-    succeeded = [(task, call) for task, call in calls if call.status == "succeeded"]
-    selected = max(
-        active or succeeded, key=lambda item: item[1].updated_at, default=None
+    call = _latest_call(root, TaskName.DIFF, "processing") or _latest_verified_call(
+        root, TaskName.DIFF
     )
-    if selected is None:
-        return []
-    task, call = selected
-    if task == TaskName.REVIEW:
-        return [target_id.removeprefix("translate/") for target_id in call.target_ids]
-    span_to_unit = {
-        span.id: unit.id for _, unit in iter_text_units(document) for span in unit.spans
-    }
+    known = document.unit_index()
     return [
-        span_to_unit[target_id]
-        for target_id in call.target_ids
-        if target_id in span_to_unit
+        key
+        for reference in (call.target_ids if call else [])
+        if reference.startswith("source_v2:")
+        and (key := reference.removeprefix("source_v2:")) in known
     ]
 
 
@@ -1777,7 +1495,7 @@ def _unit_text(
     return "\n".join(units[unit_id].text(layer) for unit_id in unit_ids)
 
 
-def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
+def _upgrade_context(root: Path) -> tuple[str, str, str] | None:  # noqa: PLR0911 - 未確定または不正な成果物を各境界で表示から除外する。
     """同一VersionChangeの英文v1、日本語v1、英文v2を返す。
 
     Args:
@@ -1793,17 +1511,25 @@ def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
     translation_v1 = _load_first_document(
         root, ["preprocess/translation-v1/load/document.json"]
     )
-    if (
-        not plan_path.is_file()
-        or source_v1 is None
-        or source_v2 is None
-        or translation_v1 is None
-    ):
+    if source_v1 is None or source_v2 is None or translation_v1 is None:
         return None
-    try:
-        plan = load_model(plan_path, UpgradePlan)
-    except ArtifactError:
-        return None
+    if plan_path.is_file():
+        try:
+            plan = load_model(plan_path, UpgradePlan)
+        except ArtifactError:
+            return None
+    else:
+        call = _latest_verified_call(root, TaskName.DIFF)
+        response = _verified_response(root, TaskName.DIFF, call) if call else None
+        if call is None or not isinstance(response, DiffResponse):
+            return None
+        plan = UpgradePlan(
+            changes=[
+                VersionChange(id=f"{call.call_id}/{index}", **item.model_dump())
+                for index, item in enumerate(response.changes)
+                if item.kind != "unchanged"
+            ]
+        )
     requested = set(_call_v2_unit_ids(root, source_v2))
     changes = (
         [
@@ -1816,9 +1542,9 @@ def _upgrade_context(root: Path) -> tuple[str, str, str] | None:
     )
     if not changes:
         return None
-    source_v1_units = text_unit_index(source_v1)
-    source_v2_units = text_unit_index(source_v2)
-    translation_v1_units = text_unit_index(translation_v1)
+    source_v1_units = source_v1.unit_index()
+    source_v2_units = source_v2.unit_index()
+    translation_v1_units = translation_v1.unit_index()
     rows: list[tuple[str, str, str, str]] = []
     for change in changes[:3]:
         value_v1 = _unit_text(change.source_v1_ids, source_v1_units, "source")
@@ -1853,7 +1579,7 @@ def _render_review_context(root: Path, processing_id: str) -> None:
 
     values = _review_context(root)
     if values is None:
-        st.caption("ALIGN完了後に表示")
+        st.caption("対応確認中")
         return
     st.subheader("レビュー対象")
     _render_text_areas(
@@ -1871,7 +1597,7 @@ def _render_upgrade_context(root: Path, processing_id: str) -> None:
 
     values = _upgrade_context(root)
     if values is None:
-        st.caption("DIFF完了後に表示")
+        st.caption("対応確認中")
         return
     st.subheader("版間の対応")
     _render_text_areas(
@@ -1887,7 +1613,7 @@ def _render_llm_progress(
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
     active_task: TaskName | None,
 ) -> None:
-    """現在時刻とSTRUCTURE・TRANSLATE・REVIEWのCall内訳だけを表示する。
+    """現在時刻とLLM TaskのCall内訳を表示する。
 
     Args:
         root (Path): 対象処理の成果物Root Directory。
@@ -1904,7 +1630,12 @@ def _render_llm_progress(
             f"{progress.planned_calls} calls "
             f"(再利用 {progress.reused_calls}, 失敗 {progress.failed_calls})"
         )
-    if active_task in {TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW}:
+    if active_task in {
+        TaskName.STRUCTURE,
+        TaskName.TRANSLATE,
+        TaskName.REVIEW,
+        TaskName.DIFF,
+    }:
         shown = True
         observed, completed, failed = _live_call_counts(root, active_task)
         st.write(
@@ -1942,27 +1673,6 @@ def _docling_progress(root: Path, started_at: datetime) -> tuple[int, int]:
     return completed, total
 
 
-def _valid_check_artifact(root: Path, relative_path: str) -> bool:
-    """CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。
-
-    Args:
-        root (Path): 対象処理の成果物Root Directory。
-        relative_path (str): 処理Directory基準の成果物Path。
-
-    Returns:
-        bool: CHECK Artifactが存在しSchema検証に成功した場合だけ真を返す。
-    """
-
-    path = root / relative_path
-    if not path.is_file():
-        return False
-    try:
-        load_model(path, CheckResult)
-    except ArtifactError:
-        return False
-    return True
-
-
 def _task_progress(
     root: Path,
     record: TranslationRecord | ReviewRecord | UpgradeRecord,
@@ -1980,11 +1690,12 @@ def _task_progress(
     stages = _task_stages(record)
     states = {state.task: state for state in record.tasks}
     completed = sum(
-        _valid_check_artifact(root, artifact)
-        if artifact is not None
-        else states.get(task) is not None
+        states.get(task) is not None
         and states[task].status in {"succeeded", "skipped"}
-        for _, task, artifact in stages
+        and all(
+            _valid_artifact(root, item) is not None for item in states[task].artifacts
+        )
+        for _, task, _ in stages
     )
     active_state = next(
         (state for state in record.tasks if state.status == "processing"), None
@@ -1992,9 +1703,9 @@ def _task_progress(
     active = "-"
     if active_state is not None:
         active = active_state.task.value.replace("_", "-")
-        if active_state.task == TaskName.CHECK:
-            initial_done = _valid_check_artifact(root, "review/check/findings.json")
-            active = "CHECK (最終)" if initial_done else "CHECK (初回)"
+        active = next(
+            (label for label, task, _ in stages if task == active_state.task), active
+        )
     return completed, len(stages), active
 
 
@@ -2160,7 +1871,7 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
 def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Review成果を一覧表示用に整形する。
 
-    CHECKとREVIEWの成果物を読み、指摘行と修正候補行へ分ける。
+    REVIEWの成果物を読み、指摘行と修正候補行へ分ける。
 
     Args:
         root (Path): 処理成果物のルートディレクトリ。
@@ -2169,22 +1880,10 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
         tuple[list[dict[str, str]], list[dict[str, str]]]: 指摘行と修正候補行。
     """
 
-    checked: CheckResult | None = None
-    reviewed: ReviewResult | None = None
-    for path, model_type in (
-        (root / "review/check/findings.json", CheckResult),
-        (root / "review/review/review.json", ReviewResult),
-    ):
-        if not path.is_file():
-            continue
-        try:
-            value = load_model(path, model_type)
-        except ArtifactError:
-            continue
-        if isinstance(value, CheckResult):
-            checked = value
-        else:
-            reviewed = value
+    try:
+        reviewed = load_model(root / "review/review/review.json", ReviewResult)
+    except ArtifactError:
+        return [], []
 
     targets = _review_targets(root)
 
@@ -2205,23 +1904,21 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
             if (value := targets.get(target_id)) is not None and value[index]
         )
 
-    findings = [] if checked is None else list(checked.findings)
-    if reviewed is not None:
-        findings.extend(reviewed.findings)
+    findings = reviewed.findings
     severity_labels = {"error": "エラー", "warning": "警告", "info": "情報"}
     finding_rows = [
         {
-            "種別": finding.origin.upper(),
             "重要度": severity_labels.get(finding.severity, finding.severity),
             "カテゴリ": finding.category,
             "対象": ", ".join(finding.target_ids) or "-",
             "原文": target_text(finding.target_ids, 0),
+            "現在の訳": target_text(finding.target_ids, 1),
             "内容": finding.message,
         }
         for finding in findings
     ]
 
-    revisions = [] if reviewed is None else reviewed.revisions
+    revisions = reviewed.revisions
     revision_rows = [
         {
             "候補ID": revision.id,
@@ -2237,13 +1934,19 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
 def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
     """Review成果物を表示する。
 
-    Review一覧、Markdown reportのpreviewおよびdownload操作を描画する。
+    変更箇所・指摘・修正提案の全件と結果JSONのdownloadを描画する。
 
     Args:
         entry (HistoryEntry): 表示対象の履歴項目。
         record (ReviewRecord): 成功したReviewの最上位記録。
     """
 
+    if not record.outputs or any(
+        _valid_artifact(entry.record_path.parent, artifact) is None
+        for artifact in record.outputs
+    ):
+        st.error("成果物が欠落または変更されています。")
+        return
     finding_rows, revision_rows = _review_rows(entry.record_path.parent)
     error_count = sum(row["重要度"] == "エラー" for row in finding_rows)
     warning_count = sum(row["重要度"] == "警告" for row in finding_rows)
@@ -2262,7 +1965,6 @@ def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
             st.dataframe(
                 finding_rows,
                 column_config={
-                    "種別": st.column_config.TextColumn("種別", width="small"),
                     "重要度": st.column_config.TextColumn("重要度", width="small"),
                     "カテゴリ": st.column_config.TextColumn("カテゴリ", width="medium"),
                     "対象": st.column_config.TextColumn("対象", width="medium"),
@@ -2296,37 +1998,82 @@ def _render_review_outputs(entry: HistoryEntry, record: ReviewRecord) -> None:
             st.error("成果物が欠落または変更されています。")
             continue
         value = path.read_bytes()
-        with st.expander("Review report (Markdown)", expanded=False):
-            st.markdown(value.decode("utf-8"), unsafe_allow_html=False)
+        reviewed = load_model(path, ReviewResult)
+        unmatched = [
+            {
+                "原文ID": ", ".join(group.source_ids),
+                "訳文ID": ", ".join(group.translation_ids),
+                "状態": group.kind,
+                "理由": group.reason or "",
+            }
+            for group in reviewed.groups
+            if group.kind != "matched"
+        ]
+        if unmatched:
+            st.subheader("未対応箇所")
+            st.dataframe(unmatched, hide_index=True)
         st.download_button(
-            "Review reportをdownload",
+            "Review結果JSONをdownload",
             value,
             file_name=path.name,
-            mime="text/markdown",
+            mime="application/json",
         )
 
 
 def _render_upgrade_output(entry: HistoryEntry, record: UpgradeRecord) -> None:
-    """hash検証済みの日本語v2 DOCXをdownload対象として表示する。
+    """検証済み変更箇所・修正提案の全件と結果JSONを表示する。
 
     Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
+        entry: 表示する処理履歴。
+        record: 成果物hashを持つ成功記録。
     """
-
+    root = entry.record_path.parent
+    documents = {
+        role: _load_first_document(
+            root, [f"preprocess/{role.replace('_', '-')}/load/document.json"]
+        )
+        for role in ("source_v1", "source_v2", "translation_v1")
+    }
+    indices = {
+        role: document.unit_index() if document else {}
+        for role, document in documents.items()
+    }
     for artifact in record.outputs:
-        path = _valid_artifact(entry.record_path.parent, artifact)
+        path = _valid_artifact(root, artifact)
         if path is None:
             st.error("成果物が欠落または変更されています。")
             continue
+        plan = load_model(path, UpgradePlan)
+        rows = [
+            {
+                "変更ID": item.id,
+                "種類": item.kind,
+                "英語旧版": _unit_text(
+                    item.source_v1_ids, indices["source_v1"], "source"
+                )
+                or "該当なし",
+                "日本語旧訳": _unit_text(
+                    item.translation_v1_ids, indices["translation_v1"], "source"
+                )
+                or "対応訳なし",
+                "英語新版": _unit_text(
+                    item.source_v2_ids, indices["source_v2"], "source"
+                )
+                or "該当なし",
+                "変更概要": item.summary,
+                "修正提案": item.suggested_translation or item.summary,
+            }
+            for item in plan.changes
+        ]
+        if rows:
+            st.dataframe(rows, hide_index=True)
+        else:
+            st.success("変更箇所なし")
         st.download_button(
-            "日本語v2 DOCXをdownload",
+            "Upgrade結果JSONをdownload",
             path.read_bytes(),
             file_name=path.name,
-            mime=(
-                "application/vnd.openxmlformats-officedocument."
-                "wordprocessingml.document"
-            ),
+            mime="application/json",
         )
 
 
@@ -2388,6 +2135,21 @@ def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
         ]
         expected = [record.source_v1, record.source_v2, record.translation_v1]
     else:
+        if any("/" in item.logical_path for item in record.inputs):
+            register_root = root / "register"
+            if any(
+                not (path := register_root / item.logical_path).is_file()
+                or not path.resolve().is_relative_to(register_root.resolve())
+                or sha256_file(path) != item.sha256
+                for item in record.inputs
+            ):
+                return None
+            return [
+                register_root / name
+                for name in sorted(
+                    {item.logical_path.split("/")[0] for item in record.inputs}
+                )
+            ]
         paths = sorted((root / "register").glob("*/*"), key=lambda path: path.name)
         expected = sorted(record.inputs, key=lambda item: item.logical_path)
     if len(paths) != len(expected) or any(not path.is_file() for path in paths):
@@ -2400,42 +2162,6 @@ def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
         key=lambda item: item[0],
     )
     return paths if actual == wanted else None
-
-
-def _resume_entry(
-    entry: HistoryEntry, paths: list[Path], registry: WorkerRegistry
-) -> bool:
-    """検証済み入力を使って処理種類別のResumeを登録する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        paths (list[Path]): 列挙された入力Path。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-
-    Returns:
-        bool: 検証済み入力を使って処理種類別のResumeを登録する。
-    """
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if processing_id is None or record is None:
-        return False
-    if isinstance(record, TranslationRecord):
-        operation = partial(_resume_translate, paths[0], record.backend, processing_id)
-    elif isinstance(record, ReviewRecord):
-        operation = partial(_resume_review, paths[0], paths[1], processing_id)
-    elif isinstance(record, UpgradeRecord):
-        operation = partial(
-            _resume_upgrade,
-            paths[0],
-            paths[1],
-            paths[2],
-            record.backend,
-            processing_id,
-        )
-    else:
-        operation = partial(_resume_register, paths, record.source_id, processing_id)
-    return registry.submit(processing_id, operation)
 
 
 def _matches_input(upload: UploadedFile, logical_path: str, sha256: str) -> bool:
@@ -2581,7 +2307,7 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
     else:
         uploads = st.file_uploader(
             "Resume用の参照資料",
-            type=["pdf", "docx", "pptx", "md", "markdown", "txt"],
+            type=["pdf"],
             accept_multiple_files=True,
             key=f"resume-register-{processing_id}",
         )
@@ -2601,43 +2327,6 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
     except (InputError, OSError) as error:
         st.error(str(error))
         return None
-
-
-def _render_resume(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終端失敗またはworker不明のprocessing記録にResume確認を表示する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    processing_id = entry.processing_id
-    if (
-        record is None
-        or processing_id is None
-        or record.status == "succeeded"
-        or registry.active(processing_id)
-    ):
-        return
-    paths = _stored_resume_paths(entry)
-    if paths is None:
-        st.info("Resume用の保存済み入力がありません。同じ入力を再uploadしてください。")
-        paths = _render_resume_uploads(entry)
-        if paths is not None and _resume_entry(entry, paths, registry):
-            st.rerun()
-        return
-    confirmed = st.checkbox(
-        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-        key=f"resume-confirm-{processing_id}",
-    )
-    submitted = st.button(
-        "Resume",
-        disabled=not confirmed,
-        key=f"resume-submit-{processing_id}",
-    )
-    if submitted and confirmed and _resume_entry(entry, paths, registry):
-        st.rerun()
 
 
 def _render_record(entry: HistoryEntry) -> None:
@@ -2662,230 +2351,6 @@ def _render_record(entry: HistoryEntry) -> None:
         with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
             st.write(f"更新時刻: {record.updated_at.isoformat()}")
             st.caption("LLM進捗はありません。")
-
-
-def _render_record_actions(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    if record is None:
-        return
-    processing_id = entry.processing_id or "-"
-    if record.status == "processing" and st.button(
-        "強制ストップ",
-        key=f"stop-{processing_id}",
-        icon=":material/stop_circle:",
-        disabled=not registry.active(processing_id),
-        help="このUIが起動した処理だけ停止できます。",
-    ):
-        if _force_stop(entry, registry):
-            st.rerun()
-        st.error("処理を停止できませんでした。履歴を更新して状態を確認してください。")
-    if record.error is not None:
-        st.error(
-            f"{record.error.message} "
-            f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
-        )
-    future = registry.future(processing_id)
-    if future is not None and future.done():
-        _render_future_error(future)
-    if record.status == "succeeded":
-        if isinstance(record, TranslationRecord):
-            _render_translation_outputs(entry, record)
-        elif isinstance(record, ReviewRecord):
-            _render_review_outputs(entry, record)
-        elif isinstance(record, UpgradeRecord):
-            _render_upgrade_output(entry, record)
-        else:
-            _render_registration_result(entry, record)
-    _render_resume(entry, registry)
-    _render_history_delete(entry, registry)
-
-
-def _force_stop(entry: HistoryEntry, registry: WorkerRegistry) -> bool:
-    """UI所有workerを停止し、残った処理記録をcancelledへ確定する。"""
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if (
-        processing_id is None
-        or record is None
-        or record.status != "processing"
-        or not registry.stop(processing_id)
-    ):
-        return False
-    try:
-        current = load_model(entry.record_path, type(record))
-    except ArtifactError:
-        return True
-    if current.status == "processing":
-        if isinstance(current, RegistrationRecord):
-            current.status = "cancelled"
-            current.updated_at = datetime.now(UTC)
-            write_model(entry.record_path, current)
-        else:
-            cancel_processing(current, entry.record_path)
-    return True
-
-
-def _render_history_delete(entry: HistoryEntry, registry: WorkerRegistry) -> None:
-    """終了済みの選択履歴だけを確認操作付きで削除する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    record = entry.record
-    processing_id = entry.processing_id
-    if (
-        record is None
-        or processing_id is None
-        or record.status == "processing"
-        or registry.active(processing_id)
-    ):
-        return
-    with st.expander("履歴を削除", expanded=False, icon=":material/delete:"):
-        confirmed = st.checkbox(
-            "成果物と保存済み入力を削除する",
-            key=f"confirm-delete-{processing_id}",
-        )
-        if st.button(
-            "削除",
-            key=f"delete-{processing_id}",
-            disabled=not confirmed,
-            type="secondary",
-        ):
-            try:
-                _delete_history_entry(entry, registry)
-            except (InputError, OSError) as error:
-                st.error(str(error))
-            else:
-                st.query_params.clear()
-                st.rerun()
-
-
-def _delete_history_entry(
-    entry: HistoryEntry,
-    registry: WorkerRegistry,
-    *,
-    outputs_root: Path | None = None,
-    work_root: Path | None = None,
-) -> None:
-    """終了済み記録の正確な処理directoryと保存入力だけを削除する。
-
-    Args:
-        entry (HistoryEntry): 表示または操作対象の処理履歴。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-        outputs_root (Path | None): 成果物Root Directory。
-        work_root (Path | None): Uploadの一時保存Root Directory。
-
-    Raises:
-        InputError: `valid processing history is required`、`active processing history cannot
-            be deleted`、`history path is outside the outputs directory`、`saved input path is
-            outside the UI work directory`のいずれかと判定した場合。
-    """
-
-    processing_id = entry.processing_id
-    record = entry.record
-    if processing_id is None or record is None:
-        raise InputError("valid processing history is required")
-    if record.status == "processing" or registry.active(processing_id):
-        raise InputError("active processing history cannot be deleted")
-    outputs = (outputs_root or Path.cwd() / "outputs").resolve()
-    processing_directory = entry.record_path.parent.resolve()
-    if (
-        processing_directory.name != processing_id
-        or processing_directory.parent.parent != outputs
-    ):
-        raise InputError("history path is outside the outputs directory")
-    staged_root = (work_root or Path.cwd() / ".translate-ui").resolve()
-    staged_directory = (staged_root / processing_id).resolve()
-    if staged_directory.parent != staged_root:
-        raise InputError("saved input path is outside the UI work directory")
-    shutil.rmtree(processing_directory)
-    if staged_directory.is_dir():
-        shutil.rmtree(staged_directory)
-
-
-def _render_selected(processing_id: str, registry: WorkerRegistry) -> None:
-    """選択処理をArtifactから再読込みして表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-    """
-
-    entry = _entry_by_id(processing_id)
-    if entry is None:
-        _render_future_state(processing_id, registry)
-        return
-    _render_record(entry)
-
-
-def _render_processing_panel(
-    processing_id: str,
-    registry: WorkerRegistry,
-    entries: list[HistoryEntry] | None = None,
-) -> None:
-    """進捗と比較を折り畳み、成果物操作をその外側へ表示する。
-
-    Args:
-        processing_id (str): 新規処理またはResume対象の処理ID。
-        registry (WorkerRegistry): Background処理のWorker Registry。
-        entries (list[HistoryEntry] | None): 表示対象の処理履歴一覧。
-    """
-
-    entries = entries if entries is not None else _history_entries()
-    current = next(
-        (entry for entry in entries if entry.processing_id == processing_id), None
-    )
-    processing = (
-        current is not None
-        and current.record is not None
-        and (current.record.status == "processing")
-    )
-    active = processing or registry.active(processing_id)
-    status = "running"
-    if current is not None and current.record is not None:
-        if current.record.status == "succeeded":
-            status = "complete"
-        elif current.record.status in {"failed", "cancelled"}:
-            status = "error"
-
-    progress_panel = st.status(
-        "進捗と処理内容",
-        expanded=True,
-        state=status,
-    )
-    with progress_panel:
-
-        @st.fragment(run_every="1s" if active else None)
-        def render_progress() -> None:
-            """実行中だけ1秒ごとにArtifactを再読込みする。"""
-
-            _render_selected(processing_id, registry)
-            refreshed = _entry_by_id(processing_id)
-            if refreshed is not None and (
-                current is None
-                or (
-                    active
-                    and refreshed.record is not None
-                    and refreshed.record.status in _TERMINAL_STATUSES
-                )
-            ):
-                st.rerun(scope="app")
-
-        render_progress()
-    progress_panel.update(expanded=True, state=status)
-    refreshed = _entry_by_id(processing_id)
-    if refreshed is not None:
-        _render_record_actions(refreshed, registry)
 
 
 def _render_session_title(processing_id: str | None) -> None:
@@ -2925,36 +2390,587 @@ def _render_session_title(processing_id: str | None) -> None:
     )
 
 
-def main() -> None:
-    """折り畳み可能なStreamlitの4操作と共通処理履歴を表示する。"""
+class TranslationApp:
+    """worker登録表を共有し、入力・実行・再開・履歴操作と画面表示を制御する。"""
 
-    st.set_page_config(
-        page_title="Translate",
-        page_icon=":material/translate:",
-        layout="wide",
-    )
-    st.logo(_LOGO_PATH, size="large")
-    registry = worker_registry()
-    entries = _history_entries()
-    selected_id = _render_history_sidebar(entries)
-    _render_session_title(selected_id)
-    expander_key = selected_id or "new"
-    with st.expander(
-        "入力と設定",
-        expanded=selected_id is None,
-        key=f"pipeline-setup-{expander_key}",
-        icon=":material/tune:",
-    ):
-        translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
-            ["Translate", "Review", "Upgrade", "Register"]
+    def __init__(self, registry: WorkerRegistry) -> None:
+        """Streamlitの再実行をまたいで存続するworker登録表を受け取る。
+
+        Args:
+            registry: 新規実行・再開・停止の対象workerを管理する登録表。
+        """
+        self.registry = registry
+
+    def _start_translate(self, upload: UploadedFile) -> str:
+        """Translate入力を保存し、background workerへ登録する。
+
+        Args:
+            upload (UploadedFile): 保存または照合するUpload File。
+
+        Returns:
+            str: Translate入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        source = _stage_translate(upload, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("translate", (source,), processing_id),
         )
-        with translate_tab:
-            _render_translate_form(registry)
-        with review_tab:
-            _render_review_form(registry)
-        with upgrade_tab:
-            _render_upgrade_form(registry)
-        with register_tab:
-            _render_register_form(registry)
-    if selected_id is not None:
-        _render_processing_panel(selected_id, registry, entries)
+        return processing_id
+
+    def _start_review(
+        self, source_upload: UploadedFile, translation_upload: UploadedFile
+    ) -> str:
+        """Review二入力を保存し、background workerへ登録する。
+
+        Args:
+            source_upload (UploadedFile): Review原文のUpload File。
+            translation_upload (UploadedFile): Review訳文のUpload File。
+
+        Returns:
+            str: Review二入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        source, translation = _stage_review(
+            source_upload, translation_upload, processing_id
+        )
+        self.registry.submit(
+            processing_id,
+            PipelineJob("review", (source, translation), processing_id),
+        )
+        return processing_id
+
+    def _start_register(
+        self, uploads: list[UploadedFile], source_id: str | None
+    ) -> str:
+        """Register入力を保存し、background workerへ登録する。
+
+        Args:
+            uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
+            source_id (str | None): 登録対象へ付与する論理Source ID。
+
+        Returns:
+            str: Register入力を保存し、background workerへ登録する。
+
+        Raises:
+            InputError: `at least one registration file is required`、`source_id is required for
+                multiple registration files`のいずれかと判定した場合。
+        """
+
+        if not uploads:
+            raise InputError("at least one registration file is required")
+        if len(uploads) > 1 and not source_id:
+            raise InputError("source_id is required for multiple registration files")
+        processing_id = str(uuid7())
+        paths = _stage_register(uploads, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("register", tuple(paths), processing_id, source_id or None),
+        )
+        return processing_id
+
+    def _start_upgrade(
+        self,
+        source_v1: UploadedFile,
+        source_v2: UploadedFile,
+        translation_v1: UploadedFile,
+    ) -> str:
+        """Upgrade三入力を保存し、background workerへ登録する。
+
+        Args:
+            source_v1 (UploadedFile): 比較基準にする英文v1。
+            source_v2 (UploadedFile): 変更を反映する英文v2。
+            translation_v1 (UploadedFile): 比較基準にする日本語v1。
+
+        Returns:
+            str: Upgrade三入力を保存し、background workerへ登録する。
+        """
+
+        processing_id = str(uuid7())
+        paths = _stage_upgrade(source_v1, source_v2, translation_v1, processing_id)
+        self.registry.submit(
+            processing_id,
+            PipelineJob("upgrade", paths, processing_id),
+        )
+        return processing_id
+
+    def _render_translate_form(
+        self,
+    ) -> None:
+        """Translateの英語PDF入力を表示する。
+
+        Args:
+        """
+
+        upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
+        submitted = st.button(
+            "翻訳を開始",
+            disabled=upload is None,
+            type="primary",
+            key="start-translate",
+        )
+        if submitted and upload is not None:
+            try:
+                _select_processing(self._start_translate(upload))
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_review_form(
+        self,
+    ) -> None:
+        """Reviewの英語原文PDFと日本語訳文PDF入力を表示する。
+
+        Args:
+        """
+
+        source = st.file_uploader("英語原文PDF", type=["pdf"], key="review-source")
+        translation = st.file_uploader(
+            "日本語訳文PDF", type=["pdf"], key="review-translation"
+        )
+        submitted = st.button(
+            "レビューを開始",
+            disabled=source is None or translation is None,
+            type="primary",
+            key="start-review",
+        )
+        if submitted and source is not None and translation is not None:
+            try:
+                _select_processing(self._start_review(source, translation))
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_register_form(
+        self,
+    ) -> None:
+        """Registerの複数fileとsource_id入力を表示する。
+
+        Args:
+        """
+
+        mode = st.segmented_control(
+            "登録する入力",
+            ["ファイル", "ディレクトリ"],
+            default="ファイル",
+            key="register-input-mode",
+        )
+        uploads = st.file_uploader(
+            "参照資料",
+            type=["pdf"],
+            accept_multiple_files="directory" if mode == "ディレクトリ" else True,
+            key="register-sources",
+        )
+        source_id = st.text_input("source_id")
+        needs_source_id = len(uploads) > 1 and not source_id.strip()
+        submitted = st.button(
+            "登録を開始",
+            disabled=not uploads or needs_source_id or len(uploads) > 100,
+            type="primary",
+            key="start-register",
+        )
+        if needs_source_id:
+            st.caption("複数fileの登録ではsource_idが必要です。")
+        if len(uploads) > 100:
+            st.caption("一度に登録できるfileは100件までです。")
+        if submitted:
+            try:
+                _select_processing(
+                    self._start_register(uploads, source_id.strip() or None)
+                )
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_upgrade_form(
+        self,
+    ) -> None:
+        """Upgradeの英文二版と日本語旧版のPDF入力を表示する。
+
+        Args:
+        """
+
+        source_v1 = st.file_uploader(
+            "英文v1 PDF", type=["pdf"], key="upgrade-source-v1"
+        )
+        source_v2 = st.file_uploader(
+            "英文v2 PDF", type=["pdf"], key="upgrade-source-v2"
+        )
+        translation_v1 = st.file_uploader(
+            "日本語v1 PDF", type=["pdf"], key="upgrade-translation-v1"
+        )
+        ready = all(
+            value is not None for value in (source_v1, source_v2, translation_v1)
+        )
+        submitted = st.button(
+            "Upgradeを開始",
+            disabled=not ready,
+            type="primary",
+            key="start-upgrade",
+        )
+        if (
+            submitted
+            and source_v1 is not None
+            and source_v2 is not None
+            and translation_v1 is not None
+        ):
+            try:
+                _select_processing(
+                    self._start_upgrade(source_v1, source_v2, translation_v1)
+                )
+            except (InputError, OSError) as error:
+                st.error(str(error))
+
+    def _render_future_state(self, processing_id: str) -> None:
+        """Artifact公開前の待機・準備状態またはworker失敗を表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+        """
+
+        future = self.registry.future(processing_id)
+        st.progress(0.0, text="0 / ? Task — 準備 — preparing")
+        if future is None:
+            current = "処理記録の公開待ち"
+        elif not future.running() and not future.done():
+            current = "workerの開始待ち"
+        elif not future.done():
+            current = "Pipelineを準備中"
+        else:
+            current = "workerの結果を確認中"
+        with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
+            st.write("更新時刻: -")
+            st.caption("LLM進捗はまだありません。")
+        st.caption(current)
+        if future is None:
+            st.info("処理記録が見つかりません。")
+        elif future.done():
+            _render_future_error(future)
+
+    def _resume_entry(self, entry: HistoryEntry, paths: list[Path]) -> bool:
+        """検証済み入力を使って処理種類別のResumeを登録する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+            paths (list[Path]): 列挙された入力Path。
+
+        Returns:
+            bool: 検証済み入力を使って処理種類別のResumeを登録する。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if processing_id is None or record is None:
+            return False
+        return self.registry.submit(
+            processing_id,
+            PipelineJob(
+                entry.kind,
+                tuple(paths),
+                processing_id,
+                record.source_id if isinstance(record, RegistrationRecord) else None,
+                resuming=True,
+            ),
+        )
+
+    def _render_resume(self, entry: HistoryEntry) -> None:
+        """終端失敗またはworker不明のprocessing記録にResume確認を表示する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        processing_id = entry.processing_id
+        if (
+            record is None
+            or processing_id is None
+            or record.status == "succeeded"
+            or self.registry.active(processing_id)
+        ):
+            return
+        paths = _stored_resume_paths(entry)
+        if paths is None:
+            st.info(
+                "Resume用の保存済み入力がありません。同じ入力を再uploadしてください。"
+            )
+            paths = _render_resume_uploads(entry)
+            if paths is not None and self._resume_entry(entry, paths):
+                st.rerun()
+            return
+        confirmed = st.checkbox(
+            "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
+            key=f"resume-confirm-{processing_id}",
+        )
+        submitted = st.button(
+            "Resume",
+            disabled=not confirmed,
+            key=f"resume-submit-{processing_id}",
+        )
+        if submitted and confirmed and self._resume_entry(entry, paths):
+            st.rerun()
+
+    def _render_record_actions(self, entry: HistoryEntry) -> None:
+        """エラー、成果物およびResume操作を進捗Collapseの外へ表示する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        if record is None:
+            return
+        processing_id = entry.processing_id or "-"
+        if record.status == "processing" and st.button(
+            "強制ストップ",
+            key=f"stop-{processing_id}",
+            icon=":material/stop_circle:",
+            disabled=not self.registry.active(processing_id),
+            help="このUIが起動した処理だけ停止できます。",
+        ):
+            if self.stop(entry):
+                st.rerun()
+            st.error(
+                "処理を停止できませんでした。履歴を更新して状態を確認してください。"
+            )
+        if record.error is not None:
+            st.error(
+                f"{record.error.message} "
+                f"({record.error.cause_type or 'unknown'}, retryable={record.error.retryable})"
+            )
+        future = self.registry.future(processing_id)
+        if future is not None and future.done() and record.error is None:
+            _render_future_error(future)
+        if record.status == "succeeded":
+            if isinstance(record, TranslationRecord):
+                _render_translation_outputs(entry, record)
+            elif isinstance(record, ReviewRecord):
+                _render_review_outputs(entry, record)
+            elif isinstance(record, UpgradeRecord):
+                _render_upgrade_output(entry, record)
+            else:
+                _render_registration_result(entry, record)
+        self._render_resume(entry)
+
+    def stop(self, entry: HistoryEntry) -> bool:
+        """UI所有workerを停止し、残った処理記録をcancelledへ確定する。
+
+        Args:
+            entry: 停止対象の処理履歴。
+
+        Returns:
+            所有する実行中workerを停止した場合はTrue。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if (
+            processing_id is None
+            or record is None
+            or record.status != "processing"
+            or not self.registry.stop(processing_id)
+        ):
+            return False
+        try:
+            current = load_model(entry.record_path, type(record))
+        except ArtifactError:
+            return True
+        if current.status == "processing":
+            if isinstance(current, RegistrationRecord):
+                current.status = "cancelled"
+                current.updated_at = datetime.now(UTC)
+                write_model(entry.record_path, current)
+            else:
+                ArtifactStore(current, entry.record_path).cancel_processing()
+        return True
+
+    def _render_history_delete(self, entry: HistoryEntry) -> None:
+        """終了済みの選択履歴だけを確認操作付きで削除する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+        """
+
+        record = entry.record
+        processing_id = entry.processing_id
+        if (
+            record is None
+            or processing_id is None
+            or record.status == "processing"
+            or self.registry.active(processing_id)
+        ):
+            return
+        with st.expander("履歴を削除", expanded=True, icon=":material/delete:"):
+            st.caption(_entry_label(entry))
+            confirmed = st.checkbox(
+                "成果物と保存済み入力を削除する",
+                key=f"confirm-delete-{processing_id}",
+            )
+            if st.button(
+                "削除",
+                key=f"delete-{processing_id}",
+                disabled=not confirmed,
+                type="secondary",
+            ):
+                try:
+                    self.delete_history(entry)
+                except (InputError, OSError) as error:
+                    st.error(str(error))
+                else:
+                    st.session_state.pop("pending-delete", None)
+                    if _selected_processing_id() == processing_id:
+                        st.query_params.clear()
+                    st.rerun()
+
+    def delete_history(
+        self,
+        entry: HistoryEntry,
+        *,
+        outputs_root: Path | None = None,
+        work_root: Path | None = None,
+    ) -> None:
+        """終了済み記録の正確な処理directoryと保存入力だけを削除する。
+
+        Args:
+            entry (HistoryEntry): 表示または操作対象の処理履歴。
+            outputs_root (Path | None): 成果物Root Directory。
+            work_root (Path | None): Uploadの一時保存Root Directory。
+
+        Raises:
+            InputError: `valid processing history is required`、`active processing history cannot
+                be deleted`、`history path is outside the outputs directory`、`saved input path is
+                outside the UI work directory`のいずれかと判定した場合。
+        """
+
+        processing_id = entry.processing_id
+        record = entry.record
+        if processing_id is None or record is None:
+            raise InputError("valid processing history is required")
+        if record.status == "processing" or self.registry.active(processing_id):
+            raise InputError("active processing history cannot be deleted")
+        outputs = (outputs_root or Path.cwd() / "outputs").resolve()
+        processing_directory = entry.record_path.parent.resolve()
+        if (
+            processing_directory.name != processing_id
+            or processing_directory.parent.parent != outputs
+        ):
+            raise InputError("history path is outside the outputs directory")
+        staged_root = (work_root or Path.cwd() / ".translate-ui").resolve()
+        staged_directory = (staged_root / processing_id).resolve()
+        if staged_directory.parent != staged_root:
+            raise InputError("saved input path is outside the UI work directory")
+        shutil.rmtree(processing_directory)
+        if staged_directory.is_dir():
+            shutil.rmtree(staged_directory)
+
+    def _render_selected(self, processing_id: str) -> None:
+        """選択処理をArtifactから再読込みして表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+        """
+
+        entry = _entry_by_id(processing_id)
+        if entry is None:
+            self._render_future_state(processing_id)
+            return
+        _render_record(entry)
+
+    def _render_processing_panel(
+        self, processing_id: str, entries: list[HistoryEntry] | None = None
+    ) -> None:
+        """進捗と比較を折り畳み、成果物操作をその外側へ表示する。
+
+        Args:
+            processing_id (str): 新規処理またはResume対象の処理ID。
+            entries (list[HistoryEntry] | None): 表示対象の処理履歴一覧。
+        """
+
+        entries = entries if entries is not None else _history_entries()
+        current = next(
+            (entry for entry in entries if entry.processing_id == processing_id), None
+        )
+        processing = (
+            current is not None
+            and current.record is not None
+            and (current.record.status == "processing")
+        )
+        active = processing or self.registry.active(processing_id)
+        status = "running"
+        if current is not None and current.record is not None:
+            if current.record.status == "succeeded":
+                status = "complete"
+            elif current.record.status in {"failed", "cancelled"}:
+                status = "error"
+
+        progress_panel = st.status(
+            "進捗と処理内容",
+            expanded=True,
+            state=status,
+        )
+        with progress_panel:
+
+            @st.fragment(run_every="1s" if active else None)
+            def render_progress() -> None:
+                """実行中だけ1秒ごとにArtifactを再読込みする。"""
+
+                self._render_selected(processing_id)
+                refreshed = _entry_by_id(processing_id)
+                if refreshed is not None and (
+                    current is None
+                    or (
+                        active
+                        and refreshed.record is not None
+                        and refreshed.record.status in _TERMINAL_STATUSES
+                    )
+                ):
+                    st.rerun(scope="app")
+
+            render_progress()
+        progress_panel.update(expanded=True, state=status)
+        refreshed = _entry_by_id(processing_id)
+        if refreshed is not None:
+            self._render_record_actions(refreshed)
+
+    def run(self) -> None:
+        """折り畳み可能なStreamlitの4操作と共通処理履歴を表示する。"""
+
+        st.set_page_config(
+            page_title="Translate",
+            page_icon=":material/translate:",
+            layout="wide",
+        )
+        st.logo(_LOGO_PATH, size="large")
+        entries = _history_entries()
+        selected_id = _render_history_sidebar(entries)
+        _render_session_title(selected_id)
+        pending_delete = st.session_state.get("pending-delete")
+        candidate = next(
+            (entry for entry in entries if entry.processing_id == pending_delete), None
+        )
+        if candidate is not None:
+            self._render_history_delete(candidate)
+        expander_key = selected_id or "new"
+        with st.expander(
+            "入力と設定",
+            expanded=selected_id is None,
+            key=f"pipeline-setup-{expander_key}",
+            icon=":material/tune:",
+        ):
+            translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
+                ["Translate", "Review", "Upgrade", "Register"]
+            )
+            with translate_tab:
+                self._render_translate_form()
+            with review_tab:
+                self._render_review_form()
+            with upgrade_tab:
+                self._render_upgrade_form()
+            with register_tab:
+                self._render_register_form()
+        if selected_id is not None:
+            self._render_processing_panel(selected_id, entries)
+
+
+def main() -> None:
+    """Streamlitの実行ごとにControllerを作り、共有workerで画面を表示する。"""
+    TranslationApp(worker_registry()).run()

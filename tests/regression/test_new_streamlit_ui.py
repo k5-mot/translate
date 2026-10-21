@@ -6,15 +6,18 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from unittest.mock import MagicMock
 
 import pytest
 from streamlit.testing.v1 import AppTest
 from uuid_utils import uuid7
 
+from scripts.real_ui_step import resume
 from translate import ui
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
     describe_artifact,
     load_model,
     sha256_file,
@@ -28,13 +31,11 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.pipeline import InputError
-from translate.pipeline.translate import translate_pdf
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
+from translate.pipeline.translate import TranslatePipeline
 from translate.ui import (
     HistoryEntry,
+    TranslationApp,
     WorkerRegistry,
-    _delete_history_entry,
-    _force_stop,
     _history_entries,
     _live_call_counts,
     _preview,
@@ -45,6 +46,9 @@ from translate.ui import (
     _valid_artifact,
     _verified_response,
 )
+
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 if TYPE_CHECKING:
     from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -181,6 +185,24 @@ def test_worker_registry_rejects_duplicate_active_id() -> None:
         registry.stop("processing-id")
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_worker_reports_success_and_failure_over_real_pipe(*, fails: bool) -> None:
+    """実spawn子processの正常終了と例外を、Pipe切断エラーに変えず受け取る。"""
+    registry = WorkerRegistry()
+    try:
+        operation = partial(int, "invalid") if fails else partial(time.sleep, 0)
+        assert registry.submit("pipe-result", operation)
+        future = registry.future("pipe-result")
+        assert future is not None
+        if fails:
+            with pytest.raises(ui.WorkerError, match="ValueError"):
+                future.result(timeout=15)
+        else:
+            assert future.result(timeout=15) is None
+    finally:
+        registry.stop("pipe-result")
+
+
 def test_force_stop_terminates_worker_and_marks_record_cancelled(
     tmp_path: Path,
 ) -> None:
@@ -206,7 +228,7 @@ def test_force_stop_terminates_worker_and_marks_record_cancelled(
 
     try:
         assert registry._processes  # noqa: SLF001
-        assert _force_stop(entry, registry)
+        assert TranslationApp(registry).stop(entry)
         future = registry.future(processing_id)
         assert future is not None
         future.result(timeout=5)
@@ -234,12 +256,9 @@ def test_processing_history_shows_loading_icon_and_stop_button(
 
     try:
         app.run(timeout=10)
-        history = next(
-            button
-            for button in app.sidebar.button
-            if button.key == f"history-{processing_id}"
-        )
-        assert "progress_activity" in str(history.proto)
+        assert not app.exception
+        component = app.get("bidi_component")[0]
+        assert '"active": true' in component.proto.json
         stop = next(
             button for button in app.button if button.key == f"stop-{processing_id}"
         )
@@ -275,11 +294,8 @@ def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
         record=record,
     )
 
-    _delete_history_entry(
-        entry,
-        WorkerRegistry(),
-        outputs_root=tmp_path / "outputs",
-        work_root=tmp_path / ".translate-ui",
+    TranslationApp(WorkerRegistry()).delete_history(
+        entry, outputs_root=tmp_path / "outputs", work_root=tmp_path / ".translate-ui"
     )
 
     assert not processing_directory.exists()
@@ -307,6 +323,7 @@ def test_streamlit_delete_button_requires_confirmation_and_removes_history(
     app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py"))
     app.query_params["processing"] = processing_id
 
+    app.session_state["pending-delete"] = processing_id
     app.run(timeout=10)
 
     delete = next(
@@ -438,12 +455,29 @@ def test_processing_id_does_not_overwrite_existing_record(tmp_path: Path) -> Non
     )
 
     with pytest.raises(InputError, match="already exists"):
-        translate_pdf(
-            source,
-            config,
-            processing_id=processing_id,
-            outputs=tmp_path / "outputs",
+        TranslatePipeline(config, outputs=tmp_path / "outputs").run(
+            source, processing_id=processing_id
         )
+
+
+def test_real_ui_translate_resume_uses_translation_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TranslateのResumeが保存済みtranslation記録を参照する。"""
+
+    monkeypatch.chdir(tmp_path)
+    processing_id = str(uuid7())
+    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    record_path.parent.mkdir(parents=True)
+    record_path.write_text('{"updated_at": "before"}', encoding="utf-8")
+    page = MagicMock()
+    page.get_by_role.return_value.click.side_effect = lambda: record_path.write_text(
+        '{"updated_at": "after"}', encoding="utf-8"
+    )
+
+    resume(page, "translate", processing_id)
+
+    page.get_by_role.assert_called_once_with("button", name="Resume", exact=True)
 
 
 @pytest.mark.browser
@@ -474,3 +508,21 @@ def test_streamlit_v2_renders_four_operations(
     )
     assert settings.label == "入力と設定"
     assert settings.proto.expanded
+
+
+def test_register_directory_upload_preserves_paths_and_rejects_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同名の子PDFを保持し、絶対pathと親参照を保存前に拒否する。"""
+    monkeypatch.chdir(tmp_path)
+    paths = _stage_register(
+        [_upload("manual/a/file.pdf", b"a"), _upload("manual/b/file.pdf", b"b")],
+        str(uuid7()),
+    )
+    assert len(paths) == 1
+    assert paths[0].name == "manual"
+    assert (paths[0] / "a/file.pdf").read_bytes() == b"a"
+    assert (paths[0] / "b/file.pdf").read_bytes() == b"b"
+    for name in ("../file.pdf", "/root/file.pdf", "C:/file.pdf", "manual/../file.pdf"):
+        with pytest.raises(InputError):
+            _stage_register([_upload(name)], str(uuid7()))

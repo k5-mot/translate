@@ -1,251 +1,91 @@
-"""Upgrade PipelineのTask接続、成果物およびResume契約を検証する。"""
+"""比較Pipelineの一覧公開、失敗記録、入力照合と再開境界を検証する。"""
 
-from __future__ import annotations
+from pathlib import Path
+from unittest.mock import Mock
 
-from collections import Counter
-from typing import TYPE_CHECKING
+import pytest
+from uuid_utils import uuid7
 
-from translate.artifact_store import (
-    describe_artifact,
-    load_model,
-    sha256_file,
-    write_model,
-)
+from translate.adapters.artifact_store import load_model, write_model
 from translate.common.config import Config
-from translate.models.artifacts import (
-    CoverResult,
-    DoclingManifest,
-    LintResult,
-    SplitManifest,
-    UnpackManifest,
-)
-from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.upgrade import UpgradeRecord
-from translate.pipeline import upgrade
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    import pytest
+from translate.models.artifacts import ReviewRecord, ReviewResult
+from translate.models.document import Document
+from translate.models.upgrade import UpgradePlan, UpgradeRecord
+from translate.pipeline import InputError, review, upgrade
 
 
-def _document(identifier: str, text: str) -> Document:
-    """一つの本文TextUnitを持つPipeline test用文書を作る。"""
-
-    return Document(
-        pages=[
-            Page(
-                number=1,
-                blocks=[
-                    Block(
-                        id=f"block-{identifier}",
-                        order=0,
-                        kind="paragraph",
-                        content=TextUnit(
-                            id=identifier,
-                            spans=[TextSpan(id=f"span-{identifier}", source=text)],
-                        ),
-                    )
-                ],
-            )
-        ]
-    )
-
-
-def test_upgrade_pipeline_reuses_translation_and_resumes(  # noqa: C901, PLR0915
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915 — 失敗から再開までの一連の境界。
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
-    """同文の日本語v1を再利用し、DOCXだけを公開してResumeでは再実行しない。"""
-
-    calls: Counter[str] = Counter()
-    source_v1 = tmp_path / "source-v1.pdf"
-    source_v2 = tmp_path / "source-v2.pdf"
-    translation_v1 = tmp_path / "translation-v1.pdf"
-    for path in (source_v1, source_v2, translation_v1):
-        path.write_bytes(path.name.encode())
-    documents = {
-        source_v1.name: _document("source-v1", "Stable text"),
-        source_v2.name: _document("source-v2", "Stable text"),
-        translation_v1.name: _document("translation-v1", "安定した文章"),
-    }
-
-    def fake_split(
-        source: Path, directory: Path, _root: Path, _pages: int
-    ) -> SplitManifest:
-        """外部PDF分割の代わりに空partの有効Manifestを保存する。"""
-
-        calls["split"] += 1
-        result = SplitManifest(
-            source_sha256=sha256_file(source), total_pages=1, parts=[]
-        )
-        write_model(directory / "manifest.json", result)
-        return result
-
-    def fake_docling(
-        _manifest: SplitManifest,
-        directory: Path,
-        _root: Path,
-        _config: Config,
-    ) -> DoclingManifest:
-        """Docling外部接続を空の有効Manifestへ置き換える。"""
-
-        calls["docling"] += 1
-        result = DoclingManifest(parts=[])
-        write_model(directory / "manifest.json", result)
-        return result
-
-    def fake_unpack(
-        _manifest: DoclingManifest, directory: Path, _root: Path
-    ) -> UnpackManifest:
-        """archive展開を空の有効Manifestへ置き換える。"""
-
-        calls["unpack"] += 1
-        result = UnpackManifest(parts=[])
-        write_model(directory / "manifest.json", result)
-        return result
-
-    def fake_merge(
-        _manifest: UnpackManifest,
-        source: Path,
-        directory: Path,
-        _root: Path,
-    ) -> Path:
-        """入力roleに対応する内部DocumentをMERGE成果として保存する。"""
-
-        calls["merge"] += 1
-        path = directory / "document.json"
-        write_model(path, documents[source.name])
-        return path
-
-    def fake_transform(source: Path, directory: Path) -> Path:
-        """POSITION、NORMALIZE、LOADを検証済みDocumentの複製に置き換える。"""
-
-        calls["transform"] += 1
-        path = directory / "document.json"
-        write_model(path, load_model(source, Document))
-        return path
-
-    def fake_structure(
-        document: Document,
-        _source: Path,
-        directory: Path,
-        _root: Path,
-        _config: Config,
-        _rules: str,
-    ) -> Document:
-        """LLM接続なしで英文v2構造をそのまま保存する。"""
-
-        calls["structure"] += 1
-        write_model(directory / "document.json", document)
-        return document
-
-    def fake_lint(_document: Document, _assets: Path) -> LintResult:
-        """公開構造を有効とする固定LINT結果を返す。"""
-
-        calls["lint"] += 1
-        return LintResult(valid=True, document_sha256="0" * 64, diagnostics=[])
-
-    def fake_cover(_source: Path, directory: Path, root: Path) -> CoverResult:
-        """表紙画像とManifestの最小成果物を保存する。"""
-
-        calls["cover"] += 1
-        image = directory / "cover.png"
-        image.parent.mkdir(parents=True, exist_ok=True)
-        image.write_bytes(b"png")
-        result = CoverResult(
-            image=describe_artifact(root, image),
-            width=1,
-            height=1,
-            excluded_page_numbers=[1],
-        )
-        write_model(directory / "manifest.json", result)
-        return result
-
-    def fake_markdown(
-        _document: Document,
-        output: Path,
-        _cover: Path,
-        _assets: Path,
-        _excluded: set[int],
-        _timeout: float,
-    ) -> Path:
-        """Pandoc入力となる中間Markdownを保存する。"""
-
-        calls["markdown"] += 1
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("日本語v2", encoding="utf-8")
-        return output
-
-    def fake_publish(
-        _markdown: Path, output: Path, _template: Path, _timeout: float
-    ) -> Path:
-        """Pandoc実行を固定DOCX byte列へ置き換える。"""
-
-        calls["docx"] += 1
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"docx")
-        return output
-
-    for name, value in (
-        ("split", fake_split),
-        ("convert_with_docling", fake_docling),
-        ("unpack", fake_unpack),
-        ("merge", fake_merge),
-        ("position", fake_transform),
-        ("normalize", fake_transform),
-        ("load", fake_transform),
-        ("structure", fake_structure),
-        ("lint", fake_lint),
-        ("create_cover", fake_cover),
-        ("convert_document", fake_markdown),
-        ("publish", fake_publish),
-    ):
-        monkeypatch.setattr(upgrade, name, value)
-
+    """失敗後は保存済みIDから再開し、成功後は設定変更でもAgentを再実行しない。"""
+    module = review if kind == "review" else upgrade
+    roles = (
+        ("source", "translation")
+        if kind == "review"
+        else ("source_v1", "source_v2", "translation_v1")
+    )
+    paths = []
+    for role in roles:
+        path = tmp_path / f"{role}.pdf"
+        path.write_bytes(b"PDF input boundary fixture")
+        paths.append(path)
     config = Config(
         docling_server_url="http://docling",
-        libretranslate_url="http://libretranslate",
-        openai_base_url="http://llm/v1",
-        openai_structure_model="structure",
+        openai_base_url="http://llm",
         openai_review_model="review",
+        qdrant_uri=None,
+        qdrant_collection=None,
+        openai_embedding_model=None,
     )
-    outcome = upgrade.upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        config,
-        backend="libretranslate",
-        outputs=tmp_path / "outputs",
+    documents = {role: Document() for role in roles}
+    prepare = Mock(return_value=(documents, {}))
+    monkeypatch.setattr(module.PipelineRun, "prepare_documents", prepare)
+    identifier = str(uuid7())
+    root = tmp_path / "outputs"
+    pipeline_type = (
+        module.ReviewPipeline if kind == "review" else module.UpgradePipeline
     )
-    before_resume = calls.copy()
-    resumed = upgrade.upgrade_pdfs(
-        source_v1,
-        source_v2,
-        translation_v1,
-        config,
-        backend="libretranslate",
-        resume_id=outcome.upgrade_id,
-        outputs=tmp_path / "outputs",
-    )
+    pipeline = pipeline_type(config, outputs=root)
+    model = ReviewRecord if kind == "review" else UpgradeRecord
+    representative = paths[-1] if kind == "review" else paths[1]
+    directory = root / representative.stem / identifier
+    record_path = directory / f"{kind}.json"
+    agent_type = module.ReviewAgent if kind == "review" else module.UpgradeAgent
+    fail = Mock(side_effect=RuntimeError("comparison unavailable"))
+    monkeypatch.setattr(agent_type, "run", fail)
+    with pytest.raises(RuntimeError, match="comparison unavailable"):
+        pipeline.run(*paths, processing_id=identifier)
+    failed = load_model(record_path, model)
+    assert failed.status == "failed"
+    assert failed.outputs == []
 
-    record = load_model(outcome.processing_directory / "upgrade.json", UpgradeRecord)
-    assert outcome.docx.read_bytes() == b"docx"
-    assert resumed.docx == outcome.docx
-    assert calls == before_resume
-    assert [item.relative_path for item in record.outputs] == [
-        "publisher/docx/document.ja.docx"
-    ]
-    assert record.source_v1.role == "source_v1"
-    assert record.source_v2.role == "source_v2"
-    assert record.translation_v1.role == "translation_v1"
-    assert (
-        next(
-            item for item in record.tasks if item.task.value == "TRANSLATE_LITE"
-        ).status
-        == "skipped"
+    def complete(instance: review.ReviewAgent | upgrade.UpgradeAgent) -> None:
+        """実際の保存境界へAgentの最終JSONだけを出力する。"""
+        result = ReviewResult() if kind == "review" else UpgradePlan()
+        write_model(
+            instance.directory / ("review.json" if kind == "review" else "plan.json"),
+            result,
+        )
+
+    monkeypatch.setattr(agent_type, "run", complete)
+    pipeline.run(*paths, resume_id=identifier)
+    succeeded = load_model(record_path, model)
+    assert succeeded.status == "succeeded"
+    assert len(succeeded.outputs) == 1
+    assert succeeded.outputs[0].relative_path.endswith(".json")
+    assert (directory / "app.log").is_file()
+    assert not list(directory.rglob("*.docx"))
+    monkeypatch.setattr(
+        agent_type,
+        "run",
+        Mock(side_effect=AssertionError("completed Agent must be reused")),
     )
-    assert (
-        next(item for item in record.tasks if item.task.value == "REVIEW").status
-        == "skipped"
-    )
+    pipeline_type(
+        config.model_copy(update={"openai_review_model": "changed"}), outputs=root
+    ).run(*paths, resume_id=identifier)
+    assert len(succeeded.outputs) == 1
+    paths[0].write_bytes(b"changed input")
+    with pytest.raises(InputError, match="inputs differ"):
+        pipeline.run(*paths, resume_id=identifier)
+    assert len(succeeded.outputs) == 1

@@ -1,12 +1,13 @@
 """Streamlit widgetへ進捗と比較値が描画されることを検証する。"""
 
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from translate.artifact_store import sha256_file, write_model
+from translate.adapters.artifact_store import sha256_file, write_model
 from translate.models.artifacts import (
     InputFile,
     LLMCallArtifact,
@@ -15,7 +16,9 @@ from translate.models.artifacts import (
     TranslationRecord,
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
+
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 
 def _assert_progress_layout(app: AppTest, processing_id: str) -> None:
@@ -31,9 +34,7 @@ def _assert_progress_layout(app: AppTest, processing_id: str) -> None:
     )
     assert progress.proto.expanded
     assert app.sidebar.subheader[0].value == "処理履歴"
-    assert any(
-        button.key == f"history-{processing_id}" for button in app.sidebar.button
-    )
+    assert processing_id in app.get("bidi_component")[0].proto.json
     detail = next(
         expander for expander in app.get("status") if expander.label == "進捗詳細"
     )

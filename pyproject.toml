@@ -13,7 +13,6 @@ dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.10,<3",
     "python-dotenv>=1.2.1",
-    "typer>=0.20.0",
     "uuid-utils>=0.17.1,<1",
 ]
 
@@ -21,9 +20,6 @@ dependencies = [
 qdrant = ["qdrant-client>=1.16.0,<2"]
 ui = ["streamlit>=1.64.0"]
 all = ["qdrant-client>=1.16.0,<2", "streamlit>=1.64.0"]
-
-[project.scripts]
-translate-ja = "translate.cli:app"
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -49,7 +45,7 @@ include = ["translate", "translate.*"]
 [tool.ruff]
 line-length = 88
 indent-width = 4
-extend-exclude = [".agents"]
+extend-exclude = [".agents", "translate_v2"]
 
 [tool.ruff.lint]
 preview = true
@@ -81,7 +77,6 @@ select = [
 
     # Type annotations
     "ANN",    # flake8-annotations
-    "TC",     # typing-only imports
     "PYI",    # typing / stub best practices
 
     # Async
@@ -183,6 +178,8 @@ max-statements = 40
 
 # テストでは assert は当然使うので Bandit の S101 だけ除外
 [tool.ruff.lint.per-file-ignores]
+# SPECで指定する番号付きTask名をimportlibで読み込む。
+"translate/tasks/[0-9]*.py" = ["N999"]
 "tests/**/*.py" = [
     "S101",
     "PLR2004",
@@ -222,12 +219,11 @@ docstring-code-line-length = "dynamic"
 convention = "google"
 
 [tool.ty.src]
-exclude = [".agents", "tests"]
+exclude = [".agents", "tests", "translate_v2"]
 
 [tool.pytest.ini_options]
 markers = [
     "integration: 複数componentを接続する統合test",
-    "cli: CLIの公開操作を検証するtest",
     "browser: Streamlitをbrowser経由で検証するtest",
-    "e2e: 公開CLIまたはbrowserから実processを通すE2E test",
+    "e2e: browserから実processを通すE2E test",
 ]

@@ -1,18 +1,14 @@
 """pypdfium2を使うPDF分割、text抽出およびpage画像化。"""
 
-from __future__ import annotations
-
 import logging
+import math
 from io import BytesIO
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pypdfium2 as pdfium
 from PIL import Image
 
-from translate.artifact_store import atomic_write_bytes
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from translate.adapters.artifact_store import atomic_write_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +71,12 @@ def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list
 
 
 def render_page(
-    source: Path, page_number: int, output: Path, dpi: int
+    source: Path,
+    page_number: int,
+    output: Path,
+    dpi: int,
+    *,
+    clip: tuple[float, float, float, float] | None = None,
 ) -> tuple[int, int]:
     """1始まりのPDF pageをPNGへ変換し、pixel寸法を返す。
 
@@ -84,12 +85,13 @@ def render_page(
         page_number (int): 1から始まる変換対象Page番号。
         output (Path): 変換結果を書き込むFile Path。
         dpi (int): PDF PageをRasterizeする解像度。
+        clip: 表示ページの左上原点によるleft、top、right、bottom (pt)。省略時は全体。
 
     Returns:
         tuple[int, int]: 生成したPNGの幅と高さをPixel単位で並べたTuple。
 
     Raises:
-        ValueError: `f'PDF page is out of range: {page_number}'`と判定した場合。
+        ValueError: ページ番号または切出し範囲が不正な場合。
     """
 
     logger.debug("PDF画像化開始 page=%d dpi=%d", page_number, dpi)
@@ -98,12 +100,23 @@ def render_page(
             raise ValueError(f"PDF page is out of range: {page_number}")
         page = pdf[page_number - 1]
         try:
-            bitmap = page.render(scale=dpi / 72)
+            crop = (0.0, 0.0, 0.0, 0.0)
+            if clip is not None:
+                left, top, right, bottom = clip
+                width, height = page.get_size()
+                if not (
+                    all(math.isfinite(value) for value in clip)
+                    and 0 <= left < right <= width
+                    and 0 <= top < bottom <= height
+                ):
+                    raise ValueError("PDF clip must be a finite region within the page")
+                crop = (left, height - bottom, width - right, top)
+            bitmap = page.render(scale=dpi / 72, crop=crop)
             try:
                 image = bitmap.to_pil()
                 try:
                     buffer = BytesIO()
-                    image.save(buffer, format="PNG")
+                    image.save(buffer, format="PNG", dpi=(dpi, dpi))
                     size = image.size
                     atomic_write_bytes(output, buffer.getvalue())
                 finally:

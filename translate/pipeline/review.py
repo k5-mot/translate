@@ -1,673 +1,513 @@
-"""独立した英語原文と日本語訳文を比較するReview Pipeline。"""
+"""原文と訳文をAgentで対応付け、指摘と修正提案を一覧化する。"""
 
-from __future__ import annotations
-
+import time
 from datetime import UTC, datetime
-from functools import partial
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
+    ArtifactStore,
     ProcessingLock,
-    cancel_processing,
-    canonical_hash,
     describe_artifact,
-    fail_task,
-    finish_task,
     load_model,
-    reusable_task,
-    sha256_file,
-    start_task,
-    task_artifacts,
     write_model,
 )
+from translate.adapters.llm import (
+    LLMClient,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    LLMOutputExceededError,
+)
+from translate.common.config import Config, validate_config
+from translate.common.logger import processing_logging
 from translate.models.artifacts import (
-    AlignmentResult,
-    CheckResult,
-    DoclingManifest,
-    InputFile,
-    LLMCallArtifact,
     LLMCallIndex,
-    LLMProgress,
     ReviewRecord,
     ReviewResult,
-    SplitManifest,
     TaskName,
-    UnpackManifest,
 )
 from translate.models.document import Document
-from translate.pipeline import InputError, resolve_processing_id
-from translate.tasks.converter.docling import convert as convert_with_docling
-from translate.tasks.converter.merge import merge
-from translate.tasks.converter.split import split
-from translate.tasks.converter.unpack import unpack
-from translate.tasks.preprocess.load import load
-from translate.tasks.preprocess.normalize import normalize
-from translate.tasks.preprocess.position import position
-from translate.tasks.publisher.report import create_report
-from translate.tasks.review.align import align
-from translate.tasks.review.check import check
-from translate.tasks.review.review import review
+from translate.models.review import AgentAction, AlignmentGroup, ReviewTarget
+from translate.pipeline import (
+    InputError,
+    PipelineRun,
+    agent_units,
+    choose_action,
+    completed_agent_calls,
+    observe_documents,
+    pdf_inputs,
+    resolve_processing_id,
+)
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from translate.common.config import Config
-    from translate.models.artifacts import LLMTaskName
-    from translate.models.review import ReviewTarget
+ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 
 
 class ReviewOutcome(BaseModel):
-    """CLIへ返すReview IDとReport path。"""
+    """UIへ返すReview IDと結果JSON。"""
 
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
-
     review_id: str
     processing_directory: Path
-    report: Path
+    result: Path
 
 
-def review_pdfs(
-    source: Path,
-    translation: Path,
-    config: Config,
-    *,
-    processing_id: str | None = None,
-    resume_id: str | None = None,
-    outputs: Path | None = None,
-) -> ReviewOutcome:
-    """二つのPDFを独立に前処理し、ALIGN、CHECK、REVIEW、REPORTを実行する。
+class ReviewPipeline:
+    """Reviewの設定と実行記録を保持し、入力検証から成果物公開まで進める。"""
 
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        processing_id (str | None): 新規処理またはResume対象の処理ID。
-        resume_id (str | None): Resume対象として指定された処理ID。
-        outputs (Path | None): 成果物Root Directory。
+    def __init__(self, config: Config, outputs: Path | None = None) -> None:
+        """外部接続の設定と成果物の基準ディレクトリを受け取る。
 
-    Returns:
-        ReviewOutcome: 二つのPDFを独立に前処理し、ALIGN、CHECK、REVIEW、REPORTを実行する。
+        Args:
+            config: 操作で使用する接続と処理上限。
+            outputs: 出力先。省略時は実行時の作業ディレクトリ内のoutputs。
+        """
+        self.config = config
+        self.outputs = outputs
 
-    Raises:
-        InputError: `processing ID already exists`と判定した場合。
-    """
+    def run(
+        self,
+        source: Path,
+        translation: Path,
+        *,
+        processing_id: str | None = None,
+        resume_id: str | None = None,
+    ) -> ReviewOutcome:
+        """二つのPDFを解析し、Agentが確定した一覧だけを公開する。
 
-    source = source.resolve()
-    translation = translation.resolve()
-    _validate_pdf(source, "source")
-    _validate_pdf(translation, "translation")
-    config.require_review()
-    review_id = resolve_processing_id(processing_id, resume_id)
-    outputs_root = (outputs or Path.cwd() / "outputs").resolve()
-    root = outputs_root / translation.stem / review_id
-    record_path = root / "review.json"
-    source_input = _input(source, "source")
-    translation_input = _input(translation, "translation")
-    with ProcessingLock(root):
-        if processing_id is not None and record_path.is_file():
-            raise InputError("processing ID already exists")
-        record = _review_record(
-            record_path,
-            review_id,
-            source_input,
-            translation_input,
-            resume_id is not None,
+        Args:
+            source: 英語原文PDF。
+            translation: 日本語訳文PDF。
+            processing_id: UIが発行した新規ID。
+            resume_id: 再開するID。
+
+        Returns:
+            処理IDと指摘・修正提案のJSON。
+
+        Raises:
+            InputError: 入力・IDまたは再開条件が不正な場合。
+            Exception: 前処理またはAgent操作が失敗した場合。
+        """
+        sources = {"source": source.resolve(), "translation": translation.resolve()}
+        inputs = pdf_inputs(sources)
+        validate_config(self.config, "review")
+        identifier = resolve_processing_id(processing_id, resume_id)
+        self.root = (
+            (self.outputs or Path.cwd() / "outputs").resolve()
+            / translation.stem
+            / identifier
         )
+        self.record_path = self.root / "review.json"
+        with ProcessingLock(self.root):
+            if self.record_path.is_file():
+                self.record = load_model(self.record_path, ReviewRecord)
+                if (
+                    not resume_id
+                    or self.record.review_id != identifier
+                    or self.record.source != inputs["source"]
+                    or self.record.translation != inputs["translation"]
+                ):
+                    raise InputError("Review ID already exists or resume inputs differ")
+            else:
+                if resume_id:
+                    raise InputError("Review to resume does not exist")
+                now = datetime.now(UTC)
+                self.record = ReviewRecord(
+                    review_id=identifier,
+                    status="processing",
+                    source=inputs["source"],
+                    translation=inputs["translation"],
+                    created_at=now,
+                    updated_at=now,
+                )
+                write_model(self.record_path, self.record)
+            with processing_logging(self.root, self.config.log_level):
+                try:
+                    self.execution = PipelineRun(
+                        ArtifactStore(self.record, self.record_path), self.config
+                    )
+                    documents, _ = self.execution.prepare_documents(sources)
+                    directory = self.root / "review" / "review"
+                    self.execution.perform_task(
+                        TaskName.REVIEW,
+                        documents,
+                        [
+                            (
+                                directory,
+                                ReviewAgent(
+                                    documents, directory, self.root, self.config
+                                ).run,
+                            )
+                        ],
+                    )
+                    self.record.status, self.record.error = "succeeded", None
+                    result_path = directory / "review.json"
+                    self.record.outputs = [describe_artifact(self.root, result_path)]
+                    self.record.updated_at = datetime.now(UTC)
+                    write_model(self.record_path, self.record)
+                except KeyboardInterrupt:
+                    ArtifactStore(self.record, self.record_path).cancel_processing()
+                    raise
+        return ReviewOutcome(
+            review_id=identifier, processing_directory=self.root, result=result_path
+        )
+
+
+class ReviewAgent:
+    """文書の確認状況を保持し、LLMが選んだ操作と終了条件を管理する。"""
+
+    def __init__(
+        self,
+        documents: dict[str, Document],
+        directory: Path,
+        root: Path,
+        config: Config,
+    ) -> None:
+        """比較対象と処理の依存関係を受け取る。
+
+        Args:
+            documents: 役割名で区別した比較対象文書。
+            directory: 操作の記録と最終一覧の保存先。
+            root: 処理IDの保存先。
+            config: LLMの接続と処理予算。
+        """
+        self.units = agent_units(documents)
+        self.directory = directory
+        self.config = config
+        self.root = root
+
+    def run(self) -> ReviewResult:
+        """文脈取得・対応付け・評価・再確認を選択し、全対象の確認後に一覧を保存する。
+
+        Returns:
+            対応関係、全指摘、修正提案および確認範囲。
+
+        Raises:
+            InputError: Agentの参照、操作、終了要求が不正な場合。
+            TimeoutError: 判断回数またはTask期限を超えた場合。
+            LLMError: 外部要求が失敗した場合。
+        """
+        self.client = LLMClient(self.config)
+        deadline = time.monotonic() + self.config.llm_task_deadline_seconds
+        self.client.deadline = deadline
         try:
-            return _review_locked(
-                source, translation, config, root, record_path, record
+            templates = Path(__file__).parents[1] / "templates"
+            rules = (templates / "review-rules.md").read_text(encoding="utf-8")
+            glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            self.review = ReviewTask(self.config, self.directory, rules, glossary)
+            self.result = ReviewResult()
+            self.conflicts: set[str] = set()
+            self.call_ids: list[str] = []
+            # 未対応群を置換しても、評価が参照するgroup IDを再利用しない。
+            self.group_number = 0
+
+            restored = completed_agent_calls(self.directory)
+            replayed: set[tuple[int, str]] = set()
+            for call in restored:
+                key = (call.round, call.operation)
+                if key in replayed:
+                    continue
+                replayed.add(key)
+                action = AgentAction.model_validate({"operation": call.operation})
+                for current in restored:
+                    if (current.round, current.operation) != key:
+                        continue
+                    for reference in current.target_ids:
+                        role, _, identifier = reference.partition(":")
+                        if call.operation == "match":
+                            action.references.setdefault(role, []).append(identifier)
+                        else:
+                            action.target_ids.append(identifier.split("/part-", 1)[0])
+                action.target_ids = list(dict.fromkeys(action.target_ids))
+                self._execute(action, call.round)
+
+            round_number = max((call.round for call in restored), default=-1) + 1
+            idle_steps = 0
+            observation: object = {"restored_operations": len(replayed)}
+            group_steps: dict[str, int] = {}
+            while True:
+                assigned = {
+                    role: {
+                        key
+                        for group in self.result.groups
+                        for key in getattr(group, f"{role}_ids")
+                    }
+                    for role in self.units
+                }
+                pending = {
+                    role: [key for key in values if key not in assigned[role]]
+                    for role, values in self.units.items()
+                }
+                unmatched = {
+                    role: [
+                        key
+                        for group in self.result.groups
+                        if group.kind != "matched"
+                        for key in getattr(group, f"{role}_ids")
+                    ]
+                    for role in self.units
+                }
+                unchecked = [
+                    target.id
+                    for target in self.result.targets
+                    if target.id not in self.result.reviewed_target_ids
+                ]
+                state: dict[str, object] = {
+                    "roles": list(self.units),
+                    "pending_counts": {role: len(ids) for role, ids in pending.items()},
+                    "pending_ids": {role: ids[:8] for role, ids in pending.items()},
+                    "unmatched_counts": {
+                        role: len(ids) for role, ids in unmatched.items()
+                    },
+                    "unmatched_ids": {role: ids[:8] for role, ids in unmatched.items()},
+                    "unchecked_count": len(unchecked),
+                    "unchecked_targets": unchecked[:32],
+                    "reviewed_targets": self.result.reviewed_target_ids[-8:],
+                    "conflicts": sorted(self.conflicts),
+                }
+                if idle_steps >= 12 or time.monotonic() >= deadline:
+                    raise TimeoutError("Review Agent reached its step or time limit")
+                try:
+                    action = choose_action(
+                        self.client,
+                        "Review English source against Japanese translation and propose edits.",
+                        state,
+                        observation,
+                        self.units,
+                    )
+                except LLMInputExceededError:
+                    observation = {
+                        "error": "Previous result exceeded the action input budget. No action was executed; choose from the current state."
+                    }
+                    idle_steps += 1
+                    continue
+                except LLMInvalidResponseError:
+                    observation = {
+                        "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
+                    }
+                    idle_steps += 1
+                    continue
+                if action.operation == "finish":
+                    if any(pending.values()) or unchecked or self.conflicts:
+                        raise InputError(
+                            "Review cannot finish with unconfirmed or conflicting targets"
+                        )
+                    break
+                progress_before = (
+                    sum(map(len, assigned.values()))
+                    + len(self.result.targets)
+                    + len(self.result.reviewed_target_ids)
+                )
+                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
+                if action.references or action.target_ids:
+                    group_key = repr((action.references, action.target_ids))
+                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
+                    if group_steps[group_key] > 12:
+                        raise TimeoutError(
+                            "Review target group exceeded 12 Agent steps"
+                        )
+                if action.operation in {"overview", "read", "search"}:
+                    visible = (
+                        {
+                            role: {
+                                key: self.units[role][key]
+                                for key in ids + unmatched[role]
+                            }
+                            for role, ids in pending.items()
+                        }
+                        if action.operation == "overview"
+                        else self.units
+                    )
+                    observation = observe_documents(
+                        action, visible, max(512, self.config.review_input_tokens // 3)
+                    )
+                else:
+                    try:
+                        observation = self._execute(action, round_number)
+                    except (LLMInputExceededError, LLMOutputExceededError):
+                        observation = {
+                            "error": "Selected scope exceeds the budget. Select fewer units or targets."
+                        }
+                    except InputError as error:
+                        observation = {
+                            "error": f"{error}. No action was executed; choose valid references from the current state."
+                        }
+                    except LLMInvalidResponseError:
+                        observation = {
+                            "error": "The operation returned an invalid response after its validation retry. "
+                            "No result was accepted. Inspect context and select a smaller or different group."
+                        }
+                    round_number += 1
+                observation = {"action": action.model_dump(), "result": observation}
+                progress_after = (
+                    sum(
+                        len(group.source_ids) + len(group.translation_ids)
+                        for group in self.result.groups
+                    )
+                    + len(self.result.targets)
+                    + len(self.result.reviewed_target_ids)
+                )
+                idle_steps = idle_steps + 1 if progress_after <= progress_before else 0
+            write_model(
+                self.directory / "call-index.json",
+                LLMCallIndex(
+                    task="REVIEW", call_ids=list(dict.fromkeys(self.call_ids))
+                ),
             )
-        except KeyboardInterrupt:
-            cancel_processing(record, record_path)
-            raise
+            write_model(self.directory / "review.json", self.result)
+            return self.result
+        finally:
+            self.client.client.close()
 
+    def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
+        """一つの許可済み操作を実行し、検証した結果だけを集約する。
 
-def _review_locked(
-    source: Path,
-    translation: Path,
-    config: Config,
-    root: Path,
-    record_path: Path,
-    record: ReviewRecord,
-) -> ReviewOutcome:
-    """排他取得後の比較Review Task列を実行する。
+        Args:
+            action: Agentが選択した対応付け・評価・再確認。
+            round_number: 保存Callの連番。
 
-    Args:
-        source (Path): 変換または検証対象の入力Source。
-        translation (Path): Review対象の日本語訳。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        root (Path): 対象処理の成果物Root Directory。
-        record_path (Path): 処理Record JSONのPath。
-        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
+        Returns:
+            次の判断へ渡す操作結果の概要。
 
-    Returns:
-        ReviewOutcome: 排他取得後の比較Review Task列を実行する。
-    """
-
-    template_root = Path(__file__).parents[1] / "templates"
-    rules = (template_root / "review-rules.md").read_text(encoding="utf-8")
-    glossary = (template_root / "glossary.csv").read_text(encoding="utf-8")
-
-    source_split_dir = root / "converter" / "source" / "split"
-    translation_split_dir = root / "converter" / "translation" / "split"
-    split_fp = canonical_hash(
-        {
-            "task": "SPLIT",
-            "source": record.source.sha256,
-            "translation": record.translation.sha256,
-            "pages": config.pdf_split_pages,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.SPLIT,
-        split_fp,
-        [source_split_dir, translation_split_dir],
-        partial(
-            _call_pair,
-            partial(split, source, source_split_dir, root, config.pdf_split_pages),
-            partial(
-                split, translation, translation_split_dir, root, config.pdf_split_pages
-            ),
-        ),
-    )
-    source_split = load_model(source_split_dir / "manifest.json", SplitManifest)
-    translation_split = load_model(
-        translation_split_dir / "manifest.json", SplitManifest
-    )
-
-    source_docling_dir = root / "converter" / "source" / "docling"
-    translation_docling_dir = root / "converter" / "translation" / "docling"
-    docling_fp = canonical_hash(
-        {
-            "task": "DOCLING",
-            "source": canonical_hash(source_split),
-            "translation": canonical_hash(translation_split),
-            "ocr": [
-                config.docling_ocr_preset,
-                config.docling_ocr_lang,
-                config.docling_force_ocr,
-            ],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DOCLING,
-        docling_fp,
-        [source_docling_dir, translation_docling_dir],
-        partial(
-            _call_pair,
-            partial(
-                convert_with_docling, source_split, source_docling_dir, root, config
-            ),
-            partial(
-                convert_with_docling,
-                translation_split,
-                translation_docling_dir,
-                root,
-                config,
-            ),
-        ),
-    )
-    source_docling = load_model(source_docling_dir / "manifest.json", DoclingManifest)
-    translation_docling = load_model(
-        translation_docling_dir / "manifest.json", DoclingManifest
-    )
-
-    source_unpack_dir = root / "converter" / "source" / "unpack"
-    translation_unpack_dir = root / "converter" / "translation" / "unpack"
-    unpack_fp = canonical_hash(
-        {
-            "task": "UNPACK",
-            "source": canonical_hash(source_docling),
-            "translation": canonical_hash(translation_docling),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.UNPACK,
-        unpack_fp,
-        [source_unpack_dir, translation_unpack_dir],
-        partial(
-            _call_pair,
-            partial(unpack, source_docling, source_unpack_dir, root),
-            partial(unpack, translation_docling, translation_unpack_dir, root),
-        ),
-    )
-    source_unpack = load_model(source_unpack_dir / "manifest.json", UnpackManifest)
-    translation_unpack = load_model(
-        translation_unpack_dir / "manifest.json", UnpackManifest
-    )
-
-    source_merge_dir = root / "converter" / "source" / "merge"
-    translation_merge_dir = root / "converter" / "translation" / "merge"
-    merge_fp = canonical_hash(
-        {
-            "task": "MERGE",
-            "source": canonical_hash(source_unpack),
-            "translation": canonical_hash(translation_unpack),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.MERGE,
-        merge_fp,
-        [source_merge_dir, translation_merge_dir],
-        partial(
-            _call_pair,
-            partial(merge, source_unpack, source, source_merge_dir, root),
-            partial(
-                merge, translation_unpack, translation, translation_merge_dir, root
-            ),
-        ),
-    )
-
-    source_document, translation_document = _preprocess_pair(
-        record,
-        record_path,
-        root,
-        source_merge_dir,
-        translation_merge_dir,
-    )
-
-    align_dir = root / "review" / "align"
-    align_fp = canonical_hash(
-        {
-            "task": "ALIGN",
-            "source": canonical_hash(source_document),
-            "translation": canonical_hash(translation_document),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.ALIGN,
-        align_fp,
-        [align_dir],
-        partial(_align_and_write, source_document, translation_document, align_dir),
-    )
-    alignment = load_model(align_dir / "alignment.json", AlignmentResult)
-
-    check_dir = root / "review" / "check"
-    check_fp = canonical_hash(
-        {
-            "task": "CHECK",
-            "targets": [item.model_dump(mode="json") for item in alignment.targets],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.CHECK,
-        check_fp,
-        [check_dir],
-        partial(_check_and_write, alignment.targets, check_dir),
-    )
-    checked = load_model(check_dir / "findings.json", CheckResult)
-
-    review_dir = root / "review" / "review"
-    review_fp = canonical_hash(
-        {
-            "task": "REVIEW",
-            "targets": [item.model_dump(mode="json") for item in alignment.targets],
-            "check": canonical_hash(checked),
-            "rules": canonical_hash(rules),
-            "glossary": canonical_hash(glossary),
-            "model": config.openai_review_model,
-            "thinking": "provider_default",
-            "repetition_penalty": 1.01,
-            "call_index": 2,
-        }
-    )
-    reused = reusable_task(record, TaskName.REVIEW, review_fp, root)
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.REVIEW,
-        review_fp,
-        [review_dir],
-        partial(
-            review,
-            alignment.targets,
-            checked,
-            review_dir,
-            root,
-            config,
-            rules,
-            glossary,
-        ),
-    )
-    _update_llm_progress(record, record_path, review_dir, "REVIEW", reused)
-    reviewed = load_model(review_dir / "review.json", ReviewResult)
-
-    report_dir = root / "publisher" / "report"
-    report_path = report_dir / "review.md"
-    report_fp = canonical_hash(
-        {
-            "task": "REPORT",
-            "alignment": canonical_hash(alignment),
-            "check": canonical_hash(checked),
-            "review": canonical_hash(reviewed),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.REPORT,
-        report_fp,
-        [report_dir],
-        partial(create_report, alignment, checked, reviewed, report_path),
-    )
-    record.status = "succeeded"
-    record.outputs = [describe_artifact(root, report_path)]
-    record.updated_at = datetime.now(UTC)
-    record.error = None
-    write_model(record_path, record)
-    return ReviewOutcome(
-        review_id=record.review_id,
-        processing_directory=root,
-        report=report_path,
-    )
-
-
-def _preprocess_pair(
-    record: ReviewRecord,
-    record_path: Path,
-    root: Path,
-    source_merge_dir: Path,
-    translation_merge_dir: Path,
-) -> tuple[Document, Document]:
-    """POSITION、NORMALIZE、LOADを原文と訳文の両方へ同じ順序で適用する。
-
-    Args:
-        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        source_merge_dir (Path): 原文側の統合済みDocument Directory。
-        translation_merge_dir (Path): 訳文側の統合済みDocument Directory。
-
-    Returns:
-        tuple[Document, Document]: POSITION、NORMALIZE、LOADを原文と訳文の両方へ同じ順序で適用する。
-    """
-
-    current_source = source_merge_dir / "document.json"
-    current_translation = translation_merge_dir / "document.json"
-    paths = {
-        "source": root / "preprocess" / "source",
-        "translation": root / "preprocess" / "translation",
-    }
-    for task, function, name in (
-        (TaskName.POSITION, position, "position"),
-        (TaskName.NORMALIZE, normalize, "normalize"),
-        (TaskName.LOAD, load, "load"),
-    ):
-        source_dir = paths["source"] / name
-        translation_dir = paths["translation"] / name
-        fingerprint = canonical_hash(
-            {
-                "task": task.value,
-                "source": sha256_file(current_source),
-                "translation": sha256_file(current_translation),
-                "schema": 2 if task == TaskName.LOAD else 1,
+        Raises:
+            InputError: 対象や結果の参照が不正な場合。
+        """
+        if action.operation == "match":
+            if set(action.references) - set(self.units):
+                raise InputError("Unknown Review role")
+            chosen = {role: action.references.get(role, []) for role in self.units}
+            if not any(chosen.values()) or sum(map(len, chosen.values())) > 32:
+                raise InputError("Review match requires 1 to 32 selected units")
+            for role, ids in chosen.items():
+                if len(ids) != len(set(ids)) or not set(ids).issubset(self.units[role]):
+                    raise InputError("Invalid Review correspondence reference")
+            for role, ids in chosen.items():
+                assigned = {
+                    key
+                    for group in self.result.groups
+                    if group.kind == "matched"
+                    for key in getattr(group, f"{role}_ids")
+                }
+                if assigned.intersection(ids):
+                    raise InputError(
+                        "Match requires units without a confirmed correspondence"
+                    )
+            call_id, response = self.review.match_documents(
+                {
+                    role: [self.units[role][key] for key in ids]
+                    for role, ids in chosen.items()
+                },
+                self.client,
+                round_number,
+            )
+            # 新しい結果の検証成功後に、再探索したIDだけを以前の未対応群から除く。
+            for group in self.result.groups:
+                if group.kind != "matched":
+                    group.source_ids = [
+                        key for key in group.source_ids if key not in chosen["source"]
+                    ]
+                    group.translation_ids = [
+                        key
+                        for key in group.translation_ids
+                        if key not in chosen["translation"]
+                    ]
+            self.result.groups = [
+                group
+                for group in self.result.groups
+                if group.source_ids or group.translation_ids
+            ]
+            first_new_group = len(self.result.groups)
+            for candidate in response.groups:
+                self.group_number += 1
+                group = AlignmentGroup(
+                    id=f"alignment-{self.group_number:06d}",
+                    **candidate.model_dump(),
+                )
+                self.result.groups.append(group)
+                if group.kind == "matched":
+                    translated = [
+                        self.units["translation"][key] for key in group.translation_ids
+                    ]
+                    self.result.targets.append(
+                        ReviewTarget(
+                            id=f"review/{group.id}",
+                            source="\n".join(
+                                self.units["source"][key].text("source")
+                                for key in group.source_ids
+                            ),
+                            translation="\n".join(
+                                unit.text("source") for unit in translated
+                            ),
+                            target_ids=group.translation_ids,
+                            spans=[span for unit in translated for span in unit.spans],
+                        )
+                    )
+            self.call_ids.append(call_id)
+            return {
+                "groups": [
+                    group.model_dump() for group in self.result.groups[first_new_group:]
+                ]
             }
-        )
-        _perform(
-            record,
-            record_path,
-            root,
-            task,
-            fingerprint,
-            [source_dir, translation_dir],
-            partial(
-                _call_pair,
-                partial(function, current_source, source_dir),
-                partial(function, current_translation, translation_dir),
-            ),
-        )
-        current_source = source_dir / "document.json"
-        current_translation = translation_dir / "document.json"
-    return (
-        load_model(current_source, Document),
-        load_model(current_translation, Document),
-    )
-
-
-def _perform[ResultT](
-    record: ReviewRecord,
-    record_path: Path,
-    root: Path,
-    task: TaskName,
-    fingerprint: str,
-    task_directories: list[Path],
-    action: Callable[[], ResultT],
-) -> ResultT | None:
-    """比較Reviewの一Taskを再利用または状態更新付きで実行する。
-
-    Args:
-        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
-        task_directories (list[Path]): 再利用判定用のTask Directory列。
-        action (Callable[[], ResultT]): Task本体として実行するCallable。
-
-    Returns:
-        ResultT | None: 比較Reviewの一Taskを再利用または状態更新付きで実行する。
-    """
-
-    if reusable_task(record, task, fingerprint, root):
-        return None
-    start_task(record, record_path, task, fingerprint)
-    try:
-        result = action()
-    except KeyboardInterrupt:
-        raise
-    except Exception as error:
-        fail_task(record, record_path, task, fingerprint, error)
-        raise
-    artifacts = [
-        artifact
-        for directory in task_directories
-        for artifact in task_artifacts(root, directory)
-    ]
-    finish_task(record, record_path, task, fingerprint, artifacts)
-    return result
-
-
-def _call_pair[FirstT, SecondT](
-    first: Callable[[], FirstT], second: Callable[[], SecondT]
-) -> tuple[FirstT, SecondT]:
-    """同じTaskの原文分岐と訳文分岐を順に実行する。
-
-    Args:
-        first (Callable[[], FirstT]): 原文側処理を実行するCallable。
-        second (Callable[[], SecondT]): 訳文側処理を実行するCallable。
-
-    Returns:
-        tuple[FirstT, SecondT]: 同じTaskの原文分岐と訳文分岐を順に実行する。
-    """
-
-    return first(), second()
-
-
-def _align_and_write(
-    source: Document,
-    translation: Document,
-    directory: Path,
-) -> AlignmentResult:
-    """ALIGN結果を専用directoryへ保存する。
-
-    Args:
-        source (Document): 変換または検証対象の入力Source。
-        translation (Document): Review対象の日本語訳。
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        AlignmentResult: ALIGN結果を専用directoryへ保存する。
-    """
-
-    result = align(source, translation)
-    write_model(directory / "alignment.json", result)
-    return result
-
-
-def _check_and_write(targets: list[ReviewTarget], directory: Path) -> CheckResult:
-    """CHECK結果を専用directoryへ保存する。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        CheckResult: CHECK結果を専用directoryへ保存する。
-    """
-
-    result = check(targets)
-    write_model(directory / "findings.json", result)
-    return result
-
-
-def _input(path: Path, role: str) -> InputFile:
-    """指定PDFのResume比較用入力情報を作る。
-
-    Args:
-        path (Path): Resume比較用情報を作成するPDFのPath。
-        role (str): 入力または比較要素のRole。
-
-    Returns:
-        InputFile: 指定PDFのResume比較用入力情報を作る。
-    """
-
-    return InputFile(
-        role=role,
-        logical_path=path.name,
-        sha256=sha256_file(path),
-        size_bytes=path.stat().st_size,
-    )
-
-
-def _review_record(
-    path: Path,
-    review_id: str,
-    source: InputFile,
-    translation: InputFile,
-    resuming: bool,
-) -> ReviewRecord:
-    """新規Review記録を作るか、二入力一致後に保存済み記録を返す。
-
-    Args:
-        path (Path): Review Recordを書き込むPath。
-        review_id (str): 作成またはResumeするReview処理ID。
-        source (InputFile): 変換または検証対象の入力Source。
-        translation (InputFile): Review対象の日本語訳。
-        resuming (bool): 既存処理をResumeしているかどうか。
-
-    Returns:
-        ReviewRecord: 新規Review記録を作るか、二入力一致後に保存済み記録を返す。
-
-    Raises:
-        InputError: `resume inputs do not match the saved review`、`review to resume does not
-            exist`のいずれかと判定した場合。
-    """
-
-    if path.is_file():
-        record = load_model(path, ReviewRecord)
+        if action.operation not in {"evaluate", "recheck"}:
+            raise InputError("Unsupported Review Agent operation")
+        selected = [
+            target for target in self.result.targets if target.id in action.target_ids
+        ]
         if (
-            record.review_id != review_id
-            or record.source != source
-            or record.translation != translation
+            not selected
+            or len(action.target_ids) > 32
+            or len(selected) != len(action.target_ids)
         ):
-            raise InputError("resume inputs do not match the saved review")
-        return record
-    if resuming:
-        raise InputError("review to resume does not exist")
-    now = datetime.now(UTC)
-    record = ReviewRecord(
-        review_id=review_id,
-        status="processing",
-        source=source,
-        translation=translation,
-        created_at=now,
-        updated_at=now,
-    )
-    write_model(path, record)
-    return record
-
-
-def _validate_pdf(path: Path, role: str) -> None:
-    """Review入力roleを存在するPDF fileへ限定する。
-
-    Args:
-        path (Path): 入力条件を検証するPDFのPath。
-        role (str): 入力または比較要素のRole。
-
-    Raises:
-        InputError: `f'{role} must be a PDF file'`と判定した場合。
-    """
-
-    if not path.is_file() or path.suffix.casefold() != ".pdf":
-        raise InputError(f"{role} must be a PDF file")
-
-
-def _update_llm_progress(
-    record: ReviewRecord,
-    record_path: Path,
-    task_directory: Path,
-    task: LLMTaskName,
-    reused: bool,
-) -> None:
-    """Call Artifactを正本としてREVIEWの集約進捗を再計算する。
-
-    Args:
-        record (ReviewRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        task_directory (Path): 対象Taskの成果物Directory。
-        task (LLMTaskName): 状態またはCallを記録するTask名。
-        reused (bool): LLM Callを再利用できたかどうか。
-    """
-
-    calls = [
-        load_model(path, LLMCallArtifact)
-        for path in sorted((task_directory / "calls").glob("*/call.json"))
-    ]
-    index_path = task_directory / "call-index.json"
-    indexed = (
-        set(load_model(index_path, LLMCallIndex).call_ids)
-        if index_path.is_file()
-        else {call.call_id for call in calls}
-    )
-    active = [call for call in calls if call.call_id in indexed]
-    state = next(item for item in record.tasks if item.task.value == task)
-    reused_calls = (
-        len(active)
-        if reused
-        else sum(call.started_at < state.started_at for call in active)
-    )
-    progress = LLMProgress(
-        task=task,
-        planned_calls=len(active),
-        completed_calls=len(active),
-        reused_calls=reused_calls,
-        failed_calls=0,
-        updated_at=datetime.now(UTC),
-    )
-    record.llm_progress = [item for item in record.llm_progress if item.task != task]
-    record.llm_progress.append(progress)
-    record.updated_at = datetime.now(UTC)
-    write_model(record_path, record)
+            raise InputError("Invalid Review evaluation target")
+        if action.operation == "evaluate" and set(action.target_ids).intersection(
+            self.result.reviewed_target_ids
+        ):
+            raise InputError("Use recheck to revisit a completed target")
+        evaluated = self.review.run(
+            selected,
+            self.root,
+            operation=action.operation,
+            round_number=round_number,
+            publish=False,
+            client=self.client,
+            span_owners={
+                span.id: key
+                for target in selected
+                for key in target.target_ids
+                for span in self.units["translation"][key].spans
+            },
+        )
+        target_units = {key for target in selected for key in target.target_ids}
+        self.result.findings = [
+            finding
+            for finding in self.result.findings
+            if not target_units.intersection(finding.target_ids)
+        ] + evaluated.findings
+        self.result.revisions = [
+            revision
+            for revision in self.result.revisions
+            if revision.target_id not in target_units
+        ] + evaluated.revisions
+        self.result.reviewed_target_ids = list(
+            dict.fromkeys([*self.result.reviewed_target_ids, *action.target_ids])
+        )
+        self.conflicts.difference_update(action.target_ids)
+        edits: dict[str, set[str]] = {}
+        for revision in evaluated.revisions:
+            for edit in revision.edits:
+                edits.setdefault(edit.span_id, set()).add(edit.text)
+        if any(len(texts) > 1 for texts in edits.values()):
+            self.conflicts.update(action.target_ids)
+        self.call_ids.extend(
+            call.call_id
+            for call in completed_agent_calls(self.directory)
+            if call.round == round_number and call.operation == action.operation
+        )
+        return {
+            "findings": [item.model_dump() for item in evaluated.findings[:5]],
+            "revisions": [item.model_dump() for item in evaluated.revisions[:5]],
+            "total_findings": len(evaluated.findings),
+            "total_revisions": len(evaluated.revisions),
+            "conflicts": sorted(self.conflicts),
+        }

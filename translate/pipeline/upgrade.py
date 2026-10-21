@@ -1,1193 +1,492 @@
-"""英文二版と既存日本語版から日本語新版を生成するUpgrade Pipeline。"""
+"""英文二版と旧訳をAgentで比較し、変更箇所と修正提案を公開する。"""
 
-from __future__ import annotations
-
+import time
 from datetime import UTC, datetime
-from functools import partial
+from importlib import import_module
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
-from translate.artifact_store import (
+from translate.adapters.artifact_store import (
+    ArtifactStore,
     ProcessingLock,
-    cancel_processing,
-    canonical_hash,
     describe_artifact,
-    fail_task,
-    finish_task,
     load_model,
-    reusable_task,
-    sha256_file,
-    start_task,
-    task_artifacts,
     write_model,
 )
-from translate.models.artifacts import (
-    AlignmentResult,
-    CheckResult,
-    CoverResult,
-    DoclingManifest,
-    InputFile,
-    LintResult,
-    LLMCallArtifact,
-    LLMCallIndex,
-    LLMProgress,
-    ProcessingError,
-    ReviewResult,
-    SplitManifest,
-    TaskName,
-    UnpackManifest,
+from translate.adapters.llm import (
+    LLMClient,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    LLMOutputExceededError,
 )
+from translate.common.config import Config, validate_config
+from translate.common.logger import processing_logging
+from translate.models.artifacts import LLMCallIndex, TaskName
 from translate.models.document import Document
-from translate.models.upgrade import ReuseReport, UpgradePlan, UpgradeRecord
-from translate.pipeline import InputError, resolve_processing_id
-from translate.pipeline.translate import PipelineError
-from translate.tasks.converter.docling import convert as convert_with_docling
-from translate.tasks.converter.merge import merge
-from translate.tasks.converter.split import split
-from translate.tasks.converter.unpack import unpack
-from translate.tasks.preprocess.load import load
-from translate.tasks.preprocess.normalize import normalize
-from translate.tasks.preprocess.position import position
-from translate.tasks.preprocess.structure import structure
-from translate.tasks.publisher.cover import create_cover
-from translate.tasks.publisher.docx import publish
-from translate.tasks.publisher.lint import lint
-from translate.tasks.publisher.markdown import convert_document
-from translate.tasks.review.align import align
-from translate.tasks.review.check import check, targets_from_document
-from translate.tasks.review.diff import diff
-from translate.tasks.review.fix import apply_revisions
-from translate.tasks.review.review import review
-from translate.tasks.translation.reuse import previous_context, reuse
-from translate.tasks.translation.translate import translate as translate_with_llm
-from translate.tasks.translation.translate_lite import translate_lite
+from translate.models.review import AgentAction
+from translate.models.upgrade import (
+    DiffChange,
+    UpgradePlan,
+    UpgradeRecord,
+    VersionChange,
+)
+from translate.pipeline import (
+    InputError,
+    PipelineRun,
+    agent_units,
+    choose_action,
+    completed_agent_calls,
+    observe_documents,
+    pdf_inputs,
+    resolve_processing_id,
+)
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
-
-    from translate.common.config import Config
-    from translate.models.artifacts import LLMTaskName
-    from translate.models.review import ReviewTarget
-
-_Role = Literal["source-v1", "source-v2", "translation-v1"]
+DiffTask = import_module("translate.tasks.21_diff").DiffTask
 
 
 class UpgradeOutcome(BaseModel):
-    """CLIへ返すUpgrade IDと最終DOCX path。"""
+    """UIへ返すUpgrade IDと変更一覧JSON。"""
 
     model_config = ConfigDict(extra="ignore", arbitrary_types_allowed=True)
-
     upgrade_id: str
     processing_directory: Path
-    docx: Path
+    plan: Path
 
 
-def upgrade_pdfs(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    config: Config,
-    *,
-    backend: str = "llm",
-    processing_id: str | None = None,
-    resume_id: str | None = None,
-    outputs: Path | None = None,
-) -> UpgradeOutcome:
-    """三つのPDFを比較し、再利用可能な既存訳を保った日本語v2を生成する。
+class UpgradePipeline:
+    """Upgradeの設定と実行記録を保持し、入力検証から成果物公開まで進める。"""
 
-    Args:
-        source_v1 (Path): 比較基準にする英文v1。
-        source_v2 (Path): 変更を反映する英文v2。
-        translation_v1 (Path): 比較基準にする日本語v1。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        backend (str): 翻訳に使用するBackend名。
-        processing_id (str | None): 新規処理またはResume対象の処理ID。
-        resume_id (str | None): Resume対象として指定された処理ID。
-        outputs (Path | None): 成果物Root Directory。
+    def __init__(self, config: Config, outputs: Path | None = None) -> None:
+        """外部接続の設定と成果物の基準ディレクトリを受け取る。
 
-    Returns:
-        UpgradeOutcome: 三つのPDFを比較し、再利用可能な既存訳を保った日本語v2を生成する。
+        Args:
+            config: 操作で使用する接続と処理上限。
+            outputs: 出力先。省略時は実行時の作業ディレクトリ内のoutputs。
+        """
+        self.config = config
+        self.outputs = outputs
 
-    Raises:
-        InputError: `backend must be llm or libretranslate`、`processing ID already
-            exists`のいずれかと判定した場合。
-    """
+    def run(
+        self,
+        source_v1: Path,
+        source_v2: Path,
+        translation_v1: Path,
+        *,
+        processing_id: str | None = None,
+        resume_id: str | None = None,
+    ) -> UpgradeOutcome:
+        """三つのPDFを比較し、文書へ適用せず変更と提案の一覧を公開する。
 
-    source_v1 = source_v1.resolve()
-    source_v2 = source_v2.resolve()
-    translation_v1 = translation_v1.resolve()
-    for path, role in (
-        (source_v1, "source_v1"),
-        (source_v2, "source_v2"),
-        (translation_v1, "translation_v1"),
-    ):
-        _validate_pdf(path, role)
-    if backend not in {"llm", "libretranslate"}:
-        raise InputError("backend must be llm or libretranslate")
-    config.require_translate(backend)
-    upgrade_id = resolve_processing_id(processing_id, resume_id)
-    outputs_root = (outputs or Path.cwd() / "outputs").resolve()
-    root = outputs_root / source_v2.stem / upgrade_id
-    record_path = root / "upgrade.json"
-    inputs = (
-        _input(source_v1, "source_v1"),
-        _input(source_v2, "source_v2"),
-        _input(translation_v1, "translation_v1"),
-    )
-    with ProcessingLock(root):
-        if processing_id is not None and record_path.is_file():
-            raise InputError("processing ID already exists")
-        record = _upgrade_record(
-            record_path,
-            upgrade_id,
-            *inputs,
-            backend,
-            resume_id is not None,
+        Args:
+            source_v1: 英文旧版PDF。
+            source_v2: 英文新版PDF。
+            translation_v1: 日本語旧版PDF。
+            processing_id: 新規処理ID。
+            resume_id: 再開対象ID。
+
+        Returns:
+            処理IDと変更・修正提案のJSON。
+
+        Raises:
+            InputError: 入力・ID・再開条件が不正な場合。
+            Exception: 前処理またはAgent操作の失敗。
+        """
+        sources = {
+            "source_v1": source_v1.resolve(),
+            "source_v2": source_v2.resolve(),
+            "translation_v1": translation_v1.resolve(),
+        }
+        inputs = pdf_inputs(sources)
+        validate_config(self.config, "upgrade")
+        identifier = resolve_processing_id(processing_id, resume_id)
+        self.root = (
+            (self.outputs or Path.cwd() / "outputs").resolve()
+            / source_v2.stem
+            / identifier
         )
+        self.record_path = self.root / "upgrade.json"
+        with ProcessingLock(self.root):
+            if self.record_path.is_file():
+                self.record = load_model(self.record_path, UpgradeRecord)
+                if (
+                    not resume_id
+                    or self.record.upgrade_id != identifier
+                    or any(
+                        getattr(self.record, role) != item
+                        for role, item in inputs.items()
+                    )
+                ):
+                    raise InputError(
+                        "Upgrade ID already exists or resume inputs differ"
+                    )
+            else:
+                if resume_id:
+                    raise InputError("Upgrade to resume does not exist")
+                now = datetime.now(UTC)
+                self.record = UpgradeRecord(
+                    upgrade_id=identifier,
+                    status="processing",
+                    source_v1=inputs["source_v1"],
+                    source_v2=inputs["source_v2"],
+                    translation_v1=inputs["translation_v1"],
+                    created_at=now,
+                    updated_at=now,
+                )
+                write_model(self.record_path, self.record)
+            with processing_logging(self.root, self.config.log_level):
+                try:
+                    self.execution = PipelineRun(
+                        ArtifactStore(self.record, self.record_path), self.config
+                    )
+                    documents, _ = self.execution.prepare_documents(sources)
+                    directory = self.root / "upgrade" / "diff"
+                    self.execution.perform_task(
+                        TaskName.DIFF,
+                        documents,
+                        [
+                            (
+                                directory,
+                                UpgradeAgent(documents, directory, self.config).run,
+                            )
+                        ],
+                    )
+                    result_path = directory / "plan.json"
+                    self.record.status, self.record.error = "succeeded", None
+                    self.record.outputs = [describe_artifact(self.root, result_path)]
+                    self.record.updated_at = datetime.now(UTC)
+                    write_model(self.record_path, self.record)
+                except KeyboardInterrupt:
+                    ArtifactStore(self.record, self.record_path).cancel_processing()
+                    raise
+        return UpgradeOutcome(
+            upgrade_id=identifier, processing_directory=self.root, plan=result_path
+        )
+
+
+class UpgradeAgent:
+    """文書の確認状況を保持し、LLMが選んだ操作と終了条件を管理する。"""
+
+    def __init__(
+        self, documents: dict[str, Document], directory: Path, config: Config
+    ) -> None:
+        """比較対象と処理の依存関係を受け取る。
+
+        Args:
+            documents: 役割名で区別した比較対象文書。
+            directory: 操作の記録と最終一覧の保存先。
+            config: LLMの接続と処理予算。
+        """
+        self.units = agent_units(documents)
+        self.directory = directory
+        self.config = config
+
+    def run(self) -> UpgradePlan:
+        """Agentが対象と比較・再確認を選択し、英文の全範囲を確認する。
+
+        無効な対象指定は確定済み対応を変えずに理由を返し、既存のstep上限内で選び直す。
+
+        Returns:
+            未変更を除く変更一覧と全確認範囲。
+
+        Raises:
+            InputError: 復元したCallの対応または終了条件が不正な場合。
+            TimeoutError: 判断回数またはTask期限を超えた場合。
+            LLMError: 外部要求が失敗した場合。
+        """
+        self.client = LLMClient(self.config)
+        deadline = time.monotonic() + self.config.llm_task_deadline_seconds
+        self.client.deadline = deadline
         try:
-            return _upgrade_locked(
-                {
-                    "source-v1": source_v1,
-                    "source-v2": source_v2,
-                    "translation-v1": translation_v1,
-                },
-                config,
-                root,
-                record_path,
-                record,
-            )
-        except KeyboardInterrupt:
-            cancel_processing(record, record_path)
-            raise
+            templates = Path(__file__).parents[1] / "templates"
+            rules = (templates / "review-rules.md").read_text(encoding="utf-8")
+            glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            self.diff = DiffTask(self.client, self.directory, rules, glossary)
+            self.confirmed: list[tuple[str, DiffChange]] = []
+            self.call_ids: list[str] = []
 
-
-def _upgrade_locked(
-    files: dict[_Role, Path],
-    config: Config,
-    root: Path,
-    record_path: Path,
-    record: UpgradeRecord,
-) -> UpgradeOutcome:
-    """排他取得後のUpgrade Task列を実行する。
-
-    Args:
-        files (dict[_Role, Path]): Role別の入力File。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        root (Path): 対象処理の成果物Root Directory。
-        record_path (Path): 処理Record JSONのPath。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-
-    Returns:
-        UpgradeOutcome: 排他取得後のUpgrade Task列を実行する。
-    """
-
-    template_root = Path(__file__).parents[1] / "templates"
-    structure_rules = (template_root / "structure-rules.md").read_text(encoding="utf-8")
-    translation_rules = (template_root / "translation-rules.md").read_text(
-        encoding="utf-8"
-    )
-    review_rules = (template_root / "review-rules.md").read_text(encoding="utf-8")
-    glossary = (template_root / "glossary.csv").read_text(encoding="utf-8")
-
-    merge_dirs = _convert_inputs(files, config, root, record_path, record)
-    loaded = _preprocess_inputs(merge_dirs, root, record_path, record)
-    source_v1 = loaded["source-v1"]
-    source_v2 = loaded["source-v2"]
-    translation_v1 = loaded["translation-v1"]
-
-    structure_dir = root / "preprocess" / "source-v2" / "structure"
-    structure_fp = canonical_hash(
-        {
-            "task": "STRUCTURE",
-            "document": canonical_hash(source_v2),
-            "source": record.source_v2.sha256,
-            "rules": canonical_hash(structure_rules),
-            "model": config.openai_structure_model,
-            "mode": config.llm_structured_output_mode,
-            "thinking": "provider_default",
-            "repetition_penalty": 1.01,
-            "call_index": 3,
-        }
-    )
-    reused_structure = reusable_task(record, TaskName.STRUCTURE, structure_fp, root)
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.STRUCTURE,
-        structure_fp,
-        [structure_dir],
-        partial(
-            structure,
-            source_v2,
-            files["source-v2"],
-            structure_dir,
-            root,
-            config,
-            structure_rules,
-        ),
-    )
-    _update_llm_progress(
-        record, record_path, structure_dir, "STRUCTURE", reused_structure
-    )
-    structured_v2 = load_model(structure_dir / "document.json", Document)
-
-    align_dir = root / "upgrade" / "align"
-    align_fp = canonical_hash(
-        {
-            "task": "ALIGN",
-            "source": canonical_hash(source_v1),
-            "translation": canonical_hash(translation_v1),
-            "schema": 1,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.ALIGN,
-        align_fp,
-        [align_dir],
-        partial(_align_and_write, source_v1, translation_v1, align_dir),
-    )
-    alignment = load_model(align_dir / "result.json", AlignmentResult)
-
-    diff_dir = root / "upgrade" / "diff"
-    diff_fp = canonical_hash(
-        {
-            "task": "DIFF",
-            "source_v1": canonical_hash(source_v1),
-            "source_v2": canonical_hash(source_v2),
-            "alignment": canonical_hash(alignment),
-            "schema": 1,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DIFF,
-        diff_fp,
-        [diff_dir],
-        partial(diff, source_v1, source_v2, translation_v1, alignment, diff_dir),
-    )
-    plan = load_model(diff_dir / "plan.json", UpgradePlan)
-
-    reuse_dir = root / "upgrade" / "reuse"
-    reuse_fp = canonical_hash(
-        {
-            "task": "REUSE",
-            "document": canonical_hash(structured_v2),
-            "translation": canonical_hash(translation_v1),
-            "plan": canonical_hash(plan),
-            "schema": 1,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.REUSE,
-        reuse_fp,
-        [reuse_dir],
-        partial(reuse, structured_v2, translation_v1, plan, reuse_dir),
-    )
-    document = load_model(reuse_dir / "document.json", Document)
-    reuse_report = load_model(reuse_dir / "report.json", ReuseReport)
-    context = previous_context(plan, source_v1, source_v2, translation_v1)
-    document = _translate_changes(
-        document,
-        reuse_report,
-        context,
-        config,
-        record,
-        record_path,
-        root,
-        translation_rules,
-        glossary,
-    )
-    document = _review_changes(
-        document,
-        set(reuse_report.translation_target_ids),
-        config,
-        record,
-        record_path,
-        root,
-        review_rules,
-        glossary,
-    )
-    return _publish(
-        document,
-        files["source-v2"],
-        merge_dirs["source-v2"],
-        config,
-        record,
-        record_path,
-        root,
-        template_root,
-    )
-
-
-def _convert_inputs(
-    files: dict[_Role, Path],
-    config: Config,
-    root: Path,
-    record_path: Path,
-    record: UpgradeRecord,
-) -> dict[_Role, Path]:
-    """三入力へconverter Taskを同じ順序で適用する。
-
-    Args:
-        files (dict[_Role, Path]): Role別の入力File。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        root (Path): 対象処理の成果物Root Directory。
-        record_path (Path): 処理Record JSONのPath。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-
-    Returns:
-        dict[_Role, Path]: 三入力へconverter Taskを同じ順序で適用する。
-    """
-
-    inputs = {
-        "source-v1": record.source_v1,
-        "source-v2": record.source_v2,
-        "translation-v1": record.translation_v1,
-    }
-    split_dirs = {role: root / "converter" / role / "split" for role in files}
-    split_fp = canonical_hash(
-        {
-            "task": "SPLIT",
-            "inputs": {role: value.sha256 for role, value in inputs.items()},
-            "pages": config.pdf_split_pages,
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.SPLIT,
-        split_fp,
-        list(split_dirs.values()),
-        partial(
-            _call_all,
-            [
-                partial(
-                    split, files[role], split_dirs[role], root, config.pdf_split_pages
+            restored = completed_agent_calls(self.directory)
+            for call in restored:
+                action = AgentAction.model_validate({"operation": call.operation})
+                for reference in call.target_ids:
+                    role, _, identifier = reference.partition(":")
+                    action.references.setdefault(role, []).append(identifier)
+                self._execute(action, call.round)
+            round_number = max((call.round for call in restored), default=-1) + 1
+            idle_steps = 0
+            group_steps: dict[str, int] = {}
+            one_sided_failures = {"source_v1": 0, "source_v2": 0}
+            max_reference_ids = 32
+            observation: object = {"restored_operations": len(restored)}
+            while True:
+                covered = {
+                    role: {
+                        key
+                        for _, item in self.confirmed
+                        for key in getattr(item, f"{role}_ids")
+                    }
+                    for role in ("source_v1", "source_v2")
+                }
+                pending = {
+                    role: [key for key in self.units[role] if key not in ids]
+                    for role, ids in covered.items()
+                }
+                if not any(pending.values()) and idle_steps >= 12:
+                    break
+                # 片側だけが残り、比較失敗または無進捗が続いた場合は対応未確認で記録する。
+                if (
+                    (one_sided_failures["source_v1"] >= 3 or idle_steps >= 12)
+                    and not pending["source_v2"]
+                    and pending["source_v1"]
+                ):
+                    self.confirmed.extend(
+                        (
+                            f"unmatched-v1-{round_number}-{index}",
+                            DiffChange(
+                                kind="deleted",
+                                source_v1_ids=[identifier],
+                                summary="新版に対応する英文はありません。旧訳との対応は未確認です。",
+                            ),
+                        )
+                        for index, identifier in enumerate(pending["source_v1"], 1)
+                    )
+                    one_sided_failures["source_v1"] = 0
+                    continue
+                if (
+                    (one_sided_failures["source_v2"] >= 3 or idle_steps >= 12)
+                    and not pending["source_v1"]
+                    and pending["source_v2"]
+                ):
+                    self.confirmed.extend(
+                        (
+                            f"unmatched-v2-{round_number}-{index}",
+                            DiffChange(
+                                kind="added",
+                                source_v2_ids=[identifier],
+                                summary="旧版に対応する英文はありません。旧訳との対応は未確認です。",
+                            ),
+                        )
+                        for index, identifier in enumerate(pending["source_v2"], 1)
+                    )
+                    one_sided_failures["source_v2"] = 0
+                    continue
+                assigned_translation = {
+                    key for _, item in self.confirmed for key in item.translation_v1_ids
+                }
+                state: dict[str, object] = {
+                    "roles": list(self.units),
+                    "pending_counts": {role: len(ids) for role, ids in pending.items()},
+                    "pending_ids": {role: ids[:8] for role, ids in pending.items()},
+                    "translation_candidates": [
+                        key
+                        for key in self.units["translation_v1"]
+                        if key not in assigned_translation
+                    ][:8],
+                    "confirmed_count": len(self.confirmed),
+                    "max_reference_ids": max_reference_ids,
+                }
+                if idle_steps >= 36 or time.monotonic() >= deadline:
+                    raise TimeoutError("Upgrade Agent reached its step or time limit")
+                try:
+                    action = choose_action(
+                        self.client,
+                        "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
+                        state,
+                        observation,
+                        self.units,
+                    )
+                except LLMInputExceededError:
+                    observation = {
+                        "error": "Previous result exceeded the action input budget. No action was executed; choose from the current state."
+                    }
+                    idle_steps += 1
+                    continue
+                except LLMInvalidResponseError:
+                    observation = {
+                        "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
+                    }
+                    idle_steps += 1
+                    continue
+                if action.operation == "finish":
+                    if any(pending.values()):
+                        raise InputError(
+                            "Upgrade cannot finish with unconfirmed English units"
+                        )
+                    break
+                before = sum(map(len, covered.values()))
+                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
+                if action.references:
+                    group_key = repr(action.references)
+                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
+                    if group_steps[group_key] > 12:
+                        raise TimeoutError(
+                            "Upgrade target group exceeded 12 Agent steps"
+                        )
+                if action.operation in {"overview", "read", "search"}:
+                    visible = (
+                        {
+                            role: {
+                                key: unit
+                                for key, unit in values.items()
+                                if key
+                                not in (
+                                    assigned_translation
+                                    if role == "translation_v1"
+                                    else covered[role]
+                                )
+                            }
+                            for role, values in self.units.items()
+                        }
+                        if action.operation == "overview"
+                        else self.units
+                    )
+                    observation = observe_documents(
+                        action, visible, max(512, self.config.review_input_tokens // 3)
+                    )
+                else:
+                    try:
+                        observation = self._execute(action, round_number)
+                    except (LLMInputExceededError, LLMOutputExceededError):
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count <= 2:
+                            raise InputError(
+                                "The minimum two-unit DIFF scope exceeds the input/output budget"
+                            ) from None
+                        max_reference_ids = max(
+                            2, min(max_reference_ids - 1, selected_count // 2)
+                        )
+                        observation = {
+                            "error": "Selected scope exceeds the budget. "
+                            f"Select at most {max_reference_ids} document units."
+                        }
+                    except LLMInvalidResponseError:
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 2:
+                            max_reference_ids = max(
+                                2, min(max_reference_ids - 1, selected_count // 2)
+                            )
+                        for role, opposite in (
+                            ("source_v1", "source_v2"),
+                            ("source_v2", "source_v1"),
+                        ):
+                            selected = set(action.references.get(role, []))
+                            if (
+                                selected
+                                and selected.issubset(pending[role])
+                                and not pending[opposite]
+                            ):
+                                one_sided_failures[role] += 1
+                        observation = {
+                            "error": "The comparison returned an invalid response after its validation retry. "
+                            "No result was accepted. "
+                            + (
+                                f"Select at most {max_reference_ids} document units."
+                                if selected_count > 2
+                                else "Select a different or smaller group."
+                            )
+                        }
+                    except InputError as error:
+                        observation = {"error": str(error)}
+                    else:
+                        one_sided_failures = {"source_v1": 0, "source_v2": 0}
+                    round_number += 1
+                observation = {"action": action.model_dump(), "result": observation}
+                after = sum(
+                    len(item.source_v1_ids) + len(item.source_v2_ids)
+                    for _, item in self.confirmed
                 )
-                for role in files
-            ],
-        ),
-    )
-    splits = {
-        role: load_model(directory / "manifest.json", SplitManifest)
-        for role, directory in split_dirs.items()
-    }
-
-    docling_dirs = {role: root / "converter" / role / "docling" for role in files}
-    docling_fp = canonical_hash(
-        {
-            "task": "DOCLING",
-            "inputs": {role: canonical_hash(value) for role, value in splits.items()},
-            "url": config.docling_server_url,
-            "ocr": [
-                config.docling_ocr_preset,
-                config.docling_ocr_lang,
-                config.docling_force_ocr,
-            ],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DOCLING,
-        docling_fp,
-        list(docling_dirs.values()),
-        partial(
-            _call_all,
-            [
-                partial(
-                    convert_with_docling,
-                    splits[role],
-                    docling_dirs[role],
-                    root,
-                    config,
-                )
-                for role in files
-            ],
-        ),
-    )
-    docling = {
-        role: load_model(directory / "manifest.json", DoclingManifest)
-        for role, directory in docling_dirs.items()
-    }
-
-    unpack_dirs = {role: root / "converter" / role / "unpack" for role in files}
-    unpack_fp = canonical_hash(
-        {
-            "task": "UNPACK",
-            "inputs": {role: canonical_hash(value) for role, value in docling.items()},
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.UNPACK,
-        unpack_fp,
-        list(unpack_dirs.values()),
-        partial(
-            _call_all,
-            [partial(unpack, docling[role], unpack_dirs[role], root) for role in files],
-        ),
-    )
-    unpacked = {
-        role: load_model(directory / "manifest.json", UnpackManifest)
-        for role, directory in unpack_dirs.items()
-    }
-
-    merge_dirs = {role: root / "converter" / role / "merge" for role in files}
-    merge_fp = canonical_hash(
-        {
-            "task": "MERGE",
-            "inputs": {role: canonical_hash(value) for role, value in unpacked.items()},
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.MERGE,
-        merge_fp,
-        list(merge_dirs.values()),
-        partial(
-            _call_all,
-            [
-                partial(
-                    merge,
-                    unpacked[role],
-                    files[role],
-                    merge_dirs[role],
-                    root,
-                )
-                for role in files
-            ],
-        ),
-    )
-    return merge_dirs
-
-
-def _preprocess_inputs(
-    merge_dirs: dict[_Role, Path],
-    root: Path,
-    record_path: Path,
-    record: UpgradeRecord,
-) -> dict[_Role, Document]:
-    """三入力へ決定的な前処理を同じ順序で適用する。
-
-    Args:
-        merge_dirs (dict[_Role, Path]): Role別の統合済みDocument Directory。
-        root (Path): 対象処理の成果物Root Directory。
-        record_path (Path): 処理Record JSONのPath。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-
-    Returns:
-        dict[_Role, Document]: 三入力へ決定的な前処理を同じ順序で適用する。
-    """
-
-    current = {
-        role: directory / "document.json" for role, directory in merge_dirs.items()
-    }
-    for task, function, name in (
-        (TaskName.POSITION, position, "position"),
-        (TaskName.NORMALIZE, normalize, "normalize"),
-        (TaskName.LOAD, load, "load"),
-    ):
-        directories = {role: root / "preprocess" / role / name for role in current}
-        fingerprint = canonical_hash(
-            {
-                "task": task.value,
-                "inputs": {role: sha256_file(path) for role, path in current.items()},
-                "schema": 2 if task == TaskName.LOAD else 1,
-            }
-        )
-        _perform(
-            record,
-            record_path,
-            root,
-            task,
-            fingerprint,
-            list(directories.values()),
-            partial(
-                _call_all,
-                [
-                    partial(function, current[role], directories[role])
-                    for role in current
+                idle_steps = idle_steps + 1 if after <= before else 0
+            result = UpgradePlan(
+                changes=[
+                    VersionChange(id=key, **item.model_dump())
+                    for key, item in self.confirmed
+                    if item.kind != "unchanged"
                 ],
-            ),
-        )
-        current = {
-            role: directory / "document.json" for role, directory in directories.items()
-        }
-    return {role: load_model(path, Document) for role, path in current.items()}
+                reviewed_source_v1_ids=[
+                    key
+                    for key in self.units["source_v1"]
+                    if key in covered["source_v1"]
+                ],
+                reviewed_source_v2_ids=[
+                    key
+                    for key in self.units["source_v2"]
+                    if key in covered["source_v2"]
+                ],
+            )
+            write_model(
+                self.directory / "call-index.json",
+                LLMCallIndex(task="DIFF", call_ids=list(dict.fromkeys(self.call_ids))),
+            )
+            write_model(self.directory / "plan.json", result)
+            return result
+        finally:
+            self.client.client.close()
 
+    def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
+        """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。
 
-def _translate_changes(
-    document: Document,
-    report: ReuseReport,
-    context: dict[str, tuple[str, str]],
-    config: Config,
-    record: UpgradeRecord,
-    record_path: Path,
-    root: Path,
-    rules: str,
-    glossary: str,
-) -> Document:
-    """再利用できなかったTextUnitだけを選択backendで翻訳する。
+        Args:
+            action: Agentが選んだ比較または再確認。
+            round_number: 保存する操作の連番。
 
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        report (ReuseReport): 再利用結果または診断Report。
-        context (dict[str, tuple[str, str]]): 変更対象別の原文と旧訳。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        rules (str): LLM Promptへ含める追加規則。
-        glossary (str): 対象文書へ適用するCSV形式の用語集。
+        Returns:
+            次の判断へ渡す変更結果の概要。
 
-    Returns:
-        Document: 再利用できなかったTextUnitだけを選択backendで翻訳する。
-    """
-
-    task = TaskName.TRANSLATE if record.backend == "llm" else TaskName.TRANSLATE_LITE
-    name = "translate" if record.backend == "llm" else "translate-lite"
-    directory = root / "translation" / name
-    fingerprint = canonical_hash(
-        {
-            "task": task.value,
-            "document": canonical_hash(document),
-            "targets": report.translation_target_ids,
-            "context": canonical_hash(context),
-            "rules": canonical_hash(rules),
-            "glossary": canonical_hash(glossary),
-            "backend": record.backend,
-            "model": config.openai_translation_model
-            if record.backend == "llm"
-            else config.libretranslate_url,
-            "thinking": "provider_default" if record.backend == "llm" else None,
-            "repetition_penalty": 1.01 if record.backend == "llm" else None,
-            "call_index": 2 if record.backend == "llm" else None,
-        }
-    )
-    if not report.translation_target_ids:
-        finish_task(record, record_path, task, fingerprint, [], skipped=True)
-        return document
-    reused = reusable_task(record, task, fingerprint, root)
-    action = (
-        partial(
-            translate_with_llm,
-            document,
-            directory,
-            root,
-            config,
-            rules,
-            glossary,
-            context,
-        )
-        if record.backend == "llm"
-        else partial(translate_lite, document, directory, config)
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        task,
-        fingerprint,
-        [directory],
-        action,
-    )
-    if record.backend == "llm":
-        _update_llm_progress(record, record_path, directory, "TRANSLATE", reused)
-    return load_model(directory / "document.json", Document)
-
-
-def _review_changes(
-    document: Document,
-    changed_unit_ids: set[str],
-    config: Config,
-    record: UpgradeRecord,
-    record_path: Path,
-    root: Path,
-    rules: str,
-    glossary: str,
-) -> Document:
-    """全文をCHECKし、今回翻訳したTextUnitだけをLLM REVIEWへ渡す。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        changed_unit_ids (set[str]): 再翻訳またはReview対象のTextUnit ID集合。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        rules (str): LLM Promptへ含める追加規則。
-        glossary (str): 対象文書へ適用するCSV形式の用語集。
-
-    Returns:
-        Document: 全文をCHECKし、今回翻訳したTextUnitだけをLLM REVIEWへ渡す。
-    """
-
-    check_dir = root / "review" / "check"
-    targets = targets_from_document(document)
-    initial_fp = canonical_hash(
-        {
-            "task": "CHECK",
-            "phase": "initial",
-            "targets": [item.model_dump(mode="json") for item in targets],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.CHECK,
-        initial_fp,
-        [check_dir],
-        partial(_check_and_write, targets, check_dir / "findings.json"),
-    )
-    checked = load_model(check_dir / "findings.json", CheckResult)
-    review_targets = [
-        target for target in targets if changed_unit_ids.intersection(target.target_ids)
-    ]
-    review_dir = root / "review" / "review"
-    review_fp = canonical_hash(
-        {
-            "task": "REVIEW",
-            "targets": [item.model_dump(mode="json") for item in review_targets],
-            "check": canonical_hash(checked),
-            "rules": canonical_hash(rules),
-            "glossary": canonical_hash(glossary),
-            "model": config.openai_review_model,
-            "thinking": "provider_default",
-            "repetition_penalty": 1.01,
-            "call_index": 2,
-        }
-    )
-    if review_targets:
-        relevant = CheckResult(
-            findings=[
-                item
-                for item in checked.findings
-                if changed_unit_ids.intersection(item.target_ids)
-            ]
-        )
-        reused = reusable_task(record, TaskName.REVIEW, review_fp, root)
-        _perform(
-            record,
-            record_path,
-            root,
-            TaskName.REVIEW,
-            review_fp,
-            [review_dir],
-            partial(
-                review,
-                review_targets,
-                relevant,
-                review_dir,
-                root,
-                config,
-                rules,
-                glossary,
-            ),
-        )
-        _update_llm_progress(record, record_path, review_dir, "REVIEW", reused)
-        reviewed = load_model(review_dir / "review.json", ReviewResult)
-    else:
-        finish_task(record, record_path, TaskName.REVIEW, review_fp, [], skipped=True)
-        reviewed = ReviewResult(findings=[], revisions=[])
-
-    fix_dir = root / "review" / "fix"
-    fix_fp = canonical_hash(
-        {
-            "task": "FIX",
-            "document": canonical_hash(document),
-            "review": canonical_hash(reviewed),
-        }
-    )
-    if reviewed.revisions:
-        _perform(
-            record,
-            record_path,
-            root,
-            TaskName.FIX,
-            fix_fp,
-            [fix_dir],
-            partial(_fix_and_write, document, reviewed, fix_dir),
-        )
-        document = load_model(fix_dir / "document.json", Document)
-    else:
-        finish_task(record, record_path, TaskName.FIX, fix_fp, [], skipped=True)
-
-    final_targets = targets_from_document(document)
-    final_fp = canonical_hash(
-        {
-            "task": "CHECK",
-            "phase": "final",
-            "targets": [item.model_dump(mode="json") for item in final_targets],
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.CHECK,
-        final_fp,
-        [check_dir],
-        partial(_check_and_write, final_targets, check_dir / "final-findings.json"),
-    )
-    final = load_model(check_dir / "final-findings.json", CheckResult)
-    if any(item.category == "empty_translation" for item in final.findings):
-        _stop(
-            record,
-            record_path,
-            "empty_translation",
-            "Empty translations remain after review.",
-        )
-    return document
-
-
-def _publish(
-    document: Document,
-    source_v2: Path,
-    merge_dir: Path,
-    config: Config,
-    record: UpgradeRecord,
-    record_path: Path,
-    root: Path,
-    template_root: Path,
-) -> UpgradeOutcome:
-    """全文検査後のDocumentを英文v2 assetからDOCXへ公開する。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        source_v2 (Path): 変更を反映する英文v2。
-        merge_dir (Path): 統合済みDocument Directory。
-        config (Config): 接続先、上限値および処理Optionを保持する設定。
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        template_root (Path): Publisher Template Directory。
-
-    Returns:
-        UpgradeOutcome: 全文検査後のDocumentを英文v2 assetからDOCXへ公開する。
-    """
-
-    lint_dir = root / "publisher" / "lint"
-    lint_fp = canonical_hash(
-        {
-            "task": "LINT",
-            "document": canonical_hash(document),
-            "assets": _tree_hash(merge_dir / "assets"),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.LINT,
-        lint_fp,
-        [lint_dir],
-        partial(_lint_and_write, document, merge_dir, lint_dir),
-    )
-    if not load_model(lint_dir / "report.json", LintResult).valid:
-        _stop(
-            record,
-            record_path,
-            "lint_failed",
-            "Document structure is not publishable.",
-        )
-
-    cover_dir = root / "publisher" / "cover"
-    cover_fp = canonical_hash(
-        {"task": "COVER", "source": record.source_v2.sha256, "dpi": 150}
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.COVER,
-        cover_fp,
-        [cover_dir],
-        partial(create_cover, source_v2, cover_dir, root),
-    )
-    cover = load_model(cover_dir / "manifest.json", CoverResult)
-
-    markdown_dir = root / "publisher" / "markdown"
-    markdown_path = markdown_dir / "document.ja.md"
-    markdown_fp = canonical_hash(
-        {
-            "task": "MARKDOWN",
-            "document": canonical_hash(document),
-            "cover": canonical_hash(cover),
-            "assets": _tree_hash(merge_dir / "assets"),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.MARKDOWN,
-        markdown_fp,
-        [markdown_dir],
-        partial(
-            convert_document,
-            document,
-            markdown_path,
-            root / Path(cover.image.relative_path),
-            merge_dir,
-            set(cover.excluded_page_numbers),
-            config.http_request_timeout_seconds,
-        ),
-    )
-
-    docx_dir = root / "publisher" / "docx"
-    docx_path = docx_dir / "document.ja.docx"
-    docx_fp = canonical_hash(
-        {
-            "task": "DOCX",
-            "markdown": sha256_file(markdown_path),
-            "template": sha256_file(template_root / "template.docx"),
-        }
-    )
-    _perform(
-        record,
-        record_path,
-        root,
-        TaskName.DOCX,
-        docx_fp,
-        [docx_dir],
-        partial(
-            publish,
-            markdown_path,
-            docx_path,
-            template_root / "template.docx",
-            config.http_request_timeout_seconds,
-        ),
-    )
-    record.status = "succeeded"
-    record.outputs = [describe_artifact(root, docx_path)]
-    record.updated_at = datetime.now(UTC)
-    record.error = None
-    write_model(record_path, record)
-    return UpgradeOutcome(
-        upgrade_id=record.upgrade_id,
-        processing_directory=root,
-        docx=docx_path,
-    )
-
-
-def _perform[ResultT](
-    record: UpgradeRecord,
-    record_path: Path,
-    root: Path,
-    task: TaskName,
-    fingerprint: str,
-    task_directories: list[Path],
-    action: Callable[[], ResultT],
-) -> ResultT | None:
-    """一つのUpgrade Taskを再利用または状態更新付きで実行する。
-
-    Args:
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        root (Path): 対象処理の成果物Root Directory。
-        task (TaskName): 状態またはCallを記録するTask名。
-        fingerprint (str): 入力と設定から算出した再利用判定Hash。
-        task_directories (list[Path]): 再利用判定用のTask Directory列。
-        action (Callable[[], ResultT]): Task本体として実行するCallable。
-
-    Returns:
-        ResultT | None: 一つのUpgrade Taskを再利用または状態更新付きで実行する。
-    """
-
-    if reusable_task(record, task, fingerprint, root):
-        return None
-    start_task(record, record_path, task, fingerprint)
-    try:
-        result = action()
-    except KeyboardInterrupt:
-        raise
-    except Exception as error:
-        fail_task(record, record_path, task, fingerprint, error)
-        raise
-    artifacts = [
-        artifact
-        for directory in task_directories
-        for artifact in task_artifacts(root, directory)
-    ]
-    finish_task(record, record_path, task, fingerprint, artifacts)
-    return result
-
-
-def _call_all(actions: Sequence[Callable[[], object]]) -> list[object]:
-    """同じTaskの三入力分岐を決定的な順序で実行する。
-
-    Args:
-        actions (Sequence[Callable[[], object]]): 並列実行するTask Callable列。
-
-    Returns:
-        list[object]: 同じTaskの三入力分岐を決定的な順序で実行する。
-    """
-
-    return [action() for action in actions]
-
-
-def _align_and_write(
-    source: Document,
-    translation: Document,
-    directory: Path,
-) -> AlignmentResult:
-    """英文v1と日本語v1のALIGN結果を保存する。
-
-    Args:
-        source (Document): 変換または検証対象の入力Source。
-        translation (Document): Review対象の日本語訳。
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        AlignmentResult: 英文v1と日本語v1のALIGN結果を保存する。
-    """
-
-    result = align(source, translation)
-    write_model(directory / "result.json", result)
-    return result
-
-
-def _check_and_write(targets: list[ReviewTarget], path: Path) -> CheckResult:
-    """CHECK結果を指定phaseのfileへ保存する。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-        path (Path): CHECK結果を書き込むJSON FileのPath。
-
-    Returns:
-        CheckResult: CHECK結果を指定phaseのfileへ保存する。
-    """
-
-    result = check(targets)
-    write_model(path, result)
-    return result
-
-
-def _fix_and_write(document: Document, reviewed: ReviewResult, directory: Path) -> None:
-    """FIX結果のDocumentと適用結果を保存する。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        reviewed (ReviewResult): 修正候補を含むReview結果。
-        directory (Path): LLM Call Artifactの保存Directory。
-    """
-
-    result = apply_revisions(document, reviewed)
-    write_model(directory / "document.json", result.document)
-    write_model(directory / "outcomes.json", result)
-
-
-def _lint_and_write(document: Document, asset_root: Path, directory: Path) -> None:
-    """LINT結果を公開判定用に保存する。
-
-    Args:
-        document (Document): 変換または検証対象のDocument。
-        asset_root (Path): 参照先Assetを検証するRoot Directory。
-        directory (Path): LLM Call Artifactの保存Directory。
-    """
-
-    write_model(directory / "report.json", lint(document, asset_root))
-
-
-def _input(path: Path, role: str) -> InputFile:
-    """指定PDFのResume比較用入力情報を作る。
-
-    Args:
-        path (Path): Resume比較用情報を作成するPDFのPath。
-        role (str): 入力または比較要素のRole。
-
-    Returns:
-        InputFile: 指定PDFのResume比較用入力情報を作る。
-    """
-
-    return InputFile(
-        role=role,
-        logical_path=path.name,
-        sha256=sha256_file(path),
-        size_bytes=path.stat().st_size,
-    )
-
-
-def _upgrade_record(
-    path: Path,
-    upgrade_id: str,
-    source_v1: InputFile,
-    source_v2: InputFile,
-    translation_v1: InputFile,
-    backend: str,
-    resuming: bool,
-) -> UpgradeRecord:
-    """新規記録を作るか、三入力一致後に保存済み記録を返す。
-
-    Args:
-        path (Path): Upgrade Recordを書き込むPath。
-        upgrade_id (str): 作成またはResumeするUpgrade処理ID。
-        source_v1 (InputFile): 比較基準にする英文v1。
-        source_v2 (InputFile): 変更を反映する英文v2。
-        translation_v1 (InputFile): 比較基準にする日本語v1。
-        backend (str): 翻訳に使用するBackend名。
-        resuming (bool): 既存処理をResumeしているかどうか。
-
-    Returns:
-        UpgradeRecord: 新規記録を作るか、三入力一致後に保存済み記録を返す。
-
-    Raises:
-        InputError: `resume inputs do not match the saved upgrade`、`resume backend does not
-            match the saved upgrade`、`upgrade to resume does not exist`のいずれかと判定した場合。
-    """
-
-    if path.is_file():
-        record = load_model(path, UpgradeRecord)
+        Raises:
+            InputError: 範囲外IDや既存結果と矛盾する部分対応がある場合。
+        """
+        if action.operation not in {"match", "evaluate", "recheck"}:
+            raise InputError("Unsupported Upgrade Agent operation")
+        if set(action.references) - set(self.units):
+            raise InputError("Unknown Upgrade role")
+        chosen = {role: action.references.get(role, []) for role in self.units}
         if (
-            record.upgrade_id != upgrade_id
-            or record.source_v1 != source_v1
-            or record.source_v2 != source_v2
-            or record.translation_v1 != translation_v1
+            not (chosen["source_v1"] or chosen["source_v2"])
+            or sum(map(len, chosen.values())) > 32
         ):
-            raise InputError("resume inputs do not match the saved upgrade")
-        if record.backend != backend:
-            raise InputError("resume backend does not match the saved upgrade")
-        return record
-    if resuming:
-        raise InputError("upgrade to resume does not exist")
-    now = datetime.now(UTC)
-    record = UpgradeRecord(
-        upgrade_id=upgrade_id,
-        status="processing",
-        source_v1=source_v1,
-        source_v2=source_v2,
-        translation_v1=translation_v1,
-        backend=cast("Literal['llm', 'libretranslate']", backend),
-        created_at=now,
-        updated_at=now,
-    )
-    write_model(path, record)
-    return record
-
-
-def _validate_pdf(path: Path, role: str) -> None:
-    """Upgrade入力を存在するPDF fileへ限定する。
-
-    Args:
-        path (Path): 入力条件を検証するPDFのPath。
-        role (str): 入力または比較要素のRole。
-
-    Raises:
-        InputError: `f'{role} must be a PDF file'`と判定した場合。
-    """
-
-    if not path.is_file() or path.suffix.casefold() != ".pdf":
-        raise InputError(f"{role} must be a PDF file")
-
-
-def _tree_hash(directory: Path) -> str:
-    """directory配下fileの相対pathとhashをfingerprint化する。
-
-    Args:
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        str: directory配下fileの相対pathとhashをfingerprint化する。
-    """
-
-    if not directory.exists():
-        return canonical_hash([])
-    return canonical_hash(
-        [
-            (path.relative_to(directory).as_posix(), sha256_file(path))
-            for path in sorted(directory.rglob("*"))
-            if path.is_file()
+            raise InputError(
+                "Upgrade comparison requires English IDs and at most 32 units"
+            )
+        for role, ids in chosen.items():
+            if len(ids) != len(set(ids)) or not set(ids).issubset(self.units[role]):
+                raise InputError("Invalid Upgrade reference")
+        overlaps = [
+            item
+            for item in self.confirmed
+            if set(item[1].source_v1_ids).intersection(chosen["source_v1"])
+            or set(item[1].source_v2_ids).intersection(chosen["source_v2"])
         ]
-    )
-
-
-def _update_llm_progress(
-    record: UpgradeRecord,
-    record_path: Path,
-    task_directory: Path,
-    task: LLMTaskName,
-    reused: bool,
-) -> None:
-    """Call ArtifactからUpgradeのLLM集約進捗を再計算する。
-
-    Args:
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        task_directory (Path): 対象Taskの成果物Directory。
-        task (LLMTaskName): 状態またはCallを記録するTask名。
-        reused (bool): LLM Callを再利用できたかどうか。
-    """
-
-    calls = [
-        load_model(path, LLMCallArtifact)
-        for path in sorted((task_directory / "calls").glob("*/call.json"))
-    ]
-    index_path = task_directory / "call-index.json"
-    indexed = (
-        set(load_model(index_path, LLMCallIndex).call_ids)
-        if index_path.is_file()
-        else {call.call_id for call in calls}
-    )
-    active = [call for call in calls if call.call_id in indexed]
-    state = next(item for item in record.tasks if item.task.value == task)
-    reused_calls = (
-        len(active)
-        if reused
-        else sum(call.started_at < state.started_at for call in active)
-    )
-    progress = LLMProgress(
-        task=task,
-        planned_calls=len(active),
-        completed_calls=len(active),
-        reused_calls=reused_calls,
-        failed_calls=0,
-        updated_at=datetime.now(UTC),
-    )
-    record.llm_progress = [item for item in record.llm_progress if item.task != task]
-    record.llm_progress.append(progress)
-    record.updated_at = datetime.now(UTC)
-    write_model(record_path, record)
-
-
-def _stop(
-    record: UpgradeRecord,
-    record_path: Path,
-    code: str,
-    message: str,
-) -> None:
-    """公開条件を満たさないUpgradeを説明可能な失敗として停止する。
-
-    Args:
-        record (UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        record_path (Path): 処理Record JSONのPath。
-        code (str): 診断または停止理由を識別するCode。
-        message (str): 診断または停止理由のMessage。
-
-    Raises:
-        PipelineError: 公開条件を満たさないUpgradeを説明可能な失敗として停止する処理を完了できない場合。
-    """
-
-    record.status = "failed"
-    record.error = ProcessingError(code=code, message=message, retryable=False)
-    record.updated_at = datetime.now(UTC)
-    write_model(record_path, record)
-    raise PipelineError(message)
+        if overlaps and action.operation != "recheck":
+            raise InputError("Use recheck to revisit confirmed changes")
+        for _, previous in overlaps:
+            if not set(previous.source_v1_ids).issubset(chosen["source_v1"]) or not set(
+                previous.source_v2_ids
+            ).issubset(chosen["source_v2"]):
+                raise InputError(
+                    "Recheck must include the complete existing correspondence"
+                )
+        retained = [item for item in self.confirmed if item not in overlaps]
+        used_translation = {
+            key for _, item in retained for key in item.translation_v1_ids
+        }
+        if used_translation.intersection(chosen["translation_v1"]):
+            raise InputError(
+                "Recheck must include changes already using the selected translation"
+            )
+        call_id, response = self.diff.run(
+            {
+                role: [self.units[role][key] for key in ids]
+                for role, ids in chosen.items()
+            },
+            action.operation,
+            round_number,
+        )
+        self.confirmed[:] = retained + [
+            (f"change-{call_id}-{index:04d}", item)
+            for index, item in enumerate(response.changes, 1)
+        ]
+        self.call_ids.append(call_id)
+        return {
+            "changes": [item.model_dump() for item in response.changes[:5]],
+            "total": len(response.changes),
+        }

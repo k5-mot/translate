@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import json
 import zipfile
+from importlib import import_module
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
+import pypdfium2 as pdfium
 import pytest
 from PIL import Image as PILImage
+from PIL import ImageChops
 
-from translate.adapters.llm import LLMInputExceededError, StructuredResult
+from tests import successful_review
+from translate.adapters.glossary import Glossary
+from translate.adapters.llm import (
+    LLMClient,
+    LLMInputExceededError,
+    LLMInvalidResponseError,
+    LLMProviderError,
+    StructuredResult,
+)
+from translate.adapters.pandoc import Pandoc
+from translate.adapters.pdf import render_page
 from translate.common.config import Config
-from translate.glossary import relevant_glossary
-from translate.models.artifacts import CheckResult, ReviewResult
+from translate.models.artifacts import ReviewResult
 from translate.models.document import (
     Block,
     Document,
@@ -22,37 +35,91 @@ from translate.models.document import (
     TextSpan,
     TextUnit,
 )
-from translate.models.review import ReviewResponse, ReviewTarget, Revision, TextEdit
-from translate.tasks.converter.unpack import _validate_entries
-from translate.tasks.preprocess.load import (
-    _assign_cell_images,
-    _inline,
-    _normalized_cells,
-    load_document,
+from translate.models.review import (
+    ReviewAssessment,
+    ReviewResponse,
+    ReviewTarget,
+    ReviewTextEdit,
+    Revision,
+    TextEdit,
 )
-from translate.tasks.preprocess.normalize import normalize
-from translate.tasks.preprocess.structure import (
-    MAX_VISION_PIXELS,
-    StructurePatch,
-    StructureResponse,
-    _apply_page,
-    _bound_image,
-    _normalize_heading_levels,
-    _schema,
-)
-from translate.tasks.preprocess.structure import (
-    _chunks as structure_chunks,
-)
-from translate.tasks.publisher.lint import lint
-from translate.tasks.publisher.markdown import convert_block
-from translate.tasks.review.align import align
-from translate.tasks.review.check import check, targets_from_document
-from translate.tasks.review.fix import apply_revisions
-from translate.tasks.review.review import _chunks as review_chunks
-from translate.tasks.review.review import _execute as execute_review
+
+_validate_entries = import_module("translate.tasks.02_unpack")._validate_entries  # noqa: SLF001
+_inline = import_module("translate.tasks.12_load")._inline  # noqa: SLF001
+_normalized_cells = import_module("translate.tasks.12_load")._normalized_cells  # noqa: SLF001
+DocumentLoader = import_module("translate.tasks.12_load").DocumentLoader
+normalize = import_module("translate.tasks.11_normalize").normalize
+MAX_VISION_PIXELS = import_module("translate.tasks.13_structure").MAX_VISION_PIXELS
+StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
+StructureResponse = import_module("translate.tasks.13_structure").StructureResponse
+_apply_page = import_module("translate.tasks.13_structure")._apply_page  # noqa: SLF001
+_bound_image = import_module("translate.tasks.13_structure")._bound_image  # noqa: SLF001
+_normalize_heading_levels = import_module(  # noqa: SLF001
+    "translate.tasks.13_structure"
+)._normalize_heading_levels
+_schema = import_module("translate.tasks.13_structure")._schema  # noqa: SLF001
+structure_chunks = import_module("translate.tasks.13_structure")._chunks  # noqa: SLF001
+lint = import_module("translate.tasks.50_lint").lint
+MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
+apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
+review_chunks = import_module("translate.tasks.41_review")._chunks  # noqa: SLF001
+review_user_payload = import_module("translate.tasks.41_review")._user_payload  # noqa: SLF001
+ReviewTask = import_module("translate.tasks.41_review").ReviewTask
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
+TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
+translation_schema = import_module("translate.tasks.30_translate")._schema  # noqa: SLF001
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.mark.parametrize("ambiguity", [None, "missing", "body", "footnote", "number"])
+def test_markdown_links_original_footnote_marker_once(
+    tmp_path: Path, ambiguity: str | None
+) -> None:
+    """一意な本文参照だけをWord脚注へ置き換え、曖昧な元番号や通常の数字は残す。"""
+    body = _unit("body", "Version 1. ", "バージョン1。 ")
+    if ambiguity not in {"missing", "number"}:
+        body.spans.append(TextSpan(id="body/marker", source="1"))
+    blocks = [
+        Block(id="body", kind="paragraph", order=0, content=body),
+        Block(
+            id="note",
+            kind="footnote",
+            order=1,
+            content=_unit("note", "1 Footnote.", "1 脚注。"),
+        ),
+    ]
+    if ambiguity in {"body", "footnote"}:
+        duplicate = blocks[0 if ambiguity == "body" else 1].model_copy(deep=True)
+        duplicate.id = "duplicate"
+        duplicate.order = 2
+        duplicate.content.id = "duplicate/content"
+        for index, span in enumerate(duplicate.content.spans):
+            span.id = f"duplicate/{index}"
+        blocks.append(duplicate)
+    if ambiguity == "number":
+        blocks.append(
+            Block(id="number", kind="paragraph", order=2, content=_unit("number", "1"))
+        )
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    original = document.model_dump()
+    cover = tmp_path / "cover.png"
+    PILImage.new("RGB", (1, 1)).save(cover)
+    output = tmp_path / "markdown/document.md"
+    MarkdownTask(Pandoc(30)).run(document, output, cover, tmp_path / "assets", set())
+    text = output.read_text(encoding="utf-8")
+    assert "バージョン1。" in text
+    assert document.model_dump() == original
+    if ambiguity is None:
+        assert "バージョン1。 [^note]" in text
+        assert "[^note]: 脚注。" in text
+        assert "\n\n[^note]\n" not in text
+        assert "1 脚注。" not in text
+    else:
+        assert "[^" not in text
+        assert "1 脚注。" in text
 
 
 def _unit(identifier: str, source: str, translated: str | None = None) -> TextUnit:
@@ -70,8 +137,614 @@ def _unit(identifier: str, source: str, translated: str | None = None) -> TextUn
     )
 
 
-def test_check_only_reports_empty_and_extreme_lengths() -> None:
-    """CHECKが仕様で限定した三分類だけを返すことを確認する。"""
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_render_page_clips_in_display_coordinates(
+    tmp_path: Path, rotation: int
+) -> None:
+    """回転ページでも左上原点の切出しが全体画像の同じ領域と一致する。"""
+    source = tmp_path / "source.pdf"
+    picture = PILImage.new("RGB", (100, 80), "white")
+    picture.paste("black", (10, 20, 40, 60))
+    picture.save(source, resolution=72)
+    if rotation:
+        with pdfium.PdfDocument(source) as pdf:
+            page = pdf[0]
+            page.set_rotation(rotation)
+            page.close()
+            pdf.save(tmp_path / "rotated.pdf")
+        source = tmp_path / "rotated.pdf"
+    render_page(source, 1, tmp_path / "full.png", 72)
+    assert render_page(source, 1, tmp_path / "clip.png", 72, clip=(10, 20, 40, 60)) == (
+        30,
+        40,
+    )
+    with (
+        PILImage.open(tmp_path / "full.png") as full,
+        PILImage.open(tmp_path / "clip.png") as clipped,
+    ):
+        assert clipped.info["dpi"] == pytest.approx((72, 72), abs=0.01)
+        assert (
+            ImageChops.difference(full.crop((10, 20, 40, 60)), clipped).getbbox()
+            is None
+        )
+    for invalid in (
+        (-1, 0, 10, 10),
+        (0, 10, 10, 5),
+        (0, 0, 101, 10),
+        (0, float("nan"), 10, 20),
+    ):
+        with pytest.raises(ValueError, match="clip"):
+            render_page(source, 1, tmp_path / "invalid.png", 72, clip=invalid)
+    assert not (tmp_path / "invalid.png").exists()
+
+
+@pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
+def test_load_normalizes_block_coordinates_for_formula_image(origin: str) -> None:
+    """Doclingの座標原点が違っても、原本画像の同じ領域を指すBlockに変換する。"""
+    result = DocumentLoader(
+        {
+            "schema_name": "DoclingDocument",
+            "pages": {"1": {"size": {"width": 100, "height": 80}}},
+            "texts": [
+                {
+                    "self_ref": "#/texts/0",
+                    "label": "text",
+                    "text": "Equation",
+                    "prov": [
+                        {
+                            "page_no": 1,
+                            "bbox": {
+                                "l": 10,
+                                "r": 40,
+                                "t": 20 if origin == "TOPLEFT" else 60,
+                                "b": 60 if origin == "TOPLEFT" else 20,
+                                "coord_origin": origin,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    ).load()
+    assert result.pages[0].blocks[0].bbox == (10, 20, 40, 60)
+
+
+@pytest.mark.parametrize("legacy_coordinates", [False, True])
+def test_structure_preserves_misclassified_formula_as_source_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, legacy_coordinates: bool
+) -> None:
+    """1セル数式の原文IDを保持し、Task所有画像・Lint・Markdown・再開まで通す。"""
+    source, assets = tmp_path / "source.pdf", tmp_path / "converter/merge/assets"
+    picture = PILImage.new("RGB", (100, 80), "white")
+    picture.paste("black", (10, 20, 40, 60))
+    picture.save(source, resolution=72)
+    assets.mkdir(parents=True)
+    picture.save(assets / "original.png")
+    table = Block(
+        id="table",
+        kind="table",
+        order=0,
+        bbox=(10, 60, 40, 20) if legacy_coordinates else (10, 20, 40, 60),
+        cells=[
+            TableCell(
+                id="cell", row=0, column=0, content=_unit("cell-content", "E=mcଶ")
+            )
+        ],
+    )
+    native = Block(
+        id="native",
+        kind="formula",
+        order=1,
+        content=TextUnit(
+            id="native/content",
+            spans=[TextSpan(id="native/span", kind="code", source="E=mc^2")],
+        ),
+    )
+    document = Document(
+        pages=[Page(number=1, width=100, height=80, blocks=[table, native])]
+    )
+    before = document.model_dump()
+    module = import_module("translate.tasks.13_structure")
+    client = MagicMock()
+    client.structured.return_value = StructuredResult(
+        StructureResponse(patches=[StructurePatch(block_id="table", kind="formula")]),
+        1,
+        100,
+        20,
+    )
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+    directory = tmp_path / "structure"
+    task = module.StructureTask(
+        Config(openai_structure_model="model"), directory, "rules"
+    )
+    result = task.run(document, source, tmp_path)
+    formula = result.pages[0].blocks[0]
+    assert formula.kind == "formula"
+    assert not formula.cells
+    assert formula.content.id == "cell-content"
+    assert formula.content.spans[0].kind == "code"
+    assert formula.content.text("source") == "E=mcଶ"
+    assert formula.image is not None
+    assert (directory / formula.image.asset_path).is_file()
+    assert (directory / "assets/original.png").read_bytes() == (
+        assets / "original.png"
+    ).read_bytes()
+    assert result.pages[0].blocks[1].image is None
+    assert lint(result, directory).valid
+    markdown = tmp_path / "markdown/document.md"
+    MarkdownTask(Pandoc(30)).run(
+        result, markdown, assets / "original.png", directory, set()
+    )
+    text = markdown.read_text(encoding="utf-8")
+    assert formula.image.asset_path in text
+    assert 'custom-style="数式ブロック"' not in text
+    assert "E=mcଶ" not in text
+    assert "$$\nE=mc^2\n$$" in text
+    assert (markdown.parent / formula.image.asset_path).read_bytes() == (
+        directory / formula.image.asset_path
+    ).read_bytes()
+    assert document.model_dump() == before
+    assert task.run(document, source, tmp_path) == result
+    client.structured.assert_called_once()
+
+
+@pytest.mark.parametrize("extra", ["cell", "image", "caption", "geometry", "content"])
+def test_structure_keeps_tables_that_cannot_be_preserved_as_one_formula(
+    extra: str,
+) -> None:
+    """複数セル・画像・Captionを失う変換や、切出し領域のない表の数式化を拒否する。"""
+    block = Block(
+        id="table",
+        kind="table",
+        order=0,
+        bbox=(10, 20, 40, 60),
+        cells=[
+            TableCell(
+                id="cell", row=0, column=0, content=_unit("cell-content", "Equation")
+            )
+        ],
+    )
+    if extra == "cell":
+        block.cells.append(
+            TableCell(id="other", row=0, column=1, content=_unit("other", "Other"))
+        )
+    elif extra == "image":
+        block.cells[0].images.append(Image(id="image", asset_path="assets/image.png"))
+    elif extra == "caption":
+        block.caption = _unit("caption", "Caption")
+    elif extra == "content":
+        block.content = _unit("body", "Additional text")
+    else:
+        block.bbox = None
+    before = block.model_dump()
+    _apply_page(
+        Page(number=1, blocks=[block]),
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=[StructurePatch(block_id="table", kind="formula")]
+                ),
+            )
+        ],
+        [],
+    )
+    assert block.model_dump() == before
+
+
+def _translation_document(spans: list[TextSpan]) -> Document:
+    """指定Spanを持つ本文を作り、Task全体の分割・適用・保存を試験する。"""
+    return Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="body",
+                        order=0,
+                        kind="paragraph",
+                        content=TextUnit(id="body/content", spans=spans),
+                    )
+                ],
+            )
+        ]
+    )
+
+
+def test_translation_splits_missing_ids_after_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一括応答で欠けた訳を再送・分割し、全対象の訳を集める。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    responses = [
+        [("a", "訳A"), ("b", "訳B")],
+        [],
+        [("c", "訳C")],
+        [("d", "訳D")],
+    ]
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id=key, text=value) for key, value in items
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            )
+            for items in responses
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = TranslationTask(
+        config=config,
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id=key, source=key) for key in "abcd"]),
+        tmp_path,
+    )
+
+    assert structured.call_count == 4
+    assert client.client.is_closed()
+    assert {
+        span.id: span.translated
+        for _, unit in calls.text_units()
+        for span in unit.spans
+    } == {"a": "訳A", "b": "訳B", "c": "訳C", "d": "訳D"}
+
+
+def test_translation_rejects_missing_single_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """最小単位の再送後も訳が欠けたら空訳を確定せず失敗する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    structured = MagicMock(
+        return_value=StructuredResult(
+            response=TranslationResponse(translations=[]),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    with pytest.raises(LLMInvalidResponseError, match="span-a"):
+        TranslationTask(
+            config=config,
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            previous_context={},
+        ).run(_translation_document([TextSpan(id="span-a", source="A")]), tmp_path)
+
+    assert structured.call_count == 2
+
+
+def test_translation_accepts_span_id_without_fragment_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLMが先頭の#だけ落としたIDの訳を元のSpanへ適用する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    structured = MagicMock(
+        return_value=StructuredResult(
+            response=TranslationResponse(
+                translations=[
+                    TranslationItem(
+                        span_id="/texts/48/content/span-0001", text="伝送媒体;"
+                    )
+                ]
+            ),
+            attempts=1,
+            input_tokens=10,
+            output_tokens=10,
+        )
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = TranslationTask(
+        config=config,
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        previous_context={},
+    ).run(
+        _translation_document(
+            [TextSpan(id="#/texts/48/content/span-0001", source="Transmission Media;")]
+        ),
+        tmp_path,
+    )
+
+    assert structured.call_count == 1
+    assert calls.pages[0].blocks[0].content.spans[0].translated == "伝送媒体;"
+
+
+def test_translation_does_not_restart_exhausted_schema_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AdapterのSchema再試行を使い切ったCallを別方式で追加送信しない。"""
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    client.structured.side_effect = LLMInvalidResponseError("invalid JSON")
+    with pytest.raises(LLMInvalidResponseError):
+        TranslationTask(
+            config=config,
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            previous_context={},
+        ).run(
+            _translation_document([TextSpan(id="span-a", source="Original sentence.")]),
+            tmp_path,
+        )
+    assert client.structured.call_count == 1
+    calls = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in tmp_path.glob("calls/*/call.json")
+    ]
+    assert len(calls) == 1
+    assert calls[0]["status"] == "failed"
+
+
+def test_translation_retries_single_missing_span_after_split(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """分割済みCallの欠落一件を単独で再送して訳文を回収する。"""
+
+    config = Config(openai_base_url="http://llm", openai_translation_model="model")
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    structured = MagicMock(
+        side_effect=[
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[
+                        TranslationItem(span_id="a", text="訳A"),
+                    ]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(translations=[]),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+            StructuredResult(
+                response=TranslationResponse(
+                    translations=[TranslationItem(span_id="b", text="訳B")]
+                ),
+                attempts=1,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+        ]
+    )
+    client.structured = structured  # type: ignore[method-assign]
+
+    calls = TranslationTask(
+        config=config,
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id=key, source=key) for key in "ab"]), tmp_path
+    )
+
+    assert structured.call_count == 3
+    assert {
+        span.id: span.translated
+        for _, unit in calls.text_units()
+        for span in unit.spans
+        if span.translated
+    } == {"a": "訳A", "b": "訳B"}
+
+
+@pytest.mark.parametrize(
+    "translation", ["", "THE BIG PICTURE", "(省略)", "余計" * 300, "Army:"]
+)
+def test_translation_preserves_model_text_without_quality_retries(
+    tmp_path: Path, translation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """長さ・同文・軍種名による補正や再送を行わず、品質判断をREVIEWへ渡す。"""
+    client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    client.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text=translation)]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    calls = TranslationTask(
+        config=Config(openai_translation_model="model"),
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
+    )
+    assert client.structured.call_count == 1
+    assert calls.pages[0].blocks[0].content.spans[0].translated == translation
+
+
+def test_translation_reuses_calls_when_rules_and_model_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """入力が同じなら規則・用語集・modelの変更で成功応答を再送しない。"""
+    client = MagicMock()
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    client.structured.return_value = StructuredResult(
+        response=TranslationResponse(
+            translations=[TranslationItem(span_id="span-a", text="THE BIG PICTURE")]
+        ),
+        attempts=1,
+        input_tokens=10,
+        output_tokens=10,
+    )
+    first = TranslationTask(
+        config=Config(openai_translation_model="first"),
+        task_directory=tmp_path,
+        rules="",
+        glossary="",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
+    )
+    second = TranslationTask(
+        config=Config(openai_translation_model="second"),
+        task_directory=tmp_path,
+        rules="Updated rules",
+        glossary="english-short,japanese\\nPICTURE,全体像",
+        previous_context={},
+    ).run(
+        _translation_document([TextSpan(id="span-a", source="THE BIG PICTURE")]),
+        tmp_path,
+    )
+    assert first == second
+    assert client.structured.call_count == 1
+
+
+def test_translation_schema_constrains_ids_without_quality_threshold() -> None:
+    """応答の件数とfieldを制約し、訳文の文字数を品質条件にしない。"""
+    schema = translation_schema(2)
+    translations = schema["properties"]["translations"]
+    assert translations["minItems"] == translations["maxItems"] == 2
+    assert translations["items"]["properties"]["text"] == {"type": "string"}
+
+
+def test_translation_short_ids_restore_original_spans_and_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ要素の複数Spanを短いIDで区別し、順不同の応答も元IDへ戻して保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_translation_model="model",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    spans = [
+        TextSpan(id=f"#/texts/33/content/span-{i:04d}", source=text)
+        for i, text in enumerate(["Footnote.", "Use superscript."], 1)
+    ]
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = json.dumps(
+        {
+            "translations": [
+                {"span_id": "2", "text": "上付きにする。"},
+                {"span_id": "1", "text": "脚注。"},
+            ]
+        }
+    )
+    completion.usage = None
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        import_module("translate.tasks.30_translate"),
+        "LLMClient",
+        MagicMock(return_value=client),
+    )
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = TranslationTask(
+            config=config,
+            task_directory=tmp_path,
+            rules="",
+            glossary="",
+            previous_context={spans[1].id: ("Old source", "旧訳")},
+        ).run(_translation_document(spans), tmp_path)
+        user = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        assert [item["span_id"] for item in user["items"]] == ["1", "2"]
+        assert user["items"][1]["previous_translation"] == "旧訳"
+        assert {
+            span.id: span.translated
+            for _, unit in result.text_units()
+            for span in unit.spans
+        } == {
+            spans[0].id: "脚注。",
+            spans[1].id: "上付きにする。",
+        }
+        directory = next((tmp_path / "calls").iterdir())
+        assert json.loads((directory / "call.json").read_text(encoding="utf-8"))[
+            "target_ids"
+        ] == [s.id for s in spans]
+        assert (
+            json.loads((directory / "response.json").read_text(encoding="utf-8"))[
+                "translations"
+            ][0]["span_id"]
+            == spans[1].id
+        )
+        assert (
+            TranslationTask(
+                config=config,
+                task_directory=tmp_path,
+                rules="",
+                glossary="",
+                previous_context={spans[1].id: ("Old source", "旧訳")},
+            ).run(_translation_document(spans), tmp_path)
+            == result
+        )
+        create.assert_called_once()
+    finally:
+        client.client.close()
+
+
+def test_translation_ignores_ids_from_other_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """別Callの有効なSpan IDが応答に混入しても既存訳を上書きしない。"""
 
     document = Document(
         pages=[
@@ -79,19 +752,62 @@ def test_check_only_reports_empty_and_extreme_lengths() -> None:
                 number=1,
                 blocks=[
                     Block(
-                        id="block",
-                        order=0,
-                        kind="paragraph",
-                        content=_unit("unit", "a" * 80, ""),
-                    )
+                        id="block-a", order=0, kind="paragraph", content=_unit("a", "A")
+                    ),
+                    Block(
+                        id="block-b", order=1, kind="paragraph", content=_unit("b", "B")
+                    ),
                 ],
             )
         ]
     )
+    responses = [
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="a/span-0001", text="正しいA"),
+                TranslationItem(span_id="b/span-0001", text="誤訳B"),
+            ]
+        ),
+        TranslationResponse(
+            translations=[
+                TranslationItem(span_id="b/span-0001", text="正しいB"),
+                TranslationItem(span_id="a/span-0001", text="誤訳A"),
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        LLMClient,
+        "structured",
+        MagicMock(
+            side_effect=[
+                StructuredResult(
+                    response=response,
+                    attempts=1,
+                    input_tokens=10,
+                    output_tokens=10,
+                )
+                for response in responses
+            ]
+        ),
+    )
 
-    result = check(targets_from_document(document))
+    result = TranslationTask(
+        Config(
+            openai_base_url="http://llm",
+            openai_translation_model="model",
+            translate_max_units=1,
+        ),
+        tmp_path / "translation",
+        "",
+        "",
+    ).run(document, tmp_path)
 
-    assert [finding.category for finding in result.findings] == ["empty_translation"]
+    assert [unit.spans[0].translated for _, unit in result.text_units()] == [
+        "正しいA",
+        "正しいB",
+    ]
+    diagnostics = json.loads((tmp_path / "task-translate.json").read_text())
+    assert sum("unexpected_span" in item for item in diagnostics["diagnostics"]) == 2
 
 
 def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
@@ -138,53 +854,104 @@ def test_fix_rejects_conflict_without_rolling_back_first_revision() -> None:
     ]
 
 
-def test_align_uses_unique_figure_anchor_and_leaves_role_mismatch_unmatched() -> None:
-    """図番号anchorは対応させ、role列が異なる区間は未対応に残す。"""
+@pytest.mark.parametrize("repeat", [5, 12])
+def test_fix_applies_short_revision_without_length_threshold(
+    repeat: int,
+) -> None:
+    """構造上有効な短い候補を文字数比で棄却せず適用する。"""
 
-    source = Document(
+    original = "これは既存の翻訳文です。" * repeat
+    document = Document(
         pages=[
             Page(
                 number=1,
                 blocks=[
                     Block(
-                        id="s1",
+                        id="block",
                         order=0,
                         kind="paragraph",
-                        content=_unit("su1", "before"),
-                    ),
-                    Block(
-                        id="s2",
-                        order=1,
-                        kind="paragraph",
-                        content=_unit("su2", "Figure 3"),
-                    ),
+                        content=_unit("unit", "source", original),
+                    )
                 ],
             )
         ]
     )
-    translation = Document(
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="short",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text="一文だけ。")],
+            )
+        ],
+    )
+
+    result = apply_revisions(document, review)
+
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised == "一文だけ。"
+    assert span.translated == original
+    assert result.outcomes[0].reason_code == "applied"
+
+
+@pytest.mark.parametrize(
+    ("source", "translated", "proposed"),
+    [
+        (
+            "Accelerating Assistance to Energy Employees",
+            "エネルギー関係者に対する支援を加速",
+            "$43 million",
+        ),
+        (
+            "maintain the safety of nuclear weapons stockpile",
+            "核兵器備蓄の安全性を維持する。" * 5,
+            "原文の訳語について説明すべきである。" * 9,
+        ),
+        (
+            "A long paragraph about the program",
+            "日本語の本文です。" * 30,
+            "日本語の本文です。" * 18,
+        ),
+        ("7,434", "7,434", "7,436"),
+    ],
+)
+def test_fix_does_not_rejudge_revision_meaning(
+    source: str, translated: str, proposed: str
+) -> None:
+    """REVIEWの候補を言語・文字数比・数値の固定ルールで再評価しない。"""
+
+    document = Document(
         pages=[
             Page(
                 number=1,
                 blocks=[
-                    Block(id="t1", order=0, kind="heading", content=_unit("tu1", "前")),
                     Block(
-                        id="t2", order=1, kind="paragraph", content=_unit("tu2", "図3")
-                    ),
+                        id="block",
+                        order=0,
+                        kind="paragraph",
+                        content=_unit("unit", source, translated),
+                    )
                 ],
             )
         ]
     )
+    review = ReviewResult(
+        findings=[],
+        revisions=[
+            Revision(
+                id="bad",
+                target_id="unit",
+                edits=[TextEdit(span_id="unit/span-0001", text=proposed)],
+            )
+        ],
+    )
 
-    result = align(source, translation)
-
-    matched = [group for group in result.groups if group.kind == "matched"]
-    assert len(matched) == 1
-    assert matched[0].method == "unique_anchor"
-    assert {group.kind for group in result.groups} >= {
-        "source_only",
-        "translation_only",
-    }
+    result = apply_revisions(document, review)
+    span = result.document.pages[0].blocks[0].content.spans[0]  # type: ignore[union-attr]
+    assert span.revised == proposed
+    assert span.translated == translated
+    assert result.outcomes[0].reason_code == "applied"
 
 
 def test_lint_checks_asset_existence_without_translation_quality(
@@ -225,11 +992,41 @@ def test_markdown_alert_uses_bundled_word_style_name() -> None:
         content=_unit("note/content", "Reference details."),
     )
 
-    value = convert_block(block, 30.0)
+    value = MarkdownTask(Pandoc(30.0)).convert_block(block)
 
     assert value == (
         '::: {custom-style="Note / 注記"}\n**NOTE:** Reference details\\.\n:::'
     )
+
+
+def test_markdown_table_removes_dot_leaders_and_preserves_missing_value() -> None:
+    """表の装飾点線を除き、欠損値のダッシュを水平線へ変えない。"""
+
+    block = Block(
+        id="table",
+        order=0,
+        kind="table",
+        cells=[
+            TableCell(
+                id="label",
+                row=0,
+                column=0,
+                content=_unit("label/content", "Revenue ........"),
+            ),
+            TableCell(
+                id="value",
+                row=0,
+                column=1,
+                content=_unit("value/content", "—"),
+            ),
+        ],
+    )
+
+    value = MarkdownTask(Pandoc(30.0)).convert_block(block)
+
+    assert "Revenue" in value
+    assert "........" not in value
+    assert "\\-" in value
 
 
 def test_load_converts_minimal_docling_document() -> None:
@@ -255,7 +1052,7 @@ def test_load_converts_minimal_docling_document() -> None:
         "body": {"children": [{"$ref": "#/texts/0"}]},
     }
 
-    document = load_document(value)
+    document = DocumentLoader(value).load()
 
     unit = document.pages[0].blocks[0].content
     assert unit is not None
@@ -263,15 +1060,31 @@ def test_load_converts_minimal_docling_document() -> None:
     assert unit.spans[0].source == "Hello"
 
 
-def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> None:
-    """目次見出しと本文が同じページにあるPDFの本文を保持する。"""
+@pytest.mark.parametrize(
+    ("body_kind", "index_title"),
+    [
+        ("long_text", "List of Figures"),
+        ("short_text", "図一覧"),
+        ("table", "表一覧"),
+        ("code", "List of Tables"),
+    ],
+)
+def test_index_heading_does_not_discard_body_on_same_page(
+    tmp_path: Path, body_kind: str, index_title: str
+) -> None:
+    """目次と同じページにある本文を、段落の長さや表の形式によらず保持する。"""
 
-    paragraph = "本文と図の説明が同じページに続きます。" * 12
+    paragraph = "本文と図の説明が同じページに続きます。" * (
+        12 if body_kind == "long_text" else 1
+    )
+    if body_kind == "code":
+        paragraph = "# input ... 2"
     texts = [
         (1, "section_header", "Table of Contents"),
         (1, "text", "Chapter 1 ........ 1"),
-        (2, "section_header", "List of Figures"),
-        (2, "text", paragraph),
+        (2, "section_header", index_title),
+        (2, "text", "Figure 1 ........ 2"),
+        (2, "code" if body_kind == "code" else "text", paragraph),
     ]
     value = {
         "schema_name": "DoclingDocument",
@@ -297,15 +1110,44 @@ def test_index_heading_does_not_discard_body_on_same_page(tmp_path: Path) -> Non
             "children": [{"$ref": f"#/texts/{index}"} for index in range(len(texts))]
         },
     }
+    if body_kind == "table":
+        value["texts"].pop()
+        value["body"]["children"].pop()
+        value["tables"] = [
+            {
+                "self_ref": "#/tables/0",
+                "label": "table",
+                "prov": [{"page_no": 2}],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [
+                        {
+                            "start_row_offset_idx": 0,
+                            "start_col_offset_idx": 0,
+                            "end_row_offset_idx": 1,
+                            "end_col_offset_idx": 1,
+                            "text": "Document ID: SYS-DD-001",
+                        }
+                    ],
+                },
+            }
+        ]
+        value["body"]["children"].append({"$ref": "#/tables/0"})
     source = tmp_path / "source.json"
     source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
     normalized = normalize(source, tmp_path / "normalized")
-    document = load_document(json.loads(normalized.read_text(encoding="utf-8")))
+    document = DocumentLoader(json.loads(normalized.read_text(encoding="utf-8"))).load()
 
     assert document.pages[0].blocks == []
     assert len(document.pages[1].blocks) == 1
-    assert document.pages[1].blocks[0].content.text("source") == paragraph
+    block = document.pages[1].blocks[0]
+    if body_kind == "table":
+        assert block.kind == "table"
+        assert block.cells[0].content.text("source") == "Document ID: SYS-DD-001"
+    else:
+        assert block.content.text("source") == paragraph
 
 
 def test_load_keeps_cells_when_docling_spans_overlap() -> None:
@@ -340,9 +1182,9 @@ def test_load_keeps_cells_when_docling_spans_overlap() -> None:
 
     cells = [source.cell for source in _normalized_cells(item, "#/tables/0")]
 
-    assert [(cell.row, cell.column, cell.rowspan, cell.colspan) for cell in cells] == [
-        (0, 0, 1, 1),
-        (0, 1, 1, 1),
+    assert [(cell.row, cell.column) for cell in cells] == [
+        (0, 0),
+        (0, 1),
     ]
     assert [cell.content.text("source") for cell in cells] == ["first", "second"]
 
@@ -417,24 +1259,32 @@ def test_load_keeps_unowned_picture_that_partially_overlaps_table() -> None:
         ],
     }
 
-    _assign_cell_images(document, {1: page})
+    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 表セル画像の帰属を検証する。
 
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
 
 
-def test_structure_chunks_single_long_block_with_bounded_excerpt() -> None:
-    """長文Blockでも分類用抜粋を上限内に収めてSTRUCTUREへ渡す。"""
-
-    block = Block(
-        id="#/texts/0",
-        order=0,
-        kind="paragraph",
-        content=_unit("#/texts/0/content", "long source " * 2_000),
+def test_structure_chunks_long_block_at_sentence_boundaries() -> None:
+    """長文をSpan境界で分け、STRUCTURE入力から中間の本文を省略しない。"""
+    text = "This sentence contains information that must be preserved. " * 100
+    content = TextUnit(id="body/content", spans=_inline("body/content", text))
+    block = Block(id="body", order=0, kind="paragraph", content=content)
+    chunks = structure_chunks([block], maximum_blocks=20, maximum_bytes=2980)
+    assert len(chunks) > 1
+    assert (
+        "".join(part.content.text("source") for chunk in chunks for part in chunk)
+        == text
     )
+    assert all(part.id == block.id for chunk in chunks for part in chunk)
 
-    chunks = structure_chunks([block], maximum_blocks=20, maximum_bytes=2_980)
 
-    assert chunks == [[block]]
+def test_structure_rejects_oversized_sentence_without_truncation() -> None:
+    """最小の文が上限を超える場合は本文を切り捨てず失敗する。"""
+    block = Block(
+        id="body", order=0, kind="paragraph", content=_unit("body", "word " * 2000)
+    )
+    with pytest.raises(ValueError, match="single sentence exceeds"):
+        structure_chunks([block], maximum_blocks=20, maximum_bytes=2980)
 
 
 def test_unpack_rejects_parent_path_before_extracting(tmp_path: Path) -> None:
@@ -518,6 +1368,50 @@ def test_structure_rejects_kind_without_required_block_content() -> None:
     assert diagnostics == ["call invalid_kind table code"]
 
 
+def test_structure_preserves_existing_image_caption() -> None:
+    """既存Captionと本文を、誤ったcaption移動patchで失わない。"""
+
+    figure = Block(
+        id="figure",
+        order=0,
+        kind="figure",
+        image=Image(
+            id="image",
+            asset_path="image.png",
+            caption=_unit("existing-caption", "Original caption"),
+        ),
+    )
+    paragraph = Block(
+        id="paragraph",
+        order=1,
+        kind="paragraph",
+        content=_unit("paragraph-content", "Unrelated body text"),
+    )
+    page = Page(number=1, blocks=[figure, paragraph])
+    diagnostics: list[str] = []
+
+    _apply_page(
+        page,
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=[
+                        StructurePatch(block_id="figure", caption_source_id="paragraph")
+                    ]
+                ),
+            )
+        ],
+        diagnostics,
+    )
+
+    assert figure.image is not None
+    assert figure.image.caption is not None
+    assert figure.image.caption.id == "existing-caption"
+    assert [block.id for block in page.blocks] == ["figure", "paragraph"]
+    assert diagnostics == ["call caption_already_present figure"]
+
+
 def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     """ページ境界のlevel=1誤補正をDocling初期levelへ戻す。"""
 
@@ -536,7 +1430,7 @@ def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
         content=_unit("h2/content", "Section"),
     )
     document = Document(
-        pages=[Page(number=1, blocks=[first]), Page(number=2, blocks=[second])]
+        pages=[Page(number=2, blocks=[first]), Page(number=3, blocks=[second])]
     )
     diagnostics: list[str] = []
 
@@ -548,18 +1442,160 @@ def test_structure_preserves_cross_page_heading_level_after_llm_reset() -> None:
     ]
 
 
-def test_structure_allows_explicit_chapter_reset_to_level_one() -> None:
-    """章見出しはページ境界でもlevel=1を維持する。"""
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    ("source_kind", "target_kind"),
+    [("heading", "table"), ("paragraph", "table"), ("paragraph", "paragraph")],
+)
+def test_structure_caption_transfer_respects_final_block_roles(
+    *, reverse: bool, source_kind: str, target_kind: str
+) -> None:
+    """応答の順序によらず、見出しをCaptionへ移さず、明示的な段落への補正は許可する。"""
+    source = Block(
+        id="source",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("source/content", "Table description"),
+    )
+    target = Block.model_validate(
+        {
+            "id": "target",
+            "order": 1,
+            "kind": target_kind,
+            "content": _unit("target/content", "Body").model_dump()
+            if target_kind == "paragraph"
+            else None,
+            "cells": [
+                TableCell(id="cell", row=0, column=0, content=_unit("cell", "value"))
+            ]
+            if target_kind == "table"
+            else [],
+        }
+    )
+    patches = [
+        StructurePatch.model_validate({"block_id": "source", "kind": source_kind}),
+        StructurePatch(block_id="target", caption_source_id="source"),
+    ]
+    page = Page(number=2, blocks=[source, target])
+    diagnostics: list[str] = []
+
+    _apply_page(
+        page,
+        [
+            (
+                "call",
+                StructureResponse(
+                    patches=list(reversed(patches)) if reverse else patches
+                ),
+            )
+        ],
+        diagnostics,
+    )
+
+    if source_kind == "paragraph" and target_kind == "table":
+        assert [block.id for block in page.blocks] == ["target"]
+        assert target.caption.text("source") == "Table description"
+        assert diagnostics == []
+    else:
+        assert [block.id for block in page.blocks] == ["source", "target"]
+        assert target.caption is None
+        assert diagnostics
+
+
+@pytest.mark.parametrize(
+    ("title", "initial_level", "expected_level"),
+    [
+        ("1 Document Control", 3, 1),
+        ("2 Lists", 2, 1),
+        ("7.1 Heading", 1, 2),
+        ("7.1.1 Heading", 4, 3),
+        ("2026 Results", 2, 2),
+    ],
+)
+def test_structure_uses_section_depth_for_numbered_heading_level(
+    title: str, initial_level: int, expected_level: int
+) -> None:
+    """番号付き見出しの深さを章番号から揃え、年号は章番号として扱わない。"""
+    heading = Block(
+        id="heading",
+        order=0,
+        kind="heading",
+        level=initial_level,
+        content=_unit("heading/content", title),
+    )
+    document = Document(pages=[Page(number=2, blocks=[heading])])
+
+    _normalize_heading_levels(document, {"heading": initial_level}, [])
+
+    assert heading.level == expected_level
+
+
+@pytest.mark.parametrize(
+    ("title", "proposed_kind", "expected_kind"),
+    [
+        ("8 Equation", "paragraph", "heading"),
+        ("10 Notes", "alert", "heading"),
+        ("2026 Results", "paragraph", "paragraph"),
+    ],
+)
+def test_structure_preserves_numbered_heading_kind(
+    title: str, proposed_kind: str, expected_kind: str
+) -> None:
+    """章節番号付き見出しの段落化を拒否し、年号付き文字列の種別補正は妨げない。"""
+    heading = Block(
+        id="heading",
+        order=0,
+        kind="heading",
+        level=2,
+        content=_unit("heading/content", title),
+    )
+    page = Page(number=2, blocks=[heading])
+    patch = StructurePatch.model_validate(
+        {
+            "block_id": "heading",
+            "kind": proposed_kind,
+            "alert_kind": "note" if proposed_kind == "alert" else None,
+        }
+    )
+
+    _apply_page(page, [("call", StructureResponse(patches=[patch]))], [])
+    _normalize_heading_levels(Document(pages=[page]), {"heading": 2}, [])
+
+    assert heading.kind == expected_kind
+    if expected_kind == "heading":
+        assert heading.level == 1
+
+
+@pytest.mark.parametrize(
+    "title", ["CHAPTER II", "1 Document Control", "7 TOC Levels", "10 Notes"]
+)
+def test_structure_allows_explicit_chapter_reset_to_level_one(title: str) -> None:
+    """先行見出しがあるページ境界でも、明示的な章番号のlevel=1補正を維持する。"""
 
     heading = Block(
         id="chapter",
         order=0,
         kind="heading",
         level=1,
-        content=_unit("chapter/content", "CHAPTER II"),
+        content=_unit("chapter/content", title),
     )
     document = Document(
-        pages=[Page(number=1, blocks=[]), Page(number=2, blocks=[heading])]
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="prior",
+                        order=0,
+                        kind="heading",
+                        level=1,
+                        content=_unit("prior/content", "Introduction"),
+                    )
+                ],
+            ),
+            Page(number=3, blocks=[heading]),
+        ]
     )
     diagnostics: list[str] = []
 
@@ -586,7 +1622,7 @@ def test_structure_does_not_normalize_same_page_heading_reset() -> None:
         level=1,
         content=_unit("h2/content", "Section"),
     )
-    document = Document(pages=[Page(number=1, blocks=[first, second])])
+    document = Document(pages=[Page(number=2, blocks=[first, second])])
     diagnostics: list[str] = []
 
     _normalize_heading_levels(document, {"h1": 1, "h2": 2}, diagnostics)
@@ -595,16 +1631,279 @@ def test_structure_does_not_normalize_same_page_heading_reset() -> None:
     assert diagnostics == []
 
 
-def test_load_splits_long_text_without_loss() -> None:
-    """長大Docling文字列を安定IDと有限byteのSpanへ欠落なく分ける。"""
+@pytest.mark.parametrize("cached_omission", [False, True])
+@pytest.mark.parametrize("candidate_kind", ["heading", "table"])
+def test_structure_requires_classification_of_required_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    candidate_kind: str,
+    *,
+    cached_omission: bool,
+) -> None:
+    """見出しと1セル表を未確認で残す応答は訂正させ、原文とIDを保持する。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(
+        openai_base_url="http://127.0.0.1:1/v1",
+        openai_structure_model="model",
+        llm_structured_output_mode="json_schema",
+        llm_retry_attempts=2,
+    )
+    document = Document(
+        pages=[
+            Page(
+                number=2,
+                blocks=[
+                    Block(
+                        id="title",
+                        order=0,
+                        kind="heading",
+                        level=1,
+                        content=_unit("title/content", "6 Footnotes"),
+                    ),
+                    Block(
+                        id="body",
+                        order=1,
+                        kind=candidate_kind,
+                        level=6 if candidate_kind == "heading" else None,
+                        content=_unit("body/content", "Read the reference document. 1")
+                        if candidate_kind == "heading"
+                        else None,
+                        cells=[
+                            TableCell(
+                                id="cell",
+                                row=0,
+                                column=0,
+                                content=_unit("cell/content", "Value"),
+                            )
+                        ]
+                        if candidate_kind == "table"
+                        else [],
+                    ),
+                ],
+            )
+        ]
+    )
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = LLMClient(config)
+    responses = []
+    for patches in (
+        [StructurePatch(block_id="title", kind="heading", level=1)],
+        [
+            StructurePatch(block_id="title", kind="heading", level=1),
+            StructurePatch(
+                block_id="body",
+                kind="paragraph" if candidate_kind == "heading" else "table",
+            ),
+        ],
+    ):
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = StructureResponse(
+            patches=patches
+        ).model_dump_json()
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+    if cached_omission:
+        monkeypatch.setattr(
+            module,
+            "load_reusable_llm_response",
+            MagicMock(
+                return_value=(
+                    None,
+                    StructureResponse(
+                        patches=[
+                            StructurePatch(block_id="title", kind="heading", level=1)
+                        ]
+                    ),
+                )
+            ),
+        )
+    result = module.StructureTask(config, directory, "rules").run(
+        document, tmp_path / "source.pdf", tmp_path
+    )
+    assert create.call_count == 2
+    assert result.pages[0].blocks[1].kind == (
+        "paragraph" if candidate_kind == "heading" else "table"
+    )
+    assert result.pages[0].blocks[1].content == document.pages[0].blocks[1].content
+    assert result.pages[0].blocks[1].cells == document.pages[0].blocks[1].cells
+    assert document.pages[0].blocks[1].kind == candidate_kind
+    feedback = create.call_args.kwargs["messages"][-1]["content"][0]["text"]
+    assert "missing=['body']" in feedback
 
-    source = "English 日本語 " * 300
+
+def test_structure_splits_blocks_after_invalid_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """構造化応答が再試行後も不正なら、対象Blockを分割して処理する。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(
+        openai_base_url="http://127.0.0.1:1/v1",
+        openai_structure_model="model",
+        llm_structured_output_mode="json_schema",
+        llm_retry_attempts=2,
+    )
+    blocks = [
+        Block(
+            id=f"block-{index}",
+            order=index,
+            kind="paragraph",
+            content=_unit(f"block-{index}/content", f"Text {index}"),
+        )
+        for index in range(2)
+    ]
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = MagicMock()
+    invalid = LLMInvalidResponseError("Invalid structure response")
+    invalid.attempts = 2
+    client.structured.side_effect = [
+        invalid,
+        StructuredResult(
+            response=StructureResponse(patches=[]),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=10,
+        ),
+        StructuredResult(
+            response=StructureResponse(patches=[]),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=10,
+        ),
+    ]
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    result = module.StructureTask(
+        config.model_copy(update={"structure_max_blocks": 2}), directory, "rules"
+    ).run(document, tmp_path / "source.pdf", tmp_path)
+
+    assert [block.id for block in result.pages[0].blocks] == [
+        block.id for block in blocks
+    ]
+    calls = [
+        json.loads((path.parent / "call.json").read_text(encoding="utf-8"))
+        for path in directory.glob("calls/*/call.json")
+    ]
+    assert any(call["status"] == "split" for call in calls)
+    assert sum(call["status"] == "split" for call in calls) == 1
+    assert sum(call["status"] == "succeeded" for call in calls) == 2
+
+
+def test_structure_does_not_split_after_other_llm_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """認証や通信などの失敗は対象を分割しても直らないため、そのまま伝える。"""
+    module = import_module("translate.tasks.13_structure")
+    config = Config(openai_structure_model="model")
+    blocks = [
+        Block(
+            id=f"block-{index}",
+            order=index,
+            kind="paragraph",
+            content=_unit(f"block-{index}/content", f"Text {index}"),
+        )
+        for index in range(2)
+    ]
+    document = Document(pages=[Page(number=2, blocks=blocks)])
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    PILImage.new("RGB", (20, 20)).save(directory / "pages/page-0002.png")
+    client = MagicMock()
+    error = LLMProviderError("Endpoint returned an unexpected API error")
+    error.attempts = 2
+    client.structured.side_effect = error
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    with pytest.raises(LLMProviderError):
+        module.StructureTask(config, directory, "rules").run(
+            document, tmp_path / "source.pdf", tmp_path
+        )
+
+    assert client.structured.call_count == 1
+    call = json.loads(
+        next(directory.glob("calls/*/call.json")).read_text(encoding="utf-8")
+    )
+    assert call["status"] == "failed"
+
+
+def test_structure_keeps_cover_out_of_body_heading_hierarchy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """表紙を本文の親にせず、本文内のページ境界補正だけを維持する。"""
+    module = import_module("translate.tasks.13_structure")
+    document = Document(
+        pages=[
+            Page(
+                number=number,
+                blocks=[
+                    Block(
+                        id=key,
+                        order=0,
+                        kind="heading",
+                        level=level,
+                        content=_unit(f"{key}/content", title),
+                    )
+                ],
+            )
+            for number, key, level, title in (
+                (1, "cover", 1, "System Design"),
+                (2, "body", 3, "Introduction"),
+                (3, "section", 2, "Requirements"),
+            )
+        ]
+    )
+    directory = tmp_path / "structure"
+    (directory / "pages").mkdir(parents=True)
+    for page in document.pages:
+        PILImage.new("RGB", (20, 20)).save(
+            directory / "pages" / f"page-{page.number:04d}.png"
+        )
+    client = MagicMock()
+    client.structured.side_effect = [
+        StructuredResult(
+            response=StructureResponse(
+                patches=[StructurePatch(block_id=key, kind="heading", level=1)]
+            ),
+            attempts=1,
+            input_tokens=100,
+            output_tokens=20,
+        )
+        for key in ("cover", "body", "section")
+    ]
+    monkeypatch.setattr(module, "LLMClient", MagicMock(return_value=client))
+
+    result = module.StructureTask(
+        Config(openai_structure_model="model"), directory, "rules"
+    ).run(document, tmp_path / "source.pdf", tmp_path)
+
+    requests = [
+        json.loads(call.kwargs["user"]) for call in client.structured.call_args_list
+    ]
+    assert requests[1]["heading_history"] == []
+    assert requests[2]["heading_history"] == [{"level": 1, "text": "Introduction"}]
+    assert result.pages[1].blocks[0].level == 1
+    assert result.pages[2].blocks[0].level == 2
+    assert document.pages[1].blocks[0].level == 3
+
+
+def test_load_splits_long_text_without_loss() -> None:
+    """長文を文境界で分け、空白も含む原文と安定IDを保持する。"""
+
+    source = "First sentence.\n Second sentence! " * 300
 
     spans = _inline("#/texts/0/content", source)
 
     assert len(spans) > 1
     assert "".join(span.source for span in spans) == source
-    assert all(len(span.source.encode("utf-8")) <= 1024 for span in spans)
+    assert all(span.source.rstrip().endswith((".", "!")) for span in spans)
     assert spans[1].id == "#/texts/0/content/span-0002"
 
 
@@ -618,14 +1917,17 @@ def test_glossary_keeps_only_terms_found_in_english_source() -> None:
         "VLM,Vision Language Model,VLM,視覚言語モデル\n"
     )
 
-    selected = relevant_glossary(
-        glossary,
+    catalog = Glossary(glossary)
+    selected = catalog.select(
         "The application uses an API; partial must not trigger a shorter term.",
     )
 
     assert "API,Application Programming Interface" in selected
     assert "ART,Artillery" not in selected
     assert "VLM,Vision Language Model" not in selected
+    next_selection = catalog.select("The VLM processes an image.")
+    assert "VLM,Vision Language Model" in next_selection
+    assert "API,Application Programming Interface" not in next_selection
 
 
 def test_glossary_keeps_complete_matching_rows_within_byte_limit() -> None:
@@ -637,7 +1939,7 @@ def test_glossary_keeps_complete_matching_rows_within_byte_limit() -> None:
     )
     source = " ".join(f"TERM{index}" for index in range(20))
 
-    selected = relevant_glossary(glossary, source, maximum_bytes=180)
+    selected = Glossary(glossary).select(source, maximum_bytes=180)
 
     assert len(selected.encode("utf-8")) <= 180
     assert selected.startswith("english-short,english-long")
@@ -668,7 +1970,9 @@ def test_review_chunks_split_large_target_without_losing_source_or_spans() -> No
     """単一ReviewTargetが大きくても原文と修正単位を保って分割する。"""
 
     spans = [
-        TextSpan(id=f"span-{index}", source="English " * 80, translated="訳" * 200)
+        TextSpan(
+            id=f"span-{index}", source="English sentence. " * 40, translated="訳" * 200
+        )
         for index in range(6)
     ]
     target = ReviewTarget(
@@ -711,10 +2015,243 @@ def test_review_chunks_keep_one_large_translated_span_intact() -> None:
     assert [item.id for part in parts for item in part.spans] == [span.id]
 
 
+def test_review_reserves_json_envelope_for_split_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """分割対象が本文予算を使い切ってもJSON外枠を含む要求が収まる。"""
+
+    class Client:
+        def __init__(self, config: Config) -> None:
+            """共通要求が参照する設定を保持する。"""
+            self.config = config
+            self.client = MagicMock()
+
+        def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
+            """実要求のuser payloadが入力予算内か検査する。"""
+
+            user = values["user"]
+            assert isinstance(user, str)
+            total = (
+                len(
+                    (values["system"] + "\n\n" + values["contract"] + user).encode(
+                        "utf-8"
+                    )
+                )
+                + 256
+            )
+            assert total <= values["input_tokens"]
+            return StructuredResult(
+                successful_review(
+                    *[target["id"] for target in json.loads(user)["targets"]]
+                ),
+                1,
+                100,
+                10,
+            )
+
+    monkeypatch.setattr("translate.tasks.41_review.LLMClient", Client)
+    span = TextSpan(id="span", source="A sentence. " * 334, translated="訳" * 800)
+    target = ReviewTarget(
+        id="target",
+        source=span.source,
+        translation=span.text(),
+        target_ids=["unit"],
+        spans=[span],
+    )
+    result = ReviewTask(
+        Config(
+            openai_base_url="http://llm",
+            openai_review_model="model",
+            review_input_tokens=8192,
+        ),
+        tmp_path / "review",
+        "r" * 2783,
+        "",
+    ).run([target], tmp_path)
+
+    assert result.findings == []
+    assert result.revisions == []
+    assert result.reviewed_target_ids == [target.id]
+    assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
+
+
+def test_review_maps_assessments_to_owned_units_and_reuses_response(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """比較対象とSpan所有先から提案を復元し、正常対象は一覧へ出さず再開できる。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="model",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    client = LLMClient(config)
+    correct = ReviewTarget(
+        id="translate/literal",
+        source="item_name",
+        translation="item_name",
+        target_ids=["literal"],
+        spans=[TextSpan(id="literal/span", source="item_name")],
+    )
+    target = ReviewTarget(
+        id="review/target",
+        source="One. Two.",
+        translation="一つ。三つ。",
+        target_ids=["unit-a", "unit-b"],
+        spans=[
+            TextSpan(id="span-a", source="一つ。"),
+            TextSpan(id="span-b", source="三つ。"),
+        ],
+    )
+    response = successful_review(correct.id, target.id)
+    response.assessments[1] = ReviewAssessment(
+        target_id=target.id,
+        reason="数値の誤訳",
+        verdict="issue",
+        edits=[ReviewTextEdit(span_id="span-b", text="二つ。")],
+        category="accuracy",
+        severity="error",
+    )
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = response.model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    task = ReviewTask(config, tmp_path / "review", "", "")
+    try:
+        result = task.run(
+            [correct, target],
+            tmp_path,
+            client=client,
+            span_owners={
+                "literal/span": "literal",
+                "span-a": "unit-a",
+                "span-b": "unit-b",
+            },
+        )
+        assert result.reviewed_target_ids == [correct.id, target.id]
+        assert [(item.target_ids, item.message) for item in result.findings] == [
+            (["unit-b"], "数値の誤訳")
+        ]
+        assert [(item.target_id, item.edits[0].text) for item in result.revisions] == [
+            ("unit-b", "二つ。")
+        ]
+        assert (
+            task.run(
+                [correct, target],
+                tmp_path,
+                client=client,
+                span_owners={
+                    "literal/span": "literal",
+                    "span-a": "unit-a",
+                    "span-b": "unit-b",
+                },
+            )
+            == result
+        )
+        create.assert_called_once()
+    finally:
+        client.client.close()
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "correct_edit",
+        "correct_category",
+        "missing_category",
+        "missing_severity",
+        "foreign_span",
+    ],
+)
+def test_review_retries_inconsistent_assessment_before_saving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_kind: str
+) -> None:
+    """判定と分類・修正案の矛盾や別対象のSpanを訂正し、有効な応答だけを保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    targets = [
+        ReviewTarget(
+            id=f"translate/{key}",
+            source="Original",
+            translation="訳",
+            target_ids=[key],
+            spans=[TextSpan(id=f"{key}/span", source="Original", translated="訳")],
+        )
+        for key in ("first", "second")
+    ]
+    valid = successful_review(*(target.id for target in targets))
+    invalid = valid.model_copy(deep=True)
+    item = invalid.assessments[0]
+    if invalid_kind == "correct_edit":
+        item.edits = [ReviewTextEdit(span_id="first/span", text="修正")]
+    elif invalid_kind == "correct_category":
+        item.category = "accuracy"
+    else:
+        item.verdict = "issue"
+        item.category = None if invalid_kind == "missing_category" else "accuracy"
+        item.severity = None if invalid_kind == "missing_severity" else "error"
+        if invalid_kind == "foreign_span":
+            item.edits = [ReviewTextEdit(span_id="second/span", text="別対象の修正")]
+    completions = []
+    for response in (invalid, valid):
+        completion = MagicMock()
+        completion.choices = [MagicMock(finish_reason="stop")]
+        completion.choices[0].message.content = response.model_dump_json()
+        completion.usage = None
+        completions.append(completion)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=completions)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            targets, tmp_path, client=client
+        )
+        assert result.findings == result.revisions == []
+        assert create.call_count == 2
+        saved = ReviewResponse.model_validate_json(
+            next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
+        )
+        assert saved == valid
+    finally:
+        client.client.close()
+
+
+def test_review_drops_optional_context_to_fit_target() -> None:
+    """対象を削らず、RAG・用語集・既知指摘を必要時だけ省く。"""
+
+    target = ReviewTarget(
+        id="target",
+        source="source",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="source", translated="訳")],
+    )
+    base = review_user_payload([target], [], "", [], 8192)
+    payload = review_user_payload(
+        [target],
+        [{"message": "finding" * 100}],
+        "term,訳語\n" * 100,
+        [{"text": "reference" * 100}],
+        len(base.encode("utf-8")),
+    )
+
+    assert json.loads(payload) == json.loads(base)
+
+
 def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     """単一対象の入力超過もさらに分割し、親Callを失敗で終わらせない。"""
 
     class SizeLimitedClient:
+        config = Config(openai_base_url="http://llm", openai_review_model="review")
+
         def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
             """3,000 bytesを超す入力だけprovider上限超過として拒否する。"""
 
@@ -724,7 +2261,9 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
                 message = "provider context limit"
                 raise LLMInputExceededError(message)
             return StructuredResult(
-                response=ReviewResponse(),
+                response=successful_review(
+                    *[target["id"] for target in json.loads(user)["targets"]]
+                ),
                 attempts=1,
                 input_tokens=100,
                 output_tokens=10,
@@ -733,7 +2272,7 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     spans = [
         TextSpan(
             id=f"span-{index}",
-            source="English " * 100,
+            source="English sentence. " * 50,
             translated="訳" * 300,
         )
         for index in range(4)
@@ -746,21 +2285,16 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
         spans=spans,
     )
 
-    responses = execute_review(
-        client=SizeLimitedClient(),  # type: ignore[arg-type]
-        config=Config(
+    responses = ReviewTask(
+        Config(
             openai_base_url="http://localhost",
             openai_review_model="review",
             review_input_tokens=8192,
         ),
-        targets=[target],
-        checked=CheckResult(findings=[]),
-        task_directory=tmp_path,
-        rules="",
-        glossary="",
-        lineage=["chunk-0000"],
-        depth=0,
-    )
+        tmp_path,
+        "",
+        "",
+    ).run([target], tmp_path, client=SizeLimitedClient())
 
     artifacts = [
         json.loads(path.read_text()) for path in tmp_path.glob("calls/*/call.json")
@@ -768,5 +2302,317 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
     statuses = [artifact["status"] for artifact in artifacts]
     assert "split" in statuses
     assert "failed" not in statuses
-    assert len(responses) > 1
-    assert all(response == ReviewResponse() for _, response, _ in responses)
+    assert responses.reviewed_target_ids == [target.id]
+    successful = [
+        artifact for artifact in artifacts if artifact["status"] == "succeeded"
+    ]
+    assert len(successful) > 1
+    assert all(
+        [
+            item.target_id
+            for item in ReviewResponse.model_validate_json(
+                (tmp_path / "calls" / artifact["call_id"] / "response.json").read_text(
+                    encoding="utf-8"
+                )
+            ).assessments
+        ]
+        == [key.removeprefix("review:") for key in artifact["target_ids"]]
+        for artifact in successful
+    )
+
+
+@pytest.mark.parametrize("prefix", ["1 ", "10 ", "123 ", "1. ", "1.2 ", "1.2.3 "])
+def test_heading_number_is_removed_only_when_publishing(prefix: str) -> None:
+    """分割Spanの番号だけをMarkdownで除き、原文・書式・本文の数字を保つ。"""
+    unit = TextUnit(
+        id="heading/content",
+        spans=[
+            TextSpan(id="first", source=prefix[:2]),
+            TextSpan(id="second", source=prefix[2:] + "Title", marks=["strong"]),
+        ],
+    )
+    heading = Block(id="heading", order=0, kind="heading", level=2, content=unit)
+    before = heading.model_dump()
+    output = MarkdownTask(Pandoc(30)).convert_block(heading)
+    assert output == "## **Title** {#heading}"
+    assert heading.model_dump() == before
+    paragraph = heading.model_copy(update={"kind": "paragraph"})
+    assert MarkdownTask(Pandoc(30)).convert_block(paragraph) != "**Title**"
+
+
+def test_heading_year_without_section_punctuation_is_preserved() -> None:
+    """節番号の形式に合わない年度を見出し本文から除かない。"""
+    heading = Block(
+        id="heading",
+        order=0,
+        kind="heading",
+        level=1,
+        content=_unit("content", "2026 Outlook"),
+    )
+    assert "2026 Outlook" in MarkdownTask(Pandoc(30)).convert_block(heading)
+
+
+@pytest.mark.parametrize(
+    ("kind", "prefix"),
+    [
+        ("figure", "図 1 "),
+        ("figure", "Figure 2: "),
+        ("figure", "Fig. 3. "),
+        ("table", "表1\uff1a"),
+        ("table", "Table 2.1: "),
+    ],
+)
+def test_caption_number_is_removed_only_when_publishing(kind: str, prefix: str) -> None:
+    """図表の採番をPandocへ委ね、原文と訳文のCaptionを変更しない。"""
+    caption = TextUnit(
+        id="caption",
+        spans=[
+            TextSpan(
+                id="label", source="original", translated=prefix, marks=["strong"]
+            ),
+            TextSpan(
+                id="title", source="title", translated="説明 2026", marks=["emphasis"]
+            ),
+        ],
+    )
+    block = Block(
+        id="block",
+        order=0,
+        kind=kind,
+        image=Image(id="image", asset_path="assets/image.png", caption=caption),
+        caption=caption,
+        cells=[
+            TableCell(id="cell", row=0, column=0, content=_unit("celltext", "data"))
+        ],
+    )
+    before = block.model_dump()
+    pandoc = MagicMock(spec=Pandoc)
+    value = MarkdownTask(pandoc).convert_block(block)
+    if kind == "figure":
+        assert value.startswith("![*説明 2026*]")
+    else:
+        table = pandoc.table_to_markdown.call_args.args[0]
+        assert table["c"][1] == [
+            None,
+            [{"t": "Plain", "c": [{"t": "Str", "c": "説明 2026"}]}],
+        ]
+    assert block.model_dump() == before
+
+
+@pytest.mark.parametrize(
+    "caption",
+    ["Table of contents", "図の説明 1", "Figure 1st example", "Figure 2.1st example"],
+)
+def test_unnumbered_caption_is_preserved(caption: str) -> None:
+    """採番接頭辞に一致しないCaption本文を保持する。"""
+    block = Block(
+        id="figure",
+        order=0,
+        kind="figure",
+        image=Image(
+            id="image", asset_path="image.png", caption=_unit("caption", caption)
+        ),
+    )
+    assert (
+        MarkdownTask(Pandoc(30))
+        .convert_block(block)
+        .startswith(f"![{caption.replace('.', r'\.')}]")
+    )
+
+
+def test_load_expands_merged_table_into_empty_grid_cells() -> None:
+    """結合セル本文を起点だけに保存し、被覆セルは空Spanで保持する。"""
+    item = {
+        "data": {
+            "num_rows": 2,
+            "num_cols": 2,
+            "table_cells": [
+                {
+                    "start_row_offset_idx": 0,
+                    "start_col_offset_idx": 0,
+                    "end_row_offset_idx": 2,
+                    "end_col_offset_idx": 2,
+                    "row_span": 2,
+                    "col_span": 2,
+                    "text": "Merged",
+                }
+            ],
+        }
+    }
+    cells = [source.cell for source in _normalized_cells(item, "#/tables/0")]
+    assert len(cells) == 4
+    assert cells[0].content.text() == "Merged"
+    assert all(cell.content.spans == [] for cell in cells[1:])
+    assert all(
+        "rowspan" not in cell.model_dump() and "colspan" not in cell.model_dump()
+        for cell in cells
+    )
+
+
+@pytest.mark.parametrize(
+    "reviewed_ids", [[], ["unit"], ["translate/unit", "translate/unit"]]
+)
+def test_review_retries_coverage_error_before_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reviewed_ids: list[str]
+) -> None:
+    """確認済みIDの不一致も同じCall内で一度再要求し、正しい結果だけ成功保存する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="review",
+        openai_llm_base_url=None,
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    client = LLMClient(config)
+    target = ReviewTarget(
+        id="translate/unit",
+        source="Original",
+        translation="訳",
+        target_ids=["unit"],
+        spans=[TextSpan(id="unit/span", source="Original", translated="訳")],
+    )
+    invalid = MagicMock()
+    invalid.choices = [MagicMock(finish_reason="stop")]
+    invalid.choices[0].message.content = successful_review(
+        *reviewed_ids
+    ).model_dump_json()
+    invalid.usage = None
+    valid = MagicMock()
+    valid.choices = [MagicMock(finish_reason="stop")]
+    valid.choices[0].message.content = successful_review(*[target.id]).model_dump_json()
+    valid.usage = None
+    create = MagicMock(side_effect=[invalid, valid])
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        responses = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+        assert create.call_count == 2
+        assert responses.reviewed_target_ids == [target.id]
+        call = json.loads(
+            next(tmp_path.glob("calls/*/call.json")).read_text(encoding="utf-8")
+        )
+        assert call["status"] == "succeeded"
+        assert call["attempts"] == 2
+        assert "assess every requested target" in str(create.call_args_list[1])
+    finally:
+        client.client.close()
+
+
+def test_review_uses_short_response_ids_and_restores_original_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """対象IDとSpan IDを要求内で短縮し、検証済み成果物では元IDを保つ。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        llm_structured_output_mode="json_schema",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id="translate/#/texts/16/content/part-0003",
+        source="Original sentence.",
+        translation="訳文",
+        target_ids=["unit"],
+        spans=[
+            TextSpan(id="unit/span", source="Original sentence.", translated="訳文")
+        ],
+    )
+    client = LLMClient(config)
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = ReviewResponse(
+        assessments=[
+            ReviewAssessment(
+                target_id="1",
+                reason="訳語を修正",
+                verdict="issue",
+                edits=[ReviewTextEdit(span_id="s1", text="識別子")],
+                category="accuracy",
+                severity="warning",
+            )
+        ]
+    ).model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        saved = ReviewResponse.model_validate_json(
+            next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
+        )
+        assert sent["targets"][0]["id"] == "1"
+        assert sent["targets"][0]["spans"][0]["span_id"] == "s1"
+        assert schema["$defs"]["ReviewAssessment"]["properties"]["target_id"][
+            "enum"
+        ] == ["1"]
+        assert schema["$defs"]["ReviewTextEdit"]["properties"]["span_id"]["enum"] == [
+            "s1"
+        ]
+        assert saved.assessments[0].target_id == target.id
+        assert saved.assessments[0].edits[0].span_id == target.spans[0].id
+        assert result.reviewed_target_ids == [target.id]
+        assert result.revisions[0].edits[0].span_id == target.spans[0].id
+    finally:
+        client.client.close()
+
+
+def test_review_trims_rag_using_complete_native_prompt_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """単一の短い対象でもSchema込みで上限を守り、参考文だけを減らして評価する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        llm_structured_output_mode="json_schema",
+        review_input_tokens=11264,
+        qdrant_uri="http://qdrant",
+        qdrant_collection="test",
+        openai_embedding_model="embed",
+    )
+    client = LLMClient(config)
+    target = ReviewTarget(
+        id="translate/unit",
+        source="Original sentence.",
+        translation="訳文。",
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="Original sentence.", translated="訳文。")],
+    )
+    monkeypatch.setattr(
+        "translate.tasks.EmbeddingClient.embed", MagicMock(return_value=[[1.0]])
+    )
+    store = MagicMock()
+    store.__enter__.return_value = store
+    store.search.return_value = [
+        {"text": "reference " * 140, "id": i} for i in range(5)
+    ]
+    monkeypatch.setattr("translate.tasks.QdrantStore", MagicMock(return_value=store))
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = successful_review(
+        *[target.id]
+    ).model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = ReviewTask(config, tmp_path, "r" * 2800, "").run(
+            [target], tmp_path, client=client
+        )
+        assert result.reviewed_target_ids == [target.id]
+        create.assert_called_once()
+        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
+        assert 0 < len(sent["references"]) < 5
+        assert sent["targets"][0]["source"] == target.source
+        assert sent["targets"][0]["spans"][0]["text"] == target.translation
+    finally:
+        client.client.close()

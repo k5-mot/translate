@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from importlib import import_module
 from pathlib import Path
 
 from PIL import Image
 
 from translate import ui
-from translate.artifact_store import describe_artifact, sha256_file, write_model
+from translate.adapters.artifact_store import (
+    describe_artifact,
+    sha256_file,
+    write_model,
+)
 from translate.common.config import Config
 from translate.models.artifacts import (
     InputFile,
@@ -18,17 +23,20 @@ from translate.models.artifacts import (
     RegistrationResult,
     RegistrationSourceResult,
     ReviewRecord,
+    ReviewResult,
     TaskName,
     TaskState,
     TranslationRecord,
 )
 from translate.models.document import Block, Document, Page, TextSpan, TextUnit
-from translate.models.upgrade import UpgradeRecord
+from translate.models.upgrade import UpgradePlan, UpgradeRecord
 from translate.pipeline.register import RegistrationOutcome
 from translate.pipeline.review import ReviewOutcome
 from translate.pipeline.translate import TranslationOutcome
 from translate.pipeline.upgrade import UpgradeOutcome
-from translate.tasks.translation.translate import TranslationItem, TranslationResponse
+
+TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
+TranslationResponse = import_module("translate.tasks.30_translate").TranslationResponse
 
 
 def _input(path: Path, role: str) -> InputFile:
@@ -46,7 +54,6 @@ def _write_translation_progress(
     root: Path,
     source: Path,
     processing_id: str,
-    backend: str,
 ) -> None:
     """処理中Callから確定Callへ変わるUI用Artifactを時間差で公開する。"""
 
@@ -90,7 +97,6 @@ def _write_translation_progress(
             translation_id=processing_id,
             status="processing",
             source=_input(source, "source"),
-            backend=backend,
             tasks=[
                 TaskState(
                     task=TaskName.TRANSLATE,
@@ -145,14 +151,13 @@ def _translate(
     source: Path,
     _config: Config,
     *,
-    backend: str = "llm",
     processing_id: str,
     **_kwargs: object,
 ) -> TranslationOutcome:
     """成功したTranslate記録とdownload成果物を公開する。"""
 
     root = Path.cwd() / "outputs" / source.stem / processing_id
-    _write_translation_progress(root, source, processing_id, backend)
+    _write_translation_progress(root, source, processing_id)
     markdown = root / "document.ja.md"
     docx = root / "document.ja.docx"
     root.mkdir(parents=True, exist_ok=True)
@@ -171,7 +176,6 @@ def _translate(
             translation_id=processing_id,
             status="succeeded",
             source=_input(source, "source"),
-            backend=backend,
             outputs=[describe_artifact(root, markdown), describe_artifact(root, docx)],
             created_at=now,
             updated_at=now,
@@ -196,9 +200,9 @@ def _review(
     """成功したReview記録とreportを公開する。"""
 
     root = Path.cwd() / "outputs" / translation.stem / processing_id
-    report = root / "review.md"
+    report = root / "review/review/review.json"
     root.mkdir(parents=True)
-    report.write_text("# Review E2E\n", encoding="utf-8")
+    write_model(report, ReviewResult())
     now = datetime.now(UTC)
     write_model(
         root / "review.json",
@@ -215,7 +219,7 @@ def _review(
     return ReviewOutcome(
         review_id=processing_id,
         processing_directory=root,
-        report=report,
+        result=report,
     )
 
 
@@ -275,16 +279,15 @@ def _upgrade(
     translation_v1: Path,
     _config: Config,
     *,
-    backend: str = "llm",
     processing_id: str,
     **_kwargs: object,
 ) -> UpgradeOutcome:
-    """成功したUpgrade記録と日本語v2 DOCXを公開する。"""
+    """成功したUpgrade記録と変更一覧JSONを公開する。"""
 
     root = Path.cwd() / "outputs" / source_v2.stem / processing_id
-    docx = root / "document.ja.docx"
+    plan = root / "upgrade/diff/plan.json"
     root.mkdir(parents=True)
-    docx.write_bytes(b"docx")
+    write_model(plan, UpgradePlan())
     now = datetime.now(UTC)
     write_model(
         root / "upgrade.json",
@@ -294,8 +297,7 @@ def _upgrade(
             source_v1=_input(source_v1, "source-v1"),
             source_v2=_input(source_v2, "source-v2"),
             translation_v1=_input(translation_v1, "translation-v1"),
-            backend=backend,
-            outputs=[describe_artifact(root, docx)],
+            outputs=[describe_artifact(root, plan)],
             created_at=now,
             updated_at=now,
         ),
@@ -303,47 +305,27 @@ def _upgrade(
     return UpgradeOutcome(
         upgrade_id=processing_id,
         processing_directory=root,
-        docx=docx,
+        plan=plan,
     )
 
 
-def execute_translate(source: Path, backend: str, processing_id: str) -> object:
-    """子processからE2E用Translate成果物を生成する。"""
+class FakePipelineJob(ui.PipelineJob):
+    """本番と同じspawn境界で、外部要求の代わりに検証用成果物を作る。"""
 
-    return _translate(source, Config(), backend=backend, processing_id=processing_id)
-
-
-def execute_review(source: Path, translation: Path, processing_id: str) -> object:
-    """子processからE2E用Review成果物を生成する。"""
-
-    return _review(source, translation, Config(), processing_id=processing_id)
-
-
-def execute_register(
-    paths: list[Path], source_id: str | None, processing_id: str
-) -> object:
-    """子processからE2E用Register成果物を生成する。"""
-
-    return _register(paths, Config(), source_id=source_id, processing_id=processing_id)
-
-
-def execute_upgrade(
-    source_v1: Path,
-    source_v2: Path,
-    translation_v1: Path,
-    backend: str,
-    processing_id: str,
-) -> object:
-    """子processからE2E用Upgrade成果物を生成する。"""
-
-    return _upgrade(
-        source_v1,
-        source_v2,
-        translation_v1,
-        Config(),
-        backend=backend,
-        processing_id=processing_id,
-    )
+    def __call__(self) -> object:
+        """保持した操作・入力・IDから検証用の処理記録を公開する。"""
+        if self.kind == "translate":
+            return _translate(self.paths[0], Config(), processing_id=self.processing_id)
+        if self.kind == "review":
+            return _review(*self.paths, Config(), processing_id=self.processing_id)
+        if self.kind == "upgrade":
+            return _upgrade(*self.paths, Config(), processing_id=self.processing_id)
+        return _register(
+            list(self.paths),
+            Config(),
+            source_id=self.source_id,
+            processing_id=self.processing_id,
+        )
 
 
 if __name__ == "__main__":
@@ -351,12 +333,5 @@ if __name__ == "__main__":
     from tests.e2e import streamlit_driver as worker  # noqa: PLW0406
 
     ui.load_config = Config
-    ui.translate_pdf = _translate
-    ui.review_pdfs = _review
-    ui.register_paths = _register
-    ui.upgrade_pdfs = _upgrade
-    ui._execute_translate = worker.execute_translate  # noqa: SLF001
-    ui._execute_review = worker.execute_review  # noqa: SLF001
-    ui._execute_register = worker.execute_register  # noqa: SLF001
-    ui._execute_upgrade = worker.execute_upgrade  # noqa: SLF001
+    ui.PipelineJob = worker.FakePipelineJob
     ui.main()

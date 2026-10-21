@@ -1,136 +1,72 @@
 # 📘 Translate JA
 
-Translate JAは、英語PDFを日本語のPandoc MarkdownとDOCXへ変換するPython
-applicationです。独立した英日PDFの比較Review、参照資料のQdrant登録、英文二版と
-日本語旧版から日本語新版を作るUpgradeも提供します。生成LLMを使うTaskは
-STRUCTURE、TRANSLATE、REVIEWだけです。
+英語PDFの翻訳、英日PDFのReview、参照資料の登録、英文改訂のUpgradeを行うStreamlitアプリケーションです。仕様は[SPEC.md](SPEC.md)を参照してください。
 
-## 🚀 セットアップ
+## 🚀 セットアップと起動
 
-Python 3.12以降、`uv`、Pandocを用意します。Qdrantを使わない翻訳だけなら、
-Qdrant clientは不要です。
+Python 3.12以降、uv、Pandoc、Docling ServeとOpenAI互換LLM endpointを用意します。RegisterにはEmbedding endpointとQdrantも必要です。
 
 ```powershell
-# 基本Dependencyを同期する。
-uv sync
-
-# Qdrantの検索またはRegisterを使う場合だけ追加する。
-uv sync --extra qdrant
-
-# 開発用Dependencyを同期する。
-uv sync --dev
-
-# 環境変数の雛形を作成する。
+# UIとQdrantを含む依存関係を同期し、環境変数の雛形をコピーする。
+uv sync --extra ui --extra qdrant --dev
 Copy-Item .env.sample .env
-```
 
-`.env`には、単一のOpenAI互換endpoint、Task別model、Docling Serveなど、
-利用する外部serviceの接続情報を設定してください。process環境変数は`.env`より
-優先されます。Qdrant関連設定を一式省略すると、TranslateとReviewのRAG検索は
-無効になります。
-
-## ⌨️ CLI
-
-公開commandはTranslate、Review、Register、Upgradeの4つです。
-
-```powershell
-# 英語PDFを日本語MarkdownとDOCXへ変換する。
-uv run translate-ja translate inputs/sample.pdf
-
-# LibreTranslateを本文翻訳に使う。
-uv run translate-ja translate inputs/sample.pdf --backend libretranslate
-
-# 独立した英語原文PDFと日本語訳文PDFを比較する。
-uv run translate-ja review inputs/source.pdf inputs/translation.pdf
-
-# 参照資料をQdrantへ登録する。
-uv run translate-ja register references --source-id product-manuals
-
-# 英文v1、英文v2、日本語v1から日本語v2 DOCXを生成する。
-uv run translate-ja upgrade inputs/source-v1.pdf inputs/source-v2.pdf inputs/translation-v1.pdf
-
-# 同じ入力と設定で中断済み処理を再開する。
-uv run translate-ja translate inputs/sample.pdf --resume <uuidv7>
-```
-
-`python -m translate`も同じCLIを起動します。Resumeでは入力pathを再指定し、
-内容のhashまたは処理へ影響する設定が変わっている場合は拒否します。同じ処理IDを
-複数processから同時操作することもできません。
-
-成果物は`outputs/<file-basename>/<uuidv7>/`へ保存します。Translateは
-`translation.json`、Reviewは`review.json`、Registerは`registration.json`、Upgradeは
-`upgrade.json`を
-最上位の処理記録として持ちます。LLM Taskの診断は同じ階層の
-`task-structure.json`、`task-translate.json`、`task-review.json`へ保存します。
-
-## 🖥️ Streamlit UI
-
-Streamlit UIからTranslate、Review、Register、UpgradeのPipelineを実行し、
-処理履歴、TaskとLLM Callの進捗、現在処理中の対象text、Resumeおよび成果物を
-確認できます。初回表示はライトテーマです。
-
-```powershell
-# UI用Dependencyを追加してlocalhostで起動する。
-uv sync --extra ui
+# .envへ接続先とモデルを設定した後、ローカルで起動する。
 uv run streamlit run main.py --server.address localhost
 ```
 
-Dockerで起動する場合は `.env` を用意し、次を実行します。
-ホスト上のLLMやDoclingへ接続するURLには、必要に応じて
-`host.docker.internal` を使用してください。
+`.env`ではTask別model、Docling接続先、必要に応じてEmbeddingとQdrantの接続情報を設定します。環境変数は`.env`より優先されます。Qdrant関連設定を省略したTranslate・Review・UpgradeではRAG検索を無効化します。
 
 ```powershell
-# Streamlit用imageをbuildし、port 8501で起動する。
+# DockerでUIをbuildし、port 8501で起動する。
 docker compose up --build
 ```
+
+Dockerからホスト上のサービスへ接続する場合は、必要に応じて`host.docker.internal`を使います。
+
+## 🖥️ 操作と成果物
+
+| 操作 | 入力 | 成果物 |
+|---|---|---|
+| Translate | 英語PDF | 日本語Markdown・DOCX |
+| Review | 英語原文PDF・日本語訳文PDF | 修正対象箇所・指摘・修正提案の一覧とJSON |
+| Register | 単一・複数PDF、またはPDFを含むディレクトリ | Qdrantへの登録結果 |
+| Upgrade | 英文旧版・新版PDF・日本語旧版PDF | 追加・変更・削除・移動した箇所と修正提案の一覧・JSON |
+
+ReviewとUpgradeのAgentは、途中結果から調査対象と操作を選び、必要な文脈の取得や再確認を繰り返します。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
+
+成果物とログは`outputs/<file-basename>/<uuidv7>/`に保存します。最上位の処理記録は`translation.json`、`review.json`、`registration.json`、`upgrade.json`、ログは同じ場所の`app.log`です。
+
+処理履歴から進捗確認、成果物のdownload、中断した処理のResumeができます。アップロードしたPDFを保存するため再アップロードは不要です。Resumeは入力ファイルの同一性を検証し、設定・規則・用語集の変更は再開拒否の理由にしません。同じ処理IDの同時実行はロックで防ぎます。履歴の削除は右クリックメニュー、または履歴にフォーカスしてShift+F10から行い、確認後に実行します。
 
 ## 🧪 品質確認
 
 ```powershell
-# Format、Lint、型、Testを順に検証する。
+# Lint、Format、型検査、Testを実行する。
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest
 ```
 
-### 🤖 自動受入検証とCodex修正
+### 🌐 実PDFの受入検証
 
-CLI出力、Git状態、入力PDFのhash、処理記録、Task診断およびLLM Call状態の収集は
-受入検証へ統合されています。各工程の診断ZIPは`.diagnostics/`へ保存されます。
+実装をコミットしてから、`inputs/sample.pdf`、`sample2.pdf`、`sample3.pdf`、`sample4.pdf`、`sample5.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
 
-軽量PDFのCLI検証とStreamlit UIのE2E検証は、次のcommandで実行できます。
-既定では`sample.pdf`、`sample3.pdf`、`sample2.pdf`を対象にし、CLI検証後にUI契約を検証します。
-`-IncludeLarge`を指定した場合は、軽量3件のCLI・UI検証が完了してから`sample1.pdf`へ進みます。
-CLIではRegister、Translate、WordによるDOCXからPDFへの変換、Review、Upgradeを順番に実行します。
+Upgradeの新版入力には、元PDFの最終ページを削除した検証用PDFを`.tmp/versions/`へ生成します。入力の変更内容は同じ場所のJSONへ記録します。
 
 ```powershell
-# 軽量PDF 3件を検証する。Codexによる自動修正は行わない。
-.\scripts\acceptance.ps1
-
-# 失敗時にCodexを1回だけ呼び出し、品質検査後に再検証する。
-.\scripts\acceptance.ps1 `
-  -AutoRemediate `
-  -MaxRepairAttempts 1
-
-# 軽量PDF 3件の成功後、sample1.pdfも追加する。
-.\scripts\acceptance.ps1 `
-  -IncludeLarge `
-  -AutoRemediate `
-  -MaxRepairAttempts 1
+# Playwrightのブラウザーを準備し、実サービスとMicrosoft Wordで検証する。
+uv run playwright install chromium
+.\scripts\real_acceptance.ps1
 ```
 
-`-Mode cli`は実PDFのCLI検証だけ、`-Mode ui`は`tests/e2e/test_ui.py`のmock pipelineを使ったUI契約検証だけを実行します。
-Codex修正は`main`以外の作業ブランチでのみ行い、commit、merge、pushは実行しません。
-既存の未コミット変更は診断Bundleへ記録し、修正対象と分離して保持します。
-修正結果は`.diagnostics/`のBundleに保存されます。
+未起動の場合は検証用UIを`127.0.0.1:8502`で起動します。実行ごとの状態・コマンド出力・画面キャプチャは`.tmp/acceptance/<実行ID>/`へ保存します。失敗時は停止します。コードを修正して品質検査とコミットを行った後、同じコマンドでsample.pdfのRegisterから全件を新しい処理IDで検証し直します。
 
-## 🧭 設計資料
+## 🧭 設計・開発資料
 
-- 確定仕様: [SPEC.md](SPEC.md)
-- Streamlit UI仕様: [SPEC_v2.md](SPEC_v2.md)
-- 用語とContext: [CONTEXT.md](CONTEXT.md)
-- 実装規則: [CODING_RULES.md](CODING_RULES.md)
-- 文書規則: [DOCUMENTATION_RULES.md](DOCUMENTATION_RULES.md)
-- Contribution手順: [CONTRIBUTING.md](CONTRIBUTING.md)
-- 今後の候補: [TODO.md](TODO.md)
+- [仕様書](SPEC.md)
+- [要件選択チェックリスト](REQUIREMENTS_CHECKLIST.md)
+- [コーディング規約](CODING_RULES.md)
+- [文書規約](DOCUMENTATION_RULES.md)
+- [Contribution手順](CONTRIBUTING.md)

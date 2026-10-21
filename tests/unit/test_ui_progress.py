@@ -3,28 +3,38 @@
 import io
 import zipfile
 from concurrent.futures import Future
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from importlib import import_module
 from pathlib import Path
 
 import pytest
 
+from translate.adapters.artifact_store import load_model, write_model
 from translate.adapters.docling import DoclingClient
 from translate.adapters.llm import LLMOutputTokenExceededError
-from translate.artifact_store import load_model, write_model
 from translate.common.config import Config
 from translate.models.artifacts import (
     ArtifactFile,
-    CheckResult,
     DoclingProgress,
     InputFile,
+    ProcessingError,
     SplitManifest,
     SplitPart,
     TaskName,
     TaskState,
     TranslationRecord,
 )
-from translate.tasks.converter.docling import convert
-from translate.ui import _docling_progress, _render_future_error, _task_progress
+from translate.ui import (
+    HistoryEntry,
+    TranslationApp,
+    WorkerError,
+    WorkerRegistry,
+    _docling_progress,
+    _render_future_error,
+    _task_progress,
+)
+
+convert = import_module("translate.tasks.01_docling").convert
 
 
 def _record() -> TranslationRecord:
@@ -49,9 +59,9 @@ def _record() -> TranslationRecord:
                 completed_at=now,
             ),
             TaskState(
-                task=TaskName.CHECK,
+                task=TaskName.PANDOC,
                 status="processing",
-                fingerprint="final-check",
+                fingerprint="pandoc",
                 started_at=now,
             ),
         ],
@@ -60,24 +70,14 @@ def _record() -> TranslationRecord:
     )
 
 
-def test_translate_progress_counts_check_phases_from_valid_artifacts(
-    tmp_path: Path,
-) -> None:
-    """同名CHECKの初回と最終をArtifactで別々に数える。"""
-
-    check_dir = tmp_path / "review/check"
-    write_model(check_dir / "findings.json", CheckResult(findings=[]))
-
-    completed, total, active = _task_progress(tmp_path, _record())
-
-    assert (completed, total) == (2, 17)
-    assert active == "CHECK (最終)"
-
-    write_model(check_dir / "final-findings.json", CheckResult(findings=[]))
-    completed, total, active = _task_progress(tmp_path, _record())
-
-    assert (completed, total) == (3, 17)
-    assert active == "CHECK (最終)"
+def test_translate_progress_counts_pandoc_and_ooxml_separately(tmp_path: Path) -> None:
+    """PANDOCとOOXMLを別stageとして数え、固定CHECKを含めない。"""
+    record = _record()
+    completed, total, active = _task_progress(tmp_path, record)
+    assert (completed, total, active) == (1, 16, "PANDOC")
+    record.tasks[-1].status = "succeeded"
+    completed, total, _ = _task_progress(tmp_path, record)
+    assert (completed, total) == (2, 16)
 
 
 def test_ui_shows_llm_error_type_and_remedy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,6 +95,45 @@ def test_ui_shows_llm_error_type_and_remedy(monkeypatch: pytest.MonkeyPatch) -> 
     _render_future_error(future)
 
     assert "LLMOutputTokenExceededError" in messages[0]
+    assert "対策: TRANSLATE_OUTPUT_TOKENS" in messages[0]
+
+
+def test_record_error_does_not_repeat_worker_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """記録にある具体的な対策を、汎用WorkerErrorで重複表示しない。"""
+
+    record = _record().model_copy(
+        update={
+            "status": "failed",
+            "error": ProcessingError(
+                code="task_failed",
+                message="出力上限です。対策: TRANSLATE_OUTPUT_TOKENSを増やす。",
+                cause_type="LLMOutputTokenExceededError",
+                retryable=True,
+            ),
+        }
+    )
+    entry = HistoryEntry(
+        kind="translate",
+        record_path=tmp_path / "translation.json",
+        updated_at=record.updated_at,
+        record=record,
+    )
+    future: Future[object] = Future()
+    future.set_exception(WorkerError("LLMOutputTokenExceededError"))
+    registry = WorkerRegistry()
+    monkeypatch.setattr(registry, "future", lambda _: future)
+    monkeypatch.setattr("translate.ui.TranslationApp._render_resume", lambda *_: None)
+    monkeypatch.setattr(
+        "translate.ui.TranslationApp._render_history_delete", lambda *_: None
+    )
+    messages: list[str] = []
+    monkeypatch.setattr("translate.ui.st.error", messages.append)
+
+    TranslationApp(registry)._render_record_actions(entry)  # noqa: SLF001 — 失敗表示の回帰試験。
+
+    assert len(messages) == 1
     assert "対策: TRANSLATE_OUTPUT_TOKENS" in messages[0]
 
 
@@ -128,7 +167,8 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
             DoclingProgress(completed=completed, total=count),
         )
 
-    assert _docling_progress(tmp_path, datetime.now(UTC)) == (0, 5)
+    future_start = datetime.now(UTC) + timedelta(seconds=1)
+    assert _docling_progress(tmp_path, future_start) == (0, 5)
     assert _docling_progress(tmp_path, datetime.fromtimestamp(0, UTC)) == (3, 5)
 
 
