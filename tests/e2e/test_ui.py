@@ -94,9 +94,9 @@ def _upload(page: Page, tab_name: str, labels: list[str], paths: list[Path]) -> 
             )
             uploader.locator('input[type="file"]').set_input_files(path)
             try:
-                uploader.get_by_text(path.name, exact=True).wait_for(
-                    state="attached", timeout=30_000
-                )
+                uploader.get_by_role(
+                    "button", name=f"Remove {path.name}", exact=True
+                ).wait_for(state="attached", timeout=30_000)
                 break
             except PlaywrightTimeoutError:
                 if attempt == 2:

@@ -158,9 +158,9 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
                 )
                 uploader.locator('input[type="file"]').set_input_files(path.resolve())
                 try:
-                    uploader.get_by_text(path.name, exact=True).wait_for(
-                        state="attached", timeout=10_000
-                    )
+                    uploader.get_by_role(
+                        "button", name=f"Remove {path.name}", exact=True
+                    ).wait_for(state="attached", timeout=10_000)
                     break
                 except Exception:
                     if attempt == 2:
