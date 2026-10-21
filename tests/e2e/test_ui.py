@@ -119,7 +119,7 @@ def _wait_for_success(
         "new URL(location.href).searchParams.get('processing')"
     )
     expect(
-        page.get_by_role("heading", name=f"Translate · {processing_id}")
+        page.get_by_role("heading", name="Translate", exact=True).last
     ).to_be_visible()
     state_file = {
         "Translate": "state-translation.json",

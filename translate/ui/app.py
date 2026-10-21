@@ -599,10 +599,9 @@ class TranslationApp:
             page_title="Translate",
             layout="wide",
         )
+        st.title("Translate")
         entries = _history_entries()
         selected_id = _render_history_sidebar(entries)
-        title = f"Translate · {selected_id}" if selected_id else "Translate"
-        st.title(title)
         pending_delete = st.session_state.get("pending-delete")
         candidate = next(
             (entry for entry in entries if entry.processing_id == pending_delete), None
