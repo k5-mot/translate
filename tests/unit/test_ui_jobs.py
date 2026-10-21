@@ -8,6 +8,7 @@ import pytest
 
 from translate import ui
 from translate.common.config import Config
+from translate.ui import runtime
 
 
 @pytest.mark.parametrize("resuming", [False, True])
@@ -32,8 +33,8 @@ def test_pipeline_job_dispatches_serializable_request(
     config = Config()
     settings = MagicMock(return_value=config)
     pipeline = MagicMock()
-    monkeypatch.setattr(ui, "load_config", settings)
-    monkeypatch.setattr(ui, pipeline_name, pipeline)
+    monkeypatch.setattr(runtime, "load_config", settings)
+    monkeypatch.setattr(runtime, pipeline_name, pipeline)
     paths = tuple(Path(f"input-{index}.pdf") for index in range(count))
     job = ui.PipelineJob(kind, paths, "processing-id", "reference", resuming)
     # 信頼済みのテスト内で生成した値だけを、spawnと同じpickle境界へ通す。

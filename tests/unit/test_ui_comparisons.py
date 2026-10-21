@@ -37,6 +37,7 @@ from translate.ui import (
     _translation_comparison,
     _upgrade_context,
 )
+from translate.ui import comparisons as ui_comparisons
 
 StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
 StructureResponse = import_module("translate.tasks.13_structure").StructureResponse
@@ -74,19 +75,21 @@ def test_rejected_revisions_are_rendered_in_collapsed_group() -> None:
     """拒否された修正候補を件数付きの閉じたCollapseへまとめる。"""
 
     with (
-        patch.object(ui, "_fix_comparison", return_value=("before", "after")),
-        patch.object(ui, "_review_comparison", return_value=None),
-        patch.object(ui, "_translation_comparison", return_value=None),
         patch.object(
-            ui,
+            ui_comparisons, "_fix_comparison", return_value=("before", "after")
+        ),
+        patch.object(ui_comparisons, "_review_comparison", return_value=None),
+        patch.object(ui_comparisons, "_translation_comparison", return_value=None),
+        patch.object(
+            ui_comparisons,
             "_fix_rejections",
             return_value=[
                 ("revision-1", "conflicting_edit"),
                 ("revision-2", "overlapping_edit"),
             ],
         ),
-        patch.object(ui, "_render_text_areas"),
-        patch.object(ui, "_render_diff"),
+        patch.object(ui_comparisons, "_render_text_areas"),
+        patch.object(ui_comparisons, "_render_diff"),
         patch.object(ui.st, "subheader"),
         patch.object(ui.st, "expander") as expander,
         patch.object(ui.st, "markdown") as markdown,
@@ -130,7 +133,7 @@ def test_review_context_keeps_source_and_translation_on_same_target(
     """Review二列は同じReviewTarget IDの原文と訳文を表示する。"""
 
     write_model(
-        tmp_path / "review/review/review.json",
+        tmp_path / "tasks/41-review/review.json",
         ReviewResult(
             groups=[],
             targets=[
@@ -155,7 +158,7 @@ def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) ->
     """Review一覧の行構造を検証する。"""
 
     write_model(
-        tmp_path / "review/review/review.json",
+        tmp_path / "tasks/41-review/review.json",
         ReviewResult(
             groups=[],
             targets=[
@@ -168,7 +171,7 @@ def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) ->
             ],
         ),
     )
-    value = load_model(tmp_path / "review/review/review.json", ReviewResult)
+    value = load_model(tmp_path / "tasks/41-review/review.json", ReviewResult)
     value.findings = [
         Finding(
             id="finding-1",
@@ -185,7 +188,7 @@ def test_review_rows_separate_findings_and_revision_proposals(tmp_path: Path) ->
             edits=[TextEdit(span_id="span-1", text="提案訳")],
         )
     ]
-    write_model(tmp_path / "review/review/review.json", value)
+    write_model(tmp_path / "tasks/41-review/review.json", value)
 
     findings, revisions = _review_rows(tmp_path)
 
@@ -213,19 +216,19 @@ def test_upgrade_context_uses_placeholders_without_guessing(tmp_path: Path) -> N
     """Upgrade三列はadded、deleted、対応訳なしを規定値で維持する。"""
 
     write_model(
-        tmp_path / "preprocess/source-v1/load/document.json",
+        tmp_path / "tasks/12-load/source-v1/document.json",
         _document([("v1-modified", "old"), ("v1-deleted", "deleted")]),
     )
     write_model(
-        tmp_path / "preprocess/source-v2/load/document.json",
+        tmp_path / "tasks/12-load/source-v2/document.json",
         _document([("v2-modified", "new"), ("v2-added", "added")]),
     )
     write_model(
-        tmp_path / "preprocess/translation-v1/load/document.json",
+        tmp_path / "tasks/12-load/translation-v1/document.json",
         _document([("ja-modified", "旧訳")]),
     )
     write_model(
-        tmp_path / "upgrade/diff/plan.json",
+        tmp_path / "tasks/21-diff/plan.json",
         UpgradePlan(
             changes=[
                 VersionChange(
@@ -267,10 +270,10 @@ def test_translation_comparison_uses_one_verified_call(tmp_path: Path) -> None:
     """TRANSLATE左右は同じ成功Callの対象と検証済み応答を使う。"""
 
     write_model(
-        tmp_path / "preprocess/structure/document.json",
+        tmp_path / "tasks/13-structure/document.json",
         _document([("unit-1", "English")]),
     )
-    call_dir = tmp_path / "translation/translate/calls/call-1"
+    call_dir = tmp_path / "tasks/30-translate/calls/call-1"
     write_model(
         call_dir / "response.json",
         TranslationResponse(
@@ -300,7 +303,7 @@ def test_translation_comparison_uses_one_verified_call(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "document_path",
-    ["preprocess/load/document.json", "preprocess/source-v2/load/document.json"],
+    ["tasks/12-load/document.json", "tasks/12-load/source-v2/document.json"],
 )
 def test_structure_comparison_shows_active_block_text(
     tmp_path: Path, document_path: str
@@ -313,7 +316,7 @@ def test_structure_comparison_shows_active_block_text(
     )
     now = datetime.now(UTC)
     write_model(
-        tmp_path / "preprocess/structure/calls/call-1/call.json",
+        tmp_path / "tasks/13-structure/calls/call-1/call.json",
         LLMCallArtifact(
             call_id="call-1",
             task="STRUCTURE",
@@ -339,9 +342,9 @@ def test_structure_comparison_shows_verified_patch_diff(tmp_path: Path) -> None:
     """検証済みSTRUCTURE応答の構造変更を同じBlockの前後に表示する。"""
 
     write_model(
-        tmp_path / "preprocess/load/document.json", _document([("unit-1", "Title")])
+        tmp_path / "tasks/12-load/document.json", _document([("unit-1", "Title")])
     )
-    call_dir = tmp_path / "preprocess/structure/calls/call-1"
+    call_dir = tmp_path / "tasks/13-structure/calls/call-1"
     write_model(
         call_dir / "response.json",
         StructureResponse(
@@ -378,9 +381,9 @@ def test_fix_comparison_shows_only_applied_revision_targets(tmp_path: Path) -> N
 
     before = _document([("unit-1", "修正前"), ("unit-2", "対象外")])
     after = _document([("unit-1", "修正後"), ("unit-2", "対象外")])
-    write_model(tmp_path / "translation/translate/document.json", before)
+    write_model(tmp_path / "tasks/30-translate/document.json", before)
     write_model(
-        tmp_path / "review/review/review.json",
+        tmp_path / "tasks/41-review/review.json",
         ReviewResult(
             findings=[],
             revisions=[
@@ -398,7 +401,7 @@ def test_fix_comparison_shows_only_applied_revision_targets(tmp_path: Path) -> N
         ),
     )
     write_model(
-        tmp_path / "review/fix/outcomes.json",
+        tmp_path / "tasks/42-fix/outcomes.json",
         FixResult(
             document=after,
             outcomes=[
@@ -429,9 +432,9 @@ def test_upgrade_displays_verified_call_before_final_plan(tmp_path: Path) -> Non
         ("translation-v1", "ja", "旧訳"),
     ):
         write_model(
-            tmp_path / f"preprocess/{role}/load/document.json", _document([(key, text)])
+            tmp_path / f"tasks/12-load/{role}/document.json", _document([(key, text)])
         )
-    call_dir = tmp_path / "upgrade/diff/calls/call-1"
+    call_dir = tmp_path / "tasks/21-diff/calls/call-1"
     write_model(
         call_dir / "response.json",
         DiffResponse.model_validate(
@@ -480,7 +483,7 @@ def test_review_comparison_resolves_agent_ids_and_revision_units(
 ) -> None:
     """Agentのrole付き対象IDとTextUnitを参照する提案を同じCallから表示する。"""
     write_model(
-        tmp_path / "review/review/review.json",
+        tmp_path / "tasks/41-review/review.json",
         ReviewResult(
             targets=[
                 ReviewTarget(
@@ -492,7 +495,7 @@ def test_review_comparison_resolves_agent_ids_and_revision_units(
             ]
         ),
     )
-    call_dir = tmp_path / "review/review/calls/call-1"
+    call_dir = tmp_path / "tasks/41-review/calls/call-1"
     write_model(
         call_dir / "response.json",
         ReviewResponse.model_validate(
@@ -539,10 +542,10 @@ def test_review_preview_reads_alignment_response(tmp_path: Path) -> None:
         ("translation", "ja", "訳文"),
     ]:
         write_model(
-            tmp_path / "preprocess" / role / "load/document.json",
+            tmp_path / "tasks" / "12-load" / role / "document.json",
             _document([(identifier, text)]),
         )
-    directory = tmp_path / "review/review/calls/match-call"
+    directory = tmp_path / "tasks/41-review/calls/match-call"
     write_model(
         directory / "response.json",
         AlignmentResponse.model_validate(

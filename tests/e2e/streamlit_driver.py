@@ -17,6 +17,8 @@ from translate.adapters.artifact_store import (
 )
 from translate.common.config import Config
 from translate.models.artifacts import (
+    ArtifactFile,
+    DoclingProgress,
     InputFile,
     LLMCallArtifact,
     RegistrationRecord,
@@ -24,6 +26,8 @@ from translate.models.artifacts import (
     RegistrationSourceResult,
     ReviewRecord,
     ReviewResult,
+    SplitManifest,
+    SplitPart,
     TaskName,
     TaskState,
     TranslationRecord,
@@ -75,8 +79,33 @@ def _write_translation_progress(
             )
         ]
     )
-    write_model(root / "preprocess/structure/document.json", document)
-    call_dir = root / "translation/translate/calls/call-1"
+    write_model(root / "tasks/13-structure/document.json", document)
+    manifest_path = root / "tasks/00-split/source/manifest.json"
+    write_model(
+        manifest_path,
+        SplitManifest(
+            source_sha256="0" * 64,
+            total_pages=20,
+            parts=[
+                SplitPart(
+                    number=number,
+                    page_start=number,
+                    page_end=number,
+                    file=ArtifactFile(
+                        relative_path=f"part-{number}.pdf",
+                        sha256="0" * 64,
+                        size_bytes=0,
+                    ),
+                )
+                for number in range(1, 21)
+            ],
+        ),
+    )
+    write_model(
+        root / "tasks/01-docling/source/docling-progress.json",
+        DoclingProgress(completed=0, total=20),
+    )
+    call_dir = root / "tasks/30-translate/calls/call-1"
     now = datetime.now(UTC)
     write_model(
         call_dir / "call.json",
@@ -92,14 +121,14 @@ def _write_translation_progress(
         ),
     )
     write_model(
-        root / "translation.json",
+        root / "state-translation.json",
         TranslationRecord(
             translation_id=processing_id,
             status="processing",
             source=_input(source, "source"),
             tasks=[
                 TaskState(
-                    task=TaskName.TRANSLATE,
+                    task=TaskName.DOCLING,
                     status="processing",
                     fingerprint="translate",
                     started_at=now,
@@ -130,7 +159,7 @@ def _write_translation_progress(
             updated_at=datetime.now(UTC),
         ),
     )
-    next_call = root / "translation/translate/calls/call-2/call.json"
+    next_call = root / "tasks/30-translate/calls/call-2/call.json"
     write_model(
         next_call,
         LLMCallArtifact(
@@ -171,7 +200,7 @@ def _translate(
     docx.write_bytes(b"docx")
     now = datetime.now(UTC)
     write_model(
-        root / "translation.json",
+        root / "state-translation.json",
         TranslationRecord(
             translation_id=processing_id,
             status="succeeded",
@@ -200,12 +229,12 @@ def _review(
     """成功したReview記録とreportを公開する。"""
 
     root = Path.cwd() / "outputs" / translation.stem / processing_id
-    report = root / "review/review/review.json"
-    root.mkdir(parents=True)
+    report = root / "tasks/41-review/review.json"
+    root.mkdir(parents=True, exist_ok=True)
     write_model(report, ReviewResult())
     now = datetime.now(UTC)
     write_model(
-        root / "review.json",
+        root / "state-review.json",
         ReviewRecord(
             review_id=processing_id,
             status="succeeded",
@@ -252,7 +281,7 @@ def _register(
         total_points=len(paths),
     )
     write_model(
-        root / "registration.json",
+        root / "state-registration.json",
         RegistrationRecord(
             registration_id=processing_id,
             status="succeeded",
@@ -269,7 +298,7 @@ def _register(
     return RegistrationOutcome(
         registration_id=processing_id,
         processing_directory=root,
-        record=root / "registration.json",
+        record=root / "state-registration.json",
     )
 
 
@@ -286,11 +315,11 @@ def _upgrade(
 
     root = Path.cwd() / "outputs" / source_v2.stem / processing_id
     plan = root / "upgrade/diff/plan.json"
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, exist_ok=True)
     write_model(plan, UpgradePlan())
     now = datetime.now(UTC)
     write_model(
-        root / "upgrade.json",
+        root / "state-upgrade.json",
         UpgradeRecord(
             upgrade_id=processing_id,
             status="succeeded",

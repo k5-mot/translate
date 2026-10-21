@@ -71,6 +71,23 @@ def test_stage_uploads_retries_transient_windows_access_denied(
     assert staged[0].read_bytes() == b"source"
 
 
+def test_stage_uploads_shares_processing_directory_with_outputs(tmp_path: Path) -> None:
+    """UI入力をoutputs配下の同じ処理IDへ保存する。"""
+
+    processing_id = "0199bde8-a610-7c89-8000-000000000001"
+    staged = _stage_uploads(
+        processing_id,
+        [(cast("UploadedFile", _Upload()), Path("translate/source.pdf"))],
+        work_root=tmp_path / "outputs",
+        output_name="sample5",
+    )
+
+    assert staged == [
+        tmp_path / "outputs/sample5" / processing_id / "inputs/translate/source.pdf"
+    ]
+    assert staged[0].read_bytes() == b"source"
+
+
 def test_atomic_write_retries_transient_windows_access_denied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -74,11 +74,16 @@ class _Upload:
 def test_streamlit_ui_does_not_use_deprecated_container_width() -> None:
     """Streamlit UIが廃止予定のuse_container_widthを使用しない。"""
 
-    source = (Path(__file__).resolve().parents[2] / "translate/ui.py").read_text(
-        encoding="utf-8"
+    ui_directory = Path(__file__).resolve().parents[2] / "translate/ui"
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in ui_directory.glob("*.py")
     )
 
     assert "use_container_width" not in source
+    assert "unsafe_allow_html=True" not in source
+    assert "st.components" not in source
+    assert "<script" not in source
+    assert "<style" not in source
 
 
 def _upload(name: str, value: bytes = b"value") -> UploadedFile:
@@ -164,7 +169,9 @@ def test_resume_reupload_requires_saved_name_and_hash(
     )
     entry = HistoryEntry(
         kind="translate",
-        record_path=tmp_path / "outputs/manual" / processing_id / "translation.json",
+        record_path=(
+            tmp_path / "outputs/manual" / processing_id / "state-translation.json"
+        ),
         updated_at=record.updated_at,
         record=record,
     )
@@ -212,7 +219,7 @@ def test_force_stop_terminates_worker_and_marks_record_cancelled(
     source.write_bytes(b"pdf")
     processing_id = str(uuid7())
     record = _record(processing_id, source, datetime.now(UTC))
-    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    record_path = tmp_path / "outputs/source" / processing_id / "state-translation.json"
     write_model(record_path, record)
     entry = HistoryEntry(
         kind="translate",
@@ -237,16 +244,16 @@ def test_force_stop_terminates_worker_and_marks_record_cancelled(
         registry.stop(processing_id)
 
 
-def test_processing_history_shows_loading_icon_and_stop_button(
+def test_processing_history_shows_two_line_item_and_stop_button(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """処理中の履歴にLoadingアイコンと停止操作を表示する。"""
+    """処理中の履歴に二段表示とStop操作を表示する。"""
 
     monkeypatch.chdir(tmp_path)
     source = tmp_path / "source.pdf"
     source.write_bytes(b"pdf")
     processing_id = str(uuid7())
-    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    record_path = tmp_path / "outputs/source" / processing_id / "state-translation.json"
     write_model(record_path, _record(processing_id, source, datetime.now(UTC)))
     registry = WorkerRegistry()
     monkeypatch.setattr(ui, "worker_registry", lambda: registry)
@@ -257,11 +264,15 @@ def test_processing_history_shows_loading_icon_and_stop_button(
     try:
         app.run(timeout=10)
         assert not app.exception
-        component = app.get("bidi_component")[0]
-        assert '"active": true' in component.proto.json
+        history_item = next(
+            button for button in app.button if button.key == f"history-{processing_id}"
+        )
+        assert "Translate | source.pdf\nprocessing | " in history_item.label
+        assert {metric.label for metric in app.metric} >= {"開始時刻", "実行時間"}
         stop = next(
             button for button in app.button if button.key == f"stop-{processing_id}"
         )
+        assert stop.label == "Stop"
         stop.click().run(timeout=10)
         assert load_model(record_path, TranslationRecord).status == "cancelled"
     finally:
@@ -280,11 +291,11 @@ def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
         update={"status": "failed"}
     )
     processing_directory = tmp_path / "outputs/source" / processing_id
-    record_path = processing_directory / "translation.json"
+    record_path = processing_directory / "state-translation.json"
     write_model(record_path, record)
-    staged = tmp_path / ".translate-ui" / processing_id
-    staged.mkdir(parents=True)
-    (staged / "source.pdf").write_bytes(b"pdf")
+    staged = processing_directory / "inputs/translate/source.pdf"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"pdf")
     untouched = tmp_path / "outputs/source/untouched"
     untouched.mkdir(parents=True)
     entry = HistoryEntry(
@@ -295,11 +306,11 @@ def test_delete_history_removes_only_selected_outputs_and_saved_inputs(
     )
 
     TranslationApp(WorkerRegistry()).delete_history(
-        entry, outputs_root=tmp_path / "outputs", work_root=tmp_path / ".translate-ui"
+        entry, outputs_root=tmp_path / "outputs"
     )
 
     assert not processing_directory.exists()
-    assert not staged.exists()
+    assert not staged.parent.parent.exists()
     assert untouched.is_dir()
 
 
@@ -316,10 +327,10 @@ def test_streamlit_delete_button_requires_confirmation_and_removes_history(
         update={"status": "failed"}
     )
     processing_directory = tmp_path / "outputs/source" / processing_id
-    write_model(processing_directory / "translation.json", record)
-    staged = tmp_path / ".translate-ui" / processing_id
-    staged.mkdir(parents=True)
-    (staged / "source.pdf").write_bytes(b"pdf")
+    write_model(processing_directory / "state-translation.json", record)
+    staged = processing_directory / "inputs/translate/source.pdf"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(b"pdf")
     app = AppTest.from_file(str(Path(__file__).parents[2] / "main.py"))
     app.query_params["processing"] = processing_id
 
@@ -341,13 +352,13 @@ def test_streamlit_delete_button_requires_confirmation_and_removes_history(
     ).click().run(timeout=10)
 
     assert not processing_directory.exists()
-    assert not staged.exists()
+    assert not staged.parent.parent.exists()
 
 
 def test_live_call_counts_reads_in_progress_artifacts(tmp_path: Path) -> None:
     """Task完了前もCall Artifactから観測数と状態を表示できる。"""
 
-    calls = tmp_path / "translation/translate/calls"
+    calls = tmp_path / "tasks/30-translate/calls"
     now = datetime.now(UTC)
     for index, status in enumerate(("succeeded", "processing", "failed"), 1):
         write_model(
@@ -373,7 +384,7 @@ def test_comparison_text_is_bounded_and_requires_verified_response(
     """比較textを240文字に省略し、hash一致する確定応答だけを表示対象にする。"""
 
     assert len(_preview("A" * 300)) == 240
-    directory = tmp_path / "translation/translate/calls/call-1"
+    directory = tmp_path / "tasks/30-translate/calls/call-1"
     response = TranslationResponse(
         translations=[TranslationItem(span_id="span-1", text="確定訳")]
     )
@@ -412,8 +423,10 @@ def test_history_is_sorted_limited_and_keeps_invalid_records(tmp_path: Path) -> 
     for index in range(101):
         processing_id = str(uuid7())
         record = _record(processing_id, source, start + timedelta(seconds=index))
-        write_model(tmp_path / "source" / processing_id / "translation.json", record)
-    invalid = tmp_path / "broken" / str(uuid7()) / "review.json"
+        write_model(
+            tmp_path / "source" / processing_id / "state-translation.json", record
+        )
+    invalid = tmp_path / "broken" / str(uuid7()) / "state-review.json"
     invalid.parent.mkdir(parents=True)
     invalid.write_text("{", encoding="utf-8")
     newest = (start + timedelta(seconds=200)).timestamp()
@@ -444,7 +457,9 @@ def test_processing_id_does_not_overwrite_existing_record(tmp_path: Path) -> Non
     source = tmp_path / "source.pdf"
     source.write_bytes(b"pdf")
     processing_id = str(uuid7())
-    record_path = tmp_path / "outputs" / "source" / processing_id / "translation.json"
+    record_path = (
+        tmp_path / "outputs" / "source" / processing_id / "state-translation.json"
+    )
     write_model(record_path, _record(processing_id, source, datetime.now(UTC)))
     config = Config(
         docling_server_url="http://docling",
@@ -467,7 +482,7 @@ def test_real_ui_translate_resume_uses_translation_record(
 
     monkeypatch.chdir(tmp_path)
     processing_id = str(uuid7())
-    record_path = tmp_path / "outputs/source" / processing_id / "translation.json"
+    record_path = tmp_path / "outputs/source" / processing_id / "state-translation.json"
     record_path.parent.mkdir(parents=True)
     record_path.write_text('{"updated_at": "before"}', encoding="utf-8")
     page = MagicMock()
@@ -497,10 +512,10 @@ def test_streamlit_v2_renders_four_operations(
         "Register",
     ]
     buttons = {button.label: button for button in app.button}
-    assert buttons["翻訳を開始"].disabled
-    assert buttons["レビューを開始"].disabled
-    assert buttons["登録を開始"].disabled
-    assert buttons["Upgradeを開始"].disabled
+    assert buttons["Start Translate"].disabled
+    assert buttons["Start Review"].disabled
+    assert buttons["Start Register"].disabled
+    assert buttons["Start Upgrade"].disabled
     assert not app.sidebar.get("status")
     assert app.sidebar.subheader[0].value == "処理履歴"
     settings = next(

@@ -34,16 +34,17 @@ def _assert_progress_layout(app: AppTest, processing_id: str) -> None:
     )
     assert progress.proto.expanded
     assert app.sidebar.subheader[0].value == "処理履歴"
-    assert processing_id in app.get("bidi_component")[0].proto.json
+    assert app.sidebar.title[0].value == "Translate"
+    assert processing_id in app.title[0].value
     detail = next(
         expander for expander in app.get("status") if expander.label == "進捗詳細"
     )
     assert not detail.proto.expanded
+    assert {metric.label for metric in app.metric} >= {"開始時刻", "実行時間"}
     details = {markdown.value for markdown in app.markdown}
-    assert any(value.startswith("更新時刻: ") for value in details)
     assert any(value.startswith("REVIEW: ") for value in details)
     progress_text = app.get("progress")[0].proto.text
-    assert all(value in progress_text for value in ("Task", "REVIEW", "processing"))
+    assert "10 / 16 - REVIEW - processing" in progress_text
 
 
 def test_streamlit_renders_progress_and_verified_translation_pair(
@@ -74,8 +75,8 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
             )
         ]
     )
-    write_model(root / "preprocess/structure/document.json", document)
-    call_dir = root / "translation/translate/calls/call-1"
+    write_model(root / "tasks/13-structure/document.json", document)
+    call_dir = root / "tasks/30-translate/calls/call-1"
     now = datetime.now(UTC)
     write_model(
         call_dir / "call.json",
@@ -91,7 +92,7 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
         ),
     )
     write_model(
-        root / "translation.json",
+        root / "state-translation.json",
         TranslationRecord(
             translation_id=processing_id,
             status="processing",
@@ -149,7 +150,7 @@ def test_streamlit_renders_progress_and_verified_translation_pair(
         ),
     )
     write_model(
-        root / "translation/translate/calls/call-2/call.json",
+        root / "tasks/30-translate/calls/call-2/call.json",
         LLMCallArtifact(
             call_id="call-2",
             task="TRANSLATE",

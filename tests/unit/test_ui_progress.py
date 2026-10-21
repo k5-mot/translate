@@ -141,9 +141,9 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
     """複数入力の分割PDF数を合算し、今回の完了件数だけ表示する。"""
 
     for role, count, completed in (("source", 2, 2), ("translation", 3, 1)):
-        directory = tmp_path / "converter" / role
+        directory = tmp_path / "tasks/00-split" / role
         write_model(
-            directory / "split/manifest.json",
+            directory / "manifest.json",
             SplitManifest(
                 source_sha256="0" * 64,
                 total_pages=count,
@@ -153,7 +153,7 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
                         page_start=index,
                         page_end=index,
                         file=ArtifactFile(
-                            relative_path=f"converter/{role}/split/part-{index}.pdf",
+                            relative_path=f"tasks/00-split/{role}/part-{index}.pdf",
                             sha256="0" * 64,
                             size_bytes=1,
                         ),
@@ -163,7 +163,7 @@ def test_docling_progress_sums_pdfs_across_inputs(tmp_path: Path) -> None:
             ),
         )
         write_model(
-            directory / "docling-progress.json",
+            tmp_path / "tasks/01-docling" / role / "docling-progress.json",
             DoclingProgress(completed=completed, total=count),
         )
 
@@ -183,7 +183,7 @@ def test_docling_conversion_publishes_progress_after_each_pdf(
             page_start=index,
             page_end=index,
             file=ArtifactFile(
-                relative_path=f"converter/split/part-{index}.pdf",
+                relative_path=f"tasks/00-split/part-{index}.pdf",
                 sha256="0" * 64,
                 size_bytes=1,
             ),
@@ -195,7 +195,7 @@ def test_docling_conversion_publishes_progress_after_each_pdf(
         source.parent.mkdir(parents=True, exist_ok=True)
         source.write_bytes(b"pdf")
     manifest = SplitManifest(source_sha256="0" * 64, total_pages=2, parts=parts)
-    progress_path = tmp_path / "converter/docling-progress.json"
+    progress_path = tmp_path / "tasks/01-docling/docling-progress.json"
     observed: list[tuple[int, int]] = []
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as payload:
@@ -213,7 +213,7 @@ def test_docling_conversion_publishes_progress_after_each_pdf(
     monkeypatch.setattr(DoclingClient, "convert", fake_convert)
     convert(
         manifest,
-        tmp_path / "converter/docling",
+        tmp_path / "tasks/01-docling",
         tmp_path,
         Config(docling_server_url="http://localhost"),
     )
