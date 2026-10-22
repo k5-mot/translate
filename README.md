@@ -1,6 +1,6 @@
 # 📘 Translate JA
 
-英語PDFの翻訳、英日PDFのReview、参照資料の登録、英文改訂のUpgradeを行うStreamlitアプリケーションです。仕様は[SPEC.md](SPEC.md)を参照してください。
+英語PDFの翻訳、英日PDFのReview、参照資料の登録、英文改訂のUpgradeを行うStreamlitアプリケーションです。仕様は[SPEC.md](docs/SPEC.md)を参照してください。
 
 ## 🚀 セットアップと起動
 
@@ -35,7 +35,7 @@ Dockerからホスト上のサービスへ接続する場合は、必要に応�
 
 ReviewとUpgradeのAgentは、途中結果から調査対象と操作を選び、必要な文脈の取得や再確認を繰り返します。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
 
-成果物とログは`outputs/<file-basename>/<uuidv7>/`に保存します。最上位の処理記録は`translation.json`、`review.json`、`registration.json`、`upgrade.json`、ログは同じ場所の`app.log`です。
+成果物と入力PDFは`outputs/<file-basename>/<uuidv7>/`にまとめます。タスク成果物は`tasks/<番号>-<task名>/`、状態ファイルは`state-translation.json`などの名前で、ログは`translation.log`、`review.log`、`registration.log`または`upgrade.log`として処理ディレクトリ直下に保存します。
 
 処理履歴から進捗確認、成果物のdownload、中断した処理のResumeができます。アップロードしたPDFを保存するため再アップロードは不要です。Resumeは入力ファイルの同一性を検証し、設定・規則・用語集の変更は再開拒否の理由にしません。同じ処理IDの同時実行はロックで防ぎます。履歴の削除は右クリックメニュー、または履歴にフォーカスしてShift+F10から行い、確認後に実行します。
 
@@ -65,8 +65,7 @@ uv run playwright install chromium
 
 ## 🧭 設計・開発資料
 
-- [仕様書](SPEC.md)
-- [要件選択チェックリスト](REQUIREMENTS_CHECKLIST.md)
-- [コーディング規約](CODING_RULES.md)
-- [文書規約](DOCUMENTATION_RULES.md)
-- [Contribution手順](CONTRIBUTING.md)
+- [仕様書](docs/SPEC.md)
+- [コーディング規約](docs/CODING_RULES.md)
+- [文書規約](docs/DOCUMENTATION_RULES.md)
+- [Contribution手順](docs/CONTRIBUTING.md)
