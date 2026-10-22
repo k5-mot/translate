@@ -79,6 +79,7 @@ function Convert-Docx {
     param([string]$Stem, [string]$Id)
     $docx = Join-Path $root "outputs/$Stem/$Id/tasks/54-ooxml/document.ja.docx"
     $officeDocx = Join-Path (Split-Path -Parent $docx) 'document.ja-office.docx'
+    $officePdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office-export.pdf'
     $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
     Invoke-Logged @('uv', 'run', 'python', 'scripts/prepare_office_docx.py', $docx, $officeDocx) | Out-Null
@@ -91,7 +92,7 @@ function Convert-Docx {
         $word.Options.UpdateFieldsAtPrint = $false
         $word.Options.UpdateLinksAtOpen = $false
         $document = $word.Documents.Open($officeDocx, $false, $true)
-        $document.SaveAs2($pdf, 17)
+        $document.SaveAs2($officePdf, 17)
     }
     finally {
         if ($document) {
@@ -103,7 +104,8 @@ function Convert-Docx {
             [Runtime.InteropServices.Marshal]::FinalReleaseComObject($word) | Out-Null
         }
     }
-    if (-not (Test-Path -LiteralPath $pdf -PathType Leaf)) { throw "Word did not create $pdf" }
+    if (-not (Test-Path -LiteralPath $officePdf -PathType Leaf)) { throw "Word did not create $officePdf" }
+    Move-Item -LiteralPath $officePdf -Destination $pdf -Force
     return $pdf
 }
 
