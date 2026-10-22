@@ -16,9 +16,12 @@ $state = @{ head = (& git rev-parse HEAD).Trim(); status = 'processing' }
 $currentStage = 'startup'
 
 function Save-State {
+    param([hashtable]$Snapshot, [string]$Path)
     # 同じディレクトリ内で置換し、途中終了による破損を避ける。
-    Set-Content -LiteralPath "${statePath}.tmp" -Value (ConvertTo-Json -InputObject $state -Depth 3) -Encoding utf8
-    Move-Item -LiteralPath "${statePath}.tmp" -Destination $statePath -Force
+    $temporaryPath = "${Path}.tmp"
+    $json = ConvertTo-Json -InputObject $Snapshot -Depth 3
+    Set-Content -LiteralPath $temporaryPath -Value $json -Encoding utf8
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
 }
 
 function Get-Record {
@@ -148,7 +151,7 @@ function Invoke-Validation {
             if ($operation -eq 'translate') { $japanesePdf = Convert-Docx $stem $identifier }
         }
         $state["$stem/done"] = $true
-        Save-State
+        Save-State -Snapshot $state -Path $statePath
     }
 }
 
@@ -162,14 +165,14 @@ if ($SelfCheck) {
     exit 0
 }
 if (@(git status --porcelain).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
-Save-State
+Save-State -Snapshot $state -Path $statePath
 try {
     Ensure-UiServer
     & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
     if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
     Invoke-Validation
     $state['status'] = 'succeeded'
-    Save-State
+    Save-State -Snapshot $state -Path $statePath
     Write-Output "ALL_REAL_ACCEPTANCE_PASSED $statePath"
 } catch {
     $state['status'] = 'failed'
