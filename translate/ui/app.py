@@ -639,6 +639,7 @@ class TranslationApp:
                     )
                 _clear_processing_selection()
                 st.rerun()
+            st.title("Translate")
             with st.expander(
                 "入力と設定",
                 expanded=selected_id is None,
@@ -673,6 +674,7 @@ class TranslationApp:
             """選択中セッションの進捗と成果物を表示する。"""
 
             if selected_id is not None:
+                st.title("Translate")
                 self._render_processing_panel(selected_id, entries)
 
         workflow_page = st.Page(
