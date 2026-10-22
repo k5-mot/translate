@@ -51,7 +51,7 @@ uv run pytest
 
 ### 🌐 実PDFの受入検証
 
-実装をコミットしてから、`inputs/sample.pdf`、`sample2.pdf`、`sample3.pdf`、`sample4.pdf`、`sample5.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
+実装をコミットしてから、`inputs/sample.pdf`、`sample5.pdf`、`sample4.pdf`、`sample3.pdf`、`sample2.pdf`、`sample1.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
 
 Upgradeの新版入力には、元PDFの最終ページを削除した検証用PDFを`.tmp/versions/`へ生成します。入力の変更内容は同じ場所のJSONへ記録します。
 
@@ -61,7 +61,7 @@ uv run playwright install chromium
 .\scripts\real_acceptance.ps1
 ```
 
-未起動の場合は検証用UIを`127.0.0.1:8502`で起動します。実行ごとの状態・コマンド出力・画面キャプチャは`.tmp/acceptance/<実行ID>/`へ保存します。失敗時は停止します。コードを修正して品質検査とコミットを行った後、同じコマンドでsample.pdfのRegisterから全件を新しい処理IDで検証し直します。
+未起動の場合は検証用UIを`127.0.0.1:8502`で起動します。実行ごとの状態・コマンド出力・画面キャプチャは`.tmp/acceptance/<実行ID>/`へ保存します。失敗時は停止します。失敗したPDFの修正後は、そのPDFのRegisterから全工程を新しい処理IDで検証し直します。`-StartAt sample5`のように開始するPDFを指定できます。
 
 ## 🧭 設計・開発資料
 
