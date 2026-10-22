@@ -140,7 +140,7 @@ function Invoke-Validation {
                 'upgrade' { @($source, $sourceV2, $japanesePdf) }
             }
             $identifier = Run-Ui $operation $files "$stem/$operation"
-            $recordStem = if ($operation -eq 'review') { 'document.ja' } else { $stem }
+            $recordStem = if ($operation -eq 'review') { 'document.ja-office' } else { $stem }
             $recordName = switch ($operation) { 'register' { 'registration' }; 'translate' { 'translation' }; default { $operation } }
             Wait-Record $recordStem $identifier $recordName
             $image = Join-Path (Split-Path -Parent $statePath) "$stem-$operation.png"
