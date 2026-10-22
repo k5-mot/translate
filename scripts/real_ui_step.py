@@ -20,7 +20,9 @@ def resume(page: Page, operation: str, processing_id: str) -> None:
     record_name = {"register": "registration", "translate": "translation"}.get(
         operation, operation
     )
-    record_paths = list(Path("outputs").glob(f"*/{processing_id}/{record_name}.json"))
+    record_paths = list(
+        Path("outputs").glob(f"*/{processing_id}/state-{record_name}.json")
+    )
     if len(record_paths) != 1:
         message = f"Resume対象の記録を一意に特定できません: {processing_id}"
         raise RuntimeError(message)
@@ -47,7 +49,7 @@ def prepare_versions() -> None:
     """検証用の英文新版を原本から作り、最後の1ページを削除した変更を記録する。"""
     destination = Path(".tmp/versions")
     destination.mkdir(parents=True, exist_ok=True)
-    for stem in ("sample", "sample2", "sample3", "sample4", "sample5"):
+    for stem in ("sample", "sample1", "sample2", "sample3", "sample4", "sample5"):
         source = Path("inputs") / f"{stem}.pdf"
         target = destination / source.name
         with pdfium.PdfDocument(source) as document:
@@ -78,9 +80,9 @@ def inspect_result(page: Page, operation: str, processing_id: str) -> None:
         "review": "Review結果JSONをdownload",
         "upgrade": "Upgrade結果JSONをdownload",
     }
-    expect(page.locator("#translate-session-title")).to_have_text(
-        processing_id, timeout=30_000
-    )
+    expect(
+        page.get_by_role("heading", name=f"Translate · {processing_id}")
+    ).to_be_visible(timeout=30_000)
     expect(
         page.get_by_role("button", name=labels[operation], exact=True)
     ).to_be_visible(timeout=30_000)
@@ -112,10 +114,10 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
         "upgrade": ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"],
     }
     buttons = {
-        "register": "登録を開始",
-        "translate": "翻訳を開始",
-        "review": "レビューを開始",
-        "upgrade": "Upgradeを開始",
+        "register": "Start Register",
+        "translate": "Start Translate",
+        "review": "Start Review",
+        "upgrade": "Start Upgrade",
     }
     if (
         not args.resume
@@ -156,9 +158,9 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
                 )
                 uploader.locator('input[type="file"]').set_input_files(path.resolve())
                 try:
-                    uploader.get_by_text(path.name, exact=True).wait_for(
-                        state="attached", timeout=10_000
-                    )
+                    uploader.get_by_role(
+                        "button", name=f"Remove {path.name}", exact=True
+                    ).wait_for(state="attached", timeout=10_000)
                     break
                 except Exception:
                     if attempt == 2:
@@ -169,7 +171,7 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
             "new URL(location.href).searchParams.has('processing')", timeout=20_000
         )
         processing_id = parse_qs(urlparse(page.url).query)["processing"][0]
-        page.locator("#translate-session-title").get_by_text(processing_id).wait_for(
+        page.get_by_role("heading", name=f"Translate · {processing_id}").wait_for(
             timeout=15_000
         )
         sys.stdout.write(f"processing_id={processing_id}\n")

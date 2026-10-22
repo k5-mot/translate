@@ -98,7 +98,7 @@ class ReviewPipeline:
             / translation.stem
             / identifier
         )
-        self.record_path = self.root / "review.json"
+        self.record_path = self.root / "state-review.json"
         with ProcessingLock(self.root):
             if self.record_path.is_file():
                 self.record = load_model(self.record_path, ReviewRecord)
@@ -122,13 +122,13 @@ class ReviewPipeline:
                     updated_at=now,
                 )
                 write_model(self.record_path, self.record)
-            with processing_logging(self.root, self.config.log_level):
+            with processing_logging(self.root, self.config.log_level, "review.log"):
                 try:
                     self.execution = PipelineRun(
                         ArtifactStore(self.record, self.record_path), self.config
                     )
                     documents, _ = self.execution.prepare_documents(sources)
-                    directory = self.root / "review" / "review"
+                    directory = self.root / "tasks" / "41-review"
                     self.execution.perform_task(
                         TaskName.REVIEW,
                         documents,

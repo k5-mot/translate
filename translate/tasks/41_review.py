@@ -1,7 +1,5 @@
 """問題指摘と修正候補を生成するREVIEW Task。"""
 
-import json
-import re
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,7 +22,7 @@ from translate.models.artifacts import (
     LLMTaskDiagnostics,
     ReviewResult,
 )
-from translate.models.document import TextSpan, TextUnit
+from translate.models.document import TextUnit
 from translate.models.review import (
     AlignmentResponse,
     Finding,
@@ -34,6 +32,14 @@ from translate.models.review import (
     TextEdit,
 )
 from translate.tasks import SavedLLMCalls
+from translate.tasks.review_alignment import match_documents as _match_documents
+from translate.tasks.review_chunks import (
+    _chunks,
+    _retry_groups,
+    _target_bytes,
+    _target_payload,
+    _user_payload,
+)
 
 
 class ReviewTask:
@@ -58,7 +64,7 @@ class ReviewTask:
     def run(
         self,
         targets: list[ReviewTarget],
-        processing_directory: Path,
+        _processing_directory: Path,
         *,
         operation: str = "evaluate",
         round_number: int = 0,
@@ -87,7 +93,7 @@ class ReviewTask:
         if self.config.openai_review_model is None:
             raise ValueError("review model is required")
         self.task_directory.mkdir(parents=True, exist_ok=True)
-        diagnostics_path = processing_directory / "task-review.json"
+        diagnostics_path = self.task_directory / "diagnostics.json"
         diagnostics: list[str] = []
         _write_diagnostics(diagnostics_path, diagnostics)
         owns_client = client is None
@@ -335,360 +341,8 @@ class ReviewTask:
         client: LLMClient,
         round_number: int,
     ) -> tuple[str, AlignmentResponse]:
-        """Agentが選んだ原文と訳文の対応候補を取得し、参照と網羅性を検証する。
-
-        Args:
-            units: sourceとtranslationの候補TextUnit。
-            client: LLM接続。
-            round_number: Agent操作の連番。
-
-        Returns:
-            成功Call IDと対応付け応答。
-
-        Raises:
-            ValueError: 選択対象と対応groupのID・種別・網羅性が矛盾する場合。
-            LLMError: LLM要求が失敗した場合。
-        """
-        expected = {
-            role: [unit.id for unit in values] for role, values in units.items()
-        }
-
-        def validate(response: AlignmentResponse) -> None:
-            """選択した各IDが一つのgroupに属し、未対応には理由があることを確認する。
-
-            Args:
-                response: 対応付け応答。
-
-            Raises:
-                ValueError: 対応関係が不正、または範囲外の結果を含む場合。
-            """
-            for role in ("source", "translation"):
-                found = [
-                    key
-                    for group in response.groups
-                    for key in getattr(group, f"{role}_ids")
-                ]
-                if sorted(found) != sorted(expected[role]):
-                    raise ValueError(
-                        "Correspondence must cover the selected IDs exactly once. "
-                        f"{role}: missing={sorted(set(expected[role]) - set(found))}; "
-                        f"duplicate={sorted({key for key in found if found.count(key) > 1})}; "
-                        f"unknown={sorted(set(found) - set(expected[role]))}"
-                    )
-            for group in response.groups:
-                correct = (
-                    "matched"
-                    if group.source_ids and group.translation_ids
-                    else "source_only"
-                    if group.source_ids
-                    else "translation_only"
-                )
-                if group.kind != correct or not (
-                    group.source_ids or group.translation_ids
-                ):
-                    raise ValueError("Invalid correspondence kind")
-                if group.kind != "matched" and not (group.reason or "").strip():
-                    raise ValueError("Unmatched correspondence requires a reason")
-
-        payload: dict[str, object] = {
-            role: [{"id": unit.id, "text": unit.text("source")} for unit in values]
-            for role, values in units.items()
-        }
-        return self.calls.request(
-            client,
-            "match",
-            round_number,
-            [f"{role}:{key}" for role, keys in expected.items() for key in keys],
-            payload,
-            "\n".join(unit.text("source") for unit in units["source"]),
-            AlignmentResponse,
-            '{"groups":[{"reason":"brief content comparison",'
-            '"kind":"matched|source_only|translation_only",'
-            '"source_ids":["id"],"translation_ids":["id"]}]}. '
-            "Every source ID and every translation ID must appear exactly once, including unmatched IDs. "
-            "The source and translation arrays are independent candidate pools, not parallel rows. "
-            "For each source, search ALL translation candidates for the same content; "
-            "never pair by array position or similar IDs. "
-            "Match only the same content, not related topics. "
-            "When two texts do not correspond, return two groups: source_only and translation_only, "
-            "each with its own IDs and reason. "
-            "For every group, first name the actual source text and corresponding translation text in reason, "
-            "or briefly state which content has no counterpart. "
-            "Then select the kind and the IDs that belong to those texts. "
-            "Do not use generic reasons such as matched content. "
-            "Keep separate table cells separate: an identifier, its description, and its value are distinct content, even in the same row. "
-            "A group with multiple units is valid only when those units are split fragments of the SAME content expressed on the other side. "
-            "Account for the content of EVERY selected unit on BOTH sides; do not absorb an unmatched unit into a related match. "
-            "If the identifier itself has no counterpart in this candidate pool, leave it source_only or translation_only.",
-            validate,
-        )
-
-
-def _chunks(
-    targets: list[ReviewTarget],
-    maximum_targets: int,
-    maximum_bytes: int,
-) -> list[list[ReviewTarget]]:
-    """ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-        maximum_targets (int): 一つのREVIEW Callへ含める最大Target数。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        list[list[ReviewTarget]]: ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。
-    """
-
-    result: list[list[ReviewTarget]] = []
-    current: list[ReviewTarget] = []
-    for target in targets:
-        for part in _split_large_target(target, maximum_bytes):
-            if current and (
-                len(current) >= maximum_targets
-                or _target_bytes([*current, part]) > maximum_bytes
-            ):
-                result.append(current)
-                current = []
-            current.append(part)
-    if current:
-        result.append(current)
-    return result
-
-
-def _split_large_target(target: ReviewTarget, maximum_bytes: int) -> list[ReviewTarget]:
-    """長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。
-
-    Args:
-        target (ReviewTarget): 入力上限へ収めるReview対象。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        list[ReviewTarget]: 長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。
-
-    Raises:
-        ValueError: `f'single ReviewTarget exceeds review input limit: {target.id}'`と判定した場合。
-    """
-
-    if _target_bytes([target]) <= maximum_bytes:
-        return [target]
-    span_groups = _split_spans(target, maximum_bytes) or [[]]
-    parts: list[ReviewTarget] = []
-    remaining_source = target.source
-    for index, spans in enumerate(span_groups):
-        part = target.model_copy(
-            update={
-                "id": f"{target.id}/part-{index + 1:04d}",
-                "source": "",
-                "translation": "".join(
-                    "\n" if span.kind == "line_break" else span.text() for span in spans
-                )
-                if spans
-                else "",
-                "spans": spans,
-            },
-            deep=True,
-        )
-        source = _source_prefix(part, remaining_source, maximum_bytes)
-        parts.append(part.model_copy(update={"source": source}))
-        remaining_source = remaining_source[len(source) :]
-    while remaining_source:
-        index = len(parts)
-        part = target.model_copy(
-            update={
-                "id": f"{target.id}/part-{index + 1:04d}",
-                "source": "",
-                "translation": "",
-                "spans": [],
-            },
-            deep=True,
-        )
-        source = _source_prefix(part, remaining_source, maximum_bytes)
-        if not source:
-            raise ValueError(
-                f"single ReviewTarget exceeds review input limit: {target.id}"
-            )
-        parts.append(part.model_copy(update={"source": source}))
-        remaining_source = remaining_source[len(source) :]
-    return parts
-
-
-def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str:
-    """ReviewTargetへ収まる最長の原文prefixを文・改行の境界で返す。
-
-    Args:
-        target (ReviewTarget): 原文Prefixを取得するReview対象。
-        source (str): 変換または検証対象の入力Source。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        str: ReviewTargetへ収まる最長の原文prefixを文・改行の境界で返す。
-    """
-
-    end = 0
-    boundaries = [
-        match.end()
-        for match in re.finditer(
-            r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", source
-        )
-    ]
-    for boundary in [*boundaries, len(source)]:
-        candidate = target.model_copy(update={"source": source[:boundary]})
-        if _target_bytes([candidate]) > maximum_bytes:
-            break
-        end = boundary
-    return source[:end]
-
-
-def _split_spans(target: ReviewTarget, maximum_bytes: int) -> list[list[TextSpan]]:
-    """修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。
-
-    Args:
-        target (ReviewTarget): Span単位へ分割するReview対象。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        list[list[TextSpan]]: 修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。
-
-    Raises:
-        ValueError: `f'single ReviewTarget span exceeds review input limit:
-            {span.id}'`と判定した場合。
-    """
-
-    groups: list[list[TextSpan]] = []
-    current: list[TextSpan] = []
-    for span in target.spans:
-        projected = [*current, span]
-        candidate = target.model_copy(
-            update={
-                "id": f"{target.id}/part-9999",
-                "source": "",
-                "spans": projected,
-            }
-        )
-        if current and _target_bytes([candidate]) > maximum_bytes:
-            groups.append(current)
-            projected = [span]
-            candidate = target.model_copy(
-                update={
-                    "id": f"{target.id}/part-9999",
-                    "source": "",
-                    "spans": projected,
-                }
-            )
-        if _target_bytes([candidate]) > maximum_bytes:
-            raise ValueError(
-                f"single ReviewTarget span exceeds review input limit: {span.id}"
-            )
-        current = projected
-    if current:
-        groups.append(current)
-    return groups
-
-
-def _target_bytes(targets: list[ReviewTarget]) -> int:
-    """REVIEW promptへ渡す対象の保守的byte数を返す。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-
-    Returns:
-        int: REVIEW promptへ渡す対象の保守的byte数を返す。
-    """
-
-    value = [_target_payload(target) for target in targets]
-    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
-
-
-def _target_payload(target: ReviewTarget) -> dict[str, object]:
-    """重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。
-
-    Args:
-        target (ReviewTarget): LLM Payloadへ変換するReview対象。
-
-    Returns:
-        dict[str, object]: 重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。
-    """
-
-    return {
-        "id": target.id,
-        "source": target.source,
-        "target_ids": target.target_ids,
-        "spans": [{"span_id": span.id, "text": span.text()} for span in target.spans],
-    }
-
-
-def _retry_groups(targets: list[ReviewTarget]) -> tuple[list[ReviewTarget], ...]:
-    """上限超過したCallを、単一の事前分割済み対象も含めて縮小する。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-
-    Returns:
-        tuple[list[ReviewTarget], ...]: 上限超過したCallを、単一の事前分割済み対象も含めて縮小する。
-    """
-
-    if len(targets) >= 2:
-        middle = len(targets) // 2
-        return (targets[:middle], targets[middle:])
-    if not targets:
-        return ()
-    maximum_bytes = max(1, _target_bytes(targets) // 2)
-    try:
-        parts = _split_large_target(targets[0], maximum_bytes)
-    except ValueError:
-        return ()
-    if len(parts) < 2:
-        return ()
-    return tuple([part] for part in parts)
-
-
-def _user_payload(
-    targets: list[ReviewTarget],
-    findings: list[dict[str, object]],
-    glossary: str,
-    rag: list[dict[str, object]],
-    maximum_bytes: int,
-) -> str:
-    """任意の参照情報を必要に応じて除外し、入力上限内のJSON payloadを作る。
-
-    Args:
-        targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
-        findings (list[dict[str, object]]): LLMへ渡す既存Review指摘。
-        glossary (str): 対象文書へ適用するCSV形式の用語集。
-        rag (list[dict[str, object]]): Promptへ含める検索済み参考文列。
-        maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
-
-    Returns:
-        str: 低順位RAGを必要に応じて除外し、入力上限内のJSON payloadを作る。
-
-    Raises:
-        LLMInputExceededError: `review prompt exceeds input limit`と判定した場合。
-    """
-
-    selected = list(rag)
-    selected_glossary = glossary
-    selected_findings = list(findings)
-    while True:
-        value = json.dumps(
-            {
-                "glossary": selected_glossary,
-                "references": selected,
-                "check_findings": selected_findings,
-                "targets": [_target_payload(target) for target in targets],
-            },
-            ensure_ascii=False,
-        )
-        if len(value.encode("utf-8")) <= maximum_bytes:
-            return value
-        if selected:
-            selected.pop()
-        elif selected_glossary:
-            selected_glossary = ""
-        elif selected_findings:
-            selected_findings = []
-        else:
-            raise LLMInputExceededError("review prompt exceeds input limit")
+        """Agentが選んだ原文と訳文の対応候補を取得する。"""
+        return _match_documents(self.calls, units, client, round_number)
 
 
 def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:

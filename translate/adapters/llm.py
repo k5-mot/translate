@@ -163,9 +163,9 @@ class LLMClient:
         feedback = ""
         last_error: LLMError | None = None
         last_cause: Exception | None = None
-        logger.info("LLM開始 task=%s model=%s", task, model)
+        logger.info("LLM started task=%s model=%s", task, model)
         for attempt in range(1, self.config.llm_retry_attempts + 1):
-            logger.debug("LLM要求 task=%s attempt=%d", task, attempt)
+            logger.debug("LLM request task=%s attempt=%d", task, attempt)
             _validate_input_size(
                 system=system,
                 user=f"{user}{feedback}",
@@ -205,7 +205,7 @@ class LLMClient:
                 if validate is not None:
                     validate(validated)
                 logger.info(
-                    "LLM完了 task=%s attempt=%d input_tokens=%s output_tokens=%s",
+                    "LLM completed task=%s attempt=%d input_tokens=%s output_tokens=%s",
                     task,
                     attempt,
                     used_input_tokens,
@@ -219,7 +219,7 @@ class LLMClient:
                 )
             except (LLMInputExceededError, LLMOutputExceededError) as error:
                 error.attempts = attempt
-                logger.warning("LLM失敗 task=%s type=%s", task, type(error).__name__)
+                logger.warning("LLM failed task=%s type=%s", task, type(error).__name__)
                 raise
             except (
                 APIResponseValidationError,
@@ -278,7 +278,7 @@ class LLMClient:
             if time.monotonic() >= deadline:
                 break
             logger.warning(
-                "LLM再試行 task=%s attempt=%d type=%s",
+                "Retrying LLM request task=%s attempt=%d type=%s",
                 task,
                 attempt,
                 type(last_error).__name__,
@@ -287,12 +287,12 @@ class LLMClient:
             if delay > 0:
                 time.sleep(random.uniform(0, delay))  # noqa: S311
         if last_error is None:
-            logger.warning("LLM失敗 task=%s type=LLMTimeoutError", task)
+            logger.warning("LLM failed task=%s type=LLMTimeoutError", task)
             raise LLMTimeoutError(
                 "LLM Callの期限に達しました。対策: "
                 "LLM_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
             )
-        logger.warning("LLM失敗 task=%s type=%s", task, type(last_error).__name__)
+        logger.warning("LLM failed task=%s type=%s", task, type(last_error).__name__)
         last_error.attempts = attempt
         raise last_error from last_cause
 

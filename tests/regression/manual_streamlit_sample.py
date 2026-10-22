@@ -56,7 +56,7 @@ def verify(url: str, source: Path, timeout_seconds: float) -> None:
         page.goto(url, wait_until="networkidle", timeout=60_000)
         expect(page.get_by_role("tab", name="Translate")).to_be_visible()
         page.locator('input[type="file"]').first.set_input_files(str(source))
-        start = page.get_by_role("button", name="翻訳を開始")
+        start = page.get_by_role("button", name=re.compile("Start"))
         expect(start).to_be_enabled(timeout=30_000)
         start.click()
         page.wait_for_url(re.compile(r"[?&]processing=[0-9a-f-]{36}"), timeout=60_000)

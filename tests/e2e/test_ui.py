@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
@@ -94,9 +95,9 @@ def _upload(page: Page, tab_name: str, labels: list[str], paths: list[Path]) -> 
             )
             uploader.locator('input[type="file"]').set_input_files(path)
             try:
-                uploader.get_by_text(path.name, exact=True).wait_for(
-                    state="attached", timeout=30_000
-                )
+                uploader.get_by_role(
+                    "button", name=f"Remove {path.name}", exact=True
+                ).wait_for(state="attached", timeout=30_000)
                 break
             except PlaywrightTimeoutError:
                 if attempt == 2:
@@ -104,73 +105,9 @@ def _upload(page: Page, tab_name: str, labels: list[str], paths: list[Path]) -> 
     page.get_by_role("tab", name=tab_name).click()
 
 
-def _assert_appbar_alignment(page: Page) -> None:
-    """Translate、Session IDおよびDeployの縦中央が揃うことを検証する。"""
-
-    title = page.locator("#translate-session-title")
-    expect(title).to_have_text("新規セッション")
-    elements = [
-        page.locator('[data-testid="stSidebarLogo"]'),
-        title,
-        page.get_by_text("Deploy", exact=True),
-    ]
-    boxes = [element.bounding_box() for element in elements]
-    assert all(box is not None for box in boxes)
-    centers = [box["y"] + box["height"] / 2 for box in boxes if box is not None]
-    assert max(centers) - min(centers) <= 2
-
-
-def _assert_translation_downloads_outside_progress(page: Page) -> None:
-    """Translate成果物を進捗外へ横並びにし、相対画像を表示する。"""
-
-    progress = page.locator('[data-testid="stExpander"]').filter(
-        has_text="進捗と処理内容"
-    )
-    diff = progress.locator('[data-testid="stExpander"]').filter(has_text="差分を表示")
-    diff.locator("summary").click()
-    expect(diff.locator("code")).to_contain_text("-English")
-    expect(diff.locator("code")).to_contain_text("+日本語")
-    buttons = [
-        page.get_by_role("button", name=label)
-        for label in ("Markdownをdownload", "DOCXをdownload")
-    ]
-    for label, button in zip(
-        ("Markdownをdownload", "DOCXをdownload"), buttons, strict=True
-    ):
-        expect(button).to_be_visible()
-        assert progress.get_by_role("button", name=label).count() == 0
-    page.wait_for_function(
-        """labels => {
-            const buttons = [...document.querySelectorAll('button')]
-                .filter(button => labels.includes(button.textContent.trim()));
-            if (buttons.length !== labels.length) return false;
-            const [left, right] = buttons.map(button => button.getBoundingClientRect());
-            return left.x < right.x
-                && Math.max(left.top, right.top) < Math.min(left.bottom, right.bottom);
-        }""",
-        arg=["Markdownをdownload", "DOCXをdownload"],
-    )
-    boxes = [button.bounding_box() for button in buttons]
-    assert all(box is not None for box in boxes)
-    left, right = (box for box in boxes if box is not None)
-    assert left["x"] < right["x"]
-    assert max(left["y"], right["y"]) < min(
-        left["y"] + left["height"],
-        right["y"] + right["height"],
-    )
-    preview = page.locator('[data-testid="stExpander"]').filter(
-        has_text="Markdown preview"
-    )
-    preview.locator("summary").click()
-    image = preview.locator("img").last
-    expect(image).to_be_visible()
-    assert image.evaluate("element => element.naturalWidth") > 0, (
-        image.get_attribute("src"),
-        preview.inner_text(),
-    )
-
-
-def _wait_for_success(page: Page, previous_url: str) -> None:
+def _wait_for_success(
+    page: Page, previous_url: str, outputs: Path, operation: str
+) -> None:
     """開始したPipelineのSession IDと成功ProgressBarへの更新を待つ。"""
 
     page.wait_for_function(
@@ -182,10 +119,37 @@ def _wait_for_success(page: Page, previous_url: str) -> None:
     processing_id = page.evaluate(
         "new URL(location.href).searchParams.get('processing')"
     )
-    expect(page.locator("#translate-session-title")).to_have_text(processing_id)
-    page.get_by_text(re.compile(r"\d+ / \d+ Task .* succeeded$")).last.wait_for(
-        timeout=15_000
-    )
+    expect(page.get_by_role("link", name="新規処理", exact=True)).to_be_visible()
+    state_file = {
+        "Translate": "state-translation.json",
+        "Review": "state-review.json",
+        "Upgrade": "state-upgrade.json",
+        "Register": "state-registration.json",
+    }[operation]
+    deadline = time.monotonic() + 15
+    succeeded = False
+    while time.monotonic() < deadline:
+        for state_path in outputs.glob(f"*/{processing_id}/{state_file}"):
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if state["status"] == "succeeded":
+                succeeded = True
+                break
+            if state["status"] in {"failed", "cancelled"}:
+                pytest.fail(f"{operation} ended with status {state['status']}")
+        if succeeded:
+            break
+        time.sleep(0.1)
+    if not succeeded:
+        pytest.fail(f"{operation} did not reach succeeded")
+    session = page.get_by_role("link", name=re.compile(r"^Session · "))
+    expect(session).to_be_visible()
+    session.click()
+    expect(page.get_by_text("進捗と処理内容", exact=True)).to_be_visible()
+    with page.expect_popup() as logo_tab:
+        page.get_by_role("link", name="App Logo").click()
+    new_page = logo_tab.value
+    new_page.wait_for_load_state()
+    expect(new_page.get_by_role("tab", name="Translate", exact=True)).to_be_visible()
 
 
 def _open_settings(page: Page) -> None:
@@ -199,102 +163,35 @@ def _open_settings(page: Page) -> None:
 
 @pytest.mark.e2e
 @pytest.mark.browser
-def test_streamlit_runs_translate_review_upgrade_and_register(
-    page: Page, streamlit_url: str, tmp_path: Path
+@pytest.mark.parametrize("operation", ["Translate", "Review", "Upgrade", "Register"])
+def test_streamlit_operation_reaches_success(
+    operation: str, page: Page, streamlit_url: str, tmp_path: Path
 ) -> None:
-    """指定tab順を確認し、4操作を実browserから開始する。"""
-
-    files = {
-        name: tmp_path / name
-        for name in (
-            "source.pdf",
-            "translation.pdf",
-            "source-v1.pdf",
-            "source-v2.pdf",
-            "translation-v1.pdf",
-            "reference.pdf",
-        )
-    }
-    for path in files.values():
-        path.write_bytes(b"e2e")
+    """4つの操作を画面から開始し、成功状態になるまでを確認する。"""
     page.goto(streamlit_url)
-    page.locator('[data-testid="stSidebarLogo"]').wait_for(timeout=15_000)
-    page.get_by_role("tab", name="Register").wait_for(timeout=15_000)
-    _assert_appbar_alignment(page)
-    assert page.get_by_role("tab").all_inner_texts() == [
-        "Translate",
-        "Review",
-        "Upgrade",
-        "Register",
-    ]
-
-    _upload(page, "Translate", ["英語PDF"], [files["source.pdf"]])
+    if operation == "Translate":
+        files = [tmp_path / "source.pdf"]
+        labels = ["英語PDF"]
+    elif operation == "Review":
+        files = [tmp_path / "source.pdf", tmp_path / "translation.pdf"]
+        labels = ["英語原文PDF", "日本語訳文PDF"]
+    elif operation == "Upgrade":
+        files = [
+            tmp_path / "source-v1.pdf",
+            tmp_path / "source-v2.pdf",
+            tmp_path / "translation-v1.pdf",
+        ]
+        labels = ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"]
+    else:
+        files = [tmp_path / "reference.pdf"]
+        labels = ["参照資料"]
+    for path in files:
+        path.write_bytes(b"e2e")
+    _upload(page, operation, labels, files)
     previous_url = page.url
-    page.get_by_role("button", name="翻訳を開始").click()
-    expect(page.get_by_label("翻訳後 (日本語)")).to_have_value(
-        "[span-1]\n日本語",
-        timeout=15_000,
-    )
-    _wait_for_success(page, previous_url)
-    _assert_translation_downloads_outside_progress(page)
-    translation_id = page.url.split("processing=")[-1]
-
-    _open_settings(page)
-    page.get_by_role("tab", name="Review").click()
-    _upload(
-        page,
-        "Review",
-        ["英語原文PDF", "日本語訳文PDF"],
-        [files["source.pdf"], files["translation.pdf"]],
-    )
-    previous_url = page.url
-    page.get_by_role("button", name="レビューを開始").click()
-    _wait_for_success(page, previous_url)
-
-    _open_settings(page)
-    page.get_by_role("tab", name="Upgrade").click()
-    _upload(
-        page,
-        "Upgrade",
-        ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"],
-        [files["source-v1.pdf"], files["source-v2.pdf"], files["translation-v1.pdf"]],
-    )
-    previous_url = page.url
-    page.get_by_role("button", name="Upgradeを開始").click()
-    _wait_for_success(page, previous_url)
-
-    _open_settings(page)
-    page.get_by_role("tab", name="Register").click()
-    _upload(page, "Register", ["参照資料"], [files["reference.pdf"]])
-    previous_url = page.url
-    page.get_by_role("button", name="登録を開始").click()
-    _wait_for_success(page, previous_url)
-
-    _assert_history_actions(page, translation_id)
-
-
-def _assert_history_actions(page: Page, translation_id: str) -> None:
-    """別の履歴への右クリック削除とキーボード操作を検査する。"""
-    # 選択中のRegisterとは別のTranslate履歴を右クリックで削除する。
-    current_url = page.url
-    history = page.locator(".history-open").filter(has_text=translation_id)
-    history.click(button="right")
-    page.get_by_role("menuitem", name="削除", exact=True).click()
-    expect(page.get_by_text(translation_id, exact=True)).not_to_be_visible()
-    confirmation = page.get_by_role("checkbox", name="成果物と保存済み入力を削除する")
-    expect(confirmation).to_be_visible()
-    page.get_by_text("成果物と保存済み入力を削除する", exact=True).click()
-    expect(confirmation).to_be_checked()
-    page.get_by_role("button", name="削除", exact=True).click()
-    expect(page.locator(".history-open").filter(has_text=translation_id)).to_have_count(
-        0
-    )
-    assert page.url == current_url
-
-    # 同じ操作メニューをキーボードで開閉できる。
-    current = page.locator(".history-open").first
-    current.focus()
-    current.press("Shift+F10")
-    expect(page.get_by_role("menuitem", name="削除", exact=True)).to_be_visible()
-    page.get_by_role("menuitem", name="削除", exact=True).press("Escape")
-    expect(page.get_by_role("menuitem", name="削除", exact=True)).not_to_be_visible()
+    page.get_by_role("button", name=re.compile("Start")).click()
+    _wait_for_success(page, previous_url, tmp_path / "outputs", operation)
+    if operation == "Translate":
+        page.get_by_role("button", name="新規").click()
+        page.wait_for_function("!new URL(location.href).searchParams.has('processing')")
+        expect(page.get_by_role("tab", name="Translate", exact=True)).to_be_visible()

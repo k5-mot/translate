@@ -4,7 +4,7 @@
 
 本書は実装時に満たす仕様を記述する。Task配置、DOCX公開、設定、ログおよびAgentによる制御を含む。
 
-本書は[要件選択チェックリスト](REQUIREMENTS_CHECKLIST.md)の回答を反映した仕様とする。利用者向けの操作はStreamlit UIへ統一する。
+本書は合意済みの要件と設計上の選択をまとめた仕様とする。利用者向けの操作はStreamlit UIへ統一する。
 
 ## 🎯 目的と対象
 
@@ -110,6 +110,26 @@ Upgradeは改訂による変更箇所を確認する操作とする。英文旧�
 - 追加・変更箇所には日本語の修正候補を示す。削除・移動はその変更内容を提案として示す。
 - 提案は一覧内に保持し、文書へ反映しない。旧訳の移植、REUSE、FIX、全文翻訳および新版DOCXの生成は行わない。
 - AgentはDIFF結果を観察して、未確認対象や対応が曖昧な対象の次の確認を選ぶ。全対象を確認した後だけ一覧を確定する。
+
+## 🎛️ 要件ごとの選択と採用内容
+
+各要件について、実装方式の候補と選択時の利点・制約を比較し、採用する振る舞いを明示する。
+
+| 要件 | 検討した選択肢と利点・制約 | 採用する選択肢 |
+|---|---|---|
+| 利用者向け入口 | Streamlitだけなら操作場所が一つで分かりやすいが、CLIからの自動実行はできない。UIとCLIの併設は自動化しやすいが、入口と設定経路が二重になる。 | Streamlit UIに統一する。翻訳用CLIとbackend選択は設けない。 |
+| Translateの成果物 | Markdownのみなら生成・保守が簡単だが、利用者がWordで編集しにくい。MarkdownとDOCXの両方を出せば用途が広がるが、DOCX変換工程が必要になる。 | 日本語MarkdownとDOCXを生成する。DOCXはPandocとOOXMLのTaskに分けて出力する。 |
+| Review・Upgradeの結果 | 提案一覧だけなら人が判断でき、原文への意図しない反映を防げる。自動適用して新版DOCXまで生成すれば作業を短縮できるが、確認前の変更が文書へ入る。 | 変更箇所・指摘・修正提案の一覧だけを作成する。文書への適用や新版DOCX生成はしない。 |
+| Review・Upgradeの進め方 | 固定順のLLM呼び出しは流れが予測しやすいが、途中結果に応じた対象変更が難しい。Agent方式は必要な文脈や次の確認対象を選べるが、停止条件と進捗管理が必要になる。 | 両操作をAgentとして実装し、途中結果に応じて確認・対応付け・提案・再確認を選ぶ。 |
+| Registerの識別 | 利用者指定の `source_id` は識別を明示できるが、入力負担とID衝突を招く。ファイルの論理pathなら指定不要だが、同じpathは同じ登録対象になる。 | `source_id` の利用者入力を求めず、`logical_path` を登録キーにする。同じファイル名・論理pathの再登録は既存revisionを置き換える。 |
+| Resumeの一致判定 | 入力・設定・規則・用語集すべてを照合すれば変更条件に厳密だが、fingerprint管理が複雑で設定変更のたびに再実行になる。入力だけを照合すれば再開しやすいが、変更された設定を成果物再利用へ反映しない場合がある。 | 入力ファイルの一致を確認する。設定・規則・用語集の一致は再開条件にしない。 |
+| Taskと状態管理 | 手続き型の独立関数は個別実装が短いが、共通の入出力や進捗処理が散らばる。共通親クラスは共通動作をまとめられるが、過剰な継承は変更を追いにくくする。 | Taskは共通の親クラスを使うオブジェクト指向で構成し、共通処理だけを親へ置く。各Task固有の変換は個別クラスに残す。 |
+| 成果物保存の責務 | 状態判断とファイル操作を一つの保存moduleに集約すれば呼び出し側は単純だが、再開規則とI/Oが混在する。I/OをAdapter、状態遷移と再利用判断をPipeline側へ置けば外部境界が明確になるが、責務を越える呼び出しを避ける必要がある。 | 保存先は `outputs/<ファイル名>/<処理ID>/` とする。ファイル読み書き・hash・LLM Call記録・lockはAdapter、Task状態と再開判断はPipeline側へ分ける。 |
+| 排他制御 | ファイル単位の細かなlockは同時書込み範囲を限定できるが、lock取得順と解放箇所が増える。処理ごとに一つのlockなら実装が単純だが、同じ処理ID内の並行更新は許可しない。 | 処理IDごとの `.lock` を一つ使い、同一処理の重複実行を防ぐ。成果物ファイルのatomic置換は途中書込みを避ける範囲に限定する。 |
+| ローカルサービス呼出し | 並列要求は処理時間を短縮できるが、ローカルhostが並列要求を処理できないとtimeoutや失敗が増える。逐次要求は時間がかかるが、サービス負荷を一定にできる。 | Embedding、LLM、Qdrantへの同時呼出し数をそれぞれ1にする。 |
+| DOCXの一覧と見出し番号 | 入力文書の目次・図表一覧を残すと生成物と重複する。番号付き見出し本文を残すとWordのoutline番号と二重になる。 | 目次・図一覧・表一覧はPandocで生成し、入力由来の一覧は除外する。見出し本文先頭の章番号は除き、Wordの見出しstyleで番号を付ける。 |
+| ログ保存 | 共通場所のログは全処理を横断して見られるが、別処理の記録が混在する。処理ごとのログは履歴と対応するが、複数fileを確認する必要がある。 | `outputs/<ファイル名>/<処理ID>/<operation>.log` に処理単位で保存し、ログ本文は英語にする。 |
+| 自動テスト | 画面部品・Pipeline・Taskを個別に広く試験すると失敗箇所を分離しやすいが、テスト重複と保守負担が増える。業務フローと各Adapter・Taskに絞れば境界ごとの責務が明確になるが、UIの見た目確認は行わない。 | Translate・Review・Upgrade・RegisterのE2Eを各1件、8 AdapterのUnit test、17 TaskのRegression testに限定する。その他のテストは置かない。 |
 
 ## ⚙️ 機能仕様
 
@@ -836,7 +856,7 @@ Task別のLLM応答モデルも `ConfigDict(extra="ignore")` で検証する。�
 
 処理全体の `status` は `processing`、`succeeded`、`failed` または `cancelled` とする。
 
-`TranslationRecord` は `translation.json` のroot modelとし、次のfieldを持つ。
+`TranslationRecord` は `state-translation.json` のroot modelとし、次のfieldを持つ。
 
 - `schema_version: Literal[1]`
 - `translation_id: str`
@@ -865,12 +885,12 @@ Task別のLLM応答モデルも `ConfigDict(extra="ignore")` で検証する。�
 - `updated_at: datetime`
 - `error: ProcessingError | None`
 
-`RegistrationRecord` は `registration.json` のroot modelとし、次のfieldを持つ。
+`RegistrationRecord` は `state-registration.json` のroot modelとし、次のfieldを持つ。
 
 - `schema_version: Literal[1]`
 - `registration_id: str`
 - `status: ProcessingStatus`
-- `source_id: str | None`
+- `source_id: str | None`（旧形式の処理記録をResumeするための互換field。新規UI処理では未設定）
 - `inputs: list[InputFile]`
 - `fingerprint: str`
 - `collection: str`
@@ -880,7 +900,7 @@ Task別のLLM応答モデルも `ConfigDict(extra="ignore")` で検証する。�
 - `updated_at: datetime`
 - `error: ProcessingError | None`
 
-RegisterのResumeでも指定された入力を再走査し、`inputs` の内容と順序を照合する。`fingerprint` は順序付き入力の識別情報から計算し、`source_id`、抽出設定、PDF分割設定、OCR設定、`chunk_schema`、Embedding modelおよびQdrant collectionを含めない。Resumeでは保存済みの `source_id` を使用する。入力が一致する場合は、同じ `registration_id` による登録確認または未完了処理を継続する。入力が異なる場合はResumeを拒否し、新しいRegistration IDを要求する。
+RegisterのResumeでも指定された入力を再走査し、`inputs` の内容と順序を照合する。`fingerprint` は順序付き入力の識別情報から計算し、抽出設定、PDF分割設定、OCR設定、`chunk_schema`、Embedding modelおよびQdrant collectionを含めない。旧形式の記録に `source_id` があれば、保存済み成果物directoryを再開先として使用する。入力が一致する場合は、同じ `registration_id` による登録確認または未完了処理を継続する。入力が異なる場合はResumeを拒否し、新しいRegistration IDを要求する。
 
 #### 📦 ManifestとResult
 
@@ -970,9 +990,9 @@ Image:      p0001-b0012/cell-r0002-c0003/image-0001
 outputs/<file-basename>/<uuidv7>/
 ```
 
-存在するTaskのディレクトリだけを作成し、未実行Taskの空ディレクトリは作成しない。
+処理ディレクトリには入力、Task成果物、処理状態、ログおよび排他lockをまとめる。Task成果物は `tasks/<番号>-<task名>/` へ保存し、必要なTask directoryだけを作成する。処理状態は `state-translation.json`、`state-review.json`、`state-registration.json`、`state-upgrade.json` とする。
 
-全操作のログファイルは、処理ディレクトリ直下の `app.log` に統一する。保存先は `outputs/<file-basename>/<uuidv7>/app.log` とし、各操作の入力名と処理IDには以下の規則を適用する。Resumeでは同じ処理ディレクトリのログへ追記する。
+各操作のログは同じ処理ディレクトリ直下の `translation.log`、`review.log`、`registration.log` または `upgrade.log` とする。Resumeでは同じログへ追記する。排他lockは `.lock` とする。
 
 #### 🌐 Translate成果物
 
@@ -980,32 +1000,27 @@ outputs/<file-basename>/<uuidv7>/
 
 ```text
 outputs/<source-basename>/<uuidv7>/
-├── app.log
-├── translation.json
-├── task-structure.json
-├── task-translate.json
-├── task-review.json
-├── converter/
-│   ├── split/
-│   ├── docling/
-│   ├── unpack/
-│   └── merge/
-├── preprocess/
-│   ├── position/
-│   ├── normalize/
-│   ├── load/
-│   └── structure/
-├── translation/
-│   └── translate/
-├── review/
-│   ├── review/
-│   └── fix/
-└── publisher/
-    ├── lint/
-    ├── cover/
-    ├── markdown/
-    ├── pandoc/
-    └── ooxml/
+├── inputs/translate/<source-basename>.pdf
+├── tasks/
+│   ├── 00-split/
+│   ├── 01-docling/
+│   ├── 02-unpack/
+│   ├── 03-merge/
+│   ├── 10-position/
+│   ├── 11-normalize/
+│   ├── 12-load/
+│   ├── 13-structure/
+│   ├── 30-translate/
+│   ├── 41-review/
+│   ├── 42-fix/
+│   ├── 50-lint/
+│   ├── 51-cover/
+│   ├── 52-markdown/
+│   ├── 53-pandoc/
+│   └── 54-ooxml/
+├── translation.log
+├── .lock
+└── state-translation.json
 ```
 
 #### 🔎 Review成果物
@@ -1014,52 +1029,40 @@ outputs/<source-basename>/<uuidv7>/
 
 ```text
 outputs/<translation-basename>/<uuidv7>/
-├── app.log
-├── review.json
-├── task-review.json
-├── converter/
-│   ├── source/
-│   │   ├── split/
-│   │   ├── docling/
-│   │   ├── unpack/
-│   │   └── merge/
-│   └── translation/
-│       ├── split/
-│       ├── docling/
-│       ├── unpack/
-│       └── merge/
-├── preprocess/
-│   ├── source/
-│   │   ├── position/
-│   │   ├── normalize/
-│   │   └── load/
-│   └── translation/
-│       ├── position/
-│       ├── normalize/
-│       └── load/
-└── review/
-    └── review/
-        ├── review.json
-        └── calls/
+├── inputs/review/{source,translation}/<original-basename>.pdf
+├── tasks/00-split/<role>/
+├── tasks/01-docling/<role>/
+├── tasks/02-unpack/<role>/
+├── tasks/03-merge/<role>/
+├── tasks/10-position/<role>/
+├── tasks/11-normalize/<role>/
+├── tasks/12-load/<role>/
+├── tasks/41-review/{review.json,calls/}
+├── review.log
+├── .lock
+└── state-review.json
 ```
 
 #### 📚 Register成果物
 
-単一fileではその `Path.stem`、単一ディレクトリではその `Path.name` を使い、UUIDv7は `registration_id` とする。複数の独立したpathをまとめて登録する場合は、`source_id` を最上位の名前として必須にする。
+単一fileではその `Path.stem`、単一ディレクトリではその `Path.name` を使い、UUIDv7は `registration_id` とする。複数の独立したpathをまとめる場合は、最上位名を `register` とする。
 
 ```text
 outputs/<file-or-directory-basename>/<uuidv7>/
-├── app.log
-└── registration.json
+├── inputs/register/
+├── registration.log
+├── .lock
+└── state-registration.json
 
-outputs/<source-id>/<uuidv7>/
-├── app.log
-└── registration.json
+outputs/register/<uuidv7>/
+├── inputs/register/
+├── registration.log
+├── .lock
+└── state-registration.json
 ```
 
-`registration.json` は登録対象、内容のhash、登録件数、登録先および状態を保持する。登録対象の実体はQdrantへ保存し、成果物側に複製しない。
+`state-registration.json` は登録対象、内容のhash、登録件数、登録先および状態を保持する。登録対象の実体はQdrantへ保存し、成果物側に重複して複製しない。
 
-`source_id` は空でない単一のpath要素に限定する。`.`、`..`、path separator、制御文字、Windowsの予約名を含む値、および末尾がspaceまたは `.` の値は拒否し、置換や自動修正を行わない。予約名の判定は大文字と小文字を区別せず、拡張子の有無にかかわらず `CON`、`PRN`、`AUX`、`NUL`、`COM1` から `COM9`、`LPT1` から `LPT9` を対象とする。
 
 #### 🆙 Upgrade成果物
 
@@ -1067,24 +1070,21 @@ outputs/<source-id>/<uuidv7>/
 
 ```text
 outputs/<source-v2-basename>/<upgrade-id>/
-├── app.log
-├── upgrade.json
-├── task-diff.json
-├── converter/
-│   ├── source-v1/{split,docling,unpack,merge}/
-│   ├── source-v2/{split,docling,unpack,merge}/
-│   └── translation-v1/{split,docling,unpack,merge}/
-├── preprocess/
-│   ├── source-v1/{position,normalize,load}/
-│   ├── source-v2/{position,normalize,load}/
-│   └── translation-v1/{position,normalize,load}/
-└── upgrade/
-    └── diff/
-        ├── plan.json
-        └── calls/
+├── inputs/upgrade/{source-v1,source-v2,translation-v1}/
+├── tasks/00-split/<role>/
+├── tasks/01-docling/<role>/
+├── tasks/02-unpack/<role>/
+├── tasks/03-merge/<role>/
+├── tasks/10-position/<role>/
+├── tasks/11-normalize/<role>/
+├── tasks/12-load/<role>/
+├── tasks/21-diff/{plan.json,calls/}
+├── upgrade.log
+├── .lock
+└── state-upgrade.json
 ```
 
-`UpgradeRecord.outputs` には変更箇所一覧の `upgrade/diff/plan.json` を記録する。publisherの成果物は生成しない。
+`UpgradeRecord.outputs` には変更箇所一覧の `tasks/21-diff/plan.json` を記録する。publisherの成果物は生成しない。
 
 ## 🖥️ Streamlit UI
 
@@ -1135,7 +1135,7 @@ Streamlit UI
   <- processing recordとLLM Call Artifactを1秒間隔で再読込み
 ```
 
-UIの実行中は、`translation.json`、`review.json`、`registration.json`、`upgrade.json`、
+UIの実行中は、`state-translation.json`、`state-review.json`、`state-registration.json`、`state-upgrade.json`、
 Task状態およびLLM Call Artifactを進捗の正本とする。Streamlitの `session_state`や
 background workerの `Future`は正本としない。
 
@@ -1158,7 +1158,7 @@ uv run streamlit run main.py --server.address localhost
 ```
 
 - UIは現在の作業directoryの `.env` とprocess環境変数を既存 `load_config()` で読み込む。
-- `outputs`と `.translate-ui` は現在の作業directory直下を使用する。
+- `outputs` は現在の作業directory直下を使用し、UIの保存入力とPipeline成果物を同じ処理directoryへまとめる。
 - 初期構成はlocalhostでの単一Streamlit server processを前提とする。
 - localhost以外へbindする場合のTLS、認証、reverse proxyおよびaccess制御は運用側の責務とする。
 - 設定値とsecretはUIへ表示しない。UIは `.env` を書き換えない。
@@ -1173,7 +1173,7 @@ uv run streamlit run main.py --server.address localhost
 - containerはStreamlitを `0.0.0.0:8501` で起動する。
 - container起動時はheadless modeを有効にし、Streamlitの利用統計送信を無効にする。
 - `docker-compose.yml` は `.env` を環境変数として渡す。imageへ `.env` を複製しない。
-- `outputs` と `.translate-ui` はホストdirectoryをbind mountし、container再作成後も保持する。
+- `outputs` はホストdirectoryをbind mountし、container再作成後も保持する。
 - ホスト上の外部serviceへは `host.docker.internal` で接続できる構成とする。
 - healthcheckは `/_stcore/health` をcontainer内から確認する。
 
@@ -1261,7 +1261,6 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 | 項目 | 仕様 |
 |---|---|
 | 参照資料 | 1件以上のPDF upload、またはStreamlit実行環境から読めるディレクトリ |
-| `source_id` | 複数の独立file・pathでは必須、単一file・単一directoryでは任意 |
 | 開始操作 | Register用の `PipelineJob` をbackground workerへ登録する |
 | 成功時 | collection、Embedding model、各fileの状態、Point数と合計 |
 
@@ -1269,7 +1268,7 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 - ディレクトリ内のPDFも保存入力へ複製し、元のdirectory名と相対pathを保持する。再開は元directoryに依存しない。
 - 1処理の対象は最大100fileとする。非PDFを単独で指定した場合は拒否し、directory内の非PDFは対象外とする。
 - 複数PDF uploadの同名basename、またはdirectoryを含む入力の論理path重複を拒否する。
-- `source_id` は「Register入力」と同じ検証を使用し、UI独自の置換を行わない。
+- Register UIは `source_id` を求めない。同じ `logical_path` の資料を再登録した場合は新revisionを確認後に旧revisionを置き換える。
 
 #### 🆙 Upgrade
 
@@ -1286,20 +1285,20 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 
 ### 📥 Upload入力の保存
 
-`UploadedFile` はPipelineへ直接渡さず、処理開始前に次の作業directoryへ保存する。
+`UploadedFile` はPipelineへ直接渡さず、処理開始前に対応する出力directoryへ保存する。
 
 ```text
-.translate-ui/<uuidv7>/
-├── translate/
+outputs/<file-basename>/<uuidv7>/
+├── inputs/translate/
 │   └── <original-basename>.pdf
-├── review/
+├── inputs/review/
 │   ├── source/<original-basename>.pdf
 │   └── translation/<original-basename>.pdf
-├── register/
+├── inputs/register/
 │   ├── 0001/<original-basename>
 │   ├── 0002/<original-basename>
 │   └── directories/<root-basename>/<relative-path>.pdf
-└── upgrade/
+└── inputs/upgrade/
     ├── source-v1/<original-basename>.pdf
     ├── source-v2/<original-basename>.pdf
     └── translation-v1/<original-basename>.pdf
@@ -1307,9 +1306,9 @@ Agentが確定した同じ `ReviewTarget` の英語原文と日本語訳を二�
 
 - directory名のUUIDv7は対応する `translation_id`、`review_id`、`registration_id` または
   `upgrade_id` と同じ値とする。
-- `.translate-ui/` はGit管理対象外とする。
+- `outputs/` はGit管理対象外とする。
 - upload元のbasenameは成果物最上位directory名と `logical_path` のために保持する。
-- Registerのdirectory入力は、列挙したPDFだけを `register/directories/` へ複製する。保存用directory名を `logical_path` に混ぜず、元のroot名と相対pathで照合する。
+- Registerのdirectory入力は、列挙したPDFだけを `inputs/register/` へ複製する。保存用directory名を `logical_path` に混ぜず、元のroot名と相対pathで照合する。
 - basenameが空、`.`、`..`、path separatorまたは制御文字を含む場合は拒否する。
 - fileの拡張子は大文字と小文字を区別せず検査する。MIME typeだけを信頼しない。
 - 保存は一時fileへ書き込んだ後、同一filesystem内で原子的に確定する。Windowsの
@@ -1405,8 +1404,9 @@ UIはTask列全体をProgressBarとして表現する。ただし、表示する
 | Register | REGISTER |
 
 - Review AgentはREVIEW、Upgrade AgentはDIFFの `TaskState` と検証済み成果物から完了を判定する。全対象が確認され、最終結果を保存した場合だけstageを完了する。
-- `succeeded` または `skipped` のstageを完了として数える。現在の `processing` stageは
-  ProgressBarのtextへ `現在: DOCLING` のように表示するが、完了数へは含めない。
+- `succeeded` または `skipped` は `completed` と表示する。ProgressBarのtextは
+  `1 / 16 - SPLIT - completed` のように、stage番号、総数、Task名、状態の順とする。
+  処理開始直後でTask記録がない場合も、最初のstageであるSPLITを表示する。
 - 失敗または中断時は最後に確認できた値を保持し、Barと併せて `failed` または
   `cancelled` をtext表示する。色だけで状態を表現しない。
 - 条件分岐で実行不要となったTRANSLATE、REVIEWまたはFIXは、既存どおり `skipped` の
@@ -1415,19 +1415,13 @@ UIはTask列全体をProgressBarとして表現する。ただし、表示する
   正常終了時だけ100%とする。
 - 各stageの重みは一律1とする。DOCLINGの通信待ちとFIXのような短い処理で所要時間が
   異なっても、時間比率らしく見せるための推定weightは導入しない。
-- DOCLINGはTask directoryを完了時だけ公開するため、既存Artifactだけでは
-  `3 / 10 parts`のようなTask内部進捗を正確に表示できない。DOCLING stageを
-  実行中として表示するだけとし、part単位の追加進捗Artifactは設けない。
-- TRANSLATEなどのLLM Task内部は、既存のCall件数表示をProgressBarの下へ併記する。
-  `planned_calls`は分割によって増えるため、LLM Call比率を別の百分率Barに
-  変換しない。
+- Task内部の進捗は、処理済みページ数またはCall数、総数および状態を `5 / 120 - processing` の形式で表示する。DOCLINGは完了した分割PDFに含まれるページ数と総ページ数、
+  LLM TaskはCall数を使う。1回のLLM応答で複数要素が完了する場合、表示数はまとめて進めてよい。
 - Registerは `TaskState`を持たないため、最上位JSONの状態から `REGISTER`という一つの
-  表示用Taskを組み立てる。`succeeded`の場合だけ `1 / 1 Task`、それ以外は `0 / 1 Task` とし、
-  Task名と最上位JSONの状態をProgressBarのtextへ表示する。
+  表示用Taskを組み立て、同じstage表示形式で進捗を示す。
 
-UIはこの方式により、Agent専用のArtifact Schemaを追加せず進捗を表示する。Task内の
-厳密な処理量、残り時間およびDOCLINGのpart単位進捗は、Pipeline側に途中状態の追加保存が
-必要になるため表示しない。
+UIは既存のTask・LLM Call・Docling進捗記録を使い、Agent専用のArtifact Schemaを追加せず
+進捗を表示する。残り時間は推定しない。
 
 #### 🔬 進捗詳細
 
@@ -1535,18 +1529,16 @@ Upgradeは三つの読取専用TextAreaを `英語v1 | 日本語v1 | 英語v2` �
 列挙する。
 
 ```text
-outputs/*/*/translation.json
+outputs/*/*/state-translation.json
 outputs/*/*/review.json
-outputs/*/*/registration.json
+outputs/*/*/state-registration.json
 outputs/*/*/upgrade.json
 ```
 
 - 履歴は `updated_at` の新しい順に最大100件まで表示する。
 - 履歴は左sidebarへ折り畳まず、選択可能なitemとして縦に並べる。
 - 履歴の列挙は一度のStreamlit評価につき一回とし、Task directory全体を再帰的に読み込まない。
-- 各履歴buttonは種類、代表入力、状態および処理IDを、この順序で `|` 区切りに表示する。
-  Translateは英語PDF、Reviewは日本語訳文PDF、Upgradeは英文v2を代表入力とする。Registerは
-  `source_id`があればその値、なければ先頭入力のlogical pathを使用する。
+- 履歴の各itemは1行目に処理種別と代表入力、2行目に状態と日時を表示する。Translateは英語PDF、Reviewは日本語訳文PDF、Upgradeは英文v2、Registerは先頭入力のlogical pathを表示する。
 - 不正なJSONまたは非対応 `schema_version` は履歴から隠さず、「読込不可」とpathを表示する。
 - `outputs` 以外のdirectoryは列挙対象としない。
 
@@ -1557,7 +1549,7 @@ outputs/*/*/upgrade.json
 - メニューに必要なcomponentは履歴表示に限定し、削除の検証と実行はPython側で行う。
 - 削除前に「成果物と保存済み入力を削除する」の確認を必須とする。
 - 実行中の最上位記録、またはUI worker登録表で未完了の処理IDは削除を拒否する。
-- 削除対象は、選択した処理IDと一致する `outputs/<basename>/<processing-id>/` および存在する場合の `.translate-ui/<processing-id>/` だけとする。
+- 削除対象は、選択した処理IDと一致する `outputs/<basename>/<processing-id>/` だけとする。
 - 解決済みpathが上記root直下の規定階層と一致しない場合は削除を拒否する。
 - 削除後は選択中のquery parameterを解除し、新規処理画面へ戻る。
 
@@ -1567,10 +1559,10 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 `Future` がない `processing` に表示する。`processing` が実際に稼働中かどうかをUIが
 推測して正本化してはならない。同時操作は `ProcessingLock` が最終的に判定する。
 
-- `.translate-ui/<processing-id>/` の保存済みPDFを使用し、通常のResumeでは再uploadを要求しない。
+- `outputs/<basename>/<processing-id>/inputs/` の保存済みPDFを使用し、通常のResumeでは再uploadを要求しない。
 - 保存入力が失われた場合だけ、同じfileと論理pathを復元するための再指定を求め、元のhashと照合する。
 - Resume開始前にfile件数、roleおよびSHA-256を比較し、不一致ならPipelineを呼び出さず拒否する。
-- Registerの `source_id`、入力roleとlogical pathの順序は保存済み記録に合わせる。
+- Registerの入力roleとlogical pathの順序は保存済み記録に合わせる。
 - Resume buttonの確定時は「完了済みTaskおよびLLM Callを再利用し、未完了箇所から再開する」ことを明示する。
 - `succeeded` の処理にResume buttonを表示しない。
 - Resumeが拒否された場合も既存成果物を変更しない。
@@ -1582,8 +1574,8 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 - Artifactの `relative_path`は処理directoryを基準に解決し、directory外を参照するpathを拒否する。
 - download前にfileの存在、sizeとSHA-256を `ArtifactFile` と比較する。
 - 検証に失敗したArtifactはdownload buttonを表示せず、「成果物が欠落または変更されている」と表示する。
-- TranslateはMarkdownとDOCX、Reviewは `review/review/review.json`、Registerは `registration.json`、Upgradeは `upgrade/diff/plan.json` をdownload対象とする。
-- Registerの `registration.json` は成果物を指すroot recordそのものであり、自己参照する
+- TranslateはMarkdownとDOCX、Reviewは `tasks/41-review/review.json`、Registerは `state-registration.json`、Upgradeは `tasks/21-diff/plan.json` をdownload対象とする。
+- Registerの `state-registration.json` は成果物を指すroot recordそのものであり、自己参照する
   `ArtifactFile` を持たない。`RegistrationRecord` としてSchema検証でき、かつ状態が
   `succeeded` の場合に、読み込んだ同じbyte列をdownload対象とする。
 - previewおよびdownload buttonは `進捗と処理内容` Collapseの外側へ表示する。
@@ -1637,12 +1629,12 @@ flowchart TB
     Input["入力PDF<br/>単一・複数・ディレクトリ"]
     Env[".env・process環境変数"]
     Template["translate/templates/<br/>規則・glossary.csv・template.docx"]
-    Upload[".translate-ui/＜処理ID＞/<br/>保存入力PDF"]
+    Upload["outputs/＜入力名＞/＜処理ID＞/inputs/<br/>保存入力PDF"]
     O["outputs/＜入力名＞/＜処理ID＞/"]
-    Log["app.log<br/>処理ごとのログ"]
-    Record["translation.json・review.json<br/>registration.json・upgrade.json・.lock"]
-    Work["Task成果物・calls/*/<br/>中間JSON・画像・ZIP"]
-    Final["Translate: Markdown・DOCX<br/>Review: review/review/review.json<br/>Upgrade: upgrade/diff/plan.json"]
+    Log["translation.log・review.log<br/>registration.log・upgrade.log"]
+    Record["state-translation.json等<br/>.lock"]
+    Work["tasks/NN-name/<br/>中間JSON・画像・ZIP"]
+    Final["Translate: Markdown・DOCX<br/>Review: tasks/41-review/review.json<br/>Upgrade: tasks/21-diff/plan.json"]
     Docling["Docling Serve API"]
     LLM["OpenAI互換API<br/>LLM・Embedding"]
     Qdrant["Qdrant API"]
@@ -1840,13 +1832,13 @@ Doclingの `key_value_area` は項目名と値を対応付ける領域として�
 
 `common/config.py` の `Config` は `pydantic_settings.BaseSettings` を直接継承する。`_EnvironmentConfig` と `BaseModel` への再変換を設けない。`load_config()` が現在の作業directoryの `.env` を指定して `Config` を生成し、同名のprocess環境変数を優先する。数値範囲と型はfield定義で検証する。環境変数の組合せ、token予算、操作ごとの必須項目、および任意のRAG設定の完全性は `validate_config(config, operation)` 一つで扱い、`require_translate()`、`require_review()`、`require_register()` など用途別の検証関数へ分けない。設定エラーは `ConfigError` としてUIへ返す。外部clientの生成、Artifactの読書きおよびPipelineの実行は行わない。
 
-`common/logger.py` は標準Libraryの `logging` で `translate` Loggerを設定する。`LOG_LEVEL` の既定値は `INFO` とする。ログの保存先はPipelineが確定した処理ディレクトリ直下の `app.log` とし、`LOG_FILEPATH` による保存先の指定は設けない。ファイルには日次ローテーションと7世代の保持を適用し、ローテーション後のログも同じ処理ディレクトリへ保存する。同じログを標準エラーにも出力する。formatには時刻、level、file名、行番号、関数名およびmessageを含める。標準エラーのhandlerはprocess内で一度だけ初期化する。file handlerは処理開始時に設定し、終了時に閉じて外す。同じ処理への再設定でhandlerを重複追加せず、別の処理IDのログを混在させない。Resumeでは既存ログへ追記する。処理ディレクトリが確定する前のログは標準エラーだけへ出力する。専用のLogger subclassや `LogRecord` を変更するfilter、ANSI色付けは設けない。本文、認証情報、Vector、応答payloadは記録せず、開始、完了、再試行、失敗の種別と件数を記録する。例外による中断時は、例外型と発生箇所のfile名・行番号・関数名を記録する。例外本文とsource行はログに含めない。
+`common/logger.py` は標準Libraryの `logging` で `translate` Loggerを設定する。`LOG_LEVEL` の既定値は `INFO` とする。ログの保存先はPipelineが確定した処理ディレクトリ直下の `translation.log`、`review.log`、`registration.log` または `upgrade.log` とし、`LOG_FILEPATH` による保存先の指定は設けない。ファイルには日次ローテーションと7世代の保持を適用し、ローテーション後のログも同じ処理ディレクトリへ保存する。同じログを標準エラーにも出力する。formatには時刻、level、file名、行番号、関数名およびmessageを含める。標準エラーのhandlerはprocess内で一度だけ初期化する。file handlerは処理開始時に設定し、終了時に閉じて外す。同じ処理への再設定でhandlerを重複追加せず、別の処理IDのログを混在させない。Resumeでは既存ログへ追記する。処理ディレクトリが確定する前のログは標準エラーだけへ出力する。専用のLogger subclassや `LogRecord` を変更するfilter、ANSI色付けは設けない。本文、認証情報、Vector、応答payloadは記録せず、開始、完了、再試行、失敗の種別と件数を記録する。例外による中断時は、例外型と発生箇所のfile名・行番号・関数名を記録する。例外本文とsource行はログに含めない。
 
 rootの `main.py` は `translate.ui.main` を呼び出す。UIは4つのPipelineをbackground workerから実行する。
 
 ### 📏 実装規模と静的検査
 
-実装整理では `translate/` 配下のPython source全体を7,000〜8,000行程度へ近づけることを目安とする。行数は空行とコメントを含む物理行で測り、`tests/` と参照用の `translate_v2/` は含めない。機能の削除は[要件選択チェックリスト](REQUIREMENTS_CHECKLIST.md)への回答で決め、行数だけを理由に削除しない。残す機能の安全性と検証を保ちながら、重複した検証、不要な中間モデル、浅い関数分割を優先して減らす。`pipeline/`、`adapters/`、`common/` は配置を維持し、各fileの内部を簡潔にする。
+実装整理では `translate/` 配下のPython source全体を7,000〜8,000行程度へ近づけることを目安とする。行数は空行とコメントを含む物理行で測り、`tests/` と参照用の `translate_v2/` は含めない。機能の追加・削除は本書に記載した採用要件に従い、行数だけを理由に削除しない。残す機能の安全性と検証を保ちながら、重複した検証、不要な中間モデル、浅い関数分割を優先して減らす。`pipeline/`、`adapters/`、`common/` は配置を維持し、各fileの内部を簡潔にする。
 
 Ruffの `TC` ruleは有効化しない。型注釈専用importを機械的に `if TYPE_CHECKING:` へ移す必要はない。`from __future__ import annotations` は前方参照が必要なmoduleで使用し、全fileへ一律に追加しない。実行時の循環importまたは重いoptional dependencyを避ける場合だけ `TYPE_CHECKING` を使う。型検査は既存の `ty` で継続する。
 
@@ -1990,7 +1982,7 @@ Qdrantが設定済みで検索または登録に失敗した場合、障害を�
 
 #### 📂 Register入力
 
-RegisterはPDFだけを受理する。単一PDF、複数PDF、およびPDFを含むディレクトリをUIから指定できる。
+RegisterはPDFだけを受理する。単一PDF、複数PDF、およびPDFを含むディレクトリをUIから指定できる。UIで資料IDは入力させず、ファイル名とディレクトリ内相対pathから作る `logical_path` を資料識別子とする。同じ `logical_path` を再登録すると、確認後に旧revisionを自動で置き換える。
 
 PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値を10とする。OCRを含むDocling成果の本文だけを登録用テキストとして抽出する。通常の段落・Captionに加えて表セルの本文も含め、結合セルの本文を重複登録しない。
 
@@ -2000,7 +1992,7 @@ PDFは `PDF_SPLIT_PAGES` pageごとに分割してDoclingへ送り、既定値�
 
 抽出したテキストは改行をLFへ正規化し、空行で区切られた段落を優先して最大1,000 Unicode code pointのchunkへ分割する。隣接chunkは最大100 code pointを重複させる。単一段落が上限を超える場合は文境界で分割する。意味を保った最小単位が上限を超える場合は入力エラーとし、文字位置で切断しない。表本文を含む抽出・分割規則の識別子は `registration-v2` とする。
 
-`source_key` は、`source_id` が指定された場合は `<source_id>/<logical_path>`、指定されない場合は `logical_path` そのものとする。`revision` は入力内容のSHA-256、抽出設定、`chunk_schema` およびEmbedding model名から生成する。
+`source_key` は `logical_path` とする。旧形式の `source_id` 付きPointも、同じ `logical_path` の新revision確認後に削除して置き換える。`revision` は入力内容のSHA-256、抽出設定、`chunk_schema` およびEmbedding model名から生成する。
 
 #### ⏱️ 外部処理の制限
 
@@ -2098,26 +2090,19 @@ uv run playwright install chromium
 - ArtifactのSchema、path、size、SHA-256を検証し、不正な成果物を再利用・公開しないこと。
 - 処理IDごとの一つのlockで同時操作を拒否し、途中書込みの記録を再利用しないこと。
 - `BaseSettings` がprocess環境変数を優先し、用途別の必須項目を一つの検証関数で扱うこと。
-- loggerのhandlerが重複せず、処理directoryの `app.log` に保存され、Resumeで追記すること。
+- loggerのhandlerが重複せず、処理種別に対応したログへ保存され、Resumeで追記すること。
 - Task別の診断Artifactを保持し、本文・認証情報・raw promptをログへ出さないこと。
 
 #### 🎨 UIとE2E
 
-`streamlit.testing.v1.AppTest` で入力、履歴、進捗、比較、エラー表示を検証する。右クリックメニューと実際のfile upload・downloadはPlaywrightで実Streamlit serverに接続して検証する。
+テストは、UI・Pipelineを通した4つの主要操作をE2Eで検証し、Unit testはAdapter、Regression testはTaskに限定する。E2Eは実際のStreamlit画面から入力して処理を成功まで実行し、生成または登録された結果を確認する。外部サービスはテスト用の決定的な応答へ置き換えてよいが、Pipelineそのものは呼び出す。画面配置や装飾だけを確認するテストは作らない。
 
-- 4操作がUIから開始でき、必須入力不足・連打による重複実行を防ぐこと。
-- Registerで複数PDFとdirectory指定が利用でき、対象一覧から開始できること。
-- background処理中も画面が応答し、Task・LLM Callの保存状態を進捗へ反映すること。
-- 同じ成功Callの処理前後を表示し、未確定の応答を確定結果と混在させないこと。
-- Reviewは同じ対応単位の二列、Upgradeは同じ変更項目の三列と修正提案を表示すること。
-- ReviewとUpgradeの全指摘・変更箇所・修正候補を一覧で参照でき、結果JSONをdownloadできること。
-- TranslateのMarkdown・DOCXとRegisterの結果JSONを検証後だけdownloadできること。
-- 履歴の右クリックで対象sessionの削除メニューが開き、確認前に削除されないこと。
-- 右クリック対象と選択中sessionが異なる場合も、確認した対象だけを削除すること。
-- 実行中sessionを削除できず、path検査を通った終了済みsessionの成果物と保存入力だけを削除すること。
-- browser更新後も処理IDの表示を復元し、保存入力からResumeできること。
-- ライトテーマ、AppBarのSession ID、sidebar履歴、Collapseと比較表示を維持すること。
-- rootの `main.py` から起動でき、翻訳CLIとbackend選択を要求しないこと。
+- Translate、Review、Upgrade、RegisterをそれぞれUIから開始し、各結果が成功状態になること。
+- ReviewとUpgradeは変更箇所・修正提案一覧を生成し、Registerは同じ `logical_path` の再登録で旧revisionを置き換えること。
+- テスト対象の入力不備、履歴再開、停止などは、4つのE2Eフローを成立させるために必要な範囲で確認する。
+- 起動時のbrand `Translate` はアイコン位置に48pxのテキストで置き、押すと履歴選択を解除して新規画面へ戻る。
+- 各処理開始ボタンは適切なMaterial iconと `Start` を含む共通表記にする。
+- rootの `main.py` から起動でき、翻訳CLIとbackend選択を要求しない。
 
 ### ✅ 完了条件
 

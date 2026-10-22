@@ -44,7 +44,7 @@ def _register(
     return RegistrationOutcome(
         registration_id="register-e2e",
         processing_directory=root,
-        record=root / "registration.json",
+        record=root / "state-registration.json",
     )
 
 

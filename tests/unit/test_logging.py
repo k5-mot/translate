@@ -53,8 +53,8 @@ def test_logging_appends_and_separates_processing_ids(
             assert file_handler.backupCount == 7
         assert file_handler.stream is None
         assert application_logger.handlers == handlers
-    first_text = (first / "app.log").read_text(encoding="utf-8")
-    second_text = (second / "app.log").read_text(encoding="utf-8")
+    first_text = (first / "translation.log").read_text(encoding="utf-8")
+    second_text = (second / "translation.log").read_text(encoding="utf-8")
     assert first_text.count("first-run") == first_text.count("resumed") == 1
     assert "second-run" not in first_text
     assert "first-run" not in second_text
@@ -80,7 +80,7 @@ def test_logging_closes_on_failure_without_exception_payload(
     assert isinstance(file_handler, TimedRotatingFileHandler)
     assert file_handler.stream is None
     assert application_logger.handlers == handlers
-    output = (tmp_path / "app.log").read_text(encoding="utf-8")
+    output = (tmp_path / "translation.log").read_text(encoding="utf-8")
     assert "ValueError" in output
     assert re.search(
         r"location=test_logging\.py:\d+:"

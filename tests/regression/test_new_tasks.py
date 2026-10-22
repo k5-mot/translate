@@ -70,6 +70,50 @@ TranslationResponse = import_module("translate.tasks.30_translate").TranslationR
 TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
 translation_schema = import_module("translate.tasks.30_translate")._schema  # noqa: SLF001
 
+
+def test_review_targets_skip_formula_text_but_keep_prose_and_captions() -> None:
+    """数式本文は言語品質確認から除外し、本文とキャプションは残す。"""
+
+    document = Document(
+        pages=[
+            Page(
+                number=1,
+                blocks=[
+                    Block(
+                        id="formula",
+                        order=0,
+                        kind="formula",
+                        content=TextUnit(
+                            id="formula-content",
+                            spans=[TextSpan(id="formula-span", source="x = 1")],
+                        ),
+                        caption=TextUnit(
+                            id="formula-caption",
+                            spans=[TextSpan(id="caption-span", source="Equation")],
+                        ),
+                    ),
+                    Block(
+                        id="paragraph",
+                        order=1,
+                        kind="paragraph",
+                        content=TextUnit(
+                            id="paragraph-content",
+                            spans=[TextSpan(id="paragraph-span", source="Text")],
+                        ),
+                    ),
+                ],
+            )
+        ]
+    )
+
+    targets = ReviewTarget.from_document(document)
+
+    assert [target.target_ids for target in targets] == [
+        ["formula-caption"],
+        ["paragraph-content"],
+    ]
+
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -214,7 +258,7 @@ def test_structure_preserves_misclassified_formula_as_source_image(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, legacy_coordinates: bool
 ) -> None:
     """1セル数式の原文IDを保持し、Task所有画像・Lint・Markdown・再開まで通す。"""
-    source, assets = tmp_path / "source.pdf", tmp_path / "converter/merge/assets"
+    source, assets = tmp_path / "source.pdf", tmp_path / "tasks/03-merge/assets"
     picture = PILImage.new("RGB", (100, 80), "white")
     picture.paste("black", (10, 20, 40, 60))
     picture.save(source, resolution=72)
@@ -1278,13 +1322,18 @@ def test_structure_chunks_long_block_at_sentence_boundaries() -> None:
     assert all(part.id == block.id for chunk in chunks for part in chunk)
 
 
-def test_structure_rejects_oversized_sentence_without_truncation() -> None:
-    """最小の文が上限を超える場合は本文を切り捨てず失敗する。"""
+def test_structure_splits_oversized_sentence_without_truncation() -> None:
+    """一つのSpanが入力上限を超えても本文を欠落なく分割する。"""
     block = Block(
         id="body", order=0, kind="paragraph", content=_unit("body", "word " * 2000)
     )
-    with pytest.raises(ValueError, match="single sentence exceeds"):
-        structure_chunks([block], maximum_blocks=20, maximum_bytes=2980)
+    chunks = structure_chunks([block], maximum_blocks=20, maximum_bytes=2980)
+
+    assert len(chunks) > 1
+    assert (
+        "".join(part.content.text("source") for chunk in chunks for part in chunk)
+        == "word " * 2000
+    )
 
 
 def test_unpack_rejects_parent_path_before_extracting(tmp_path: Path) -> None:

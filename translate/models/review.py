@@ -61,6 +61,12 @@ class ReviewTarget(ReviewModel):
             list[ReviewTarget]: Translate後のDocument内IDからREVIEWの対象を作る。
         """
 
+        formula_ids = {
+            block.content.id
+            for page in document.pages
+            for block in page.blocks
+            if block.kind == "formula" and block.content is not None
+        }
         return [
             cls(
                 id=f"translate/{unit.id}",
@@ -70,7 +76,7 @@ class ReviewTarget(ReviewModel):
                 spans=unit.spans,
             )
             for _, unit in document.text_units()
-            if unit.text("source").strip()
+            if unit.text("source").strip() and unit.id not in formula_ids
         ]
 
 

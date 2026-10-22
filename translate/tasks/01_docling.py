@@ -42,7 +42,7 @@ def convert(
 
     client = DoclingClient(config)
     parts: list[DoclingPart] = []
-    progress_path = task_directory.parent / "docling-progress.json"
+    progress_path = task_directory / "docling-progress.json"
     total = len(manifest.parts)
     write_model(progress_path, DoclingProgress(completed=0, total=total))
     with temporary_task_directory(task_directory) as temporary:
@@ -80,4 +80,5 @@ def convert(
             )
         result = DoclingManifest(parts=parts)
         write_model(temporary / "manifest.json", result, atomic=False)
+    write_model(progress_path, DoclingProgress(completed=len(parts), total=total))
     return result
