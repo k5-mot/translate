@@ -31,6 +31,7 @@ def _chunks(
             if current and (
                 len(current) >= maximum_targets
                 or _target_bytes([*current, part]) > maximum_bytes
+                or bool(current[0].spans) != bool(part.spans)
             ):
                 result.append(current)
                 current = []
