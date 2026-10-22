@@ -28,10 +28,6 @@ def resume(page: Page, operation: str, processing_id: str) -> None:
         raise RuntimeError(message)
     record_path = record_paths[0]
     previous_update = json.loads(record_path.read_text(encoding="utf-8"))["updated_at"]
-    page.get_by_text(
-        "完了済みTaskとLLM Callを再利用し、未完了箇所から再開する",
-        exact=True,
-    ).click(timeout=20_000)
     page.get_by_role("button", name="Resume", exact=True).click()
     deadline = time.monotonic() + 30
     while (

@@ -533,6 +533,25 @@ def _provider_error(error: APIStatusError) -> LLMError:
     """
 
     status = error.status_code
+    body_error = error.body.get("error") if isinstance(error.body, dict) else None
+    request_id = error.response.headers.get("x-request-id")
+    details = ", ".join(
+        f"{name}={value}"
+        for name, value in (
+            ("request_id", request_id),
+            ("body_type", type(error.body).__name__),
+            ("type", body_error.get("type") if isinstance(body_error, dict) else None),
+            ("code", error.code),
+            ("param", error.param),
+            ("category", _provider_error_category(error.body)),
+        )
+        if isinstance(value, str)
+        and 0 < len(value) <= 80
+        and all(character.isalnum() or character in "_.-[]" for character in value)
+    )
+    diagnostic = f" ({details})" if details else ""
+    if status == 400:
+        logger.warning("LLM request rejected status=%s%s", status, diagnostic)
     if status == 408:
         return LLMTimeoutError(
             "LLM endpointがHTTP 408で時間切れを返しました。対策: "
@@ -554,9 +573,39 @@ def _provider_error(error: APIStatusError) -> LLMError:
             "endpointの稼働状態とサーバーログを確認してください。"
         )
     return LLMProviderError(
-        f"LLM要求がHTTP {status}で拒否されました。対策: "
+        f"LLM要求がHTTP {status}で拒否されました{diagnostic}。対策: "
         "model名、structured output方式とendpointの対応を確認してください。"
     )
+
+
+def _provider_error_category(body: object) -> str | None:
+    """Provider本文から機密文を出さず、既知のHTTP 400原因を分類する。"""
+
+    if isinstance(body, str):
+        message = body
+    elif isinstance(body, dict):
+        body_error = body.get("error")
+        message = body_error.get("message") if isinstance(body_error, dict) else None
+    else:
+        message = None
+    if not isinstance(message, str):
+        category = None
+    else:
+        message = message.casefold()
+        if any(
+            term in message
+            for term in ("response_format", "json_schema", "structured output")
+        ):
+            category = "structured_output"
+        elif any(term in message for term in ("context", "token", "sequence length")):
+            category = "input_limit"
+        elif "model" in message and any(
+            term in message for term in ("not found", "does not exist", "unknown")
+        ):
+            category = "model"
+        else:
+            category = None
+    return category
 
 
 def _response(
