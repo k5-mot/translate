@@ -17,7 +17,7 @@ $currentStage = 'startup'
 
 function Save-State {
     # 同じディレクトリ内で置換し、途中終了による破損を避ける。
-    $state | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath "${statePath}.tmp" -Encoding utf8
+    Set-Content -LiteralPath "${statePath}.tmp" -Value (ConvertTo-Json -InputObject $state -Depth 3) -Encoding utf8
     Move-Item -LiteralPath "${statePath}.tmp" -Destination $statePath -Force
 }
 
