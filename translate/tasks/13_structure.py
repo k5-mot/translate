@@ -40,6 +40,7 @@ from translate.models.document import (
     BlockKind,
     Document,
     Page,
+    TextSpan,
 )
 from translate.models.document import (
     Image as DocumentImage,
@@ -126,7 +127,7 @@ class StructureTask:
         if self.config.openai_structure_model is None:
             raise ValueError("structure model is required")
         self.task_directory.mkdir(parents=True, exist_ok=True)
-        original_assets = processing_directory / "converter" / "merge" / "assets"
+        original_assets = processing_directory / "tasks" / "03-merge" / "assets"
         if original_assets.is_dir():
             shutil.copytree(
                 original_assets, self.task_directory / "assets", dirs_exist_ok=True
@@ -430,31 +431,41 @@ def _chunks(
                 content = block.content.model_copy(update={"spans": [*spans, span]})
                 piece = block.model_copy(update={"content": content})
                 if _block_bytes([piece]) > maximum_bytes:
-                    if not spans:
-                        raise ValueError(
-                            f"single sentence exceeds structure input limit: {span.id}"
+                    if spans:
+                        result.append(
+                            [
+                                block.model_copy(
+                                    update={
+                                        "content": block.content.model_copy(
+                                            update={"spans": spans}
+                                        )
+                                    }
+                                )
+                            ]
                         )
-                    result.append(
-                        [
-                            block.model_copy(
-                                update={
-                                    "content": block.content.model_copy(
-                                        update={"spans": spans}
-                                    )
-                                }
-                            )
-                        ]
-                    )
-                    spans = [span]
-                    piece = block.model_copy(
+                        spans = []
+                    single = block.model_copy(
                         update={
-                            "content": block.content.model_copy(update={"spans": spans})
+                            "content": block.content.model_copy(
+                                update={"spans": [span]}
+                            )
                         }
                     )
-                    if _block_bytes([piece]) > maximum_bytes:
-                        raise ValueError(
-                            f"single sentence exceeds structure input limit: {span.id}"
+                    if _block_bytes([single]) > maximum_bytes:
+                        result.extend(
+                            [
+                                block.model_copy(
+                                    update={
+                                        "content": block.content.model_copy(
+                                            update={"spans": [part]}
+                                        )
+                                    }
+                                )
+                            ]
+                            for part in _split_span(block, span, maximum_bytes)
                         )
+                        continue
+                    spans = [span]
                 else:
                     spans.append(span)
             if spans:
@@ -480,6 +491,46 @@ def _chunks(
     if current:
         result.append(current)
     return result
+
+
+def _split_span(block: Block, span: TextSpan, maximum_bytes: int) -> list[TextSpan]:
+    """単一SpanをSTRUCTURE payloadのbyte上限に収まる連続片へ分ける。
+
+    Args:
+        block (Block): 分割するSpanを含む元Block。
+        span (TextSpan): 分割するTextSpan。
+        maximum_bytes (int): 一つのpayloadへ含める最大byte数。
+
+    Returns:
+        list[TextSpan]: 元の文字列を欠落・重複なく分割したTextSpan。
+
+    Raises:
+        ValueError: 一文字を含むpayloadもbyte上限を超える場合。
+    """
+    if block.content is None or not span.source:
+        raise ValueError(f"single sentence exceeds structure input limit: {span.id}")
+    text = span.source
+    parts = []
+    start = 0
+    while start < len(text):
+        low, high, end = start + 1, len(text), start
+        while low <= high:
+            middle = (low + high) // 2
+            part = span.model_copy(update={"source": text[start:middle]})
+            content = block.content.model_copy(update={"spans": [part]})
+            candidate = block.model_copy(update={"content": content})
+            if _block_bytes([candidate]) <= maximum_bytes:
+                end = middle
+                low = middle + 1
+            else:
+                high = middle - 1
+        if end == start:
+            raise ValueError(
+                f"single sentence exceeds structure input limit: {span.id}"
+            )
+        parts.append(span.model_copy(update={"source": text[start:end]}))
+        start = end
+    return parts
 
 
 def _block_bytes(blocks: list[Block]) -> int:

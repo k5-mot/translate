@@ -64,7 +64,7 @@ class ReviewTask:
     def run(
         self,
         targets: list[ReviewTarget],
-        processing_directory: Path,
+        _processing_directory: Path,
         *,
         operation: str = "evaluate",
         round_number: int = 0,
@@ -93,7 +93,7 @@ class ReviewTask:
         if self.config.openai_review_model is None:
             raise ValueError("review model is required")
         self.task_directory.mkdir(parents=True, exist_ok=True)
-        diagnostics_path = processing_directory / "task-review.json"
+        diagnostics_path = self.task_directory / "diagnostics.json"
         diagnostics: list[str] = []
         _write_diagnostics(diagnostics_path, diagnostics)
         owns_client = client is None
