@@ -124,6 +124,7 @@ function Ensure-UiServer {
 }
 
 function Invoke-Validation {
+    param([string]$StartAt)
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
     $startIndex = [Array]::IndexOf($samples, $StartAt)
     foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
@@ -166,7 +167,7 @@ try {
     Ensure-UiServer
     & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
     if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
-    Invoke-Validation
+    Invoke-Validation -StartAt $StartAt
     $state['status'] = 'succeeded'
     Save-State -Snapshot $state -Path $statePath
     Write-Output "ALL_REAL_ACCEPTANCE_PASSED $statePath"
