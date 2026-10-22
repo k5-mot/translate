@@ -2040,6 +2040,17 @@ def test_review_chunks_split_large_target_without_losing_source_or_spans() -> No
         span.id for span in spans
     ]
 
+    source_only = ReviewTarget(
+        id="source-only",
+        source="additional source text",
+        translation="",
+        target_ids=["unit-2"],
+        spans=[],
+    )
+    chunks = review_chunks([target, source_only], 32, 3000)
+    assert any(not part.spans for chunk in chunks for part in chunk)
+    assert all(len({bool(part.spans) for part in chunk}) == 1 for chunk in chunks)
+
 
 def test_review_chunks_keep_one_large_translated_span_intact() -> None:
     """長い翻訳spanを壊さず、残余容量へ原文を分配して分割する。"""
@@ -2610,6 +2621,50 @@ def test_review_uses_short_response_ids_and_restores_original_ids(
         assert saved.assessments[0].edits[0].span_id == target.spans[0].id
         assert result.reviewed_target_ids == [target.id]
         assert result.revisions[0].edits[0].span_id == target.spans[0].id
+    finally:
+        client.client.close()
+
+
+def test_review_source_only_chunk_has_valid_no_edits_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """修正Spanのない原文chunkには空enumを送らず編集を禁止する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_llm_base_url=None,
+        openai_review_model="review",
+        llm_structured_output_mode="json_schema",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id="translate/#/texts/6/content/part-0001/part-0003",
+        source="Original source text without a translated span.",
+        translation="",
+        target_ids=["unit"],
+        spans=[],
+    )
+    client = LLMClient(config)
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = successful_review(
+        target.id
+    ).model_dump_json()
+    completion.usage = None
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+
+        schema = create.call_args.kwargs["response_format"]["json_schema"]["schema"]
+        assert "enum" not in schema["$defs"]["ReviewTextEdit"]["properties"]["span_id"]
+        assert (
+            schema["$defs"]["ReviewAssessment"]["properties"]["edits"]["maxItems"] == 0
+        )
+        assert result.reviewed_target_ids == [target.id]
+        assert not result.revisions
     finally:
         client.client.close()
 

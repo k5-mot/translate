@@ -192,9 +192,14 @@ class SavedLLMCalls:
                     key.removeprefix("review:") for key in target_ids
                 ]
                 confirmed["minItems"] = confirmed["maxItems"] = len(target_ids)
-                schema["$defs"]["ReviewTextEdit"]["properties"]["span_id"]["enum"] = (
-                    list(span_aliases.values())
-                )
+                if span_aliases:
+                    schema["$defs"]["ReviewTextEdit"]["properties"]["span_id"][
+                        "enum"
+                    ] = list(span_aliases.values())
+                else:
+                    schema["$defs"]["ReviewAssessment"]["properties"]["edits"][
+                        "maxItems"
+                    ] = 0
             if self.task == "DIFF":
                 # 同じ形のIDでも文書ごとに意味が異なるため、選択したrole内に限定する。
                 schema["properties"]["changes"]["maxItems"] = sum(
