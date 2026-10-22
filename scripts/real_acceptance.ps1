@@ -83,27 +83,7 @@ function Convert-Docx {
     $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
     Invoke-Logged @('uv', 'run', 'python', 'scripts/prepare_office_docx.py', $docx, $officeDocx) | Out-Null
-    $word = $null
-    $document = $null
-    try {
-        $word = New-Object -ComObject Word.Application
-        $word.Visible = $false
-        $word.DisplayAlerts = 0
-        $word.Options.UpdateFieldsAtPrint = $false
-        $word.Options.UpdateLinksAtOpen = $false
-        $document = $word.Documents.Open($officeDocx, $false, $true)
-        $document.SaveAs2($officePdf, 17)
-    }
-    finally {
-        if ($document) {
-            $document.Close($false)
-            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($document) | Out-Null
-        }
-        if ($word) {
-            $word.Quit()
-            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($word) | Out-Null
-        }
-    }
+    Invoke-Logged @('powershell.exe', '-NoProfile', '-File', 'scripts/convert_office_docx.ps1', $officeDocx, $officePdf) | Out-Null
     if (-not (Test-Path -LiteralPath $officePdf -PathType Leaf)) { throw "Word did not create $officePdf" }
     Move-Item -LiteralPath $officePdf -Destination $pdf -Force
     return $pdf
