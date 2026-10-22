@@ -80,9 +80,10 @@ def inspect_result(page: Page, operation: str, processing_id: str) -> None:
         "review": "Review結果JSONをdownload",
         "upgrade": "Upgrade結果JSONをdownload",
     }
-    expect(
-        page.get_by_role("heading", name=f"Translate · {processing_id}")
-    ).to_be_visible(timeout=30_000)
+    session = page.get_by_role("link", name=f"Session · {processing_id}")
+    expect(session).to_be_visible(timeout=30_000)
+    session.click()
+    expect(page.get_by_text("進捗と処理内容", exact=True)).to_be_visible(timeout=30_000)
     expect(
         page.get_by_role("button", name=labels[operation], exact=True)
     ).to_be_visible(timeout=30_000)
@@ -112,12 +113,6 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
         "translate": ["英語PDF"],
         "review": ["英語原文PDF", "日本語訳文PDF"],
         "upgrade": ["英文v1 PDF", "英文v2 PDF", "日本語v1 PDF"],
-    }
-    buttons = {
-        "register": "Start Register",
-        "translate": "Start Translate",
-        "review": "Start Review",
-        "upgrade": "Start Upgrade",
     }
     if (
         not args.resume
@@ -166,12 +161,12 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
                     if attempt == 2:
                         raise
         tab.click()
-        page.get_by_role("button", name=buttons[args.operation]).click()
+        page.get_by_role("button", name=re.compile("Start")).click()
         page.wait_for_function(
             "new URL(location.href).searchParams.has('processing')", timeout=20_000
         )
         processing_id = parse_qs(urlparse(page.url).query)["processing"][0]
-        page.get_by_role("heading", name=f"Translate · {processing_id}").wait_for(
+        page.get_by_role("link", name=f"Session · {processing_id}").wait_for(
             timeout=15_000
         )
         sys.stdout.write(f"processing_id={processing_id}\n")

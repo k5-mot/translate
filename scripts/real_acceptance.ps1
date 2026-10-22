@@ -1,11 +1,15 @@
 [CmdletBinding()]
-param([switch]$SelfCheck)
+param(
+    [switch]$SelfCheck,
+    [ValidateSet('sample', 'sample5', 'sample4', 'sample3', 'sample2', 'sample1')]
+    [string]$StartAt = 'sample'
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
-$samples = @('sample', 'sample2', 'sample3', 'sample4', 'sample5')
+$samples = @('sample', 'sample5', 'sample4', 'sample3', 'sample2', 'sample1')
 $runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $statePath = Join-Path $root ".tmp/acceptance/$runId/state.json"
 $state = @{ head = (& git rev-parse HEAD).Trim(); status = 'processing' }
@@ -20,20 +24,20 @@ function Save-State {
 
 function Get-Record {
     param([string]$Stem, [string]$Id, [string]$Name)
-    $path = Join-Path $root "outputs/$Stem/$Id/$Name.json"
+    $path = Join-Path $root "outputs/$Stem/$Id/state-$Name.json"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
 }
 
 function Wait-Record {
     param([string]$Stem, [string]$Id, [string]$RecordName)
-    $path = Join-Path $root "outputs/$Stem/$Id/$RecordName.json"
+    $path = Join-Path $root "outputs/$Stem/$Id/state-$RecordName.json"
     while ($true) {
         $record = Get-Record $Stem $Id $RecordName
         if ($record) {
             if ($record.status -eq 'succeeded') {
                 if ($RecordName -eq 'translation') {
-                    & uv run python scripts/audit_document.py (Join-Path $root "outputs/$Stem/$Id") $RecordName
+                    & uv run python scripts/audit_document.py (Join-Path $root "outputs/$Stem/$Id")
                     if ($LASTEXITCODE -ne 0) { throw "AUDIT FAIL $Stem $RecordName $Id" }
                 }
                 Write-Output "PASS $currentStage $Id"
@@ -73,8 +77,8 @@ function Run-Ui {
 
 function Convert-Docx {
     param([string]$Stem, [string]$Id)
-    $docx = Join-Path $root "outputs/$Stem/$Id/publisher/ooxml/document.ja.docx"
-    $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja.pdf'
+    $docx = Join-Path $root "outputs/$Stem/$Id/tasks/54-ooxml/document.ja.docx"
+    $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
     $word = $null
     $document = $null
@@ -123,7 +127,8 @@ function Ensure-UiServer {
 
 function Invoke-Validation {
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
-    foreach ($stem in $samples) {
+    $startIndex = [Array]::IndexOf($samples, $StartAt)
+    foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
         $source = (Resolve-Path -LiteralPath "inputs/$stem.pdf").Path
         $sourceV2 = (Resolve-Path -LiteralPath ".tmp/versions/$stem.pdf").Path
         foreach ($operation in @('register', 'translate', 'review', 'upgrade')) {
@@ -150,7 +155,8 @@ function Invoke-Validation {
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
 if ($SelfCheck) {
-    foreach ($stem in $samples) {
+    $startIndex = [Array]::IndexOf($samples, $StartAt)
+    foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
         if (-not (Test-Path -LiteralPath "inputs/$stem.pdf" -PathType Leaf)) { throw "Missing inputs/$stem.pdf" }
         foreach ($operation in @('register', 'translate', 'review', 'upgrade')) { Write-Output "$stem/$operation" }
     }

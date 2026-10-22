@@ -11,13 +11,13 @@ def main() -> None:
     """入力構造と最終訳のID・原文・処理漏れ・DOCXを照合する。"""
 
     root = Path(sys.argv[1])
-    source_name = "preprocess/structure/document.json"
+    source_name = "tasks/13-structure/document.json"
     source = Document.model_validate_json(
         (root / source_name).read_text(encoding="utf-8")
     )
-    final_path = root / "review/fix/document.json"
+    final_path = root / "tasks/42-fix/document.json"
     if not final_path.is_file():
-        final_path = root / "translation/translate/document.json"
+        final_path = root / "tasks/30-translate/document.json"
     final = Document.model_validate_json(final_path.read_text(encoding="utf-8"))
     before = [unit for _, unit in source.text_units()]
     after = [unit for _, unit in final.text_units()]
@@ -33,7 +33,7 @@ def main() -> None:
             for span in translated.spans
             if span.source.strip() and span.kind not in {"code", "line_break"}
         ), f"untranslated span in {translated.id}"
-    docx = root / "publisher/ooxml/document.ja.docx"
+    docx = root / "tasks/54-ooxml/document.ja.docx"
     with ZipFile(docx) as archive:
         assert archive.testzip() is None
         assert archive.read("word/document.xml")
