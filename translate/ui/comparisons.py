@@ -260,12 +260,12 @@ def _render_diff(before: str, after: str, before_label: str, after_label: str) -
         after_label (str): 変更後TextのLabel。
     """
 
-    with st.expander("差分を表示", expanded=False):
-        diff = _diff_text(before, after, before_label, after_label)
-        if diff:
-            st.code(diff, language="diff")
-        else:
-            st.caption("差分はありません。")
+    st.subheader("差分")
+    diff = _diff_text(before, after, before_label, after_label)
+    if diff:
+        st.code(diff, language="diff")
+    else:
+        st.caption("差分はありません。")
 
 
 def _unit_text(

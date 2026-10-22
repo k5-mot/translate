@@ -161,6 +161,7 @@ class WorkerError(RuntimeError):
     """子processから返された利用者向けの失敗。"""
 
 
+@st.cache_resource
 def worker_registry() -> WorkerRegistry:
     """Streamlitの再読込み間で共有するworker登録表を返す。
 

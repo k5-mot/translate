@@ -309,9 +309,9 @@ class TranslationApp:
             current = "Pipelineを準備中"
         else:
             current = "workerの結果を確認中"
-        with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
-            st.write("更新時刻: -")
-            st.caption("LLM進捗はまだありません。")
+        st.caption("OpenAI 呼び出し: 0")
+        st.caption("Docling 呼び出し: 0")
+        st.caption("Qdrant 呼び出し: 0")
         st.caption(current)
         if future is None:
             st.info("処理記録が見つかりません。")
@@ -563,6 +563,27 @@ class TranslationApp:
 
                 self._render_selected(processing_id)
                 refreshed = _entry_by_id(processing_id)
+                if refreshed is not None and refreshed.record is not None:
+                    if refreshed.record.status == "processing":
+                        if st.button(
+                            "Stop",
+                            key=f"stop-{processing_id}",
+                            icon=":material/stop_circle:",
+                            disabled=not self.registry.active(processing_id),
+                        ):
+                            if self.stop(refreshed):
+                                st.rerun(scope="app")
+                            st.error("処理を停止できませんでした。")
+                    else:
+                        self._render_resume(refreshed)
+                elif self.registry.active(processing_id) and st.button(
+                    "Stop",
+                    key=f"stop-{processing_id}",
+                    icon=":material/stop_circle:",
+                ):
+                    if self.registry.stop(processing_id):
+                        st.rerun(scope="app")
+                    st.error("処理を停止できませんでした。")
                 if refreshed is not None and (
                     current is None
                     or (
@@ -574,23 +595,6 @@ class TranslationApp:
                     st.rerun(scope="app")
 
             render_progress()
-            refreshed = _entry_by_id(processing_id)
-            if refreshed is not None:
-                if (
-                    refreshed.record is not None
-                    and refreshed.record.status == "processing"
-                ):
-                    if st.button(
-                        "Stop",
-                        key=f"stop-{processing_id}",
-                        icon=":material/stop_circle:",
-                        disabled=not self.registry.active(processing_id),
-                    ):
-                        if self.stop(refreshed):
-                            st.rerun()
-                        st.error("処理を停止できませんでした。")
-                else:
-                    self._render_resume(refreshed)
         progress_panel.update(expanded=True, state=status)
         refreshed = _entry_by_id(processing_id)
         if refreshed is not None:
@@ -632,7 +636,7 @@ class TranslationApp:
             """4種類の処理フォームを入力ページに表示する。"""
 
             if selected_id is not None:
-                if st.query_params.get("processing") and session_page is not None:
+                if session_page is not None:
                     st.switch_page(
                         session_page,
                         query_params={"processing": selected_id},

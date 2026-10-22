@@ -62,7 +62,6 @@ from .inputs import (
 from .progress import (
     _docling_progress,
     _preview_image_path,
-    _render_llm_progress,
     _render_markdown_preview,
     _render_task_progress,
     _task_progress,
@@ -135,7 +134,6 @@ __all__ = [
     "_render_future_error",
     "_render_history_sidebar",
     "_render_latest_comparison",
-    "_render_llm_progress",
     "_render_markdown_preview",
     "_render_record",
     "_render_registration_result",

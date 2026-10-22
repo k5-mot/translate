@@ -27,6 +27,7 @@ from .comparisons import _load_first_document, _review_targets, _unit_text
 from .history import HistoryEntry
 from .inputs import _stage_resume_uploads
 from .progress import (
+    _render_api_call_counts,
     _render_markdown_preview,
     _render_task_progress,
     _valid_artifact,
@@ -422,6 +423,7 @@ def _render_record(entry: HistoryEntry) -> None:
     left, right = st.columns(2)
     left.metric("開始時刻", started.astimezone().strftime("%Y-%m-%d %H:%M:%S"))
     right.metric("実行時間", f"{hours:02}:{minutes:02}:{seconds:02}")
+    _render_api_call_counts(entry.record_path.parent)
     if isinstance(record, (TranslationRecord, ReviewRecord, UpgradeRecord)):
         _render_task_progress(entry, record)
     else:
@@ -431,5 +433,3 @@ def _render_record(entry: HistoryEntry) -> None:
             float(completed),
             text=f"1 / 1 - REGISTER - {status}",
         )
-        with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
-            st.caption("LLM進捗はありません。")

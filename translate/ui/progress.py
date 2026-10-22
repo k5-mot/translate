@@ -19,6 +19,7 @@ from translate.models.artifacts import (
     ReviewRecord,
     SplitManifest,
     TaskName,
+    TaskState,
     TranslationRecord,
 )
 from translate.models.upgrade import (
@@ -26,7 +27,7 @@ from translate.models.upgrade import (
 )
 
 from .comparisons import (
-    _live_call_counts,
+    _llm_calls,
     _render_latest_comparison,
     _render_review_context,
     _render_upgrade_context,
@@ -136,20 +137,59 @@ def _render_task_progress(
     detail = f"{task_number} / {total} - {task_label} - {task_status}"
     st.progress(completed / total if total else 0.0, text=detail)
     active_task = active_state.task if active_state is not None else None
-    if active_task == TaskName.DOCLING and active_state is not None:
-        pdfs_done, pdfs_total = _docling_progress(root, active_state.started_at)
-        st.progress(
-            pdfs_done / pdfs_total if pdfs_total else 0.0,
-            text=f"{pdfs_done} / {pdfs_total} - {active_state.status}",
-        )
-    with st.expander("進捗詳細", expanded=False, icon=":material/analytics:"):
-        _render_llm_progress(root, record, active_task)
+    _render_internal_progress(root, record, active_task, active_state)
     _render_latest_comparison(root)
     processing_id = entry.processing_id or entry.kind
     if isinstance(record, ReviewRecord):
         _render_review_context(root, processing_id)
     elif isinstance(record, UpgradeRecord):
         _render_upgrade_context(root, processing_id)
+
+
+def _render_internal_progress(
+    root: Path,
+    record: TranslationRecord | ReviewRecord | UpgradeRecord,
+    active_task: TaskName | None,
+    active_state: TaskState | None,
+) -> None:
+    if active_task == TaskName.DOCLING and active_state is not None:
+        pages_done, pages_total = _docling_progress(root, active_state.started_at)
+        st.progress(
+            pages_done / pages_total if pages_total else 0.0,
+            text=f"{pages_done} / {pages_total} - {active_state.status}",
+        )
+    elif active_task in {
+        TaskName.STRUCTURE,
+        TaskName.TRANSLATE,
+        TaskName.REVIEW,
+        TaskName.DIFF,
+    }:
+        calls = _llm_calls(root, active_task)
+        observed = len(calls)
+        completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
+        progress = next((item for item in record.llm_progress if item.task == active_task), None)
+        total = progress.planned_calls if progress is not None else observed
+        done = progress.completed_calls if progress is not None else completed
+        st.progress(
+            min(done / total, 1.0) if total else 0.0,
+            text=f"{done} / {total} - processing",
+        )
+
+
+def _render_api_call_counts(root: Path) -> None:
+    tasks = (TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW, TaskName.DIFF)
+    openai_calls = sum(call.attempts for task in tasks for call in _llm_calls(root, task))
+    log = root / "translation.log"
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
+    docling_calls = sum("docling.py:" in line and "convert: Docling started" in line for line in lines)
+    qdrant_calls = sum(
+        "qdrant.py:" in line
+        and ("Qdrant registration started" in line or "Qdrant search completed" in line)
+        for line in lines
+    )
+    st.caption(f"OpenAI 呼び出し: {openai_calls}")
+    st.caption(f"Docling 呼び出し: {docling_calls}")
+    st.caption(f"Qdrant 呼び出し: {qdrant_calls}")
 
 
 def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
@@ -225,45 +265,3 @@ def _preview_image_path(markdown: Path, target: str) -> Path | None:
     if not path.is_relative_to(root) or not path.is_file():
         return None
     return path
-
-
-def _render_llm_progress(
-    root: Path,
-    record: TranslationRecord | ReviewRecord | UpgradeRecord,
-    active_task: TaskName | None,
-) -> None:
-    """現在時刻とLLM TaskのCall内訳を表示する。
-
-    Args:
-        root (Path): 対象処理の成果物Root Directory。
-        record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
-        active_task (TaskName | None): 進捗内訳を表示する実行中Task。
-    """
-
-    shown = False
-    for progress in record.llm_progress:
-        shown = True
-        st.write(
-            f"{progress.task}: {progress.completed_calls} / {progress.planned_calls}"
-        )
-        if active_task == progress.task:
-            st.progress(
-                min(progress.completed_calls / max(progress.planned_calls, 1), 1.0),
-                text=f"{progress.completed_calls} / {progress.planned_calls}",
-            )
-    if active_task in {
-        TaskName.STRUCTURE,
-        TaskName.TRANSLATE,
-        TaskName.REVIEW,
-        TaskName.DIFF,
-    }:
-        shown = True
-        observed, completed, failed = _live_call_counts(root, active_task)
-        st.write(f"{active_task.value}: {completed} / {observed} (failed {failed})")
-        if observed:
-            st.progress(
-                min(completed / observed, 1.0),
-                text=f"{completed} / {observed}",
-            )
-    if not shown:
-        st.caption("LLM進捗はありません。")

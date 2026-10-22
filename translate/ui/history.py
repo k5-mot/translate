@@ -26,7 +26,7 @@ from .types import ProcessingKind, ProcessingRecord, TaskStage
 
 
 def _entry_label(entry: HistoryEntry) -> str:
-    """処理履歴の選択欄に種類、入力、状態とIDを表示する。
+    """処理履歴の選択欄に種類、入力、状態を一行で表示する。
 
     Args:
         entry (HistoryEntry): 表示または操作対象の処理履歴。
@@ -53,11 +53,12 @@ def _entry_label(entry: HistoryEntry) -> str:
         "upgrade": "Upgrade",
     }
     status = record.status if record is not None else "読込不可"
-    updated_at = record.updated_at if record is not None else None
-    date = updated_at.astimezone().strftime("%Y-%m-%d %H:%M") if updated_at else "-"
-    return (
-        f"{labels.get(entry.kind, entry.kind)} | {Path(source).name}\n{status} | {date}"
-    )
+    return f"{labels.get(entry.kind, entry.kind)} | {Path(source).name} | {status}"
+
+
+def _entry_date(entry: HistoryEntry) -> str:
+    updated_at = entry.record.updated_at if entry.record is not None else None
+    return updated_at.astimezone().strftime("%Y-%m-%d %H:%M") if updated_at else "-"
 
 
 class HistoryEntry(BaseModel):
@@ -248,13 +249,15 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
             if processing_id is None:
                 continue
             select_column, actions_column = st.columns([5, 1])
-            if select_column.button(
-                _entry_label(entry),
-                key=f"history-{processing_id}",
-                type="tertiary",
-                width="stretch",
-            ):
-                _select_processing(processing_id)
+            with select_column:
+                if st.button(
+                    _entry_label(entry),
+                    key=f"history-{processing_id}",
+                    type="tertiary",
+                    width="stretch",
+                ):
+                    _select_processing(processing_id)
+                st.caption(_entry_date(entry))
             active = entry.record is not None and entry.record.status == "processing"
             with actions_column.popover(
                 "操作",
