@@ -78,18 +78,19 @@ function Run-Ui {
 function Convert-Docx {
     param([string]$Stem, [string]$Id)
     $docx = Join-Path $root "outputs/$Stem/$Id/tasks/54-ooxml/document.ja.docx"
+    $officeDocx = Join-Path (Split-Path -Parent $docx) 'document.ja-office.docx'
     $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
+    Invoke-Logged @('uv', 'run', 'python', 'scripts/prepare_office_docx.py', $docx, $officeDocx) | Out-Null
     $word = $null
     $document = $null
     try {
         $word = New-Object -ComObject Word.Application
         $word.Visible = $false
         $word.DisplayAlerts = 0
-        $document = $word.Documents.Open($docx, $false, $true)
-        # 非表示・読取専用で開く場合も、PDF化する前に目次と図表一覧を実体化する。
-        $document.Fields.Update() | Out-Null
-        $document.Repaginate()
+        $word.Options.UpdateFieldsAtPrint = $false
+        $word.Options.UpdateLinksAtOpen = $false
+        $document = $word.Documents.Open($officeDocx, $false, $true)
         $document.ExportAsFixedFormat($pdf, 17)
     }
     finally {
