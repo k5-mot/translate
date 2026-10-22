@@ -176,7 +176,7 @@ def _render_internal_progress(
         )
 
 
-def _render_api_call_counts(root: Path) -> None:
+def _api_call_counts(root: Path) -> tuple[int, int, int]:
     tasks = (TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW, TaskName.DIFF)
     openai_calls = sum(call.attempts for task in tasks for call in _llm_calls(root, task))
     log = root / "translation.log"
@@ -187,9 +187,7 @@ def _render_api_call_counts(root: Path) -> None:
         and ("Qdrant registration started" in line or "Qdrant search completed" in line)
         for line in lines
     )
-    st.caption(f"OpenAI 呼び出し: {openai_calls}")
-    st.caption(f"Docling 呼び出し: {docling_calls}")
-    st.caption(f"Qdrant 呼び出し: {qdrant_calls}")
+    return openai_calls, docling_calls, qdrant_calls
 
 
 def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:

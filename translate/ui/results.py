@@ -27,7 +27,7 @@ from .comparisons import _load_first_document, _review_targets, _unit_text
 from .history import HistoryEntry
 from .inputs import _stage_resume_uploads
 from .progress import (
-    _render_api_call_counts,
+    _api_call_counts,
     _render_markdown_preview,
     _render_task_progress,
     _valid_artifact,
@@ -420,10 +420,16 @@ def _render_record(entry: HistoryEntry) -> None:
     elapsed = max(int((ended - started).total_seconds()), 0)
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
-    left, right = st.columns(2)
+    left, right, calls = st.columns([1.5, 1, 0.8])
     left.metric("開始時刻", started.astimezone().strftime("%Y-%m-%d %H:%M:%S"))
     right.metric("実行時間", f"{hours:02}:{minutes:02}:{seconds:02}")
-    _render_api_call_counts(entry.record_path.parent)
+    openai_calls, docling_calls, qdrant_calls = _api_call_counts(
+        entry.record_path.parent
+    )
+    with calls:
+        st.caption(f"OpenAI 呼び出し: {openai_calls}")
+        st.caption(f"Docling 呼び出し: {docling_calls}")
+        st.caption(f"Qdrant 呼び出し: {qdrant_calls}")
     if isinstance(record, (TranslationRecord, ReviewRecord, UpgradeRecord)):
         _render_task_progress(entry, record)
     else:

@@ -52,7 +52,16 @@ def _entry_label(entry: HistoryEntry) -> str:
         "register": "Register",
         "upgrade": "Upgrade",
     }
-    status = record.status if record is not None else "読込不可"
+    status = (
+        {
+            "processing": "処理中",
+            "succeeded": "成功",
+            "failed": "失敗",
+            "cancelled": "停止",
+        }.get(record.status, record.status)
+        if record is not None
+        else "読込不可"
+    )
     return f"{labels.get(entry.kind, entry.kind)} | {Path(source).name} | {status}"
 
 
@@ -248,16 +257,16 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
             processing_id = entry.processing_id
             if processing_id is None:
                 continue
-            select_column, actions_column = st.columns([5, 1])
+            select_column, actions_column = st.columns([10, 1])
             with select_column:
                 if st.button(
-                    _entry_label(entry),
+                    f"{_entry_label(entry)}  \n{_entry_date(entry)}",
                     key=f"history-{processing_id}",
                     type="tertiary",
                     width="stretch",
+                    wrap=True,
                 ):
                     _select_processing(processing_id)
-                st.caption(_entry_date(entry))
             active = entry.record is not None and entry.record.status == "processing"
             with actions_column.popover(
                 "操作",
