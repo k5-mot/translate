@@ -91,7 +91,7 @@ function Convert-Docx {
         $word.Options.UpdateFieldsAtPrint = $false
         $word.Options.UpdateLinksAtOpen = $false
         $document = $word.Documents.Open($officeDocx, $false, $true)
-        $document.ExportAsFixedFormat($pdf, 17)
+        $document.SaveAs2($pdf, 17)
     }
     finally {
         if ($document) {
