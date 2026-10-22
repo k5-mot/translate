@@ -123,8 +123,21 @@ function Ensure-UiServer {
     throw 'Streamlit did not start on 127.0.0.1:8502'
 }
 
-function Invoke-Validation {
-    param([string]$StartAt)
+New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
+if ($SelfCheck) {
+    $startIndex = [Array]::IndexOf($samples, $StartAt)
+    foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
+        if (-not (Test-Path -LiteralPath "inputs/$stem.pdf" -PathType Leaf)) { throw "Missing inputs/$stem.pdf" }
+        foreach ($operation in @('register', 'translate', 'review', 'upgrade')) { Write-Output "$stem/$operation" }
+    }
+    exit 0
+}
+if (@(git status --porcelain).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
+Save-State -Snapshot $state -Path $statePath
+try {
+    Ensure-UiServer
+    & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
+    if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
     $startIndex = [Array]::IndexOf($samples, $StartAt)
     foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
@@ -150,24 +163,6 @@ function Invoke-Validation {
         $state["$stem/done"] = $true
         Save-State -Snapshot $state -Path $statePath
     }
-}
-
-New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
-if ($SelfCheck) {
-    $startIndex = [Array]::IndexOf($samples, $StartAt)
-    foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
-        if (-not (Test-Path -LiteralPath "inputs/$stem.pdf" -PathType Leaf)) { throw "Missing inputs/$stem.pdf" }
-        foreach ($operation in @('register', 'translate', 'review', 'upgrade')) { Write-Output "$stem/$operation" }
-    }
-    exit 0
-}
-if (@(git status --porcelain).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
-Save-State -Snapshot $state -Path $statePath
-try {
-    Ensure-UiServer
-    & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
-    if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
-    Invoke-Validation -StartAt $StartAt
     $state['status'] = 'succeeded'
     Save-State -Snapshot $state -Path $statePath
     Write-Output "ALL_REAL_ACCEPTANCE_PASSED $statePath"
