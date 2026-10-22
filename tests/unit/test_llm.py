@@ -11,6 +11,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMInvalidResponseError,
     StructuredResult,
+    _provider_error,
 )
 from translate.common.config import Config
 
@@ -110,3 +111,30 @@ def test_structured_rejects_invalid_schema_after_retries() -> None:
 
     with pytest.raises(LLMInvalidResponseError, match="JSON形式または契約"):
         _call(client)
+
+
+def test_provider_error_exposes_only_safe_http_diagnostics() -> None:
+    """400診断に構造化出力原因を示し、provider messageは記録しない。"""
+    error = _provider_error(
+        SimpleNamespace(
+            status_code=400,
+            code="invalid_schema",
+            param="response_format",
+            response=SimpleNamespace(headers={"x-request-id": "req-123"}),
+            body={
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        "Unsupported json_schema for response_format: source text"
+                    ),
+                }
+            },
+        )
+    )
+
+    assert "code=invalid_schema" in str(error)
+    assert "param=response_format" in str(error)
+    assert "type=invalid_request_error" in str(error)
+    assert "request_id=req-123" in str(error)
+    assert "category=structured_output" in str(error)
+    assert "source text" not in str(error)
