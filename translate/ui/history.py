@@ -101,6 +101,13 @@ def _select_processing(processing_id: str) -> None:
     st.rerun()
 
 
+def _clear_processing_selection() -> None:
+    """選択中の処理IDを画面状態とURLから消去する。"""
+
+    st.session_state.pop("selected-processing", None)
+    st.query_params.clear()
+
+
 def _selected_processing_id() -> str | None:
     """URL query parameterから選択中の処理IDを取得する。
 
@@ -109,7 +116,10 @@ def _selected_processing_id() -> str | None:
     """
 
     value = st.query_params.get("processing")
-    return value if isinstance(value, str) and value else None
+    if isinstance(value, str) and value:
+        st.session_state["selected-processing"] = value
+        return value
+    return st.session_state.get("selected-processing")
 
 
 def _task_stages(
@@ -227,9 +237,8 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
     invalid_entries = [entry for entry in entries if entry.error is not None]
     selected_id = _selected_processing_id()
     with st.sidebar:
-        st.title("Translate")
-        if st.button("新規処理", key="home", icon=":material/add:"):
-            st.query_params.clear()
+        if st.button("新規", key="home", icon=":material/add:"):
+            _clear_processing_selection()
             st.rerun()
         st.subheader("処理履歴", icon=":material/history:")
         if not valid_entries and not invalid_entries:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
+from urllib.parse import urlsplit
 
 import streamlit as st
 from streamlit.runtime.uploaded_file_manager import UploadedFile
@@ -28,6 +30,7 @@ from translate.pipeline import InputError
 
 from .history import (
     HistoryEntry,
+    _clear_processing_selection,
     _entry_by_id,
     _entry_label,
     _history_entries,
@@ -171,7 +174,7 @@ class TranslationApp:
 
         upload = st.file_uploader("英語PDF", type=["pdf"], key="translate-source")
         submitted = st.button(
-            "Start Translate",
+            "Start",
             icon=":material/translate:",
             disabled=upload is None or busy,
             type="primary",
@@ -198,7 +201,7 @@ class TranslationApp:
             "日本語訳文PDF", type=["pdf"], key="review-translation"
         )
         submitted = st.button(
-            "Start Review",
+            "Start",
             icon=":material/rate_review:",
             disabled=source is None or translation is None or busy,
             type="primary",
@@ -233,7 +236,7 @@ class TranslationApp:
             key="register-sources",
         )
         submitted = st.button(
-            "Start Register",
+            "Start",
             icon=":material/library_add:",
             disabled=not uploads or len(uploads) > 100 or busy,
             type="primary",
@@ -270,7 +273,7 @@ class TranslationApp:
             value is not None for value in (source_v1, source_v2, translation_v1)
         )
         submitted = st.button(
-            "Start Upgrade",
+            "Start",
             icon=":material/upgrade:",
             disabled=not ready or busy,
             type="primary",
@@ -469,6 +472,7 @@ class TranslationApp:
                 else:
                     st.session_state.pop("pending-delete", None)
                     if _selected_processing_id() == processing_id:
+                        st.session_state.pop("selected-processing", None)
                         st.query_params.clear()
                     st.rerun()
 
@@ -599,7 +603,12 @@ class TranslationApp:
             page_title="Translate",
             layout="wide",
         )
-        st.title("Translate")
+        home_url = urlsplit(st.context.url or "http://localhost/")
+        st.logo(
+            "🌐",
+            size="large",
+            link=home_url._replace(path="/", query="", fragment="").geturl(),
+        )
         entries = _history_entries()
         selected_id = _render_history_sidebar(entries)
         pending_delete = st.session_state.get("pending-delete")
@@ -617,37 +626,70 @@ class TranslationApp:
             }
             if processing_id is not None
         )
-        with st.expander(
-            "入力と設定",
-            expanded=selected_id is None,
-            key=f"pipeline-setup-{expander_key}",
-            icon=":material/tune:",
-        ):
-            translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
-                ["Translate", "Review", "Upgrade", "Register"]
-            )
-            with translate_tab:
-                st.caption(
-                    "英語PDFから文書構造を抽出し、日本語へ翻訳します。結果を確認してMarkdownとWordを出力します。"
+        session_page = None
+
+        def render_workflows() -> None:
+            """4種類の処理フォームを入力ページに表示する。"""
+
+            if selected_id is not None:
+                if st.query_params.get("processing") and session_page is not None:
+                    st.switch_page(
+                        session_page,
+                        query_params={"processing": selected_id},
+                    )
+                _clear_processing_selection()
+                st.rerun()
+            with st.expander(
+                "入力と設定",
+                expanded=selected_id is None,
+                key=f"pipeline-setup-{expander_key}",
+                icon=":material/tune:",
+            ):
+                translate_tab, review_tab, upgrade_tab, register_tab = st.tabs(
+                    ["Translate", "Review", "Upgrade", "Register"]
                 )
-                self._render_translate_form(busy=busy)
-            with review_tab:
-                st.caption(
-                    "英語原文と日本語訳文を照合します。変更箇所、指摘、修正案を一覧で出力します。"
-                )
-                self._render_review_form(busy=busy)
-            with upgrade_tab:
-                st.caption(
-                    "英文の旧版・新版と日本語旧訳を比較します。変更箇所と修正案を一覧で出力します。"
-                )
-                self._render_upgrade_form(busy=busy)
-            with register_tab:
-                st.caption(
-                    "PDF資料をQdrantへ登録し、TranslateやReviewで参照できるようにします。"
-                )
-                self._render_register_form(busy=busy)
+                with translate_tab:
+                    st.caption(
+                        "英語PDFから文書構造を抽出し、日本語へ翻訳します。結果を確認してMarkdownとWordを出力します。"
+                    )
+                    self._render_translate_form(busy=busy)
+                with review_tab:
+                    st.caption(
+                        "英語原文と日本語訳文を照合します。変更箇所、指摘、修正案を一覧で出力します。"
+                    )
+                    self._render_review_form(busy=busy)
+                with upgrade_tab:
+                    st.caption(
+                        "英文の旧版・新版と日本語旧訳を比較します。変更箇所と修正案を一覧で出力します。"
+                    )
+                    self._render_upgrade_form(busy=busy)
+                with register_tab:
+                    st.caption(
+                        "PDF資料をQdrantへ登録し、TranslateやReviewで参照できるようにします。"
+                    )
+                    self._render_register_form(busy=busy)
+
+        def render_session() -> None:
+            """選択中セッションの進捗と成果物を表示する。"""
+
+            if selected_id is not None:
+                self._render_processing_panel(selected_id, entries)
+
+        workflow_page = st.Page(
+            render_workflows,
+            title="新規処理",
+            url_path="translate",
+            default=selected_id is None,
+        )
+        pages = [workflow_page]
         if selected_id is not None:
-            self._render_processing_panel(selected_id, entries)
+            session_page = st.Page(
+                render_session,
+                title=f"Session · {selected_id}",
+                url_path="session",
+            )
+            pages.append(session_page)
+        cast(Any, st.navigation)(pages, position="top").run()
 
 
 def main() -> None:

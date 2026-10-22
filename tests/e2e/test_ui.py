@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -118,9 +119,7 @@ def _wait_for_success(
     processing_id = page.evaluate(
         "new URL(location.href).searchParams.get('processing')"
     )
-    expect(
-        page.get_by_role("heading", name="Translate", exact=True).last
-    ).to_be_visible()
+    expect(page.get_by_role("link", name="新規処理", exact=True)).to_be_visible()
     state_file = {
         "Translate": "state-translation.json",
         "Review": "state-review.json",
@@ -128,15 +127,29 @@ def _wait_for_success(
         "Register": "state-registration.json",
     }[operation]
     deadline = time.monotonic() + 15
+    succeeded = False
     while time.monotonic() < deadline:
         for state_path in outputs.glob(f"*/{processing_id}/{state_file}"):
             state = json.loads(state_path.read_text(encoding="utf-8"))
             if state["status"] == "succeeded":
-                return
+                succeeded = True
+                break
             if state["status"] in {"failed", "cancelled"}:
                 pytest.fail(f"{operation} ended with status {state['status']}")
+        if succeeded:
+            break
         time.sleep(0.1)
-    pytest.fail(f"{operation} did not reach succeeded")
+    if not succeeded:
+        pytest.fail(f"{operation} did not reach succeeded")
+    session = page.get_by_role("link", name=re.compile(r"^Session · "))
+    expect(session).to_be_visible()
+    session.click()
+    expect(page.get_by_text("進捗と処理内容", exact=True)).to_be_visible()
+    with page.expect_popup() as logo_tab:
+        page.get_by_role("link", name="App Logo").click()
+    new_page = logo_tab.value
+    new_page.wait_for_load_state()
+    expect(new_page.get_by_role("tab", name="Translate", exact=True)).to_be_visible()
 
 
 def _open_settings(page: Page) -> None:
@@ -176,11 +189,9 @@ def test_streamlit_operation_reaches_success(
         path.write_bytes(b"e2e")
     _upload(page, operation, labels, files)
     previous_url = page.url
-    page.get_by_role("button", name=f"Start {operation}").click()
+    page.get_by_role("button", name=re.compile("Start")).click()
     _wait_for_success(page, previous_url, tmp_path / "outputs", operation)
     if operation == "Translate":
-        page.get_by_role("button", name="新規処理").click()
+        page.get_by_role("button", name="新規").click()
         page.wait_for_function("!new URL(location.href).searchParams.has('processing')")
-        expect(
-            page.get_by_role("heading", name="Translate", exact=True).last
-        ).to_be_visible()
+        expect(page.get_by_role("tab", name="Translate", exact=True)).to_be_visible()
