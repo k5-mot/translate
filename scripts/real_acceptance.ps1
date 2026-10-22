@@ -10,7 +10,8 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
 $samples = @('sample', 'sample5', 'sample4', 'sample3', 'sample2', 'sample1')
-$validationStartIndex = [Array]::IndexOf($samples, $StartAt)
+$script:acceptanceStartIndex = [Array]::IndexOf($samples, $StartAt)
+$validationStartIndex = $script:acceptanceStartIndex
 $validationSamples = @($samples | Select-Object -Skip $validationStartIndex)
 $runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $statePath = Join-Path $root ".tmp/acceptance/$runId/state.json"
@@ -140,7 +141,6 @@ try {
     & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
     if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
-    $script:acceptanceStartIndex = [Array]::IndexOf($samples, $StartAt)
     foreach ($stem in $samples[$script:acceptanceStartIndex..($samples.Count - 1)]) {
         $source = (Resolve-Path -LiteralPath "inputs/$stem.pdf").Path
         $sourceV2 = (Resolve-Path -LiteralPath ".tmp/versions/$stem.pdf").Path
