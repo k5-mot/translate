@@ -106,7 +106,7 @@ function Convert-Docx {
 
 function Ensure-UiServer {
     try {
-        Invoke-WebRequest 'http://127.0.0.1:8502' -Method Head -TimeoutSec 3 | Out-Null
+        Invoke-WebRequest 'http://127.0.0.1:8502' -UseBasicParsing -TimeoutSec 3 | Out-Null
         return
     }
     catch { }
@@ -115,7 +115,7 @@ function Ensure-UiServer {
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Seconds 2
         try {
-            Invoke-WebRequest 'http://127.0.0.1:8502' -Method Head -TimeoutSec 3 | Out-Null
+            Invoke-WebRequest 'http://127.0.0.1:8502' -UseBasicParsing -TimeoutSec 3 | Out-Null
             return
         }
         catch { }
@@ -174,6 +174,6 @@ try {
     $state['status'] = 'failed'
     $state['stage'] = $currentStage
     $state['error'] = $_.Exception.Message
-    Save-State
+    Save-State -Snapshot $state -Path $statePath
     throw
 }
