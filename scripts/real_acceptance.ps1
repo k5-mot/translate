@@ -18,10 +18,8 @@ $currentStage = 'startup'
 function Save-State {
     param([hashtable]$Snapshot, [string]$Path)
     # 同じディレクトリ内で置換し、途中終了による破損を避ける。
-    $temporaryPath = "${Path}.tmp"
-    $json = ConvertTo-Json -InputObject $Snapshot -Depth 3
-    Set-Content -LiteralPath $temporaryPath -Value $json -Encoding utf8
-    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    [System.IO.File]::WriteAllText("${Path}.tmp", (ConvertTo-Json -InputObject $Snapshot -Depth 3))
+    Move-Item -LiteralPath "${Path}.tmp" -Destination $Path -Force
 }
 
 function Get-Record {
@@ -73,7 +71,7 @@ function Run-Ui {
     if (-not $line) { throw "UI $Operation did not return an ID: $output" }
     $id = $line -replace '^processing_id=', ''
     $state[$Key] = $id
-    Save-State
+    Save-State -Snapshot $state -Path $statePath
     return $id
 }
 
