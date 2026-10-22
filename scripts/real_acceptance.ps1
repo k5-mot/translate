@@ -140,7 +140,7 @@ try {
     & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
     if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
-    $script:startIndex = [Array]::IndexOf($samples, $StartAt)
+    Set-Variable -Name startIndex -Scope Script -Value ([Array]::IndexOf($samples, $StartAt))
     foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
         $source = (Resolve-Path -LiteralPath "inputs/$stem.pdf").Path
         $sourceV2 = (Resolve-Path -LiteralPath ".tmp/versions/$stem.pdf").Path
