@@ -17,9 +17,7 @@ $currentStage = 'startup'
 
 function Save-State {
     param([hashtable]$Snapshot, [string]$Path)
-    # 同じディレクトリ内で置換し、途中終了による破損を避ける。
-    [System.IO.File]::WriteAllText("${Path}.tmp", (ConvertTo-Json -InputObject $Snapshot -Depth 3))
-    Move-Item -LiteralPath "${Path}.tmp" -Destination $Path -Force
+    Set-Content -LiteralPath $Path -Value (ConvertTo-Json -InputObject $Snapshot -Depth 3) -Encoding utf8
 }
 
 function Get-Record {
