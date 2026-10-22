@@ -10,6 +10,8 @@ $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $root
 $samples = @('sample', 'sample5', 'sample4', 'sample3', 'sample2', 'sample1')
+$validationStartIndex = [Array]::IndexOf($samples, $StartAt)
+$validationSamples = @($samples | Select-Object -Skip $validationStartIndex)
 $runId = (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 $statePath = Join-Path $root ".tmp/acceptance/$runId/state.json"
 $state = @{ head = (& git rev-parse HEAD).Trim(); status = 'processing' }
@@ -125,8 +127,7 @@ function Ensure-UiServer {
 
 New-Item -ItemType Directory -Path (Split-Path -Parent $statePath) -Force | Out-Null
 if ($SelfCheck) {
-    $startIndex = [Array]::IndexOf($samples, $StartAt)
-    foreach ($stem in $samples[$startIndex..($samples.Count - 1)]) {
+    foreach ($stem in $validationSamples) {
         if (-not (Test-Path -LiteralPath "inputs/$stem.pdf" -PathType Leaf)) { throw "Missing inputs/$stem.pdf" }
         foreach ($operation in @('register', 'translate', 'review', 'upgrade')) { Write-Output "$stem/$operation" }
     }
