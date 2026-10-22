@@ -50,7 +50,7 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     model = ReviewRecord if kind == "review" else UpgradeRecord
     representative = paths[-1] if kind == "review" else paths[1]
     directory = root / representative.stem / identifier
-    record_path = directory / f"{kind}.json"
+    record_path = directory / f"state-{kind}.json"
     agent_type = module.ReviewAgent if kind == "review" else module.UpgradeAgent
     fail = Mock(side_effect=RuntimeError("comparison unavailable"))
     monkeypatch.setattr(agent_type, "run", fail)
@@ -74,7 +74,7 @@ def test_comparison_pipeline_publishes_json_and_reuses_success(  # noqa: PLR0915
     assert succeeded.status == "succeeded"
     assert len(succeeded.outputs) == 1
     assert succeeded.outputs[0].relative_path.endswith(".json")
-    assert (directory / "app.log").is_file()
+    assert (directory / ("review.log" if kind == "review" else "upgrade.log")).is_file()
     assert not list(directory.rglob("*.docx"))
     monkeypatch.setattr(
         agent_type,

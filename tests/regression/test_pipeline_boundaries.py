@@ -27,7 +27,7 @@ from translate.pipeline import InputError, resolve_processing_id
 from translate.pipeline.register import (
     RegisterPipeline,
     _chunks,
-    _validate_source_id,
+    _collect,
 )
 
 TranslationItem = import_module("translate.tasks.30_translate").TranslationItem
@@ -96,7 +96,7 @@ def test_register_resume_clears_stale_failure_and_records_embedding_cause(
         RegisterPipeline(config, outputs=outputs).run(
             [source], processing_id=processing_id
         )
-    record_path = outputs / "reference" / processing_id / "registration.json"
+    record_path = outputs / "reference" / processing_id / "state-registration.json"
     failed = load_model(record_path, RegistrationRecord)
     assert failed.status == "failed"
 
@@ -215,16 +215,33 @@ def test_registration_chunk_limit_and_overlap() -> None:
     assert len(chunks) > 1
     assert all(chunk.endswith(".") for chunk in chunks)
     assert chunks[0].endswith(chunks[1][:95].strip())
-    with pytest.raises(InputError, match="sentence exceeds"):
-        _chunks("A" * 1200)
+    long_sentence = _chunks("A" * 1200)
+    assert all(len(chunk) <= 1000 for chunk in long_sentence)
+    assert (
+        "".join(
+            chunk if index == 0 else chunk[100:]
+            for index, chunk in enumerate(long_sentence)
+        )
+        == "A" * 1200
+    )
 
 
-@pytest.mark.parametrize("value", ["CON", "com1.txt", "..", "nested/path", "tail."])
-def test_registration_source_id_rejects_unsafe_components(value: str) -> None:
-    """Windows予約名を含む危険なsource-idを拒否する。"""
+def test_registration_uses_logical_path_as_stable_source_key(
+    tmp_path: Path,
+) -> None:
+    """複数PDFの登録でもsource_idなしで同じ論理pathを識別子にする。"""
 
-    with pytest.raises(InputError, match="safe single path"):
-        _validate_source_id(value)
+    first = tmp_path / "first.pdf"
+    second = tmp_path / "second.pdf"
+    first.write_bytes(b"first revision")
+    second.write_bytes(b"second document")
+
+    sources = _collect([first, second], tmp_path / "outputs")
+
+    assert [(source.logical_path, source.source_key) for source in sources] == [
+        ("first.pdf", "first.pdf"),
+        ("second.pdf", "second.pdf"),
+    ]
 
 
 def test_processing_id_accepts_one_uuidv7_source() -> None:

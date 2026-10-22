@@ -105,7 +105,7 @@ class UpgradePipeline:
             / source_v2.stem
             / identifier
         )
-        self.record_path = self.root / "upgrade.json"
+        self.record_path = self.root / "state-upgrade.json"
         with ProcessingLock(self.root):
             if self.record_path.is_file():
                 self.record = load_model(self.record_path, UpgradeRecord)
@@ -134,13 +134,13 @@ class UpgradePipeline:
                     updated_at=now,
                 )
                 write_model(self.record_path, self.record)
-            with processing_logging(self.root, self.config.log_level):
+            with processing_logging(self.root, self.config.log_level, "upgrade.log"):
                 try:
                     self.execution = PipelineRun(
                         ArtifactStore(self.record, self.record_path), self.config
                     )
                     documents, _ = self.execution.prepare_documents(sources)
-                    directory = self.root / "upgrade" / "diff"
+                    directory = self.root / "tasks" / "21-diff"
                     self.execution.perform_task(
                         TaskName.DIFF,
                         documents,

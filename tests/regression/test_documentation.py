@@ -107,9 +107,9 @@ def test_run_layout_names_are_consistent() -> None:
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "`outputs/<file-basename>/<uuidv7>/`" in readme
-    assert "`translation.json`" in readme
-    assert "`review.json`" in readme
-    assert "`registration.json`" in readme
+    assert "`state-translation.json`" in readme
+    assert "`tasks/<番号>-<task名>/`" in readme
+    assert "`review.log`" in readme
     assert "runs/" not in readme
 
 

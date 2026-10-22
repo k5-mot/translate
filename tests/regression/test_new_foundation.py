@@ -255,6 +255,7 @@ def test_qdrant_registration_uses_bounded_upload_batches(
     client.retrieve.side_effect = [
         [],
         [MagicMock(id=point["id"]) for point in points],
+        [MagicMock(id=point["id"]) for point in points],
     ]
     monkeypatch.setattr("qdrant_client.QdrantClient", MagicMock(return_value=client))
 
@@ -265,19 +266,29 @@ def test_qdrant_registration_uses_bounded_upload_batches(
         ),
     ) as store:
         written = store.upsert_revision(
-            source_key="source/sample.pdf",
+            source_key="legacy/sample.pdf",
+            logical_path="sample.pdf",
+            revision="revision",
+            points=points,
+            vector_size=2,
+        )
+        repeated = store.upsert_revision(
+            source_key="sample.pdf",
+            logical_path="sample.pdf",
             revision="revision",
             points=points,
             vector_size=2,
         )
 
     assert written is True
+    assert repeated is False
     client.upload_points.assert_called_once()
     assert client.upload_points.call_args.kwargs["batch_size"] == 64
     assert client.upload_points.call_args.kwargs["parallel"] == 1
     assert client.upload_points.call_args.kwargs["wait"] is True
     assert len(client.upload_points.call_args.kwargs["points"]) == 65
     client.upsert.assert_not_called()
+    assert client.delete.call_count == 4
     client.close.assert_called_once()
 
 

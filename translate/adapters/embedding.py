@@ -55,7 +55,7 @@ class EmbeddingClient:
         vectors: list[list[float]] = []
         dimension: int | None = None
         logger.info(
-            "Embedding開始 model=%s items=%d",
+            "Embedding started model=%s items=%d",
             config.openai_embedding_model,
             len(values),
         )
@@ -68,7 +68,7 @@ class EmbeddingClient:
             for first in range(0, len(values), 16):
                 batch = values[first : first + 16]
                 logger.debug(
-                    "Embedding batch開始 offset=%d items=%d", first, len(batch)
+                    "Embedding batch started offset=%d items=%d", first, len(batch)
                 )
                 received = self._request(batch, client, config.openai_embedding_model)
                 if len(received) != len(batch):
@@ -90,7 +90,9 @@ class EmbeddingClient:
                             "OPENAI_EMBEDDING_MODELとendpointの設定を確認してください。"
                         )
                     vectors.append(vector)
-        logger.info("Embedding完了 items=%d dimensions=%s", len(vectors), dimension)
+        logger.info(
+            "Embedding completed items=%d dimensions=%s", len(vectors), dimension
+        )
         return vectors
 
     def _request(
@@ -113,7 +115,7 @@ class EmbeddingClient:
         config = self.config
         deadline = time.monotonic() + config.external_task_deadline_seconds
         for attempt in range(1, config.http_retry_attempts + 1):
-            logger.debug("Embedding要求 attempt=%d items=%d", attempt, len(values))
+            logger.debug("Embedding request attempt=%d items=%d", attempt, len(values))
             try:
                 response = client.embeddings.create(
                     model=model,
@@ -131,7 +133,7 @@ class EmbeddingClient:
                 retryable = status is None or status in {408, 429} or status >= 500
                 if not retryable or attempt >= config.http_retry_attempts:
                     logger.warning(
-                        "Embedding失敗 attempt=%d status=%s", attempt, status
+                        "Embedding failed attempt=%d status=%s", attempt, status
                     )
                     if isinstance(error, APITimeoutError) or status == 408:
                         message = (
@@ -164,7 +166,9 @@ class EmbeddingClient:
                     with suppress(KeyError, ValueError):
                         delay = max(delay, float(error.response.headers["retry-after"]))
                 delay = min(delay, max(0.0, deadline - time.monotonic()))
-                logger.warning("Embedding再試行 attempt=%d status=%s", attempt, status)
+                logger.warning(
+                    "Retrying Embedding request attempt=%d status=%s", attempt, status
+                )
                 if delay <= 0:
                     raise EmbeddingError(
                         "Embedding処理の期限に達しました。対策: "
@@ -172,7 +176,7 @@ class EmbeddingClient:
                     ) from error
                 time.sleep(delay)
             except APIResponseValidationError as error:
-                logger.warning("Embedding失敗 type=APIResponseValidationError")
+                logger.warning("Embedding failed type=APIResponseValidationError")
                 raise EmbeddingError(
                     "Embedding応答の形式が不正です。対策: "
                     "endpointの応答形式とサーバーログを確認してください。"

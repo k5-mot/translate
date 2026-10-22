@@ -106,7 +106,7 @@ class TranslatePipeline:
         translation_id = resolve_processing_id(processing_id, resume_id)
         outputs_root = (self.outputs or Path.cwd() / "outputs").resolve()
         self.root = outputs_root / source.stem / translation_id
-        self.record_path = self.root / "translation.json"
+        self.record_path = self.root / "state-translation.json"
         source_input = InputFile(
             role="source",
             logical_path=source.name,
@@ -164,7 +164,7 @@ class TranslatePipeline:
         document, merge_dir = documents[""], assets[""]
         run = self.execution.perform_task
 
-        structure_dir = self.root / "preprocess" / "structure"
+        structure_dir = self.root / "tasks" / "13-structure"
         reused = run(
             TaskName.STRUCTURE,
             {
@@ -189,7 +189,7 @@ class TranslatePipeline:
         self._update_llm_progress(structure_dir, "STRUCTURE", reused)
         document = load_model(structure_dir / "document.json", Document)
 
-        translation_dir = self.root / "translation" / "translate"
+        translation_dir = self.root / "tasks" / "30-translate"
         reused = run(
             TaskName.TRANSLATE,
             document,
@@ -209,7 +209,7 @@ class TranslatePipeline:
         self._update_llm_progress(translation_dir, "TRANSLATE", reused)
         document = load_model(translation_dir / "document.json", Document)
 
-        review_dir = self.root / "review" / "review"
+        review_dir = self.root / "tasks" / "41-review"
         targets = ReviewTarget.from_document(document)
         reused = run(
             TaskName.REVIEW,
@@ -230,7 +230,7 @@ class TranslatePipeline:
         self._update_llm_progress(review_dir, "REVIEW", reused)
         reviewed = load_model(review_dir / "review.json", ReviewResult)
 
-        fix_dir = self.root / "review" / "fix"
+        fix_dir = self.root / "tasks" / "42-fix"
         fix_inputs = {"document": document, "review": reviewed}
         if reviewed.revisions:
             run(
@@ -247,7 +247,7 @@ class TranslatePipeline:
                 skipped=True,
             )
 
-        lint_dir = self.root / "publisher" / "lint"
+        lint_dir = self.root / "tasks" / "50-lint"
         run(
             TaskName.LINT,
             {"document": document, "assets": _tree_hash(structure_dir / "assets")},
@@ -256,14 +256,14 @@ class TranslatePipeline:
         if not load_model(lint_dir / "report.json", LintResult).valid:
             self._stop("lint_failed", "Document structure is not publishable.")
 
-        cover_dir = self.root / "publisher" / "cover"
+        cover_dir = self.root / "tasks" / "51-cover"
         run(
             TaskName.COVER,
             self.record.source.sha256,
             [(cover_dir, partial(create_cover, source, cover_dir, self.root))],
         )
         cover = load_model(cover_dir / "manifest.json", CoverResult)
-        markdown_dir = self.root / "publisher" / "markdown"
+        markdown_dir = self.root / "tasks" / "52-markdown"
         markdown_path = markdown_dir / "document.ja.md"
         run(
             TaskName.MARKDOWN,
@@ -288,7 +288,7 @@ class TranslatePipeline:
                 )
             ],
         )
-        pandoc_dir = self.root / "publisher" / "pandoc"
+        pandoc_dir = self.root / "tasks" / "53-pandoc"
         raw_docx = pandoc_dir / "document.raw.docx"
         run(
             TaskName.PANDOC,
@@ -306,7 +306,7 @@ class TranslatePipeline:
                 )
             ],
         )
-        docx_dir = self.root / "publisher" / "ooxml"
+        docx_dir = self.root / "tasks" / "54-ooxml"
         docx_path = docx_dir / "document.ja.docx"
         run(
             TaskName.OOXML,

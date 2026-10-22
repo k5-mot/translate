@@ -133,13 +133,13 @@ class PipelineRun:
             Exception: PDF解析・変換・成果物検証の失敗。
         """
         stages = (
-            (TaskName.SPLIT, "converter", "00_split", "split"),
-            (TaskName.DOCLING, "converter", "01_docling", "convert"),
-            (TaskName.UNPACK, "converter", "02_unpack", "unpack"),
-            (TaskName.MERGE, "converter", "03_merge", "merge"),
-            (TaskName.POSITION, "preprocess", "10_position", "position"),
-            (TaskName.NORMALIZE, "preprocess", "11_normalize", "normalize"),
-            (TaskName.LOAD, "preprocess", "12_load", "load"),
+            (TaskName.SPLIT, "00-split", "00_split", "split"),
+            (TaskName.DOCLING, "01-docling", "01_docling", "convert"),
+            (TaskName.UNPACK, "02-unpack", "02_unpack", "unpack"),
+            (TaskName.MERGE, "03-merge", "03_merge", "merge"),
+            (TaskName.POSITION, "10-position", "10_position", "position"),
+            (TaskName.NORMALIZE, "11-normalize", "11_normalize", "normalize"),
+            (TaskName.LOAD, "12-load", "12_load", "load"),
         )
         previous = dict(sources)
         originals = {role: sha256_file(path) for role, path in sources.items()}
@@ -150,10 +150,7 @@ class PipelineRun:
             next_inputs: dict[str, Path] = {}
             for role, source in sources.items():
                 directory = (
-                    self.store.root
-                    / category
-                    / role.replace("_", "-")
-                    / task.value.lower()
+                    self.store.root / "tasks" / category / role.replace("_", "-")
                 )
                 current = previous[role]
                 if task == TaskName.SPLIT:

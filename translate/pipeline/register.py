@@ -102,31 +102,28 @@ class RegisterPipeline:
             RegistrationOutcome: 入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
 
         Raises:
-            InputError: `at least one registration path is required`、`source-id is required for
-                multiple registration paths`、`Docling settings are required for binary
-                references`、`processing ID already exists`のいずれかと判定した場合。
+            InputError: `at least one registration path is required`、`Docling settings are required
+                for binary references`、`processing ID already exists`のいずれかと判定した場合。
         """
 
         if not paths:
             raise InputError("at least one registration path is required")
-        if len(paths) > 1 and source_id is None:
-            raise InputError("source-id is required for multiple registration paths")
         if source_id is not None:
             _validate_source_id(source_id)
         validate_config(self.config, "register")
         outputs_root = (self.outputs or Path.cwd() / "outputs").resolve()
         try:
-            sources = _collect(paths, source_id, outputs_root)
+            sources = _collect(paths, outputs_root)
         except ValueError as error:
             raise InputError(str(error)) from error
         registration_id = resolve_processing_id(processing_id, resume_id)
         top_name = source_id or _single_top_name(paths)
         self.root = outputs_root / top_name / registration_id
-        self.record_path = self.root / "registration.json"
+        self.record_path = self.root / "state-registration.json"
         fingerprint = _fingerprint(sources, source_id)
         with (
             ProcessingLock(self.root),
-            processing_logging(self.root, self.config.log_level),
+            processing_logging(self.root, self.config.log_level, "registration.log"),
         ):
             if processing_id is not None and self.record_path.is_file():
                 raise InputError("processing ID already exists")
@@ -234,6 +231,7 @@ class RegisterPipeline:
             with QdrantStore(self.config) as store:
                 written = store.upsert_revision(
                     source_key=source.source_key,
+                    logical_path=source.logical_path,
                     revision=revision,
                     points=points,
                     vector_size=len(vectors[0]),
@@ -337,14 +335,11 @@ class RegisterPipeline:
         return "\n\n".join(texts)
 
 
-def _collect(
-    paths: list[Path], source_id: str | None, outputs_root: Path
-) -> list[_Source]:
+def _collect(paths: list[Path], outputs_root: Path) -> list[_Source]:
     """入力をsymlink非追跡で展開し、重複しない論理path順へ正規化する。
 
     Args:
         paths (list[Path]): 列挙された入力Path。
-        source_id (str | None): 登録対象へ付与する論理Source ID。
         outputs_root (Path): 成果物Root Directory。
 
     Returns:
@@ -390,7 +385,7 @@ def _collect(
         _Source(
             path=path,
             logical_path=logical,
-            source_key=f"{source_id}/{logical}" if source_id else logical,
+            source_key=logical,
             input=InputFile(
                 role="reference",
                 logical_path=logical,
@@ -411,8 +406,6 @@ def _chunks(value: str) -> list[str]:
     Returns:
         list[str]: 段落境界を優先し、文を途中で切らず最大1000文字・最大100文字重複で分割する。
 
-    Raises:
-        InputError: 一文だけで1000文字を超える場合。
     """
 
     text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
@@ -430,8 +423,15 @@ def _chunks(value: str) -> list[str]:
             )
         ] + [len(paragraph)]:
             atom = paragraph[start:boundary]
-            if len(atom.strip()) > _CHUNK_SIZE:
-                raise InputError("A registration sentence exceeds 1000 characters")
+            while len(atom.strip()) > _CHUNK_SIZE:
+                split_at = max(
+                    atom.rfind(" ", 0, _CHUNK_SIZE + 1),
+                    atom.rfind("\n", 0, _CHUNK_SIZE + 1),
+                )
+                if split_at < 1:
+                    split_at = _CHUNK_SIZE
+                atoms.append(atom[:split_at])
+                atom = atom[max(0, split_at - _CHUNK_OVERLAP) :]
             if atom:
                 atoms.append(atom)
             start = boundary
@@ -556,15 +556,25 @@ def _record(
     return record
 
 
-def _validate_source_id(value: str) -> None:
-    """source-idをWindowsを含む安全な単一path要素へ限定する。
+def _single_top_name(paths: list[Path]) -> str:
+    """単一fileまたはdirectoryの成果物最上位名を返す。
 
     Args:
-        value (str): 安全なPath要素か検証するSource ID。
+        paths (list[Path]): 列挙された入力Path。
 
-    Raises:
-        InputError: `source-id must be a safe single path component`と判定した場合。
+    Returns:
+        str: 単一fileまたはdirectoryの成果物最上位名を返す。
+
     """
+
+    if len(paths) != 1:
+        return "register"
+    path = paths[0]
+    return path.stem if path.is_file() else path.name
+
+
+def _validate_source_id(value: str) -> None:
+    """旧Register記録の出力directory名として使うsource IDを検証する。"""
 
     if (
         not value
@@ -576,22 +586,3 @@ def _validate_source_id(value: str) -> None:
         or value.split(".", 1)[0].upper() in _RESERVED_NAMES
     ):
         raise InputError("source-id must be a safe single path component")
-
-
-def _single_top_name(paths: list[Path]) -> str:
-    """単一fileまたはdirectoryの成果物最上位名を返す。
-
-    Args:
-        paths (list[Path]): 列挙された入力Path。
-
-    Returns:
-        str: 単一fileまたはdirectoryの成果物最上位名を返す。
-
-    Raises:
-        InputError: `source-id is required for multiple paths`と判定した場合。
-    """
-
-    if len(paths) != 1:
-        raise InputError("source-id is required for multiple paths")
-    path = paths[0]
-    return path.stem if path.is_file() else path.name

@@ -62,6 +62,7 @@ class QdrantStore:
         self,
         *,
         source_key: str,
+        logical_path: str | None = None,
         revision: str,
         points: list[dict[str, Any]],
         vector_size: int,
@@ -70,6 +71,7 @@ class QdrantStore:
 
         Args:
             source_key (str): 旧Revisionを識別するSource Key。
+            logical_path (str | None): 再登録時に置換する資料の論理Path。
             revision (str): 登録内容の世代を識別するRevision Hash。
             points (list[dict[str, Any]]): Qdrantへ登録するVector Point列。
             vector_size (int): Qdrant CollectionのVector次元数。
@@ -83,10 +85,14 @@ class QdrantStore:
 
         client, models = self.client, self.models
         collection = self.collection
-        logger.info("Qdrant登録開始 collection=%s points=%d", collection, len(points))
+        logger.info(
+            "Qdrant registration started collection=%s points=%d",
+            collection,
+            len(points),
+        )
         if not client.collection_exists(collection):
             logger.debug(
-                "Qdrant collection作成 collection=%s dimensions=%d",
+                "Creating Qdrant collection collection=%s dimensions=%d",
                 collection,
                 vector_size,
             )
@@ -105,36 +111,63 @@ class QdrantStore:
             with_payload=False,
             with_vectors=False,
         )
-        if {str(item.id) for item in existing} >= set(ids):
+        already_present = {str(item.id) for item in existing} >= set(ids)
+        if already_present:
             logger.info(
-                "Qdrant登録省略 collection=%s points=%d", collection, len(points)
+                "Qdrant registration skipped collection=%s points=%d",
+                collection,
+                len(points),
             )
-            return False
-        logger.debug("Qdrant upload開始 points=%d", len(points))
-        client.upload_points(
-            collection_name=collection,
-            points=[
-                models.PointStruct(
-                    id=point["id"], vector=point["vector"], payload=point["payload"]
+        else:
+            logger.debug("Qdrant upload started points=%d", len(points))
+            client.upload_points(
+                collection_name=collection,
+                points=[
+                    models.PointStruct(
+                        id=point["id"],
+                        vector=point["vector"],
+                        payload=point["payload"],
+                    )
+                    for point in points
+                ],
+                batch_size=64,
+                parallel=1,
+                wait=True,
+            )
+            verified = client.retrieve(
+                collection_name=collection,
+                ids=ids,
+                with_payload=False,
+                with_vectors=False,
+            )
+            if {str(item.id) for item in verified} < set(ids):
+                logger.warning(
+                    "Qdrant registration failed type=VerificationError points=%d",
+                    len(points),
                 )
-                for point in points
-            ],
-            batch_size=64,
-            parallel=1,
-            wait=True,
-        )
-        verified = client.retrieve(
-            collection_name=collection,
-            ids=ids,
-            with_payload=False,
-            with_vectors=False,
-        )
-        if {str(item.id) for item in verified} < set(ids):
-            logger.warning(
-                "Qdrant登録失敗 type=VerificationError points=%d", len(points)
+                raise RuntimeError("Qdrant registration verification failed")
+        if logical_path is not None:
+            logger.debug(
+                "Deleting legacy Qdrant source keys logical_path=%s", logical_path
             )
-            raise RuntimeError("Qdrant registration verification failed")
-        logger.debug("Qdrant旧revision削除開始")
+            client.delete(
+                collection_name=collection,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="logical_path",
+                            match=models.MatchValue(value=logical_path),
+                        )
+                    ],
+                    must_not=[
+                        models.FieldCondition(
+                            key="source_key", match=models.MatchValue(value=source_key)
+                        )
+                    ],
+                ),
+                wait=True,
+            )
+        logger.debug("Deleting previous Qdrant revisions")
         client.delete(
             collection_name=collection,
             points_selector=models.Filter(
@@ -151,8 +184,12 @@ class QdrantStore:
             ),
             wait=True,
         )
-        logger.info("Qdrant登録完了 collection=%s points=%d", collection, len(points))
-        return True
+        logger.info(
+            "Qdrant registration completed collection=%s points=%d",
+            collection,
+            len(points),
+        )
+        return not already_present
 
     def search(self, vector: list[float], limit: int = 5) -> list[dict[str, Any]]:
         """Qdrantからscore降順、同score時Point ID順で参照文脈を返す。
@@ -167,7 +204,7 @@ class QdrantStore:
 
         client = self.client
         collection = self.collection
-        logger.debug("Qdrant検索開始 collection=%s limit=%d", collection, limit)
+        logger.debug("Qdrant search started collection=%s limit=%d", collection, limit)
         response = client.query_points(
             collection_name=collection,
             query=vector,
@@ -178,7 +215,9 @@ class QdrantStore:
             {"id": str(point.id), "score": float(point.score), **(point.payload or {})}
             for point in response.points
         ]
-        logger.info("Qdrant検索完了 collection=%s results=%d", collection, len(values))
+        logger.info(
+            "Qdrant search completed collection=%s results=%d", collection, len(values)
+        )
         return sorted(values, key=lambda item: (-float(item["score"]), str(item["id"])))
 
     def _validate_collection(self, vector_size: int) -> None:

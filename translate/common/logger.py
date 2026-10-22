@@ -28,7 +28,9 @@ def configure_logging(level: str) -> None:
 
 
 @contextmanager
-def processing_logging(directory: Path, level: str) -> Iterator[None]:
+def processing_logging(
+    directory: Path, level: str, filename: str = "translation.log"
+) -> Iterator[None]:
     """処理の間だけapp.logへ追記し、終了時にfile handlerを閉じる。
 
     単一workerで処理ごとに使用し、日次ログは同じdirectoryに7世代保持する。
@@ -47,18 +49,18 @@ def processing_logging(directory: Path, level: str) -> Iterator[None]:
     directory.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("translate")
     handler = TimedRotatingFileHandler(
-        directory / "app.log", when="midnight", backupCount=7, encoding="utf-8"
+        directory / filename, when="midnight", backupCount=7, encoding="utf-8"
     )
     handler.setFormatter(logging.Formatter(_FORMAT))
     logger.addHandler(handler)
     try:
-        logger.info("処理開始")
+        logger.info("Processing started")
         yield
     except BaseException as error:
         # 例外本文やsource行には機密情報が入り得るため、種別と発生位置だけを残す。
         frame = traceback.extract_tb(error.__traceback__, limit=-1)[0]
         logger.error(  # noqa: TRY400
-            "処理中断 type=%s location=%s:%d:%s",
+            "Processing failed type=%s location=%s:%d:%s",
             type(error).__name__,
             Path(frame.filename).name,
             frame.lineno,
@@ -66,7 +68,7 @@ def processing_logging(directory: Path, level: str) -> Iterator[None]:
         )
         raise
     else:
-        logger.info("処理完了")
+        logger.info("Processing completed")
     finally:
         logger.removeHandler(handler)
         handler.close()
