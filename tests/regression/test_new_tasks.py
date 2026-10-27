@@ -1308,6 +1308,98 @@ def test_load_keeps_unowned_picture_that_partially_overlaps_table() -> None:
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
 
 
+@pytest.mark.parametrize("scenario", ["missing", "overlap", "table_unknown"])
+def test_load_keeps_table_picture_without_unique_cell_as_figure(
+    scenario: str,
+) -> None:
+    """空セルの座標欠損や複数候補でも画像を独立図として保持する。"""
+    page = Page(
+        number=1,
+        width=100,
+        height=100,
+        blocks=[
+            Block(id="#/tables/0", order=0, kind="table"),
+            Block(
+                id="#/pictures/0",
+                order=1,
+                kind="figure",
+                image=Image(id="#/pictures/0/image", asset_path="assets/image.png"),
+            ),
+        ],
+    )
+    document = {
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "bbox": {
+                            "l": 0,
+                            "t": 100,
+                            "r": 100,
+                            "b": 0,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [
+                        {
+                            "start_row_offset_idx": 0,
+                            "start_col_offset_idx": 0,
+                            "end_row_offset_idx": 1,
+                            "end_col_offset_idx": 1,
+                            "row_span": 1,
+                            "col_span": 1,
+                            "text": "",
+                        }
+                    ],
+                },
+            }
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "parent": {"$ref": "#/tables/0"},
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "bbox": {
+                            "l": 20,
+                            "t": 80,
+                            "r": 40,
+                            "b": 60,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    if scenario == "overlap":
+        cells = document["tables"][0]["data"]["table_cells"]
+        cells[0]["bbox"] = document["pictures"][0]["prov"][0]["bbox"]
+        cells.append(
+            {
+                **cells[0],
+                "start_row_offset_idx": 1,
+                "end_row_offset_idx": 2,
+            }
+        )
+        document["tables"][0]["data"]["num_rows"] = 2
+    elif scenario == "table_unknown":
+        document["tables"][0].pop("prov")
+
+    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 帰属不能な図の退避を検証する。
+
+    assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
+    assert len(page.blocks[0].cells) == (2 if scenario == "overlap" else 1)
+    assert all(not cell.images for cell in page.blocks[0].cells)
+
+
 def test_structure_chunks_long_block_at_sentence_boundaries() -> None:
     """長文をSpan境界で分け、STRUCTURE入力から中間の本文を省略しない。"""
     text = "This sentence contains information that must be preserved. " * 100
