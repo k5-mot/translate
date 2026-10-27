@@ -76,7 +76,7 @@ class SavedLLMCalls:
         config = client.config
         # REVIEWの短い応答では、余った出力予約を本文入力へ回す。
         output_tokens = (
-            min(config.review_output_tokens, 4096 if operation == "match" else 8192)
+            min(config.review_output_tokens, 8192)
             if self.task == "REVIEW"
             else config.review_output_tokens
         )

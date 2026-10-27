@@ -453,7 +453,7 @@ def test_match_keeps_large_pair_within_review_input_budget(
     rules = (
         Path(__file__).parents[2] / "translate/templates/review-rules.md"
     ).read_text(encoding="utf-8")
-    scripted(
+    calls = scripted(
         monkeypatch,
         [
             AlignmentResponse.model_validate(
@@ -491,6 +491,10 @@ def test_match_keeps_large_pair_within_review_input_budget(
             )
         )
         assert result.groups[0].kind == "matched"
+        assert calls[0]["output_tokens"] == min(output_tokens, 8192)
+        assert calls[0]["input_tokens"] == 11264 + output_tokens - min(
+            output_tokens, 8192
+        )
     finally:
         client.client.close()
 
