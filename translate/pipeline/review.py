@@ -267,6 +267,10 @@ class ReviewAgent:
                     "reviewed_targets": self.result.reviewed_target_ids[-8:],
                     "conflicts": sorted(self.conflicts),
                 }
+                if idle_steps >= 12 and not (
+                    any(pending.values()) or unchecked or self.conflicts
+                ):
+                    break
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
                 try:

@@ -650,6 +650,37 @@ def matched() -> AlignmentResponse:
     )
 
 
+def test_review_finishes_after_idle_actions_when_all_targets_are_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """全対象を確認済みなら終了操作を選ばないAgentでも結果を保存する。"""
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source": ["en"], "translation": ["ja1", "ja2"]},
+        ),
+        matched(),
+        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+        successful_review("review/alignment-000001"),
+        *[AgentAction(operation="overview") for _ in range(12)],
+    ]
+    scripted(monkeypatch, answers)
+
+    result = ReviewAgent(
+        {
+            "source": document(en="Text"),
+            "translation": document(ja1="訳1", ja2="訳2"),
+        },
+        tmp_path,
+        tmp_path,
+        config,
+    ).run()
+
+    assert not answers
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+    assert (tmp_path / "review.json").is_file()
+
+
 def evaluation(*texts: str) -> ReviewResponse:
     """同じSpanの競合候補、または確定候補を返す。"""
     return ReviewResponse.model_validate(
