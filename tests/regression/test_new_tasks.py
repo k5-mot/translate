@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import zipfile
 from importlib import import_module
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pypdfium2 as pdfium
@@ -112,10 +112,6 @@ def test_review_targets_skip_formula_text_but_keep_prose_and_captions() -> None:
         ["formula-caption"],
         ["paragraph-content"],
     ]
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 @pytest.mark.parametrize("ambiguity", [None, "missing", "body", "footnote", "number"])
@@ -1308,6 +1304,98 @@ def test_load_keeps_unowned_picture_that_partially_overlaps_table() -> None:
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
 
 
+@pytest.mark.parametrize("scenario", ["missing", "overlap", "table_unknown"])
+def test_load_keeps_table_picture_without_unique_cell_as_figure(
+    scenario: str,
+) -> None:
+    """空セルの座標欠損や複数候補でも画像を独立図として保持する。"""
+    page = Page(
+        number=1,
+        width=100,
+        height=100,
+        blocks=[
+            Block(id="#/tables/0", order=0, kind="table"),
+            Block(
+                id="#/pictures/0",
+                order=1,
+                kind="figure",
+                image=Image(id="#/pictures/0/image", asset_path="assets/image.png"),
+            ),
+        ],
+    )
+    document = {
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "bbox": {
+                            "l": 0,
+                            "t": 100,
+                            "r": 100,
+                            "b": 0,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+                "data": {
+                    "num_rows": 1,
+                    "num_cols": 1,
+                    "table_cells": [
+                        {
+                            "start_row_offset_idx": 0,
+                            "start_col_offset_idx": 0,
+                            "end_row_offset_idx": 1,
+                            "end_col_offset_idx": 1,
+                            "row_span": 1,
+                            "col_span": 1,
+                            "text": "",
+                        }
+                    ],
+                },
+            }
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "parent": {"$ref": "#/tables/0"},
+                "prov": [
+                    {
+                        "page_no": 1,
+                        "bbox": {
+                            "l": 20,
+                            "t": 80,
+                            "r": 40,
+                            "b": 60,
+                            "coord_origin": "BOTTOMLEFT",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    if scenario == "overlap":
+        cells = document["tables"][0]["data"]["table_cells"]
+        cells[0]["bbox"] = document["pictures"][0]["prov"][0]["bbox"]
+        cells.append(
+            {
+                **cells[0],
+                "start_row_offset_idx": 1,
+                "end_row_offset_idx": 2,
+            }
+        )
+        document["tables"][0]["data"]["num_rows"] = 2
+    elif scenario == "table_unknown":
+        document["tables"][0].pop("prov")
+
+    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 帰属不能な図の退避を検証する。
+
+    assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
+    assert len(page.blocks[0].cells) == (2 if scenario == "overlap" else 1)
+    assert all(not cell.images for cell in page.blocks[0].cells)
+
+
 def test_structure_chunks_long_block_at_sentence_boundaries() -> None:
     """長文をSpan境界で分け、STRUCTURE入力から中間の本文を省略しない。"""
     text = "This sentence contains information that must be preserved. " * 100
@@ -2133,6 +2221,48 @@ def test_review_reserves_json_envelope_for_split_target(
     assert result.revisions == []
     assert result.reviewed_target_ids == [target.id]
     assert len(list((tmp_path / "review/calls").glob("*/response.json"))) > 1
+
+
+def test_review_uses_reserved_output_budget_for_large_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """大きな単一Spanを壊さず、余分な出力予約を入力へ回して評価する。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="model",
+        review_input_tokens=11264,
+        review_output_tokens=17920,
+    )
+    target = ReviewTarget(
+        id="target",
+        source="A" * 4000,
+        translation="B" * 4000,
+        target_ids=["unit"],
+        spans=[TextSpan(id="span", source="A" * 4000, translated="B" * 4000)],
+    )
+
+    def fake_structured(_self: LLMClient, **kwargs: object) -> StructuredResult:
+        """評価対象IDを使い、十分な入力枠で送信された要求へ応答する。"""
+        payload = json.loads(kwargs["user"])
+        return StructuredResult(
+            successful_review(*[item["id"] for item in payload["targets"]]),
+            1,
+            100,
+            100,
+        )
+
+    monkeypatch.setattr(LLMClient, "structured", fake_structured)
+    rules = (
+        Path(__file__).parents[2] / "translate/templates/review-rules.md"
+    ).read_text(encoding="utf-8")
+    client = LLMClient(config)
+    try:
+        result = ReviewTask(config, tmp_path / "review", rules, "").run(
+            [target], tmp_path, client=client
+        )
+        assert result.reviewed_target_ids == ["target"]
+    finally:
+        client.client.close()
 
 
 def test_review_maps_assessments_to_owned_units_and_reuses_response(

@@ -562,7 +562,7 @@ def _cell_box(
 def _geometric_cell(
     cells: list[_CellSource], box: tuple[float, float, float, float], page: Page
 ) -> set[int]:
-    """セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。
+    """セルbbox包含と行列見出しの交差から候補セルを返す。
 
     Args:
         cells (list[_CellSource]): Markdownの一行へ配置するTable Cell列。
@@ -570,11 +570,10 @@ def _geometric_cell(
         page (Page): 処理対象のPageまたはPage番号。
 
     Returns:
-        set[int]: セルbbox包含と行列見出しの一意交差を照合し、結合セル起点へ正規化する。
+        set[int]: 画像を含む候補セルのIndex。一意でない場合も候補を保持する。
 
     Raises:
-        ValueError: `conflicting cell ownership geometry`、`ambiguous table image
-            cell`のいずれかと判定した場合。
+        ValueError: `conflicting cell ownership geometry`と判定した場合。
     """
 
     direct: set[int] = set()
@@ -612,13 +611,7 @@ def _geometric_cell(
             for column in columns
         )
     }
-    if (
-        len(direct) > 1
-        or len(intersections) > 1
-        or (direct and intersections and direct != intersections)
-    ):
-        raise ValueError("ambiguous table image cell")
-    return direct or intersections
+    return direct | intersections
 
 
 def _explicit_image_owners(
@@ -966,13 +959,15 @@ class DocumentLoader:
                 if box is None:
                     raise TableImageOwnershipError(page.number, figure.id)
                 containing = []
+                unknown_table = False
                 ambiguous_overlap = False
                 for ref in page_tables:
                     with _ownership_context(page.number, ref):
                         table_box = _item_box(tables[ref], page)
                     if table_box is None:
                         if declared_ref is None:
-                            raise TableImageOwnershipError(page.number, ref)
+                            unknown_table = True
+                            continue
                         if ref == declared_ref:
                             containing.append(ref)
                         continue
@@ -985,9 +980,11 @@ class DocumentLoader:
                             raise TableImageOwnershipError(page.number, figure.id)
                         ambiguous_overlap = True
                 # 所属根拠のない部分重複は推測せず、独立した図として保持する。
-                if ambiguous_overlap:
+                if ambiguous_overlap or unknown_table:
                     continue
                 if len(containing) > 1:
+                    if declared_ref is None and parent_ref not in sources:
+                        continue
                     raise TableImageOwnershipError(page.number, figure.id)
                 if parent_ref in sources and containing != [parent_ref]:
                     raise TableImageOwnershipError(page.number, figure.id)
@@ -1010,7 +1007,8 @@ class DocumentLoader:
                 elif len(candidates) == 1:
                     index = next(iter(candidates))
                 else:
-                    raise TableImageOwnershipError(page.number, figure.id)
+                    # 帰属先セルを推測できない画像は独立した図として残す。
+                    continue
                 sources[ref][index].cell.images.append(
                     Image(
                         id=figure.image.id,

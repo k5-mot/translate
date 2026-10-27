@@ -199,6 +199,7 @@ class ReviewAgent:
             self.result = ReviewResult()
             self.conflicts: set[str] = set()
             self.call_ids: list[str] = []
+            self.match_scopes: set[tuple[tuple[str, ...], ...]] = set()
             # 未対応群を置換しても、評価が参照するgroup IDを再利用しない。
             self.group_number = 0
 
@@ -220,7 +221,7 @@ class ReviewAgent:
                         else:
                             action.target_ids.append(identifier.split("/part-", 1)[0])
                 action.target_ids = list(dict.fromkeys(action.target_ids))
-                self._execute(action, call.round)
+                self._execute(action, call.round, replay=True)
 
             round_number = max((call.round for call in restored), default=-1) + 1
             idle_steps = 0
@@ -266,6 +267,10 @@ class ReviewAgent:
                     "reviewed_targets": self.result.reviewed_target_ids[-8:],
                     "conflicts": sorted(self.conflicts),
                 }
+                if idle_steps >= 12 and not (
+                    any(pending.values()) or unchecked or self.conflicts
+                ):
+                    break
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
                 try:
@@ -360,12 +365,15 @@ class ReviewAgent:
         finally:
             self.client.client.close()
 
-    def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
+    def _execute(
+        self, action: AgentAction, round_number: int, *, replay: bool = False
+    ) -> dict[str, object]:
         """一つの許可済み操作を実行し、検証した結果だけを集約する。
 
         Args:
             action: Agentが選択した対応付け・評価・再確認。
             round_number: 保存Callの連番。
+            replay: 保存済みの操作を復元する場合。過去の同一範囲の再照合を許容する。
 
         Returns:
             次の判断へ渡す操作結果の概要。
@@ -393,6 +401,9 @@ class ReviewAgent:
                     raise InputError(
                         "Match requires units without a confirmed correspondence"
                     )
+            scope = tuple(tuple(sorted(chosen[role])) for role in self.units)
+            if scope in self.match_scopes and not replay:
+                raise InputError("Review match scope was already checked")
             call_id, response = self.review.match_documents(
                 {
                     role: [self.units[role][key] for key in ids]
@@ -401,6 +412,7 @@ class ReviewAgent:
                 self.client,
                 round_number,
             )
+            self.match_scopes.add(scope)
             # 新しい結果の検証成功後に、再探索したIDだけを以前の未対応群から除く。
             for group in self.result.groups:
                 if group.kind != "matched":

@@ -441,6 +441,64 @@ def test_match_schema_requests_only_correspondence(
         client.client.close()
 
 
+@pytest.mark.parametrize(("output_tokens", "unit_chars"), [(4096, 4000), (17920, 8000)])
+def test_match_keeps_large_pair_within_review_input_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    output_tokens: int,
+    unit_chars: int,
+) -> None:
+    """品質評価用の長い規則で対応付けの原文・訳文ペアを予算超過させない。"""
+    rules = (
+        Path(__file__).parents[2] / "translate/templates/review-rules.md"
+    ).read_text(encoding="utf-8")
+    calls = scripted(
+        monkeypatch,
+        [
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": ["ja"],
+                            "kind": "matched",
+                        }
+                    ]
+                }
+            )
+        ],
+    )
+    client = LLMClient(
+        config.model_copy(
+            update={"review_input_tokens": 11264, "review_output_tokens": output_tokens}
+        )
+    )
+    try:
+        units = agent_units(
+            {
+                "source": document(en="a" * unit_chars),
+                "translation": document(ja="b" * unit_chars),
+            }
+        )
+        _, result = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(client.config, tmp_path, rules, "")
+            .match_documents(
+                {role: list(values.values()) for role, values in units.items()},
+                client,
+                0,
+            )
+        )
+        assert result.groups[0].kind == "matched"
+        assert calls[0]["output_tokens"] == min(output_tokens, 8192)
+        assert calls[0]["input_tokens"] == 11264 + output_tokens - min(
+            output_tokens, 8192
+        )
+    finally:
+        client.client.close()
+
+
 @pytest.mark.parametrize("invalid_kind", ["matched", "missing_reason", "empty"])
 def test_match_rejects_inconsistent_groups_before_saving(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, invalid_kind: str
@@ -592,6 +650,37 @@ def matched() -> AlignmentResponse:
     )
 
 
+def test_review_finishes_after_idle_actions_when_all_targets_are_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """全対象を確認済みなら終了操作を選ばないAgentでも結果を保存する。"""
+    answers = [
+        AgentAction(
+            operation="match",
+            references={"source": ["en"], "translation": ["ja1", "ja2"]},
+        ),
+        matched(),
+        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+        successful_review("review/alignment-000001"),
+        *[AgentAction(operation="overview") for _ in range(12)],
+    ]
+    scripted(monkeypatch, answers)
+
+    result = ReviewAgent(
+        {
+            "source": document(en="Text"),
+            "translation": document(ja1="訳1", ja2="訳2"),
+        },
+        tmp_path,
+        tmp_path,
+        config,
+    ).run()
+
+    assert not answers
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+    assert (tmp_path / "review.json").is_file()
+
+
 def evaluation(*texts: str) -> ReviewResponse:
     """同じSpanの競合候補、または確定候補を返す。"""
     return ReviewResponse.model_validate(
@@ -736,6 +825,52 @@ def test_review_agent_recovers_from_invalid_match_action(
         config,
     ).run()
     assert result.reviewed_target_ids == ["review/alignment-000001"]
+
+
+def test_review_rejects_repeated_unmatched_scope_before_llm_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """source_onlyの同じ候補集合を再送せず、未対応の結果で完了する。"""
+    action = AgentAction(operation="match", references={"source": ["en"]})
+
+    def finish_after_rejection(kwargs: dict[str, object]) -> AgentAction:
+        """重複照合が拒否され、未確認対象がないことを確かめる。"""
+        payload = json.loads(kwargs["user"])
+        assert "already" in payload["observation"]["result"]["error"].lower()
+        assert payload["state"]["pending_counts"] == {
+            "source": 0,
+            "translation": 0,
+        }
+        return AgentAction(operation="finish")
+
+    scripted(
+        monkeypatch,
+        [
+            action,
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": [],
+                            "kind": "source_only",
+                            "reason": "対応訳なし",
+                        }
+                    ]
+                }
+            ),
+            action,
+            finish_after_rejection,
+        ],
+    )
+    result = ReviewAgent(
+        {"source": document(en="Text"), "translation": document()},
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+    assert len(result.groups) == 1
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 1
 
 
 def test_review_observes_only_current_matches_and_retains_all_results(
