@@ -152,6 +152,14 @@ def _render_internal_progress(
     active_task: TaskName | None,
     active_state: TaskState | None,
 ) -> None:
+    """実行中TaskのDoclingページ数またはLLM呼び出し数を表示する。
+
+    Args:
+        root: 処理成果物の保存先。
+        record: Taskの進捗情報を持つ処理記録。
+        active_task: 実行中のTask名。未実行時はNone。
+        active_state: 実行中Taskの状態。未実行時はNone。
+    """
     if active_task == TaskName.DOCLING and active_state is not None:
         pages_done, pages_total = _docling_progress(root, active_state.started_at)
         st.progress(
@@ -166,8 +174,12 @@ def _render_internal_progress(
     }:
         calls = _llm_calls(root, active_task)
         observed = len(calls)
-        completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
-        progress = next((item for item in record.llm_progress if item.task == active_task), None)
+        completed = sum(
+            call.status in {"succeeded", "partial", "split"} for call in calls
+        )
+        progress = next(
+            (item for item in record.llm_progress if item.task == active_task), None
+        )
         total = progress.planned_calls if progress is not None else observed
         done = progress.completed_calls if progress is not None else completed
         st.progress(
@@ -177,11 +189,27 @@ def _render_internal_progress(
 
 
 def _api_call_counts(root: Path) -> tuple[int, int, int]:
+    """処理記録に残るLLM、Docling、Qdrantの呼び出し数を集計する。
+
+    Args:
+        root: 処理成果物とログの保存先。
+
+    Returns:
+        LLM試行数、Docling開始数、Qdrant操作数の順の件数。
+    """
     tasks = (TaskName.STRUCTURE, TaskName.TRANSLATE, TaskName.REVIEW, TaskName.DIFF)
-    openai_calls = sum(call.attempts for task in tasks for call in _llm_calls(root, task))
+    openai_calls = sum(
+        call.attempts for task in tasks for call in _llm_calls(root, task)
+    )
     log = root / "translation.log"
-    lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.is_file() else []
-    docling_calls = sum("docling.py:" in line and "convert: Docling started" in line for line in lines)
+    lines = (
+        log.read_text(encoding="utf-8", errors="replace").splitlines()
+        if log.is_file()
+        else []
+    )
+    docling_calls = sum(
+        "docling.py:" in line and "convert: Docling started" in line for line in lines
+    )
     qdrant_calls = sum(
         "qdrant.py:" in line
         and ("Qdrant registration started" in line or "Qdrant search completed" in line)

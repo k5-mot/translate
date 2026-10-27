@@ -66,6 +66,14 @@ def _entry_label(entry: HistoryEntry) -> str:
 
 
 def _entry_date(entry: HistoryEntry) -> str:
+    """履歴記録の更新日時を表示用の文字列にする。
+
+    Args:
+        entry: 日時を表示する履歴項目。
+
+    Returns:
+        ローカル時刻の年月日と時分。記録がない場合はハイフン。
+    """
     updated_at = entry.record.updated_at if entry.record is not None else None
     return updated_at.astimezone().strftime("%Y-%m-%d %H:%M") if updated_at else "-"
 
