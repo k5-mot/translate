@@ -738,6 +738,52 @@ def test_review_agent_recovers_from_invalid_match_action(
     assert result.reviewed_target_ids == ["review/alignment-000001"]
 
 
+def test_review_rejects_repeated_unmatched_scope_before_llm_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """source_onlyの同じ候補集合を再送せず、未対応の結果で完了する。"""
+    action = AgentAction(operation="match", references={"source": ["en"]})
+
+    def finish_after_rejection(kwargs: dict[str, object]) -> AgentAction:
+        """重複照合が拒否され、未確認対象がないことを確かめる。"""
+        payload = json.loads(kwargs["user"])
+        assert "already" in payload["observation"]["result"]["error"].lower()
+        assert payload["state"]["pending_counts"] == {
+            "source": 0,
+            "translation": 0,
+        }
+        return AgentAction(operation="finish")
+
+    scripted(
+        monkeypatch,
+        [
+            action,
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": [],
+                            "kind": "source_only",
+                            "reason": "対応訳なし",
+                        }
+                    ]
+                }
+            ),
+            action,
+            finish_after_rejection,
+        ],
+    )
+    result = ReviewAgent(
+        {"source": document(en="Text"), "translation": document()},
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+    assert len(result.groups) == 1
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 1
+
+
 def test_review_observes_only_current_matches_and_retains_all_results(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
