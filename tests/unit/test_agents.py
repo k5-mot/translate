@@ -441,6 +441,60 @@ def test_match_schema_requests_only_correspondence(
         client.client.close()
 
 
+@pytest.mark.parametrize(("output_tokens", "unit_chars"), [(4096, 4000), (17920, 8000)])
+def test_match_keeps_large_pair_within_review_input_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    output_tokens: int,
+    unit_chars: int,
+) -> None:
+    """品質評価用の長い規則で対応付けの原文・訳文ペアを予算超過させない。"""
+    rules = (
+        Path(__file__).parents[2] / "translate/templates/review-rules.md"
+    ).read_text(encoding="utf-8")
+    scripted(
+        monkeypatch,
+        [
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": ["ja"],
+                            "kind": "matched",
+                        }
+                    ]
+                }
+            )
+        ],
+    )
+    client = LLMClient(
+        config.model_copy(
+            update={"review_input_tokens": 11264, "review_output_tokens": output_tokens}
+        )
+    )
+    try:
+        units = agent_units(
+            {
+                "source": document(en="a" * unit_chars),
+                "translation": document(ja="b" * unit_chars),
+            }
+        )
+        _, result = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(client.config, tmp_path, rules, "")
+            .match_documents(
+                {role: list(values.values()) for role, values in units.items()},
+                client,
+                0,
+            )
+        )
+        assert result.groups[0].kind == "matched"
+    finally:
+        client.client.close()
+
+
 @pytest.mark.parametrize("invalid_kind", ["matched", "missing_reason", "empty"])
 def test_match_rejects_inconsistent_groups_before_saving(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, invalid_kind: str

@@ -290,6 +290,8 @@ REVIEW_INPUT_TOKENS + REVIEW_OUTPUT_TOKENS + LLM_SAFETY_TOKENS <= LLM_CONTEXT_TO
 
 例えば既定の `LLM_CONTEXT_TOKENS=30208` では、`REVIEW_INPUT_TOKENS=8192`、`REVIEW_OUTPUT_TOKENS=8192`、`LLM_SAFETY_TOKENS=1024` の合計17,408は許可する。同じ入力と安全余裕で出力を24,000にすると合計33,216となり拒否する。整数・最小値・予算条件の違反、および下表の安全上限超過は起動時の設定エラーとし、黙って丸めてはならない。
 
+REVIEWの操作ごとに入出力枠の合計は維持する。`match`の出力枠は最大4,096、`evaluate`と`recheck`の出力枠は最大8,192とし、残りを入力へ回す。これにより長い原文・訳文や単一Spanを欠落なく渡す。
+
 対象件数、再試行、分割深度および時間には、ローカルLLMのメモリ消費と待ち時間を抑えるため次の安全上限を維持する。
 
 | 環境変数 | 既定値 | 安全上限 | 対象 |

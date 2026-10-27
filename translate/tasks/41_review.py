@@ -109,7 +109,13 @@ class ReviewTask:
                         owners.setdefault(span.id, target.target_ids[0])
             # System、Schemaおよびmessage形式へ2,048 bytesを予約する。
             overhead = len(self.rules.encode("utf-8")) + 2048
-            payload_budget = self.config.review_input_tokens - overhead
+            output_tokens = min(self.config.review_output_tokens, 8192)
+            input_tokens = (
+                self.config.review_input_tokens
+                + self.config.review_output_tokens
+                - output_tokens
+            )
+            payload_budget = input_tokens - overhead
             envelope_bytes = len(
                 _user_payload([], [], "", [], payload_budget).encode("utf-8")
             ) - _target_bytes([])
