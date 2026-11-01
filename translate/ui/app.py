@@ -679,7 +679,17 @@ class TranslationApp:
             """選択中セッションの進捗と成果物を表示する。"""
 
             if selected_id is not None:
-                st.title("Translate")
+                entry = next(
+                    (item for item in entries if item.processing_id == selected_id), None
+                )
+                titles = {
+                    "translate": "Translate",
+                    "review": "Review",
+                    "upgrade": "Upgrade",
+                    "register": "Register",
+                }
+                title = titles.get(entry.kind, "Translate") if entry else "Translate"
+                st.title(title)
                 self._render_processing_panel(selected_id, entries)
 
         workflow_page = st.Page(
