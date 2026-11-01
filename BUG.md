@@ -102,7 +102,7 @@
 - 影響: 対象セルを処理できず、Upgradeが65分後に失敗する。
 - 記録: `outputs/sample2/01a190b1-157a-7131-9b8f-71543b87efc3/tasks/21-diff/calls`、`upgrade.log`、`state-upgrade.json`。
 
-- 再開確認（2026-11-01 22:31 JST）: 保存済み3入力のSHA-256一致を確認し、既存IDを直接Resume。round 142で以前失敗したcellを含む範囲が成功したが、round 143の大きな比較範囲は5回のLLMInvalidResponseError後に失敗し、round 144で対象を絞って再試行中。stateはprocessingで、最終結果は未確定。
+- 再開確認（2026-11-01 22:37 JST）: 保存済み3入力のSHA-256一致を確認し、既存IDを直接Resume。round 142は以前失敗したcellを含む範囲で成功。大きな比較範囲でLLMInvalidResponseErrorが出るものの、round 144、146、149〜151は成功して先へ進んだ。現在round 152を再試行中でstateはprocessing、最終結果は未確定。
 ## 🕰️ sample2 ReviewのLLM再試行で完了まで長時間かかる
 
 - 再現条件: 88ページの`sample2.pdf`と翻訳PDFをReviewする。
@@ -171,4 +171,4 @@
 - 結果: Upgrade `01a195f9-109d-7c41-8b24-04233ab82879` は3入力のDocling変換後、開始から約1時間54分でDIFFのcallが380件（round 379）まで増加し、開始から約3時間後の2026-11-01 19:18 JST時点でもprocessing。複数callで`LLMInvalidResponseError`が再試行上限後にfailedとなる。round 348〜359では同一対象（`source_v1/source_v2:#/tables/3/cell-r0007-c0001/content`）が12回連続で失敗し、round 360で成功した。続くcell-r0007-c0002はround 361の失敗後round 363までに次候補へ進んだ。またcell-r0011-c0001もround 377〜385の9回連続失敗後、round 386で成功し、round 387で次セルへ進んだ。round 393〜394で別セルも同様に失敗後、round 395で成功し次へ進んでいる。
 - 影響: UpgradeのDIFFが長時間化し、LLM応答不正が同じ対象で長く続いても、完了まで後続判定に進めない。
 - 記録: `outputs/sample1/01a195f9-109d-7c41-8b24-04233ab82879/upgrade.log`、`tasks/21-diff/calls/`、`state-upgrade.json`。
-- 進捗更新（2026-11-01 22:31 JST）: 同じUpgradeジョブは継続中。round 1019（text 561）は2回のLLMInvalidResponseError後に成功し、現在round 1067（text 705）が処理中。累計1,068 call。LLM endpointは応答しており、DIFF完了前のため最終結果を継続確認する。
+- 進捗更新（2026-11-01 22:37 JST）: 同じUpgradeジョブは継続中。text 714のLLM応答不正は再試行後に解消し、round 1084（text 752）は成功、round 1085（text 756）が処理中。累計1,086 call。DIFF完了前のため最終結果を継続確認する。
