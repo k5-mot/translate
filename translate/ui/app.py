@@ -564,12 +564,13 @@ class TranslationApp:
                 self._render_selected(processing_id)
                 refreshed = _entry_by_id(processing_id)
                 if refreshed is not None and refreshed.record is not None:
-                    if refreshed.record.status == "processing":
+                    if refreshed.record.status == "processing" and self.registry.active(
+                        processing_id
+                    ):
                         if st.button(
                             "Stop",
                             key=f"stop-{processing_id}",
                             icon=":material/stop_circle:",
-                            disabled=not self.registry.active(processing_id),
                         ):
                             if self.stop(refreshed):
                                 st.rerun(scope="app")
