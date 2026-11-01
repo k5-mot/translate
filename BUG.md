@@ -172,4 +172,4 @@
 - 結果: Upgrade `01a195f9-109d-7c41-8b24-04233ab82879` は3入力のDocling変換後、開始から約1時間54分でDIFFのcallが380件（round 379）まで増加し、開始から約3時間後の2026-11-01 19:18 JST時点でもprocessing。複数callで`LLMInvalidResponseError`が再試行上限後にfailedとなる。round 348〜359では同一対象（`source_v1/source_v2:#/tables/3/cell-r0007-c0001/content`）が12回連続で失敗し、round 360で成功した。続くcell-r0007-c0002はround 361の失敗後round 363までに次候補へ進んだ。またcell-r0011-c0001もround 377〜385の9回連続失敗後、round 386で成功し、round 387で次セルへ進んだ。round 393〜394で別セルも同様に失敗後、round 395で成功し次へ進んでいる。
 - 影響: UpgradeのDIFFが長時間化し、LLM応答不正が同じ対象で長く続いても、完了まで後続判定に進めない。
 - 記録: `outputs/sample1/01a195f9-109d-7c41-8b24-04233ab82879/upgrade.log`、`tasks/21-diff/calls/`、`state-upgrade.json`。
-- 進捗更新（2026-11-01 22:47 JST）: 同じUpgradeジョブは継続中。text 815でround 1109〜1116の8 call連続でLLMInvalidResponseErrorとなり、round 1117で再試行中。累計1,118 call。以前のtext 561・697・714は再試行後に回復したが、text 815の結果は未確定。
+- 進捗更新（2026-11-01 22:53 JST）: 同じUpgradeジョブは継続中。text 815は8回のLLMInvalidResponseError後に回復。picture caption 13も1回失敗後round 1132で成功し、現在round 1133（text 952）が処理中。累計1,134 call。
