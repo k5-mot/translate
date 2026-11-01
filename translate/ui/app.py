@@ -15,10 +15,13 @@ from uuid_utils import uuid7
 from translate.adapters.artifact_store import (
     ArtifactError,
     ArtifactStore,
+    ProcessingInUseError,
+    ProcessingLock,
     load_model,
     write_model,
 )
 from translate.models.artifacts import (
+    ProcessingError,
     RegistrationRecord,
     ReviewRecord,
     TranslationRecord,
@@ -521,6 +524,43 @@ class TranslationApp:
         if entry is None:
             self._render_future_state(processing_id)
             return
+        record = entry.record
+        if (
+            record is not None
+            and record.status == "processing"
+            and not self.registry.active(processing_id)
+        ):
+            try:
+                with ProcessingLock(entry.record_path.parent):
+                    current = load_model(entry.record_path, type(record))
+                    if current.status == "processing":
+                        now = datetime.now(UTC)
+                        error = ProcessingError(
+                            code="worker_exited",
+                            message="Worker ended before processing completed.",
+                            cause_type="WorkerError",
+                            retryable=True,
+                        )
+                        current.status = "failed"
+                        current.updated_at = now
+                        current.error = error
+                        if hasattr(current, "tasks"):
+                            current.tasks = [
+                                task.model_copy(
+                                    update={
+                                        "status": "failed",
+                                        "completed_at": now,
+                                        "error": error,
+                                    }
+                                )
+                                if task.status == "processing"
+                                else task
+                                for task in current.tasks
+                            ]
+                        write_model(entry.record_path, current)
+            except ProcessingInUseError:
+                pass
+            entry = _entry_by_id(processing_id) or entry
         _render_record(entry)
 
     def _render_processing_panel(
