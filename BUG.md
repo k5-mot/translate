@@ -159,12 +159,12 @@
 - 記録: `outputs/sample1/01a191a6-1246-7b62-94ab-122a69cde35a/translation.log`、`tasks/41-review/calls/`、`state-translation.json`。
 
 
-## ⏳ sample1 Review の処理時間が長い
+## ❌ sample1 Reviewが入力上限超過後にTimeoutErrorで未完了
 
-- 再現条件: sample1 Translate が生成した訳文PDF（Word変換）と原文PDFでReviewする。
-- 結果: Review `01a1956c-0f32-7a40-a128-a08f86f2354a` は初回実行がTimeoutErrorで失敗。2026-11-02 01:52 JSTに保存済み入力のhash一致を確認してResumeした。同日02:18 JST時点でround 245まで進んだがstateはprocessing。Doclingは原文36/36、訳文38/38を完了。呼び出し履歴は272件で、227件成功・44件失敗（`LLMInputExceededError` 33件、`LLMInvalidResponseError` 11件）・1件処理中を確認した。失敗callはいずれもretryableで、後続roundは成功して進行中。LLMInvalidResponseErrorでは同じ対象のJSON/契約不適合を最大4回試行後に成功した例がある。
-- 影響: 65MB・357ページのPDFではReviewに長時間を要する。入力上限超過やLLM応答形式不一致によるcall失敗が記録され、分割・再試行で処理が進むものの、全体完了までの時間が延びる。Review全体の最終結果は引き続き追跡中。
-- 記録: `outputs/document.ja-office/01a1956c-0f32-7a40-a128-a08f86f2354a/review.log`、`state-review.json`、`tasks/41-review/calls/`、`.tmp/acceptance/sample1-review-resume.err`.
+- 再現条件: sample1 Translate が生成した訳文PDF（Word変換）と原文PDFでReviewする。初回ReviewがTimeoutErrorになったため、保存済み入力のhash一致を確認し、2026-11-02 01:52 JSTに同じReview ID `01a1956c-0f32-7a40-a128-a08f86f2354a`をResumeした。
+- 結果: Docling変換は原文36/36、訳文38/38を完了したが、Resumeから約50分後の02:42 JSTにstateが`failed`となった。終端エラーは`TimeoutError: REVIEW did not complete.`。callは323件で、265件成功・58件失敗（`LLMInputExceededError` 45件、`LLMInvalidResponseError` 13件）。round 287〜293では同じ16対象が7回、round 294〜298では同じ14対象が5回連続で`Selected document scope exceeds REVIEW_INPUT_TOKENS`となり、処理が進まないままReview Agentのstep/time limitに達した。Review成果物は生成されていない。
+- 影響: 大規模文書の一部対象がReview入力上限を超えると、同じ対象を繰り返し試して全体ReviewがTimeoutErrorで失敗する。対象を確実に小さく分割するか、個別対象を明示的に処理不能として記録して残りを完了できる対策が必要。
+- 記録: `outputs/document.ja-office/01a1956c-0f32-7a40-a128-a08f86f2354a/state-review.json`、`review.log`、`tasks/41-review/calls/`、`.tmp/acceptance/sample1-review-resume.err`.
 
 ## ❌ sample1 UpgradeのDIFFが入力上限超過で未完了
 
