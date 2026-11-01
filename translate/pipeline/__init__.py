@@ -287,7 +287,9 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
-    per_role_limit = max(1, maximum_references // len(units)) if upgrade else maximum_references
+    per_role_limit = (
+        max(1, maximum_references // len(units)) if upgrade else maximum_references
+    )
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
@@ -404,8 +406,9 @@ def choose_action(
                     else ""
                 )
                 + "Read or search when correspondence is unclear. Finish only when all pending counts are zero. "
-                "For Review, unmatched_ids have already been checked but no counterpart was found. "
-                "They are not pending and do not block finish; zero unmatched IDs is not required. "
+                "For Review, unmatched_ids are not pending and do not block finish. "
+                "Their reason may say no counterpart was found or that the scope remains unverified. "
+                "Revisit unverified IDs with new evidence or a smaller scope; zero unmatched IDs is not required. "
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "
                 "and discovers the pairs itself. Include multiple pending and unmatched candidates from both "
                 "roles together, up to 32 total, instead of repeatedly trying isolated pairs. "

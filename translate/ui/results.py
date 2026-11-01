@@ -284,7 +284,7 @@ def _render_upgrade_output(entry: HistoryEntry, record: UpgradeRecord) -> None:
         rows = [
             {
                 "変更ID": item.id,
-                "種類": item.kind,
+                "種類": "未確認" if item.kind == "unverified" else item.kind,
                 "英語旧版": _unit_text(
                     item.source_v1_ids, indices["source_v1"], "source"
                 )

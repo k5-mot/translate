@@ -29,7 +29,7 @@ from translate.models.artifacts import (
     TaskName,
 )
 from translate.models.document import Document
-from translate.models.review import AgentAction, AlignmentGroup, ReviewTarget
+from translate.models.review import AgentAction, AlignmentGroup, Finding, ReviewTarget
 from translate.pipeline import (
     InputError,
     PipelineRun,
@@ -306,15 +306,136 @@ class ReviewAgent:
                     + len(self.result.targets)
                     + len(self.result.reviewed_target_ids)
                 )
-                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
-                if action.references or action.target_ids:
-                    group_key = repr((action.references, action.target_ids))
-                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                    if group_steps[group_key] > 12:
-                        raise TimeoutError(
-                            "Review target group exceeded 12 Agent steps"
+                # 同じ照合・評価範囲が3回進まなければ、未確認として結果へ残す。
+                stalled_action = False
+                action_group_key = None
+                if action.operation in {"match", "evaluate", "recheck"}:
+                    action_group_key = repr(
+                        (action.operation, action.references, action.target_ids)
+                    )
+                    previous_no_progress = group_steps.get(action_group_key, 0)
+                    stalled_action = previous_no_progress >= 3
+                    if previous_no_progress >= 1 and action.operation == "match":
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 2:
+                            max_reference_ids = max(
+                                2,
+                                min(max_reference_ids - 1, selected_count // 2),
+                            )
+                if stalled_action:
+                    if action.operation == "match":
+                        selected_ids = {
+                            role: set(action.references.get(role, []))
+                            for role in self.units
+                        }
+                        assigned_ids = {
+                            role: {
+                                identifier
+                                for group in self.result.groups
+                                for identifier in getattr(group, f"{role}_ids")
+                            }
+                            for role in self.units
+                        }
+                        for role, identifiers in selected_ids.items():
+                            for identifier in sorted(identifiers - assigned_ids[role]):
+                                self.group_number += 1
+                                self.result.groups.append(
+                                    AlignmentGroup(
+                                        id=f"alignment-{self.group_number:06d}",
+                                        kind=(
+                                            "source_only"
+                                            if role == "source"
+                                            else "translation_only"
+                                        ),
+                                        source_ids=(
+                                            [identifier] if role == "source" else []
+                                        ),
+                                        translation_ids=(
+                                            [identifier]
+                                            if role == "translation"
+                                            else []
+                                        ),
+                                        reason=(
+                                            "同じ範囲の照合が進まなかったため、対応関係は未確認です。"
+                                        ),
+                                    )
+                                )
+                        if not any(
+                            identifiers - assigned_ids[role]
+                            for role, identifiers in selected_ids.items()
+                        ):
+                            for role, identifiers in pending.items():
+                                for identifier in identifiers:
+                                    self.group_number += 1
+                                    self.result.groups.append(
+                                        AlignmentGroup(
+                                            id=f"alignment-{self.group_number:06d}",
+                                            kind=(
+                                                "source_only"
+                                                if role == "source"
+                                                else "translation_only"
+                                            ),
+                                            source_ids=(
+                                                [identifier] if role == "source" else []
+                                            ),
+                                            translation_ids=(
+                                                [identifier]
+                                                if role == "translation"
+                                                else []
+                                            ),
+                                            reason=(
+                                                "Agentが同じ照合を繰り返したため、対応関係は未確認です。"
+                                            ),
+                                        )
+                                    )
+                        target_ids = [
+                            target.id
+                            for group in self.result.groups
+                            if group.kind == "matched"
+                            and (
+                                selected_ids["source"].intersection(group.source_ids)
+                                or selected_ids["translation"].intersection(
+                                    group.translation_ids
+                                )
+                            )
+                            for target in self.result.targets
+                            if target.id == f"review/{group.id}"
+                        ]
+                    else:
+                        target_ids = list(action.target_ids)
+                    targets_by_id = {
+                        target.id: target for target in self.result.targets
+                    }
+                    target_ids = [
+                        target_id
+                        for target_id in target_ids
+                        if target_id in targets_by_id
+                    ] or list(unchecked)
+                    unresolved_targets = [
+                        target_id
+                        for target_id in target_ids
+                        if target_id not in self.result.reviewed_target_ids
+                    ]
+                    for target_id in unresolved_targets:
+                        target = targets_by_id[target_id]
+                        self.result.findings.append(
+                            Finding(
+                                id=f"review/unverified/{target_id}",
+                                category="未確認",
+                                severity="warning",
+                                target_ids=target.target_ids,
+                                message="同じ対象の再試行で進捗がなかったため、内容を確認できませんでした。",
+                            )
                         )
-                if action.operation in {"overview", "read", "search"}:
+                    self.result.reviewed_target_ids = list(
+                        dict.fromkeys(
+                            [*self.result.reviewed_target_ids, *unresolved_targets]
+                        )
+                    )
+                    observation = {
+                        "error": "Repeated action made no progress. Affected targets were recorded as unverified; continue with remaining work."
+                    }
+                elif action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
                             role: {
@@ -404,6 +525,13 @@ class ReviewAgent:
                     + len(self.result.reviewed_target_ids)
                 )
                 idle_steps = idle_steps + 1 if progress_after <= progress_before else 0
+                if action_group_key is not None:
+                    if progress_after <= progress_before:
+                        group_steps[action_group_key] = (
+                            group_steps.get(action_group_key, 0) + 1
+                        )
+                    else:
+                        group_steps.pop(action_group_key, None)
             write_model(
                 self.directory / "call-index.json",
                 LLMCallIndex(

@@ -320,15 +320,77 @@ class UpgradeAgent:
                         )
                     break
                 before = sum(map(len, covered.values()))
-                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
-                if action.references:
-                    group_key = repr(action.references)
-                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                    if group_steps[group_key] > 12:
-                        raise TimeoutError(
-                            "Upgrade target group exceeded 12 Agent steps"
+                # 同じ比較範囲が3回進まなければ、上限を縮小して未確認を記録する。
+                stalled_action = False
+                action_group_key = None
+                if action.operation in {"match", "evaluate", "recheck"}:
+                    action_group_key = repr((action.operation, action.references))
+                    previous_no_progress = group_steps.get(action_group_key, 0)
+                    stalled_action = previous_no_progress >= 3
+                    if previous_no_progress >= 1:
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 1:
+                            max_reference_ids = max(
+                                1,
+                                min(max_reference_ids - 1, selected_count // 2),
+                            )
+                if stalled_action:
+                    selected = {
+                        role: set(action.references.get(role, []))
+                        for role in self.units
+                    }
+                    confirmed_ids = {
+                        role: {
+                            identifier
+                            for _, item in self.confirmed
+                            for identifier in getattr(item, f"{role}_ids")
+                        }
+                        for role in ("source_v1", "source_v2")
+                    }
+                    unverified = {
+                        role: sorted(selected[role] - confirmed_ids[role])
+                        for role in ("source_v1", "source_v2")
+                    }
+                    if not any(unverified.values()):
+                        unverified = {
+                            role: pending[role] for role in ("source_v1", "source_v2")
+                        }
+                    retained: list[tuple[str, DiffChange]] = []
+                    translation_ids = set(selected.get("translation_v1", set()))
+                    for identifier, item in self.confirmed:
+                        overlaps = any(
+                            selected[role].intersection(getattr(item, f"{role}_ids"))
+                            for role in ("source_v1", "source_v2")
                         )
-                if action.operation in {"overview", "read", "search"}:
+                        if overlaps:
+                            for role in ("source_v1", "source_v2"):
+                                unverified[role] = sorted(
+                                    set(unverified[role])
+                                    | set(getattr(item, f"{role}_ids"))
+                                )
+                            translation_ids.update(item.translation_v1_ids)
+                        else:
+                            retained.append((identifier, item))
+                    if any(unverified.values()):
+                        self.confirmed[:] = retained
+                        self.confirmed.append(
+                            (
+                                f"unverified-{round_number}-{len(self.confirmed) + 1}",
+                                DiffChange(
+                                    kind="unverified",
+                                    source_v1_ids=unverified["source_v1"],
+                                    source_v2_ids=unverified["source_v2"],
+                                    translation_v1_ids=sorted(translation_ids),
+                                    summary=(
+                                        "同じ対象の再試行で進捗がなかったため、変更内容は未確認です。"
+                                    ),
+                                ),
+                            )
+                        )
+                    observation = {
+                        "error": "Repeated action made no progress. Affected English units were recorded as unverified; continue with remaining work."
+                    }
+                elif action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
                             role: {
@@ -402,6 +464,13 @@ class UpgradeAgent:
                     for _, item in self.confirmed
                 )
                 idle_steps = idle_steps + 1 if after <= before else 0
+                if action_group_key is not None:
+                    if after <= before:
+                        group_steps[action_group_key] = (
+                            group_steps.get(action_group_key, 0) + 1
+                        )
+                    else:
+                        group_steps.pop(action_group_key, None)
             result = UpgradePlan(
                 changes=[
                     VersionChange(id=key, **item.model_dump())

@@ -544,7 +544,10 @@ class TranslationApp:
                         current.status = "failed"
                         current.updated_at = now
                         current.error = error
-                        if hasattr(current, "tasks"):
+                        if isinstance(
+                            current,
+                            (TranslationRecord, ReviewRecord, UpgradeRecord),
+                        ):
                             current.tasks = [
                                 task.model_copy(
                                     update={
@@ -720,7 +723,8 @@ class TranslationApp:
 
             if selected_id is not None:
                 entry = next(
-                    (item for item in entries if item.processing_id == selected_id), None
+                    (item for item in entries if item.processing_id == selected_id),
+                    None,
                 )
                 titles = {
                     "translate": "Translate",

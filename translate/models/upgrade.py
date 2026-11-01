@@ -15,7 +15,7 @@ from translate.models.artifacts import (
     TaskState,
 )
 
-ChangeKind = Literal["unchanged", "moved", "modified", "added", "deleted"]
+ChangeKind = Literal["unchanged", "moved", "modified", "added", "deleted", "unverified"]
 
 
 def _validate_aware(value: datetime) -> datetime:
@@ -51,7 +51,7 @@ class VersionChange(DiffChange):
     """利用者へ提示する一つの変更箇所と修正提案。"""
 
     id: str
-    kind: Literal["moved", "modified", "added", "deleted"]
+    kind: Literal["moved", "modified", "added", "deleted", "unverified"]
 
 
 class DiffResponse(ArtifactModel):
