@@ -370,10 +370,13 @@ def choose_action(
     references = {}
     for role, values in units.items():
         visible = [key for key in values if json.dumps(key, ensure_ascii=False) in user]
+        role_limit = per_role_limit
+        if upgrade and maximum_references < len(units) and role == "translation_v1":
+            role_limit = 0
         references[role] = {
             "type": "array",
             "items": {"type": "string", **({"enum": visible} if visible else {})},
-            "maxItems": per_role_limit if visible else 0,
+            "maxItems": role_limit if visible else 0,
         }
     schema["properties"]["references"] = {
         "type": "object",

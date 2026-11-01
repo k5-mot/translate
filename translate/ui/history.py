@@ -268,9 +268,9 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
             select_column, actions_column = st.columns([10, 1])
             with select_column:
                 if st.button(
-                    f"{_entry_label(entry)}  \n{_entry_date(entry)}",
+                    f"{_entry_label(entry)}\n{_entry_date(entry)}",
                     key=f"history-{processing_id}",
-                    type="tertiary",
+                    type="secondary",
                     width="stretch",
                     wrap=True,
                 ):
