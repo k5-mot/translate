@@ -227,6 +227,7 @@ class ReviewAgent:
             idle_steps = 0
             observation: object = {"restored_operations": len(replayed)}
             group_steps: dict[str, int] = {}
+            max_reference_ids = 32
             while True:
                 assigned = {
                     role: {
@@ -256,6 +257,7 @@ class ReviewAgent:
                 ]
                 state: dict[str, object] = {
                     "roles": list(self.units),
+                    "max_reference_ids": max_reference_ids,
                     "pending_counts": {role: len(ids) for role, ids in pending.items()},
                     "pending_ids": {role: ids[:8] for role, ids in pending.items()},
                     "unmatched_counts": {
@@ -331,9 +333,57 @@ class ReviewAgent:
                     try:
                         observation = self._execute(action, round_number)
                     except (LLMInputExceededError, LLMOutputExceededError):
-                        observation = {
-                            "error": "Selected scope exceeds the budget. Select fewer units or targets."
-                        }
+                        if action.operation == "match":
+                            selected = sum(map(len, action.references.values()))
+                            scope = tuple(
+                                tuple(sorted(action.references.get(role, [])))
+                                for role in self.units
+                            )
+                            if selected > 2:
+                                max_reference_ids = max(
+                                    2, min(max_reference_ids - 1, selected // 2)
+                                )
+                                message = (
+                                    "Match scope exceeded the budget. Select at most "
+                                    f"{max_reference_ids} document IDs."
+                                )
+                            else:
+                                self.match_scopes.add(scope)
+                                for role, ids in action.references.items():
+                                    for identifier in ids:
+                                        self.group_number += 1
+                                        self.result.groups.append(
+                                            AlignmentGroup(
+                                                id=f"alignment-{self.group_number:06d}",
+                                                kind=(
+                                                    "source_only"
+                                                    if role == "source"
+                                                    else "translation_only"
+                                                ),
+                                                source_ids=(
+                                                    [identifier]
+                                                    if role == "source"
+                                                    else []
+                                                ),
+                                                translation_ids=(
+                                                    [identifier]
+                                                    if role == "translation"
+                                                    else []
+                                                ),
+                                                reason=(
+                                                    "入力上限により照合できず、対応関係は未確認です。"
+                                                ),
+                                            )
+                                        )
+                                message = (
+                                    "Minimum match scope exceeded the budget. "
+                                    "Selected units were recorded as unverified; continue with other units."
+                                )
+                            observation = {"error": message}
+                        else:
+                            observation = {
+                                "error": "Selected scope exceeds the budget. Select fewer units or targets."
+                            }
                     except InputError as error:
                         observation = {
                             "error": f"{error}. No action was executed; choose valid references from the current state."

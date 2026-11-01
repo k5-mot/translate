@@ -287,12 +287,14 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
-    per_role_limit = max(1, maximum_references // len(units)) if upgrade else 32
+    per_role_limit = max(1, maximum_references // len(units)) if upgrade else maximum_references
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
             f"total document IDs from all roles and at most {per_role_limit} per role."
         )
+    else:
+        contract += f" Use at most {maximum_references} document IDs in each operation."
 
     def validate(action: AgentAction) -> None:
         """現在の状態で実行できない操作を既存の応答訂正枠へ返す。
@@ -322,9 +324,7 @@ def choose_action(
             )
         reference_count = sum(map(len, action.references.values()))
         if action.operation in {"read", "match"}:
-            limit = (
-                maximum_references if upgrade and action.operation == "match" else 32
-            )
+            limit = maximum_references
             if not 1 <= reference_count <= limit:
                 raise ValueError(
                     f"{action.operation} requires 1 to {limit} document unit IDs in references"
