@@ -166,10 +166,19 @@
 - 影響: 65MB・357ページのPDFでは、Docling変換とReview判定に長時間を要し、後続Upgradeを開始できない。最終結果は追跡中。
 - 記録: `outputs/document.ja-office/01a1956c-0f32-7a40-a128-a08f86f2354a/review.log`、`state-review.json`、`tasks/01-docling/*/docling-progress.json`。
 
-## ⏳ sample1 UpgradeのDIFFでLLM応答不正が繰り返す
+## ❌ sample1 UpgradeのDIFFが入力上限超過で未完了
 
 - 再現条件: 357ページ・23表（原文正規化後990セル）と6,421テキストunitのsample1原文、新版（末尾ページ除外）、sample1訳文PDFでUpgradeする。
 - 結果: Upgrade `01a195f9-109d-7c41-8b24-04233ab82879` は3入力のDocling変換後、開始から約1時間54分でDIFFのcallが380件（round 379）まで増加し、開始から約3時間後の2026-11-01 19:18 JST時点でもprocessing。複数callで`LLMInvalidResponseError`が再試行上限後にfailedとなる。round 348〜359では同一対象（`source_v1/source_v2:#/tables/3/cell-r0007-c0001/content`）が12回連続で失敗し、round 360で成功した。続くcell-r0007-c0002はround 361の失敗後round 363までに次候補へ進んだ。またcell-r0011-c0001もround 377〜385の9回連続失敗後、round 386で成功し、round 387で次セルへ進んだ。round 393〜394で別セルも同様に失敗後、round 395で成功し次へ進んでいる。
-- 影響: UpgradeのDIFFが長時間化し、LLM応答不正が同じ対象で長く続いても、完了まで後続判定に進めない。
+- 最終結果: 2026-11-01 15:10 UTC（11-02 00:10 JST）、round 1326でsource_v1/source_v2の`#/texts/1419/content`を処理する際、`Selected document scope exceeds REVIEW_INPUT_TOKENS`（`LLMInputExceededError`）が発生。callは1回でfailedとなり、Upgradeは`DIFF did not complete.`（`InputError`、retryable=true）でfailed、成果物は生成されなかった。
+- Resume後は以前timeoutしたtext 1190を成功させたが、text 1419の入力予算超過で停止した。変更前のジョブも同じUpgrade ID・同じ入力でResumeし、失敗位置まで処理を進めた。
+- 影響: 大規模文書の一部unitが入力上限を超えるとDIFF全体が完了せず、成果物を得られない。入力超過unitの分割・縮小または明示的なskip/フォールバックが必要。
 - 記録: `outputs/sample1/01a195f9-109d-7c41-8b24-04233ab82879/upgrade.log`、`tasks/21-diff/calls/`、`state-upgrade.json`。
 - 進捗更新（2026-11-01 23:19 JST）: 同じUpgradeジョブは継続中。text 815は8回、text 1060は3回、text 1152・1184は各1回のLLMInvalidResponseError後に回復。round 1205（text 1181）まで成功し、round 1206（text 1182）処理中。累計1,207 call。
+- 最終更新（2026-11-02 00:10 JST）: Upgradeはround 1326でfailed。途中のLLMInvalidResponseErrorやLLMTimeoutErrorはResumeと再試行で後続へ進んだが、text 1419の入力上限超過が最終停止要因となった。失敗時の状態は`outputs/sample1/01a195f9-109d-7c41-8b24-04233ab82879/state-upgrade.json`。
+## ⏳ sample2 UpgradeのDIFF処理が長時間化
+
+- 再現条件: sample2の原文2版と訳文PDFでUpgradeする。Upgrade `01a190b1-157a-7131-9b8f-71543b87efc3` はround 142〜156まで進んだ後、stateは`processing`のままworkerが消失したため、保存済みの同一入力（SHA-256一致）で同じIDをResumeした。Resume workerも途中で終了したため再度Resumeし、2026-11-02 01:50 JSTに処理完了。
+- 追跡結果: round 857（text 1096）まで到達。複数の`LLMInvalidResponseError`が発生したが、多くは後続callで回復。最終call後にstateは`succeeded`となり、DIFF成果物が作成された。Resume実行から約3時間8分。
+- 影響: sample2のUpgrade完了まで長時間を要し、worker停止後のstateがprocessingのまま残るケースもある。
+- 記録: `outputs/sample2/01a190b1-157a-7131-9b8f-71543b87efc3/upgrade.log`、`tasks/21-diff/calls/`、`state-upgrade.json`.
