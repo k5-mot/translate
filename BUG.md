@@ -56,6 +56,7 @@
 - 影響: 保存済み入力があっても同じ処理を再開できない。
 - 確認: `scripts/real_ui_step.py review --resume 01a17fd8-05f4-7ff2-b419-ec1cf05793f1` はResumeボタン待ちでタイムアウト。条件は`translate/ui/app.py`の`_render_processing_panel`。
 
+- 再現確認（2026-11-01）: sample2 Upgradeの再開処理はround 156まで進行した後、worker processが終了。state-upgrade.jsonとDIFF taskがprocessingのまま残り、error/completed_atも設定されなかった。保存済み入力は再開時にSHA-256一致済み。
 ## 🔎 sample5 TranslateのEmbedding応答が長時間戻らない
 
 - 再現条件: `sample5.pdf`をTranslateする。
@@ -102,7 +103,7 @@
 - 影響: 対象セルを処理できず、Upgradeが65分後に失敗する。
 - 記録: `outputs/sample2/01a190b1-157a-7131-9b8f-71543b87efc3/tasks/21-diff/calls`、`upgrade.log`、`state-upgrade.json`。
 
-- 再開確認（2026-11-01 22:37 JST）: 保存済み3入力のSHA-256一致を確認し、既存IDを直接Resume。round 142は以前失敗したcellを含む範囲で成功。大きな比較範囲でLLMInvalidResponseErrorが出るものの、round 144、146、149〜151は成功して先へ進んだ。現在round 152を再試行中でstateはprocessing、最終結果は未確定。
+- 再開確認（2026-11-01 22:41 JST）: 保存済み3入力のSHA-256一致を確認し、既存IDをResume。以前失敗したcellを含むround 142、round 144、146、149〜156は成功し先へ進んだ。一方、最終ログは2026-11-01 22:38:50 JSTのLLM開始で途切れ、worker processが終了したのにstateとDIFF taskはprocessingのまま残った。最終結果は未確定。
 ## 🕰️ sample2 ReviewのLLM再試行で完了まで長時間かかる
 
 - 再現条件: 88ページの`sample2.pdf`と翻訳PDFをReviewする。
