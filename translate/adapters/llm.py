@@ -683,23 +683,33 @@ def _validate_contract(
         raise ValueError("LLM response schema exceeds depth limit")
 
 
-def _schema_depth(schema: object) -> int:
+def _schema_depth(schema: object, definitions: dict[str, Any] | None = None) -> int:  # noqa: PLR0911
     """JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
 
     Args:
         schema (object): 深さまたは契約を検証するJSON Schema。
+        definitions: `$ref`の解決に使う`$defs`。省略時はschemaから取得する。
 
     Returns:
-        int: JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
+        int: `$ref`と`anyOf`を展開した入れ子深度。循環参照は再展開しない。
     """
 
     if not isinstance(schema, dict):
         return 0
+    defs = schema.get("$defs", {}) if definitions is None else definitions
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        name = reference.rsplit("/", 1)[-1]
+        rest = {key: value for key, value in defs.items() if key != name}
+        return _schema_depth(defs.get(name), rest)
+    options = schema.get("anyOf")
+    if isinstance(options, list):
+        return max((_schema_depth(item, defs) for item in options), default=0)
     schema_type = schema.get("type")
     if schema_type == "object":
         properties = schema.get("properties", {})
         children = properties.values() if isinstance(properties, dict) else []
-        return 1 + max((_schema_depth(item) for item in children), default=0)
+        return 1 + max((_schema_depth(item, defs) for item in children), default=0)
     if schema_type == "array":
-        return 1 + _schema_depth(schema.get("items"))
+        return 1 + _schema_depth(schema.get("items"), defs)
     return 0

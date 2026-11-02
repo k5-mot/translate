@@ -27,6 +27,7 @@ from translate.adapters.llm import (
     LLMRateLimitError,
     LLMTimeoutError,
     _provider_error,
+    _schema_depth,
 )
 from translate.common.config import Config, ConfigError, load_config, validate_config
 from translate.common.logger import configure_logging
@@ -848,3 +849,22 @@ def test_llm_retries_non_json_success_as_invalid_response() -> None:
             native_schema={"type": "object"},
             output_tokens=10,
         )
+
+
+def test_schema_depth_follows_references() -> None:
+    """Pydanticの$refと省略可能なanyOfを展開して深度を数える。"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+        },
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "child": {"anyOf": [{"$ref": "#/$defs/Item"}, {"type": "null"}]}
+                },
+            }
+        },
+    }
+    assert _schema_depth(schema) == 3
