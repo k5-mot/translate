@@ -2,9 +2,6 @@
 
 import logging
 import math
-import random
-import time
-from contextlib import suppress
 
 from openai import (
     APIConnectionError,
@@ -63,7 +60,8 @@ class EmbeddingClient:
             api_key=config.openai_api_key or "local-no-auth",
             base_url=config.openai_base_url,
             timeout=config.http_request_timeout_seconds,
-            max_retries=0,
+            # 接続失敗・408・409・429・5xxの再試行とRetry-AfterはSDKへ委ねる。
+            max_retries=config.http_retry_attempts - 1,
         ) as client:
             for first in range(0, len(values), 16):
                 batch = values[first : first + 16]
@@ -98,89 +96,41 @@ class EmbeddingClient:
     def _request(
         self, values: list[str], client: OpenAI, model: str
     ) -> list[list[float]]:
-        """一batchを仕様で許可されたHTTP失敗だけ再試行する。
+        """一batchを要求し、SDKが再試行を使い切った失敗を利用者向けに変換する。
 
         Args:
             values (list[str]): 一括処理する入力Text列。
-                client (OpenAI): Embedding要求に使用するOpenAI Python client。
+            client (OpenAI): Embedding要求に使用するOpenAI Python client。
             model (str): Embedding APIへ指定するModel名。
 
         Returns:
-            list[list[float]]: 一batchを仕様で許可されたHTTP失敗だけ再試行する。
+            list[list[float]]: 入力順へ並べ直したEmbedding Vector列。
 
         Raises:
             EmbeddingError: 通信、HTTP応答またはEmbedding応答の検証に失敗した場合。
         """
 
         config = self.config
-        deadline = time.monotonic() + config.external_task_deadline_seconds
-        for attempt in range(1, config.http_retry_attempts + 1):
-            logger.debug("Embedding request attempt=%d items=%d", attempt, len(values))
-            try:
-                response = client.embeddings.create(
-                    model=model,
-                    input=values,
-                    encoding_format="float",
-                    extra_headers={"Authorization": Omit()}
-                    if not config.openai_api_key
-                    else None,
-                )
-                break
-            except (APIConnectionError, APIStatusError) as error:
-                status = (
-                    error.status_code if isinstance(error, APIStatusError) else None
-                )
-                retryable = status is None or status in {408, 429} or status >= 500
-                if not retryable or attempt >= config.http_retry_attempts:
-                    logger.warning(
-                        "Embedding failed attempt=%d status=%s", attempt, status
-                    )
-                    if isinstance(error, APITimeoutError) or status == 408:
-                        message = (
-                            "Embedding要求が時間切れです。対策: "
-                            "HTTP_REQUEST_TIMEOUT_SECONDSとendpointの負荷を確認してください。"
-                        )
-                    elif status in {401, 403}:
-                        message = (
-                            f"Embedding認証・権限エラー (HTTP {status})。対策: "
-                            "OPENAI_API_KEYを確認してください。"
-                        )
-                    elif status == 429:
-                        message = (
-                            "Embeddingのrate limitに達しました。対策: "
-                            "同時実行数とendpointの制限を確認してください。"
-                        )
-                    elif status is None:
-                        message = (
-                            "Embedding endpointへ接続できません。対策: "
-                            "OPENAI_BASE_URLとネットワークを確認してください。"
-                        )
-                    else:
-                        message = (
-                            f"Embedding endpointがHTTP {status}を返しました。対策: "
-                            "model名とendpointのサーバーログを確認してください。"
-                        )
-                    raise EmbeddingError(message) from error
-                delay = random.uniform(0, 2 ** (attempt - 1))  # noqa: S311
-                if isinstance(error, APIStatusError):
-                    with suppress(KeyError, ValueError):
-                        delay = max(delay, float(error.response.headers["retry-after"]))
-                delay = min(delay, max(0.0, deadline - time.monotonic()))
-                logger.warning(
-                    "Retrying Embedding request attempt=%d status=%s", attempt, status
-                )
-                if delay <= 0:
-                    raise EmbeddingError(
-                        "Embedding処理の期限に達しました。対策: "
-                        "EXTERNAL_TASK_DEADLINE_SECONDSとendpointの負荷を確認してください。"
-                    ) from error
-                time.sleep(delay)
-            except APIResponseValidationError as error:
-                logger.warning("Embedding failed type=APIResponseValidationError")
-                raise EmbeddingError(
-                    "Embedding応答の形式が不正です。対策: "
-                    "endpointの応答形式とサーバーログを確認してください。"
-                ) from error
+        logger.debug("Embedding request items=%d", len(values))
+        try:
+            response = client.embeddings.create(
+                model=model,
+                input=values,
+                encoding_format="float",
+                extra_headers={"Authorization": Omit()}
+                if not config.openai_api_key
+                else None,
+            )
+        except (APIConnectionError, APIStatusError) as error:
+            status = error.status_code if isinstance(error, APIStatusError) else None
+            logger.warning("Embedding failed status=%s", status)
+            raise EmbeddingError(_failure_message(error, status)) from error
+        except APIResponseValidationError as error:
+            logger.warning("Embedding failed type=APIResponseValidationError")
+            raise EmbeddingError(
+                "Embedding応答の形式が不正です。対策: "
+                "endpointの応答形式とサーバーログを確認してください。"
+            ) from error
         data = getattr(response, "data", None)
         if not isinstance(data, list) or any(
             not isinstance(getattr(item, "index", None), int) for item in data
@@ -202,3 +152,39 @@ class EmbeddingClient:
                 )
             vectors.append([float(value) for value in raw])
         return vectors
+
+
+def _failure_message(error: Exception, status: int | None) -> str:
+    """SDKの通信・HTTP失敗を原因と対策の文へ変換する。
+
+    Args:
+        error: SDKが送出した例外。
+        status: HTTP status。接続失敗ではNone。
+
+    Returns:
+        秘密情報やproviderの応答本文を含まない利用者向けの文。
+    """
+    if isinstance(error, APITimeoutError) or status == 408:
+        return (
+            "Embedding要求が時間切れです。対策: "
+            "HTTP_REQUEST_TIMEOUT_SECONDSとendpointの負荷を確認してください。"
+        )
+    if status in {401, 403}:
+        return (
+            f"Embedding認証・権限エラー (HTTP {status})。対策: "
+            "OPENAI_API_KEYを確認してください。"
+        )
+    if status == 429:
+        return (
+            "Embeddingのrate limitに達しました。対策: "
+            "同時実行数とendpointの制限を確認してください。"
+        )
+    if status is None:
+        return (
+            "Embedding endpointへ接続できません。対策: "
+            "OPENAI_BASE_URLとネットワークを確認してください。"
+        )
+    return (
+        f"Embedding endpointがHTTP {status}を返しました。対策: "
+        "model名とendpointのサーバーログを確認してください。"
+    )

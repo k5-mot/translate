@@ -687,7 +687,7 @@ def test_embedding_sdk_preserves_order_and_auth(
     ).embed(["one", "two"])
 
     assert vectors == [[1.0], [2.0]]
-    assert seen["max_retries"] == 0
+    assert seen["max_retries"] == 5
     assert seen["authorization"] == expected_auth
     payload = seen["payload"]
     assert isinstance(payload, dict)
@@ -724,7 +724,7 @@ def test_embedding_retries_temporary_server_errors(
         )
 
     monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
-    monkeypatch.setattr("translate.adapters.embedding.time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", lambda _: None)
     vectors = EmbeddingClient(
         Config(
             _env_file=None,
@@ -768,8 +768,7 @@ def test_embedding_honors_retry_after_header(
         )
 
     monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
-    monkeypatch.setattr("translate.adapters.embedding.time.sleep", delays.append)
-    monkeypatch.setattr("translate.adapters.embedding.random.uniform", lambda *_: 0)
+    monkeypatch.setattr("time.sleep", delays.append)
     vectors = EmbeddingClient(
         Config(
             _env_file=None,
