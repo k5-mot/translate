@@ -5,6 +5,7 @@ description = "英語PDFを日本語MarkdownとDOCXへ変換するローカルLL
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "docling-core>=2.105,<3",
     "httpx>=0.28.1",
     "openai>=3.16.2,<4",
     "pillow>=12.0.0",
