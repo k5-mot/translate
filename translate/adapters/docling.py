@@ -10,11 +10,6 @@ import httpx
 
 from translate.common.config import Config
 
-_CONTENT_TYPES = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-}
 logger = logging.getLogger(__name__)
 
 
@@ -52,16 +47,12 @@ class DoclingClient:
             tuple[bytes, str, int]: 変換済みZIP、Job IDおよびPolling回数のTuple。
 
         Raises:
-            ValueError: `f'unsupported Docling document: {source.name}'`と判定した場合。
             RuntimeError: `Docling submit response must be an object`、`Docling response has no
                 task_id`、`Docling status response must be an object`、`f'Docling task did not
                 complete: {task_id}'`のいずれかと判定した場合。
             TimeoutError: `f'Docling task timed out: {task_id}'`と判定した場合。
         """
 
-        suffix = source.suffix.casefold()
-        if suffix not in _CONTENT_TYPES:
-            raise ValueError(f"unsupported Docling document: {source.name}")
         deadline = time.monotonic() + self.config.external_task_deadline_seconds
         logger.info("Docling started file=%s", source.name)
         with source.open("rb") as stream:
@@ -69,7 +60,7 @@ class DoclingClient:
                 "POST",
                 f"{self.base_url}/v1/convert/file/async",
                 deadline,
-                files={"files": (source.name, stream, _CONTENT_TYPES[suffix])},
+                files={"files": (source.name, stream, "application/pdf")},
                 data=self._request_data(),
             )
         submitted = response.json()

@@ -1144,21 +1144,9 @@ class DocumentLoader:
         """
 
         raw_pages = self.document.get("pages")
-        if not isinstance(raw_pages, dict):
+        if not isinstance(raw_pages, dict) or not raw_pages:
             msg = "Docling pages must be a non-empty object"
             raise ValueError(msg)
-        if not raw_pages:
-            origin = self.document.get("origin", {})
-            mimetype = origin.get("mimetype") if isinstance(origin, dict) else None
-            office_types = {
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            }
-            if mimetype not in office_types:
-                msg = "Docling pages must be a non-empty object"
-                raise ValueError(msg)
-            # Office文書はDoclingがpageを返さないため、全要素を仮想ページへ載せる。
-            raw_pages = {"1": {}}
         pages: dict[int, Page] = {}
         for raw_number, raw_page in raw_pages.items():
             number = int(raw_number)
