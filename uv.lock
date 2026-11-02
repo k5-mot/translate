@@ -1572,7 +1572,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pypdfium2" },
-    { name = "python-dotenv" },
     { name = "uuid-utils" },
 ]
 
@@ -1608,7 +1607,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.10,<3" },
     { name = "pypdfium2", specifier = ">=5.13.0,<6" },
-    { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "qdrant-client", marker = "extra == 'all'", specifier = ">=1.16.0,<2" },
     { name = "qdrant-client", marker = "extra == 'qdrant'", specifier = ">=1.16.0,<2" },
     { name = "streamlit", marker = "extra == 'all'", specifier = ">=1.64.0" },
