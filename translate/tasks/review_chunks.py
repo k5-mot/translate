@@ -1,9 +1,10 @@
 """REVIEW対象の分割とLLM payload作成。"""
 
 import json
-import re
+from itertools import accumulate
 
 from translate.adapters.llm import LLMInputExceededError
+from translate.common.sentences import split_sentences
 from translate.models.document import TextSpan
 from translate.models.review import ReviewTarget
 
@@ -111,12 +112,7 @@ def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str
     """
 
     end = 0
-    boundaries = [
-        match.end()
-        for match in re.finditer(
-            r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", source
-        )
-    ]
+    boundaries = list(accumulate(map(len, split_sentences(source))))
     for boundary in [*boundaries, len(source)]:
         candidate = target.model_copy(update={"source": source[:boundary]})
         if _target_bytes([candidate]) > maximum_bytes:

@@ -7,6 +7,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import accumulate
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
@@ -25,6 +26,7 @@ from translate.adapters.pdf import split_pdf
 from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
+from translate.common.sentences import split_sentences
 from translate.models.artifacts import (
     InputFile,
     ProcessingError,
@@ -416,12 +418,7 @@ def _chunks(value: str) -> list[str]:
             atoms.append(paragraph)
             continue
         start = 0
-        for boundary in [
-            match.end()
-            for match in re.finditer(
-                r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", paragraph
-            )
-        ] + [len(paragraph)]:
+        for boundary in accumulate(map(len, split_sentences(paragraph))):
             atom = paragraph[start:boundary]
             while len(atom.strip()) > _CHUNK_SIZE:
                 split_at = max(

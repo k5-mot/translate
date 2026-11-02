@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from translate.adapters.artifact_store import temporary_task_directory, write_model
+from translate.common.sentences import split_sentences
 from translate.models.document import (
     Block,
     BlockKind,
@@ -113,34 +114,10 @@ def _inline(
             href=href,
             marks=marks or [],
         )
-        for index, part in enumerate(_sentences(text) if kind == "text" else [text], 1)
-    ]
-
-
-def _sentences(value: str) -> list[str]:
-    """終止記号と段落の境界で分け、区切りの空白も元の順で保持する。
-
-    Args:
-        value: 書式とlinkが同一の原文。
-
-    Returns:
-        連結すると入力と一致する文の列。長い一文は切断しない。
-    """
-    # 小数点・頭字語の途中を避け、英語の終止記号は空白の直前に限定する。
-    boundaries = list(
-        re.finditer(
-            r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", value
+        for index, part in enumerate(
+            split_sentences(text) if kind == "text" else [text], 1
         )
-    )
-    parts: list[str] = []
-    start = 0
-    for boundary in boundaries:
-        if boundary.end() > start:
-            parts.append(value[start : boundary.end()])
-            start = boundary.end()
-    if start < len(value):
-        parts.append(value[start:])
-    return parts
+    ]
 
 
 def _inline_from_item(
