@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from translate.adapters.artifact_store import temporary_task_directory, write_model
+from translate.common.docling_json import resolve_ref
 from translate.common.sentences import split_sentences
 from translate.models.document import (
     Block,
@@ -742,10 +743,8 @@ class DocumentLoader:
             ValueError: 参照が不正または解決不能の場合。
         """
 
-        value: Any = self.document
         try:
-            for part in ref.removeprefix("#/").split("/"):
-                value = value[int(part)] if isinstance(value, list) else value[part]
+            value = resolve_ref(self.document, ref)
         except (KeyError, IndexError, TypeError, ValueError) as error:
             msg = f"unresolved Docling ref: {ref}"
             raise ValueError(msg) from error

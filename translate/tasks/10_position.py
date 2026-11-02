@@ -12,6 +12,7 @@ from typing import Any
 import pypdfium2 as pdfium
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
+from translate.common.docling_json import resolve_ref
 
 
 def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | None:
@@ -509,10 +510,8 @@ class PositionTask:
             dict[str, Any] | None: Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
         """
 
-        value: Any = self.document
         try:
-            for part in ref.removeprefix("#/").split("/"):
-                value = value[int(part)] if isinstance(value, list) else value[part]
+            value = resolve_ref(self.document, ref)
         except (KeyError, IndexError, TypeError, ValueError):
             return None
         return value if isinstance(value, dict) else None

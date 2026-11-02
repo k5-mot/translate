@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
+from translate.common.docling_json import resolve_ref
 
 SKIPPED = {"page_header", "page_footer"}
 INDEX_RE = re.compile(
@@ -172,10 +173,8 @@ def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None
         ref = child.get("$ref") if isinstance(child, dict) else None
         if not isinstance(ref, str):
             continue
-        value: Any = document
         try:
-            for part in ref.removeprefix("#/").split("/"):
-                value = value[int(part)] if isinstance(value, list) else value[part]
+            value = resolve_ref(document, ref)
         except (KeyError, IndexError, TypeError, ValueError):
             continue
         _filter_tree(document, value, removed)
