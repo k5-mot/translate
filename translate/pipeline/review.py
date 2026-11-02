@@ -1,9 +1,11 @@
 """原文と訳文をAgentで対応付け、指摘と修正提案を一覧化する。"""
 
+import logging
 import time
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -31,6 +33,7 @@ from translate.models.artifacts import (
 from translate.models.document import Document
 from translate.models.review import AgentAction, AlignmentGroup, Finding, ReviewTarget
 from translate.pipeline import (
+    ACTION_FAILURE_LIMIT,
     InputError,
     PipelineRun,
     agent_units,
@@ -42,6 +45,30 @@ from translate.pipeline import (
 )
 
 ReviewTask = import_module("translate.tasks.41_review").ReviewTask
+logger = logging.getLogger(__name__)
+
+
+def _fallback_action(state: dict[str, object]) -> AgentAction:
+    """未解決の対象から、LLMの判断なしで次に行うReview操作を決める。
+
+    Args:
+        state: Agentへ渡す確認状況。
+
+    Returns:
+        AgentAction: 競合の再確認、未評価の評価、未対応の照合、終了の優先順の操作。
+    """
+    conflicts = cast("list[str]", state["conflicts"])
+    if conflicts:
+        return AgentAction(operation="recheck", target_ids=conflicts[:8])
+    unchecked = cast("list[str]", state["unchecked_targets"])
+    if unchecked:
+        return AgentAction(operation="evaluate", target_ids=unchecked[:8])
+    pending = cast("dict[str, list[str]]", state["pending_ids"])
+    limit = max(1, cast("int", state["max_reference_ids"]) // 2)
+    references = {role: ids[:limit] for role, ids in pending.items() if ids}
+    if references:
+        return AgentAction(operation="match", references=references)
+    return AgentAction(operation="finish")
 
 
 class ReviewOutcome(BaseModel):
@@ -228,6 +255,7 @@ class ReviewAgent:
             observation: object = {"restored_operations": len(replayed)}
             group_steps: dict[str, int] = {}
             max_reference_ids = 32
+            action_failures = 0
             while True:
                 assigned = {
                     role: {
@@ -294,7 +322,13 @@ class ReviewAgent:
                         "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
                     }
                     idle_steps += 1
-                    continue
+                    action_failures += 1
+                    if action_failures < ACTION_FAILURE_LIMIT:
+                        continue
+                    # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                    logger.warning("Using deterministic Agent action")
+                    action = _fallback_action(state)
+                action_failures = 0
                 if action.operation == "finish":
                     if any(pending.values()) or unchecked or self.conflicts:
                         raise InputError(

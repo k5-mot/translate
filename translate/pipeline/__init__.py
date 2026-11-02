@@ -31,6 +31,9 @@ from translate.models.artifacts import (
 from translate.models.document import Document, TextUnit
 from translate.models.review import AgentAction
 
+# 連続でこの回数の判断が応答不正なら、状態から決まる操作で進める。
+ACTION_FAILURE_LIMIT = 3
+
 
 class InputError(ValueError):
     """入力またはResume指定の不備。"""

@@ -235,6 +235,12 @@ class LLMClient:
                 UnicodeError,
                 ValidationError,
             ) as error:
+                logger.warning(
+                    "LLM response rejected task=%s attempt=%d detail=%s",
+                    task,
+                    attempt,
+                    _validation_detail(error)[:300],
+                )
                 last_cause = error
                 last_error = LLMInvalidResponseError(
                     "LLM応答がJSON形式または契約に適合しません。対策: "

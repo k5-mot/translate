@@ -1035,10 +1035,7 @@ def test_agent_recovers_invalid_action_without_losing_confirmed_units(
 @pytest.mark.parametrize("kind", ["review", "upgrade"])
 @pytest.mark.parametrize(
     "case",
-    [
-        (LLMInvalidResponseError, TimeoutError, 12),
-        (LLMConnectionError, LLMConnectionError, 1),
-    ],
+    [(LLMConnectionError, LLMConnectionError, 1)],
 )
 def test_agent_action_failure_keeps_stop_conditions(
     tmp_path: Path,
@@ -2193,3 +2190,38 @@ def test_upgrade_sends_only_differing_units_to_agent(
         (item.source_v1_ids, item.source_v2_ids)
         for _, item in agent._identical_changes()  # noqa: SLF001
     ] == [(["a"], ["x"])]
+
+
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+def test_agent_runs_next_work_after_repeated_invalid_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, kind: str
+) -> None:
+    """操作選択の応答不正が3回続くと、LLMの判断なしで未確認の作業へ進む。"""
+    roles = (
+        ["source", "translation"]
+        if kind == "review"
+        else ["source_v1", "source_v2", "translation_v1"]
+    )
+    expected = AlignmentResponse if kind == "review" else DiffResponse
+
+    def invalid(kwargs: dict[str, object]) -> BaseModel:
+        """Agent判断を応答不正にする。"""
+        assert kwargs["response_type"] is AgentAction
+        message = "Action failed"
+        raise LLMInvalidResponseError(message)
+
+    def next_work(kwargs: dict[str, object]) -> BaseModel:
+        """判断を挟まず比較操作が送信されたことを確認して止める。"""
+        assert kwargs["response_type"] is expected
+        message = "stop"
+        raise LLMConnectionError(message)
+
+    scripted(monkeypatch, [invalid, invalid, invalid, next_work])
+    documents = {role: document(unit="Text") for role in roles}
+    agent = (
+        ReviewAgent(documents, tmp_path, tmp_path, config)
+        if kind == "review"
+        else UpgradeAgent(documents, tmp_path, config)
+    )
+    with pytest.raises(LLMConnectionError):
+        agent.run()

@@ -1,10 +1,12 @@
 """英文二版と旧訳をAgentで比較し、変更箇所と修正提案を公開する。"""
 
+import logging
 import time
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +35,7 @@ from translate.models.upgrade import (
     VersionChange,
 )
 from translate.pipeline import (
+    ACTION_FAILURE_LIMIT,
     InputError,
     PipelineRun,
     agent_units,
@@ -44,6 +47,27 @@ from translate.pipeline import (
 )
 
 DiffTask = import_module("translate.tasks.21_diff").DiffTask
+logger = logging.getLogger(__name__)
+
+
+def _fallback_action(state: dict[str, object]) -> AgentAction:
+    """未確認の英文から、LLMの判断なしで次に行うUpgrade操作を決める。
+
+    Args:
+        state: Agentへ渡す確認状況。
+
+    Returns:
+        AgentAction: 未確認の英文と旧訳候補の比較。未確認がなければ終了。
+    """
+    pending = cast("dict[str, list[str]]", state["pending_ids"])
+    limit = max(1, cast("int", state["max_reference_ids"]) // 3)
+    references = {role: ids[:limit] for role, ids in pending.items() if ids}
+    if not references:
+        return AgentAction(operation="finish")
+    candidates = cast("list[str]", state["translation_candidates"])[:limit]
+    if candidates:
+        references["translation_v1"] = candidates
+    return AgentAction(operation="evaluate", references=references)
 
 
 class UpgradeOutcome(BaseModel):
@@ -240,6 +264,7 @@ class UpgradeAgent:
             group_steps: dict[str, int] = {}
             one_sided_failures = {"source_v1": 0, "source_v2": 0}
             max_reference_ids = 32
+            action_failures = 0
             observation: object = {"restored_operations": len(restored)}
             while True:
                 covered = {
@@ -329,7 +354,13 @@ class UpgradeAgent:
                         "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
                     }
                     idle_steps += 1
-                    continue
+                    action_failures += 1
+                    if action_failures < ACTION_FAILURE_LIMIT:
+                        continue
+                    # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                    logger.warning("Using deterministic Agent action")
+                    action = _fallback_action(state)
+                action_failures = 0
                 if action.operation == "finish":
                     if any(pending.values()):
                         raise InputError(
