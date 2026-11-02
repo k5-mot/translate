@@ -160,7 +160,8 @@ class StructureTask:
                 chunks = _chunks(
                     page.blocks,
                     self.config.structure_max_blocks,
-                    self.config.structure_input_tokens - overhead,
+                    self.config.input_bytes(self.config.structure_input_tokens)
+                    - overhead,
                 )
                 for index, blocks in enumerate(chunks):
                     page_responses.extend(

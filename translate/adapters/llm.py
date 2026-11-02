@@ -141,8 +141,8 @@ class LLMClient:
             user (str): LLMへ渡すUser Prompt。
             contract (str): 上限値と対応付けるLLM入出力契約名。
             native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
-            input_tokens (int | None): Providerが報告した入力Token数。
-            output_tokens (int): Providerが報告した出力Token数。
+            input_tokens (int | None): 入力token予算。Noneは送信前検査を省略する。
+            output_tokens (int): 要求へ指定する最大出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
             validate: 対象IDなどの応答契約を検証する関数。ValueErrorはSchema不正と同じ再試行枠を使う。
 
@@ -172,7 +172,11 @@ class LLMClient:
                 contract=contract,
                 native_schema=native_schema,
                 mode=self.config.llm_structured_output_mode,
-                maximum_bytes=input_tokens,
+                maximum_bytes=(
+                    None
+                    if input_tokens is None
+                    else self.config.input_bytes(input_tokens)
+                ),
                 task=task,
             )
             payload = self._payload(
@@ -315,7 +319,7 @@ class LLMClient:
             user (str): LLMへ渡すUser Prompt。
             contract (str): 上限値と対応付けるLLM入出力契約名。
             native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
-            output_tokens (int): Providerが報告した出力Token数。
+            output_tokens (int): 要求へ指定する最大出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
 
         Returns:
@@ -456,7 +460,7 @@ def _validate_input_size(
     maximum_bytes: int | None,
     task: str,
 ) -> None:
-    """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。
+    """実送信するtext全体のUTF-8 byte数を、token予算の換算値と比較する。
 
     Args:
         system (str): LLMへ渡すSystem Prompt。

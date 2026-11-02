@@ -114,7 +114,7 @@ class TranslationTask:
             chunks = _chunks(
                 updated,
                 self.config.translate_max_units,
-                self.config.translate_input_tokens - overhead,
+                self.config.input_bytes(self.config.translate_input_tokens) - overhead,
                 self.previous_context,
             )
             responses: list[tuple[str, TranslationResponse]] = []
@@ -219,7 +219,9 @@ class TranslationTask:
                 return [(call_id, response)]
         source = "\n".join(span.source for span in spans)
         payload_budget = (
-            self.config.translate_input_tokens - len(self.rules.encode("utf-8")) - 2048
+            self.config.input_bytes(self.config.translate_input_tokens)
+            - len(self.rules.encode("utf-8"))
+            - 2048
         )
         selected_glossary = self.glossary.select(
             source, maximum_bytes=max(0, payload_budget // 3)

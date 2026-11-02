@@ -2208,6 +2208,7 @@ def test_review_reserves_json_envelope_for_split_target(
     )
     result = ReviewTask(
         Config(
+            llm_input_bytes_per_token=1,
             openai_base_url="http://llm",
             openai_review_model="model",
             review_input_tokens=8192,
@@ -2804,6 +2805,7 @@ def test_review_trims_rag_using_complete_native_prompt_budget(
 ) -> None:
     """単一の短い対象でもSchema込みで上限を守り、参考文だけを減らして評価する。"""
     config = Config(
+        llm_input_bytes_per_token=1,
         openai_base_url="http://llm",
         openai_llm_base_url=None,
         openai_review_model="review",

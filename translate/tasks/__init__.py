@@ -243,7 +243,7 @@ class SavedLLMCalls:
                         schema, ensure_ascii=False, separators=(",", ":")
                     ).encode("utf-8")
                 )
-            budget = input_tokens - overhead
+            budget = config.input_bytes(input_tokens) - overhead
             selected = self.glossary.select(query, max(0, budget // 3))
             references = []
             if (

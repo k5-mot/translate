@@ -76,7 +76,11 @@ def test_agent_fits_observation_without_cutting_units(
     config: Config, monkeypatch: pytest.MonkeyPatch, operation: str, count: int
 ) -> None:
     """状態とSchema込みの上限を守り、候補本文を切らず後続の閲覧位置を保持する。"""
-    client = LLMClient(config.model_copy(update={"review_input_tokens": 11264}))
+    client = LLMClient(
+        config.model_copy(
+            update={"review_input_tokens": 11264, "llm_input_bytes_per_token": 1}
+        )
+    )
     units = agent_units(
         {
             "source": document(

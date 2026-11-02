@@ -115,7 +115,7 @@ class ReviewTask:
                 + self.config.review_output_tokens
                 - output_tokens
             )
-            payload_budget = input_tokens - overhead
+            payload_budget = self.config.input_bytes(input_tokens) - overhead
             envelope_bytes = len(
                 _user_payload([], [], "", [], payload_budget).encode("utf-8")
             ) - _target_bytes([])

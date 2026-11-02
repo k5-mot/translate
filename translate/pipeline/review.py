@@ -448,7 +448,13 @@ class ReviewAgent:
                         else self.units
                     )
                     observation = observe_documents(
-                        action, visible, max(512, self.config.review_input_tokens // 3)
+                        action,
+                        visible,
+                        max(
+                            512,
+                            self.config.input_bytes(self.config.review_input_tokens)
+                            // 3,
+                        ),
                     )
                 else:
                     try:
