@@ -11,6 +11,9 @@ import httpx
 from translate.common.config import Config
 
 logger = logging.getLogger(__name__)
+# Docling再起動を待てる上限(秒)。短い再試行を使い切った後もこの間は待機する。
+OUTAGE_TOLERANCE_SECONDS = 1800.0
+OUTAGE_RETRY_INTERVAL_SECONDS = 30.0
 
 
 class DoclingClient:
@@ -56,7 +59,7 @@ class DoclingClient:
         deadline = time.monotonic() + self.config.external_task_deadline_seconds
         logger.info("Docling started file=%s", source.name)
         with source.open("rb") as stream:
-            response = self._request(
+            response = self._request_through_outage(
                 "POST",
                 f"{self.base_url}/v1/convert/file/async",
                 deadline,
@@ -73,7 +76,7 @@ class DoclingClient:
         polls = 0
         while time.monotonic() < deadline:
             polls += 1
-            status_response = self._request(
+            status_response = self._request_through_outage(
                 "GET",
                 f"{self.base_url}/v1/status/poll/{task_id}",
                 deadline,
@@ -89,7 +92,7 @@ class DoclingClient:
                 status if status in {"success", "failure"} else "pending",
             )
             if status == "success":
-                result = self._request(
+                result = self._request_through_outage(
                     "GET",
                     f"{self.base_url}/v1/result/{task_id}",
                     deadline,
@@ -107,6 +110,44 @@ class DoclingClient:
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
         logger.warning("Docling failed type=TimeoutError polls=%d", polls)
         raise TimeoutError(f"Docling task timed out: {task_id}")
+
+    def _request_through_outage(
+        self,
+        method: str,
+        url: str,
+        deadline: float,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """接続断と5xxの間は待機し、サーバー側のjobを手放さず要求を続ける。
+
+        Args:
+            method (str): Docling APIへ送信するHTTP Method。
+            url (str): Request送信先URL。
+            deadline (float): Pollingを終了するMonotonic Clock上の期限。
+            **kwargs (Any): HTTP Clientへ渡す追加Request引数。
+
+        Returns:
+            httpx.Response: 成功したHTTP応答。
+
+        Raises:
+            httpx.HTTPError: 待機上限を超えた通信失敗、または再試行できないHTTP応答。
+            TimeoutError: `Docling task deadline exceeded`と判定した場合。
+        """
+
+        limit = min(deadline, time.monotonic() + OUTAGE_TOLERANCE_SECONDS)
+        while True:
+            try:
+                return self._request(method, url, deadline, **kwargs)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code < 500 or time.monotonic() >= limit:
+                    raise
+            except httpx.TransportError:
+                if time.monotonic() >= limit:
+                    raise
+            logger.warning("Waiting for Docling recovery method=%s", method)
+            time.sleep(
+                min(OUTAGE_RETRY_INTERVAL_SECONDS, max(0.0, limit - time.monotonic()))
+            )
 
     def _request(
         self,
