@@ -29,6 +29,7 @@ class Pandoc:
         """
         self.timeout = timeout
         self.executable: str | None = None
+        self._envelope: dict[str, object] | None = None
 
     def check(self) -> str:
         """必要なoptionとDOCX extensionを確認し、実行file pathを返す。
@@ -166,17 +167,19 @@ class Pandoc:
         logger.debug("Pandoc table conversion started")
         executable = self.check()
         try:
-            envelope = json.loads(
-                subprocess.run(
-                    [executable, "--from", "markdown", "--to", "json"],
-                    input="",
-                    check=True,
-                    capture_output=True,
-                    encoding="utf-8",
-                    timeout=self.timeout,
-                ).stdout
-            )
-            envelope["blocks"] = [table]
+            # API版を得るための空AST取得は、表ごとに起動せず一度だけ行う。
+            if self._envelope is None:
+                self._envelope = json.loads(
+                    subprocess.run(
+                        [executable, "--from", "markdown", "--to", "json"],
+                        input="",
+                        check=True,
+                        capture_output=True,
+                        encoding="utf-8",
+                        timeout=self.timeout,
+                    ).stdout
+                )
+            envelope = {**self._envelope, "blocks": [table]}
             result = subprocess.run(
                 [
                     executable,
