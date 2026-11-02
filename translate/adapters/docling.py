@@ -66,7 +66,7 @@ class DoclingClient:
         submitted = response.json()
         if not isinstance(submitted, dict):
             raise RuntimeError("Docling submit response must be an object")
-        task_id = submitted.get("task_id") or submitted.get("id")
+        task_id = submitted.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             raise RuntimeError("Docling response has no task_id")
         logger.debug("Docling request submitted")
@@ -81,26 +81,14 @@ class DoclingClient:
             payload = status_response.json()
             if not isinstance(payload, dict):
                 raise RuntimeError("Docling status response must be an object")
-            status = str(
-                payload.get("task_status") or payload.get("status", "")
-            ).casefold()
+            # Docling Serveの状態はsuccess、pending、started、failureだけである。
+            status = str(payload.get("task_status", ""))
             logger.debug(
                 "Docling poll=%d status=%s",
                 polls,
-                status
-                if status
-                in {
-                    "success",
-                    "succeeded",
-                    "completed",
-                    "failure",
-                    "failed",
-                    "error",
-                    "partial",
-                }
-                else "pending",
+                status if status in {"success", "failure"} else "pending",
             )
-            if status in {"success", "succeeded", "completed"}:
+            if status == "success":
                 result = self._request(
                     "GET",
                     f"{self.base_url}/v1/result/{task_id}",
@@ -113,7 +101,7 @@ class DoclingClient:
                     len(result.content),
                 )
                 return result.content, task_id, polls
-            if status in {"failure", "failed", "error", "partial"}:
+            if status == "failure":
                 logger.warning("Docling failed status=%s polls=%d", status, polls)
                 raise RuntimeError(f"Docling task did not complete: {task_id}")
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
