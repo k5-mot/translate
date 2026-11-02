@@ -210,6 +210,8 @@ Agentが次の対象と操作を選ぶ
 完了条件を検証して一覧を確定する
 ```
 
+Upgrade Agentの開始前に、新旧英文の本文が同じ順序で完全一致する要素を`difflib.SequenceMatcher`で未変更として確定し、LLMへ送らない。一致しなかった要素だけをAgentの未確認対象とする。全要素が一致した場合はAgentを呼ばずに完了する。
+
 Agentへ公開する操作は次の範囲に限定する。
 
 | 操作 | Review Agent | Upgrade Agent |

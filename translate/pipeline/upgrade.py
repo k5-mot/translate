@@ -2,6 +2,7 @@
 
 import time
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from importlib import import_module
 from pathlib import Path
 
@@ -218,6 +219,22 @@ class UpgradeAgent:
                     role, _, identifier = reference.partition(":")
                     action.references.setdefault(role, []).append(identifier)
                 self._execute(action, call.round)
+            identical = self._identical_changes()
+            self.confirmed.extend(identical)
+            llm_required = (
+                bool(restored)
+                or not identical
+                or any(
+                    key
+                    not in {
+                        identifier
+                        for _, item in self.confirmed
+                        for identifier in getattr(item, f"{role}_ids")
+                    }
+                    for role in ("source_v1", "source_v2")
+                    for key in self.units[role]
+                )
+            )
             round_number = max((call.round for call in restored), default=-1) + 1
             idle_steps = 0
             group_steps: dict[str, int] = {}
@@ -237,7 +254,7 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
-                if not any(pending.values()) and idle_steps >= 12:
+                if not any(pending.values()) and (idle_steps >= 12 or not llm_required):
                     break
                 # 片側だけが残り、比較失敗または無進捗が続いた場合は対応未確認で記録する。
                 if (
@@ -496,6 +513,45 @@ class UpgradeAgent:
             return result
         finally:
             self.client.client.close()
+
+    def _identical_changes(self) -> list[tuple[str, DiffChange]]:
+        """本文が同じ順序で一致する未確認の英文をLLMなしで未変更として確定する。
+
+        Returns:
+            Change IDと未変更項目の組。保存済みCallが確定したIDは含めない。
+        """
+        covered = {
+            role: {
+                key
+                for _, item in self.confirmed
+                for key in getattr(item, f"{role}_ids")
+            }
+            for role in ("source_v1", "source_v2")
+        }
+        old, new = (
+            [
+                (key, unit.text("source").strip())
+                for key, unit in self.units[role].items()
+                if key not in covered[role]
+            ]
+            for role in ("source_v1", "source_v2")
+        )
+        matcher = SequenceMatcher(
+            None, [text for _, text in old], [text for _, text in new], autojunk=False
+        )
+        return [
+            (
+                f"identical-{old[block.a + offset][0]}",
+                DiffChange(
+                    kind="unchanged",
+                    source_v1_ids=[old[block.a + offset][0]],
+                    source_v2_ids=[new[block.b + offset][0]],
+                    summary="英文は新旧で同一です。",
+                ),
+            )
+            for block in matcher.get_matching_blocks()
+            for offset in range(block.size)
+        ]
 
     def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
         """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。

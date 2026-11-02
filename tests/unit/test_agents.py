@@ -39,6 +39,14 @@ from translate.pipeline import (
 from translate.pipeline.review import ReviewAgent
 from translate.pipeline.upgrade import UpgradeAgent
 
+_identical_changes = UpgradeAgent._identical_changes  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def agent_loop_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一本文の文書でもAgentの操作を検証できるよう事前照合を外す。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", lambda _self: [])
+
 
 def document(**units: str) -> Document:
     """IDと本文を保持する小さな比較用文書を作る。"""
@@ -2112,3 +2120,44 @@ def test_agent_retries_action_from_state_when_observation_exceeds_budget(
     agent.run()
 
     assert len(observations) == 2
+
+
+def test_upgrade_confirms_identical_units_without_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """全英文が同一順序で一致する場合はLLMを呼ばず変更なしで完了する。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", _identical_changes)
+    calls = scripted(monkeypatch, [])
+    result = UpgradeAgent(
+        {
+            "source_v1": document(a="One.", b="Two."),
+            "source_v2": document(x="One.", y="Two."),
+            "translation_v1": document(ja="一。"),
+        },
+        tmp_path,
+        config,
+    ).run()
+    assert not calls
+    assert result.changes == []
+    assert result.reviewed_source_v2_ids == ["x", "y"]
+
+
+def test_upgrade_sends_only_differing_units_to_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """一致した英文は確定済みとなり、差分のIDだけがAgentの未確認に残る。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", _identical_changes)
+    agent = UpgradeAgent(
+        {
+            "source_v1": document(a="One.", b="Old."),
+            "source_v2": document(x="One.", y="New."),
+            "translation_v1": document(ja="一。"),
+        },
+        tmp_path,
+        config,
+    )
+    agent.confirmed = []
+    assert [
+        (item.source_v1_ids, item.source_v2_ids)
+        for _, item in agent._identical_changes()  # noqa: SLF001
+    ] == [(["a"], ["x"])]
