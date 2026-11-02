@@ -307,7 +307,7 @@ REVIEW_INPUT_TOKENS + REVIEW_OUTPUT_TOKENS + LLM_SAFETY_TOKENS <= LLM_CONTEXT_TO
 | `LLM_REQUEST_TIMEOUT_SECONDS` | 1,800 | 1,800 | 1要求のtimeout |
 | `LLM_TASK_DEADLINE_SECONDS` | 21,600 | 21,600 | 1Taskのdeadline |
 
-入力上限にはルール、Schema、用語集、文書本文およびメッセージ形式をすべて含める。ローカルendpointのTokenizerを利用できない場合は、入力token予算へ `LLM_INPUT_BYTES_PER_TOKEN`（既定2、1〜4）を乗じたUTF-8 byte数を送信前の上限とし、追加のTokenizer依存を導入しない。実際の上限はendpointのcontext超過応答で検出する。設定上の予算がendpointの実際の上限を引き上げることはない。Agentの比較範囲が上限を超えた場合は、選択可能な要素数を直前の範囲の半分以下へ下げ、次の操作で上限として検証する。単一要素、または対応付けに必要な最小2要素を処理できない場合は失敗として停止する。再試行回数は失敗理由ごとに加算せず、1回のPipeline開始における一つのLLM Callについて全理由を合算して最大 `LLM_RETRY_ATTEMPTS` 回とする。利用者が明示的にResumeした場合、未完了または失敗したCallには新しい試行枠を与えるが、`attempts` は累計値として保持する。
+入力上限にはルール、Schema、用語集、文書本文およびメッセージ形式をすべて含める。送信前の判定はUTF-8 byte数が予算以下なら通過とし、超える場合は `OPENAI_BASE_URL` のLiteLLM `/utils/token_counter` で数える。数えられないendpointでは入力token予算へ `LLM_INPUT_BYTES_PER_TOKEN`（既定2、1〜4）を乗じたbyte数で判定し、追加のTokenizer依存を導入しない。chunkの分割計画は要求ごとに問い合わせず、この換算byte数を使う。実際の上限はendpointのcontext超過応答で検出する。設定上の予算がendpointの実際の上限を引き上げることはない。Agentの比較範囲が上限を超えた場合は、選択可能な要素数を直前の範囲の半分以下へ下げ、次の操作で上限として検証する。単一要素、または対応付けに必要な最小2要素を処理できない場合は失敗として停止する。再試行回数は失敗理由ごとに加算せず、1回のPipeline開始における一つのLLM Callについて全理由を合算して最大 `LLM_RETRY_ATTEMPTS` 回とする。利用者が明示的にResumeした場合、未完了または失敗したCallには新しい試行枠を与えるが、`attempts` は累計値として保持する。
 
 #### 🧩 意味を保つ分割
 

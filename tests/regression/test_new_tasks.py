@@ -2178,6 +2178,10 @@ def test_review_reserves_json_envelope_for_split_target(
             self.config = config
             self.client = MagicMock()
 
+        def fits_input(self, _model: str, text: str, tokens: int) -> bool:
+            """Token counterなしのbyte換算で判定する。"""
+            return len(text.encode("utf-8")) <= self.config.input_bytes(tokens)
+
         def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
             """実要求のuser payloadが入力予算内か検査する。"""
 
@@ -2446,6 +2450,10 @@ def test_review_retries_one_oversized_pre_split_target(tmp_path: Path) -> None:
 
     class SizeLimitedClient:
         config = Config(openai_base_url="http://llm", openai_review_model="review")
+
+        def fits_input(self, _model: str, text: str, tokens: int) -> bool:
+            """Token counterなしのbyte換算で判定する。"""
+            return len(text.encode("utf-8")) <= self.config.input_bytes(tokens)
 
         def structured(self, **values: object) -> StructuredResult[ReviewResponse]:
             """3,000 bytesを超す入力だけprovider上限超過として拒否する。"""

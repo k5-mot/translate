@@ -232,13 +232,13 @@ class SavedLLMCalls:
                         reviewed["items"] = selected_ids["items"]
                         reviewed["minItems"] = reviewed["maxItems"] = len(ids)
             # 本文・用語・参考文の前に、送信する契約とnative Schemaの枠を確保する。
-            overhead = len(f"{system}\n\n{contract}".encode()) + 512
-            if config.llm_structured_output_mode == "json_schema":
-                overhead += len(
-                    json.dumps(
-                        schema, ensure_ascii=False, separators=(",", ":")
-                    ).encode("utf-8")
-                )
+            schema_text = (
+                json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+                if config.llm_structured_output_mode == "json_schema"
+                else ""
+            )
+            overhead = len(f"{system}\n\n{contract}{schema_text}".encode()) + 512
+            model = config.openai_review_model or ""
             budget = config.input_bytes(input_tokens) - overhead
             selected = self.glossary.select(query, max(0, budget // 3))
             references = []
@@ -256,7 +256,8 @@ class SavedLLMCalls:
                     {**llm_payload, "glossary": selected, "references": references},
                     ensure_ascii=False,
                 )
-                if len(user.encode("utf-8")) <= budget:
+                prompt = f"{system}\n\n{contract}{user}{schema_text}"
+                if client.fits_input(model, prompt, input_tokens):
                     break
                 if references:
                     references.pop()
@@ -288,7 +289,7 @@ class SavedLLMCalls:
 
             result = client.structured(
                 task="REVIEW",
-                model=config.openai_review_model or "",
+                model=model,
                 response_type=response_type,
                 system=system,
                 user=user,
