@@ -23,6 +23,7 @@ from translate.adapters.llm import LLMError
 from translate.models.artifacts import (
     ArtifactFile,
     LLMCallArtifact,
+    LLMTaskDiagnostics,
     LLMTaskName,
     ProcessingError,
     ReviewRecord,
@@ -415,6 +416,44 @@ def load_reusable_llm_response[ResponseT: BaseModel](
         return artifact, load_model(response_path, response_type)
     except ArtifactError:
         return None
+
+
+def previous_llm_attempts(directory: Path) -> int:
+    """Resume前の累計試行数を、読める場合だけ引き継ぐ。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        int: 保存済みの試行回数。記録がない、または壊れている場合は0。
+    """
+
+    path = directory / "call.json"
+    if not path.is_file():
+        return 0
+    try:
+        return load_model(path, LLMCallArtifact).attempts
+    except ArtifactError:
+        return 0
+
+
+def write_task_diagnostics(
+    path: Path, task: LLMTaskName, diagnostics: list[str]
+) -> None:
+    """LLM Taskの適用外項目を診断JSONへ保存する。
+
+    Args:
+        path (Path): 診断を書き込むJSON FileのPath。
+        task (LLMTaskName): 診断を記録するTask名。
+        diagnostics (list[str]): 検証中に追記した診断Message列。
+    """
+
+    write_model(
+        path,
+        LLMTaskDiagnostics(
+            task=task, diagnostics=diagnostics, updated_at=datetime.now(UTC)
+        ),
+    )
 
 
 def describe_artifact(processing_directory: Path, path: Path) -> ArtifactFile:

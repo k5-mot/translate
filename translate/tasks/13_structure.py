@@ -5,7 +5,6 @@ import math
 import re
 import shutil
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 from PIL import Image
@@ -17,11 +16,12 @@ from translate.adapters.artifact_store import (
     complete_llm_call,
     fail_llm_call,
     llm_call_id,
-    load_model,
     load_reusable_llm_response,
     mark_split_llm_call,
+    previous_llm_attempts,
     sha256_file,
     write_model,
+    write_task_diagnostics,
 )
 from translate.adapters.llm import (
     LLMClient,
@@ -32,7 +32,7 @@ from translate.adapters.llm import (
 )
 from translate.adapters.pdf import render_page
 from translate.common.config import Config
-from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
+from translate.models.artifacts import LLMCallIndex
 from translate.models.document import (
     AlertKind,
     Block,
@@ -135,7 +135,7 @@ class StructureTask:
             )
         diagnostics_path = processing_directory / "task-structure.json"
         diagnostics: list[str] = []
-        _write_diagnostics(diagnostics_path, diagnostics)
+        write_task_diagnostics(diagnostics_path, "STRUCTURE", diagnostics)
         updated = document.model_copy(deep=True)
         baseline_levels = {
             block.id: block.level
@@ -189,7 +189,7 @@ class StructureTask:
                 write_model(
                     self.task_directory / "pages" / f"page-{page.number:04d}.json", page
                 )
-            _write_diagnostics(diagnostics_path, diagnostics)
+            write_task_diagnostics(diagnostics_path, "STRUCTURE", diagnostics)
             write_model(
                 self.task_directory / "call-index.json",
                 LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
@@ -319,7 +319,7 @@ class StructureTask:
             task="STRUCTURE",
             fingerprint=fingerprint,
             target_ids=target_ids,
-            previous_attempts=_previous_attempts(call_directory),
+            previous_attempts=previous_llm_attempts(call_directory),
         )
         try:
             result = client.structured(
@@ -834,40 +834,3 @@ def _schema(maximum_items: int) -> dict[str, object]:
     schema["properties"]["patches"]["maxItems"] = maximum_items
     schema["required"] = ["patches"]
     return schema
-
-
-def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。
-
-    Args:
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
-    """
-
-    path = directory / "call.json"
-    if not path.is_file():
-        return 0
-    try:
-        return load_model(path, LLMCallArtifact).attempts
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """STRUCTUREの適用外項目を処理ディレクトリ直下へ保存する。
-
-    Args:
-        path (Path): STRUCTURE診断を書き込むJSON FileのPath。
-        diagnostics (list[str]): 検証中に追記する診断Message列。
-    """
-
-    write_model(
-        path,
-        LLMTaskDiagnostics(
-            task="STRUCTURE",
-            diagnostics=diagnostics,
-            updated_at=datetime.now(UTC),
-        ),
-    )

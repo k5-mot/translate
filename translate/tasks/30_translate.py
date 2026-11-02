@@ -2,7 +2,6 @@
 
 import json
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +16,9 @@ from translate.adapters.artifact_store import (
     load_model,
     load_reusable_llm_response,
     mark_split_llm_call,
+    previous_llm_attempts,
     write_model,
+    write_task_diagnostics,
 )
 from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.glossary import Glossary
@@ -30,7 +31,7 @@ from translate.adapters.llm import (
 )
 from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config
-from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
+from translate.models.artifacts import LLMCallArtifact, LLMCallIndex
 from translate.models.document import Document, TextSpan
 
 TranslationContext = dict[str, tuple[str, str]]
@@ -107,7 +108,7 @@ class TranslationTask:
         self.task_directory.mkdir(parents=True, exist_ok=True)
         diagnostics_path = processing_directory / "task-translate.json"
         diagnostics: list[str] = []
-        _write_diagnostics(diagnostics_path, diagnostics)
+        write_task_diagnostics(diagnostics_path, "TRANSLATE", diagnostics)
         updated = document.model_copy(deep=True)
         client = LLMClient(self.config)
         client.deadline = time.monotonic() + self.config.llm_task_deadline_seconds
@@ -157,7 +158,7 @@ class TranslationTask:
                         diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
                         continue
                     span.translated = item.text
-            _write_diagnostics(diagnostics_path, diagnostics)
+            write_task_diagnostics(diagnostics_path, "TRANSLATE", diagnostics)
             write_model(
                 self.task_directory / "call-index.json",
                 LLMCallIndex(
@@ -229,7 +230,7 @@ class TranslationTask:
             source, maximum_bytes=max(0, payload_budget // 3)
         )
         rag = self._rag_context(source)
-        previous = _previous_attempts(call_directory)
+        previous = previous_llm_attempts(call_directory)
         artifact = begin_llm_call(
             call_directory,
             call_id=call_id,
@@ -601,40 +602,3 @@ def _translation_item(
         item["previous_source"] = previous[0]
         item["previous_translation"] = previous[1]
     return item
-
-
-def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。
-
-    Args:
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
-    """
-
-    path = directory / "call.json"
-    if not path.is_file():
-        return 0
-    try:
-        return load_model(path, LLMCallArtifact).attempts
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """TRANSLATEの適用外項目を処理ディレクトリ直下へ保存する。
-
-    Args:
-        path (Path): TRANSLATE診断を書き込むJSON FileのPath。
-        diagnostics (list[str]): 検証中に追記する診断Message列。
-    """
-
-    write_model(
-        path,
-        LLMTaskDiagnostics(
-            task="TRANSLATE",
-            diagnostics=diagnostics,
-            updated_at=datetime.now(UTC),
-        ),
-    )

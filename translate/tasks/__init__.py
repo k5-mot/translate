@@ -13,14 +13,14 @@ from translate.adapters.artifact_store import (
     complete_llm_call,
     fail_llm_call,
     llm_call_id,
-    load_model,
     load_reusable_llm_response,
+    previous_llm_attempts,
 )
 from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.glossary import Glossary
 from translate.adapters.llm import LLMClient, LLMInputExceededError
 from translate.adapters.qdrant import QdrantStore
-from translate.models.artifacts import LLMCallArtifact, LLMTaskName
+from translate.models.artifacts import LLMTaskName
 
 
 class SavedLLMCalls:
@@ -101,11 +101,7 @@ class SavedLLMCalls:
         if cached is not None:
             validate(cached[1])
             return call_id, cached[1]
-        previous = (
-            load_model(call_dir / "call.json", LLMCallArtifact).attempts
-            if (call_dir / "call.json").is_file()
-            else 0
-        )
+        previous = previous_llm_attempts(call_dir)
         artifact = begin_llm_call(
             call_dir,
             call_id=call_id,
