@@ -44,7 +44,7 @@ def resolve_processing_id(processing_id: str | None, resume_id: str | None) -> s
         resume_id (str | None): Resume対象として指定された処理ID。
 
     Returns:
-        str: UI指定ID、Resume IDまたは新規UUIDv7を一意に決定する。
+        str: UUIDv7形式の処理ID。
 
     Raises:
         InputError: `processing ID and resume ID cannot be used together`、`processing ID

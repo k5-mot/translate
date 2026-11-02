@@ -83,7 +83,7 @@ class ReviewTask:
             span_owners: Span IDと所有TextUnit IDの対応。単一要素の対象は入力から補う。
 
         Returns:
-            ReviewResult: ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。
+            ReviewResult: 全Targetの指摘、修正候補および確認済みID。
 
         Raises:
             ValueError: `review model is required`と判定した場合。

@@ -27,7 +27,7 @@ def unpack(
         processing_directory (Path): 対象処理の成果物Directory。
 
     Returns:
-        UnpackManifest: 全entryの安全性確認後にJSONとassetをpart別namespaceへ展開する。
+        UnpackManifest: JSONとassetの公開先を記録したManifest。
 
     Raises:
         ValueError: `Docling result must contain exactly one JSON file`、`Docling JSON must
@@ -134,7 +134,7 @@ def _extract_assets(
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        list[Path]: artifacts配下のfileだけを検査済み相対pathへ展開する。
+        list[Path]: 展開したAsset FileのPath列。
     """
 
     results: list[Path] = []

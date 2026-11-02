@@ -25,7 +25,7 @@ def _validate_aware(value: datetime) -> datetime:
         value (datetime): Timezone情報を検証する日時。
 
     Returns:
-        datetime: Upgradeの永続化日時をtimezone-aware値に限定する。
+        datetime: timezone情報を持つ入力値。
 
     Raises:
         ValueError: `datetime must be timezone-aware`と判定した場合。

@@ -22,7 +22,7 @@ def _chunks(
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        list[list[ReviewTarget]]: ReviewTargetを件数と保守的UTF-8 byte上限内へchunk化する。
+        list[list[ReviewTarget]]: 順序を保ったReviewTarget Chunk列。
     """
 
     result: list[list[ReviewTarget]] = []
@@ -50,7 +50,7 @@ def _split_large_target(target: ReviewTarget, maximum_bytes: int) -> list[Review
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        list[ReviewTarget]: 長大な比較対象を原文断片と翻訳Span群へ欠落なく分ける。
+        list[ReviewTarget]: 上限内へ収めた部分Target列。収まる場合は入力だけの列。
 
     Raises:
         ValueError: `f'single ReviewTarget exceeds review input limit: {target.id}'`と判定した場合。
@@ -108,7 +108,7 @@ def _source_prefix(target: ReviewTarget, source: str, maximum_bytes: int) -> str
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        str: ReviewTargetへ収まる最長の原文prefixを文・改行の境界で返す。
+        str: 上限内に収まる原文の先頭部分。一文も入らない場合は空文字列。
     """
 
     end = 0
@@ -129,7 +129,7 @@ def _split_spans(target: ReviewTarget, maximum_bytes: int) -> list[list[TextSpan
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        list[list[TextSpan]]: 修正単位のSpanを壊さず、REVIEW payloadのbyte上限へ分ける。
+        list[list[TextSpan]]: 上限内へ分けたSpan列の一覧。
 
     Raises:
         ValueError: `f'single ReviewTarget span exceeds review input limit:
@@ -174,7 +174,7 @@ def _target_bytes(targets: list[ReviewTarget]) -> int:
         targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
 
     Returns:
-        int: REVIEW promptへ渡す対象の保守的byte数を返す。
+        int: Target Payloadの推定byte数。
     """
 
     value = [_target_payload(target) for target in targets]
@@ -188,7 +188,7 @@ def _target_payload(target: ReviewTarget) -> dict[str, object]:
         target (ReviewTarget): LLM Payloadへ変換するReview対象。
 
     Returns:
-        dict[str, object]: 重複本文と書式情報を除き、REVIEWに必要な対象情報だけを返す。
+        dict[str, object]: ID、原文、対象IDおよびSpan本文の辞書。
     """
 
     return {
@@ -206,7 +206,7 @@ def _retry_groups(targets: list[ReviewTarget]) -> tuple[list[ReviewTarget], ...]
         targets (list[ReviewTarget]): CHECKまたはREVIEW対象一覧。
 
     Returns:
-        tuple[list[ReviewTarget], ...]: 上限超過したCallを、単一の事前分割済み対象も含めて縮小する。
+        tuple[list[ReviewTarget], ...]: 分割した子Call用のTarget列。これ以上分割できなければ空。
     """
 
     if len(targets) >= 2:

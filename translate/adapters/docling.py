@@ -165,7 +165,7 @@ class DoclingClient:
             **kwargs (Any): HTTP Clientへ渡す追加Request引数。
 
         Returns:
-            httpx.Response: streamを巻き戻し、仕様で再試行可能なHTTP失敗だけを再送する。
+            httpx.Response: 成功したHTTP応答。
 
         Raises:
             httpx.HTTPError: HTTP Retryを使い切り、最後の通信Errorを再送出する場合。
@@ -223,7 +223,7 @@ class DoclingClient:
         """Docling変換品質を固定するmultipart fieldを返す。
 
         Returns:
-            dict[str, str | list[str]]: Docling変換品質を固定するmultipart fieldを返す。
+            dict[str, str | list[str]]: `/v1/convert/file/async`へ送るForm Field。
         """
 
         return {

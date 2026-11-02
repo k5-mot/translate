@@ -75,7 +75,7 @@ class StructurePatch(StructureModel):
             value (object): STRUCTURE応答が返したBlock種別候補。
 
         Returns:
-            object: captionをBlock種別と誤認した応答だけを未指定として扱う。
+            object: `caption`ならNone。それ以外は入力値。
         """
 
         if isinstance(value, str) and value.strip().casefold() == "caption":
@@ -119,7 +119,7 @@ class StructureTask:
             processing_directory (Path): 対象処理の成果物Directory。
 
         Returns:
-            Document: page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+            Document: 整合するpatchを適用した複製Document。
 
         Raises:
             ValueError: `structure model is required`と判定した場合。
@@ -262,7 +262,7 @@ class StructureTask:
             depth (int): 分割LLM Callの現在の深さ。
 
         Returns:
-            list[tuple[str, StructureResponse]]: 一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+            list[tuple[str, StructureResponse]]: Call IDと応答の組。分割時は子Callの全結果。
         """
 
         target_ids = [block.id for block in blocks]
@@ -411,7 +411,7 @@ def _chunks(
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        list[list[Block]]: 連続Blockを件数と保守的UTF-8 byte上限内へ分割する。
+        list[list[Block]]: 順序を保ったBlock Chunk列。
 
     Raises:
         ValueError: `f'single Block exceeds structure input limit: {block.id}'`と判定した場合。
@@ -542,7 +542,7 @@ def _block_bytes(blocks: list[Block]) -> int:
         blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
 
     Returns:
-        int: STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。
+        int: Payloadの推定byte数。固定余裕1,024 byteを含む。
     """
 
     value = [_block_payload(block) for block in blocks]
@@ -556,7 +556,7 @@ def _block_payload(block: Block) -> dict[str, object]:
         block (Block): 変換または検証対象のDocument Block。
 
     Returns:
-        dict[str, object]: 分類対象の本文を省略せずSTRUCTURE入力へ含める。
+        dict[str, object]: Block ID、種別、本文、Level、bboxおよびCell数。
     """
 
     text = block.content.text("source") if block.content is not None else ""

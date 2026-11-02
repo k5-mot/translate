@@ -147,7 +147,7 @@ class LLMClient:
             validate: 対象IDなどの応答契約を検証する関数。ValueErrorはSchema不正と同じ再試行枠を使う。
 
         Returns:
-            StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
+            StructuredResult[ResponseT]: 検証済み応答、試行回数および報告Token数。
 
         Raises:
             LLMInputExceededError: 入力予算またはproviderのcontext上限を超えた場合。
@@ -469,7 +469,7 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         error (APIStatusError): 記録または分類する例外。
 
     Returns:
-        bool: OpenAI互換endpointの入力・context超過応答を識別する。
+        bool: 入力・context超過と判定した場合はTrue。
     """
 
     if error.status_code == 413:
@@ -620,7 +620,7 @@ def _token_count(value: object) -> int | None:
         value (object): Provider応答から取得したToken数候補。
 
     Returns:
-        int | None: provider値から非負の整数だけをtoken数として採用する。
+        int | None: 非負の整数ならその値、それ以外はNone。
     """
 
     return (
@@ -639,7 +639,7 @@ def _parse_content(content: str, mode: str, maximum_bytes: int) -> object:
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        object: 応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。
+        object: JSON解析後の値。
 
     Raises:
         LLMResponseTooLargeError: 応答本文がbyte数の安全上限を超えた場合。

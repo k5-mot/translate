@@ -47,7 +47,7 @@ def _task_progress(
         record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
 
     Returns:
-        tuple[int, int, str]: 固定Task列の完了数、総数、実行中表示名を返す。
+        tuple[int, int, str]: 完了数、総数および実行中の表示名。
     """
 
     stages = _task_stages(record)
@@ -226,7 +226,7 @@ def _valid_artifact(root: Path, artifact: ArtifactFile) -> Path | None:
         artifact (ArtifactFile): Path、SizeおよびHashを検証する成果物情報。
 
     Returns:
-        Path | None: Artifactが処理directory内でsizeとhashに一致する場合だけpathを返す。
+        Path | None: 検証済みのPath。一致しなければNone。
     """
 
     resolved_root = root.resolve()
@@ -280,7 +280,7 @@ def _preview_image_path(markdown: Path, target: str) -> Path | None:
         target (str): Markdown画像Linkから取得した相対Path。
 
     Returns:
-        Path | None: Markdown基準の相対画像をpreview directory内の実fileへ限定する。
+        Path | None: 画像のPath。範囲外または欠落ならNone。
     """
 
     parsed = urlsplit(target)

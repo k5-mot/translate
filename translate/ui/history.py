@@ -94,7 +94,7 @@ class HistoryEntry(BaseModel):
         """有効な最上位記録から処理IDを返す。
 
         Returns:
-            str | None: 有効な最上位記録から処理IDを返す。
+            str | None: 記録の処理ID。記録が読めなければNone。
         """
 
         if isinstance(self.record, TranslationRecord):
@@ -130,7 +130,7 @@ def _selected_processing_id() -> str | None:
     """URL query parameterから選択中の処理IDを取得する。
 
     Returns:
-        str | None: URL query parameterから選択中の処理IDを取得する。
+        str | None: 選択中の処理ID。未選択ならNone。
     """
 
     value = st.query_params.get("processing")
@@ -149,7 +149,7 @@ def _task_stages(
         record (TranslationRecord | ReviewRecord | UpgradeRecord): 状態またはTask情報を更新する処理Record。
 
     Returns:
-        tuple[TaskStage, ...]: 処理種類に対応する表示stage列を返す。
+        tuple[TaskStage, ...]: 表示名、Task名および補足の組の列。
     """
 
     common: tuple[TaskStage, ...] = (
@@ -186,7 +186,7 @@ def _entry_by_id(processing_id: str) -> HistoryEntry | None:
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        HistoryEntry | None: 最新の履歴列挙から指定処理IDを探す。
+        HistoryEntry | None: 該当する履歴。なければNone。
     """
 
     return next(
@@ -202,7 +202,7 @@ def _history_entries(outputs: Path | None = None) -> list[HistoryEntry]:
         outputs (Path | None): 成果物Root Directory。
 
     Returns:
-        list[HistoryEntry]: outputs直下の新Schema処理記録を新しい順に100件返す。
+        list[HistoryEntry]: 更新日時の新しい順で最大100件の履歴。
     """
 
     root = (outputs or Path.cwd() / "outputs").resolve()
@@ -248,7 +248,7 @@ def _render_history_sidebar(entries: list[HistoryEntry]) -> str | None:
         entries (list[HistoryEntry]): 表示対象の処理履歴一覧。
 
     Returns:
-        str | None: 左sidebarの縦並び一覧から処理を選択し、選択IDを返す。
+        str | None: 選択中の処理ID。未選択ならNone。
     """
 
     valid_entries = [entry for entry in entries if entry.processing_id is not None]

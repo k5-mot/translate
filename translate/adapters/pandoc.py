@@ -35,7 +35,7 @@ class Pandoc:
         """必要なoptionとDOCX extensionを確認し、実行file pathを返す。
 
         Returns:
-            str: 必要なoptionとDOCX extensionを確認し、実行file pathを返す。
+            str: 確認済みのPandoc実行File Path。
 
         Raises:
             PandocError: `pandoc is required`、`pandoc feature check failed`、`f"pandoc lacks
@@ -90,7 +90,7 @@ class Pandoc:
             template (Path): DOCX Style用のReference DOCX Path。
 
         Returns:
-            Path: 固定optionでMarkdownを中間DOCXへ変換する。
+            Path: 書き込んだ中間DOCXのPath。
 
         Raises:
             PandocError: `markdown and reference DOCX must exist`、`pandoc DOCX publication
@@ -158,7 +158,7 @@ class Pandoc:
             table (dict[str, object]): Pandoc Markdownへ変換するTable Data。
 
         Returns:
-            str: Pandocの構文木を介して結合セル対応grid tableへ変換する。
+            str: 結合セルを扱えるgrid table形式のMarkdown。
 
         Raises:
             PandocError: `pandoc table conversion failed`と判定した場合。

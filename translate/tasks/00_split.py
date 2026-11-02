@@ -27,7 +27,7 @@ def split(
         pages_per_part (int): 一つの分割PDFへ含めるPage数。
 
     Returns:
-        SplitManifest: PDFを固定page数で分割し、原子的にManifestとpartを公開する。
+        SplitManifest: Part一覧と総Page数を持つManifest。
     """
 
     total_pages = page_count(source)

@@ -235,7 +235,7 @@ def _cell_shape(
         column (int): Table Cellの開始Column。
 
     Returns:
-        tuple[int, int, int, int]: 半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。
+        tuple[int, int, int, int]: 開始行、開始列、行span、列spanの組。
 
     Raises:
         ValueError: `invalid table cell position`、`invalid table cell span`、`conflicting
@@ -318,7 +318,7 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
         ref (str): Docling要素を指すJSON参照。
 
     Returns:
-        list[_CellSource]: 同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。
+        list[_CellSource]: 開始位置順の論理Cell一覧。空セルで表全体を埋める。
 
     Raises:
         ValueError: `unsupported Docling table`、`table cell exceeds table
@@ -414,7 +414,7 @@ def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
         ref (str): Docling要素を指すJSON参照。
 
     Returns:
-        list[TableCell]: 別表現の重複を除いた論理セルを内部文書へ渡す。
+        list[TableCell]: 開始位置順のTableCell列。
     """
 
     with _ownership_context(_page_number(item), ref):
@@ -429,7 +429,7 @@ def _top_left_box(raw: Any, page: Page) -> tuple[float, float, float, float] | N
         page (Page): 処理対象のPageまたはPage番号。
 
     Returns:
-        tuple[float, float, float, float] | None: 存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。
+        tuple[float, float, float, float] | None: 左上原点の左、上、右、下。bboxがない場合はNone。
 
     Raises:
         ValueError: `invalid image ownership geometry`、`missing page height for image
@@ -469,7 +469,7 @@ def _item_box(
         page (Page): 処理対象のPageまたはPage番号。
 
     Returns:
-        tuple[float, float, float, float] | None: 所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。
+        tuple[float, float, float, float] | None: 左上原点の座標。同Pageのbboxがない場合はNone。
 
     Raises:
         ValueError: `conflicting image ownership provenance`と判定した場合。
@@ -497,7 +497,7 @@ def _contains(
         inner (tuple[float, float, float, float]): 内側に含まれるか判定する座標矩形。
 
     Returns:
-        bool: 距離閾値を使わず矩形全体の包含を判定する。
+        bool: outerがinnerを完全に含む場合はTrue。
     """
 
     return (
@@ -518,7 +518,7 @@ def _cell_box(
         page (Page): 処理対象のPageまたはPage番号。
 
     Returns:
-        tuple[float, float, float, float] | None: セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。
+        tuple[float, float, float, float] | None: Cellの座標。情報がない場合はNone。
 
     Raises:
         ValueError: `cell ownership references another page`、`conflicting cell ownership
@@ -602,7 +602,7 @@ def _explicit_image_owners(
         pictures (dict[str, dict[str, Any]]): 参照別の画像Metadata。
 
     Returns:
-        dict[str, set[tuple[str, int]]]: セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。
+        dict[str, set[tuple[str, int]]]: Picture参照から所有元のTable参照とCell Indexの集合への辞書。
 
     Raises:
         TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
@@ -1113,7 +1113,7 @@ class DocumentLoader:
         """Docling page mapを検証して内部Page mapへ変換する。
 
         Returns:
-            ページ番号をkeyとする内部Page map。
+            Page番号をkeyとする内部Page map。
 
         Raises:
             ValueError: Docling page mapを検証して内部Page mapへ変換する処理を完了できない場合。
@@ -1147,7 +1147,7 @@ def load(source: Path, output_dir: Path) -> Document:
         output_dir (Path): Task成果物の出力Directory。
 
     Returns:
-        Document: Docling JSONを共通Documentへ変換して原子的に保存する。
+        Document: 保存したDocument。
     """
 
     document = DocumentLoader(json.loads(source.read_text(encoding="utf-8"))).load()

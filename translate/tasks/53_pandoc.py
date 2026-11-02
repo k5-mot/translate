@@ -15,7 +15,7 @@ def publish(markdown: Path, output: Path, template: Path, timeout: float) -> Pat
         timeout (float): 外部処理のTimeout秒数。
 
     Returns:
-        Path: Pandoc Adapterへ中間DOCXの生成を委譲する。
+        Path: 書き込んだ中間DOCXのPath。
     """
 
     return Pandoc(timeout).publish(markdown, output, template)

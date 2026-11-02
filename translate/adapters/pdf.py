@@ -20,7 +20,7 @@ def page_count(source: Path) -> int:
         source (Path): 変換または検証対象の入力Source。
 
     Returns:
-        int: 有効なPDFのpage数を返し、空文書を拒否する。
+        int: 1以上のPage数。
 
     Raises:
         ValueError: `PDF has no pages`と判定した場合。
@@ -43,7 +43,7 @@ def split_pdf(source: Path, output_directory: Path, pages_per_part: int) -> list
         pages_per_part (int): 一つの分割PDFへ含めるPage数。
 
     Returns:
-        list[Path]: PDFを指定page数ずつ分割して順序付きpathを返す。
+        list[Path]: Part番号順の分割PDF Path。
 
     Raises:
         ValueError: `pages_per_part must be positive`、`PDF has no pages`のいずれかと判定した場合。
@@ -140,7 +140,7 @@ def extract_pages_text(path: Path) -> list[str]:
         path (Path): Text Layerを抽出するPDF FileのPath。
 
     Returns:
-        list[str]: PDFの各pageから埋込みtext layerを抽出する。
+        list[str]: Page順のText。Text Layerがない場合は空文字列の要素。
     """
 
     values: list[str] = []

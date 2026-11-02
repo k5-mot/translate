@@ -94,7 +94,7 @@ class TranslatePipeline:
             resume_id (str | None): Resume対象として指定された処理ID。
 
         Returns:
-            TranslationOutcome: 仕様順にTaskを実行し、有効なTaskとLLM Callだけを再利用する。
+            TranslationOutcome: 処理IDとDOCXなどの成果物Path。
 
         Raises:
             InputError: 入力PDFまたは処理IDが不正な場合。
@@ -439,7 +439,7 @@ def _translation_record(
         resuming (bool): 既存処理をResumeしているかどうか。
 
     Returns:
-        TranslationRecord: 新規記録を作るか、入力一致を確認して保存済み記録を返す。
+        TranslationRecord: 新規作成または照合済みの処理記録。
 
     Raises:
         InputError: Resume対象がない、または入力が一致しない場合。
@@ -485,7 +485,7 @@ def _tree_hash(directory: Path) -> str:
         directory (Path): LLM Call Artifactの保存Directory。
 
     Returns:
-        str: directory配下fileの相対pathとhashから決定的なfingerprintを作る。
+        str: 相対PathとHashから計算した決定的なHash。
     """
 
     if not directory.exists():

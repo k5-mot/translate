@@ -60,7 +60,7 @@ def _csv_row(row: tuple[str, ...]) -> str:
         row (tuple[str, ...]): CSV形式へ直列化する一行分のField列。
 
     Returns:
-        str: 一つのCSV行を標準csv規則で直列化する。
+        str: 行末LFを含むCSV文字列。
     """
 
     output = io.StringIO(newline="")
@@ -76,7 +76,7 @@ def _rows(glossary: str) -> tuple[tuple[str, ...], ...]:
         glossary (str): 対象文書へ適用するCSV形式の用語集。
 
     Returns:
-        tuple[tuple[str, ...], ...]: 同じ用語集をCallごとに再parseせず、変更時だけ読直す。
+        tuple[tuple[str, ...], ...]: Headerを含む全行のTuple。
     """
 
     return tuple(

@@ -39,7 +39,7 @@ class EmbeddingClient:
             values (list[str]): 一括処理する入力Text列。
 
         Returns:
-            list[list[float]]: 最大16件ずつEmbeddingし、件数、次元および有限値を検証する。
+            list[list[float]]: 入力順のVector列。
 
         Raises:
             ValueError: endpointまたはmodelの設定がない場合。

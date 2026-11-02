@@ -51,7 +51,7 @@ class WorkerRegistry:
             operation (Callable[[], object]): 子processで実行する処理。
 
         Returns:
-            bool: 同じ処理IDが未完了でない場合だけworkerへ登録する。
+            bool: 登録した場合はTrue。同じ処理が未完了ならFalse。
         """
 
         with self._lock:
@@ -137,7 +137,7 @@ class WorkerRegistry:
             processing_id (str): 新規処理またはResume対象の処理ID。
 
         Returns:
-            Future[object] | None: 処理IDに対応するFutureをthread-safeに取得する。
+            Future[object] | None: 対応するFuture。未登録ならNone。
         """
 
         with self._lock:
@@ -150,7 +150,7 @@ class WorkerRegistry:
             processing_id (str): 新規処理またはResume対象の処理ID。
 
         Returns:
-            bool: 処理IDのFutureが待機中または実行中かを返す。
+            bool: 待機中または実行中ならTrue。
         """
 
         future = self.future(processing_id)
@@ -166,7 +166,7 @@ def worker_registry() -> WorkerRegistry:
     """Streamlitの再読込み間で共有するworker登録表を返す。
 
     Returns:
-        WorkerRegistry: Streamlitの再読込み間で共有するworker登録表を返す。
+        WorkerRegistry: 共有するWorkerRegistry。
     """
 
     return WorkerRegistry()

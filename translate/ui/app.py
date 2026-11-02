@@ -83,7 +83,7 @@ class TranslationApp:
             upload (UploadedFile): 保存または照合するUpload File。
 
         Returns:
-            str: Translate入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -104,7 +104,7 @@ class TranslationApp:
             translation_upload (UploadedFile): Review訳文のUpload File。
 
         Returns:
-            str: Review二入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -124,7 +124,7 @@ class TranslationApp:
             uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
 
         Returns:
-            str: Register入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
 
         Raises:
             InputError: `at least one registration file is required`と判定した場合。
@@ -154,7 +154,7 @@ class TranslationApp:
             translation_v1 (UploadedFile): 比較基準にする日本語v1。
 
         Returns:
-            str: Upgrade三入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -329,7 +329,7 @@ class TranslationApp:
             paths (list[Path]): 列挙された入力Path。
 
         Returns:
-            bool: 検証済み入力を使って処理種類別のResumeを登録する。
+            bool: Resumeを登録できた場合はTrue。
         """
 
         processing_id = entry.processing_id

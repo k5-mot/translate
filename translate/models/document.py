@@ -55,7 +55,7 @@ class TextSpan(DocumentModel):
             layer (TextLayer): 取得するTextの優先Layer。
 
         Returns:
-            str: 指定層までの値をrevised、translated、sourceの順で選ぶ。
+            str: 最も後の層に値があるText。
         """
 
         if layer == "revised" and self.revised is not None:
@@ -78,7 +78,7 @@ class TextUnit(DocumentModel):
             layer (TextLayer): 取得するTextの優先Layer。
 
         Returns:
-            str: Spanの改行種別を保ちながら指定層のplain textを返す。
+            str: Span順に連結したText。line_breakは改行になる。
         """
 
         return "".join(
@@ -172,7 +172,7 @@ class Document(DocumentModel):
         """FIXと検証で使用するTextUnit IDの索引を作る。
 
         Returns:
-            dict[str, TextUnit]: FIXと検証で使用するTextUnit IDの索引を作る。
+            dict[str, TextUnit]: TextUnit IDからTextUnitへの索引。
         """
 
         return {unit.id: unit for _, unit in self.text_units()}

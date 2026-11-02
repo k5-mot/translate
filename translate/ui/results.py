@@ -61,7 +61,7 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
             index (int): 対象要素の読み順Index。
 
         Returns:
-            str: 対象ID群の本文を連結する。
+            str: 改行で連結した本文。
         """
 
         return " / ".join(
@@ -321,7 +321,7 @@ def _render_resume_uploads(entry: HistoryEntry) -> list[Path] | None:
         entry (HistoryEntry): 表示または操作対象の処理履歴。
 
     Returns:
-        list[Path] | None: 保存済み入力がない処理に種類別の再upload formを表示する。
+        list[Path] | None: Uploadされた入力の保存Path。未入力ならNone。
     """
 
     record = entry.record
