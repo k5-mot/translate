@@ -815,3 +815,36 @@ def test_native_schema_budget_includes_operation_contract(
         create.assert_not_called()
     finally:
         client.client.close()
+
+
+def test_llm_retries_non_json_success_as_invalid_response() -> None:
+    """HTTP 200の非JSON応答をAttributeErrorにせず応答不正として扱う。"""
+    client = LLMClient(
+        Config(_env_file=None, openai_base_url="http://llm/v1", llm_retry_attempts=1)
+    )
+    client.client = OpenAI(
+        api_key="test",
+        base_url="http://llm/v1",
+        max_retries=0,
+        http_client=httpx2.Client(
+            transport=httpx2.MockTransport(
+                lambda request: httpx2.Response(
+                    200,
+                    text="<html>proxy</html>",
+                    headers={"content-type": "text/html"},
+                    request=request,
+                )
+            )
+        ),
+    )
+    with pytest.raises(LLMInvalidResponseError):
+        client.structured(
+            task="REVIEW",
+            model="test",
+            response_type=LLMTaskDiagnostics,
+            system="system",
+            user="user",
+            contract="contract",
+            native_schema={"type": "object"},
+            output_tokens=10,
+        )

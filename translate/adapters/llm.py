@@ -628,9 +628,11 @@ def _response(
             response content must be text`のいずれかと判定した場合。
     """
 
-    if not response.choices:
+    # SDKは非JSONの200応答を例外にせず文字列で返すため、属性の有無から検査する。
+    choices = getattr(response, "choices", None)
+    if not choices:
         raise ValueError("LLM response has no choice")
-    choice = response.choices[0]
+    choice = choices[0]
     content = choice.message.content
     if not isinstance(content, str) and choice.finish_reason != "length":
         raise ValueError("LLM response content must be text")
