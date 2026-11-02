@@ -338,27 +338,10 @@ class ReviewAgent:
                         }
                         for role, identifiers in selected_ids.items():
                             for identifier in sorted(identifiers - assigned_ids[role]):
-                                self.group_number += 1
-                                self.result.groups.append(
-                                    AlignmentGroup(
-                                        id=f"alignment-{self.group_number:06d}",
-                                        kind=(
-                                            "source_only"
-                                            if role == "source"
-                                            else "translation_only"
-                                        ),
-                                        source_ids=(
-                                            [identifier] if role == "source" else []
-                                        ),
-                                        translation_ids=(
-                                            [identifier]
-                                            if role == "translation"
-                                            else []
-                                        ),
-                                        reason=(
-                                            "同じ範囲の照合が進まなかったため、対応関係は未確認です。"
-                                        ),
-                                    )
+                                self._add_unverified(
+                                    role,
+                                    identifier,
+                                    "同じ範囲の照合が進まなかったため、対応関係は未確認です。",
                                 )
                         if not any(
                             identifiers - assigned_ids[role]
@@ -366,27 +349,10 @@ class ReviewAgent:
                         ):
                             for role, identifiers in pending.items():
                                 for identifier in identifiers:
-                                    self.group_number += 1
-                                    self.result.groups.append(
-                                        AlignmentGroup(
-                                            id=f"alignment-{self.group_number:06d}",
-                                            kind=(
-                                                "source_only"
-                                                if role == "source"
-                                                else "translation_only"
-                                            ),
-                                            source_ids=(
-                                                [identifier] if role == "source" else []
-                                            ),
-                                            translation_ids=(
-                                                [identifier]
-                                                if role == "translation"
-                                                else []
-                                            ),
-                                            reason=(
-                                                "Agentが同じ照合を繰り返したため、対応関係は未確認です。"
-                                            ),
-                                        )
+                                    self._add_unverified(
+                                        role,
+                                        identifier,
+                                        "Agentが同じ照合を繰り返したため、対応関係は未確認です。",
                                     )
                         target_ids = [
                             target.id
@@ -478,29 +444,10 @@ class ReviewAgent:
                                 self.match_scopes.add(scope)
                                 for role, ids in action.references.items():
                                     for identifier in ids:
-                                        self.group_number += 1
-                                        self.result.groups.append(
-                                            AlignmentGroup(
-                                                id=f"alignment-{self.group_number:06d}",
-                                                kind=(
-                                                    "source_only"
-                                                    if role == "source"
-                                                    else "translation_only"
-                                                ),
-                                                source_ids=(
-                                                    [identifier]
-                                                    if role == "source"
-                                                    else []
-                                                ),
-                                                translation_ids=(
-                                                    [identifier]
-                                                    if role == "translation"
-                                                    else []
-                                                ),
-                                                reason=(
-                                                    "入力上限により照合できず、対応関係は未確認です。"
-                                                ),
-                                            )
+                                        self._add_unverified(
+                                            role,
+                                            identifier,
+                                            "入力上限により照合できず、対応関係は未確認です。",
                                         )
                                 message = (
                                     "Minimum match scope exceeded the budget. "
@@ -548,6 +495,26 @@ class ReviewAgent:
             return self.result
         finally:
             self.client.client.close()
+
+    def _add_unverified(self, role: str, identifier: str, reason: str) -> None:
+        """照合できなかった要素を片側だけの未確認対応として結果へ加える。
+
+        Args:
+            role: `source`または`translation`。
+            identifier: 対象のTextUnit ID。
+            reason: 未確認となった理由。
+        """
+        self.group_number += 1
+        is_source = role == "source"
+        self.result.groups.append(
+            AlignmentGroup(
+                id=f"alignment-{self.group_number:06d}",
+                kind="source_only" if is_source else "translation_only",
+                source_ids=[identifier] if is_source else [],
+                translation_ids=[] if is_source else [identifier],
+                reason=reason,
+            )
+        )
 
     def _execute(
         self, action: AgentAction, round_number: int, *, replay: bool = False
