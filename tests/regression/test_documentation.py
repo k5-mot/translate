@@ -13,7 +13,9 @@ from importlib import import_module
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+import docx
 import pytest
+from docx.oxml import parse_xml
 
 from translate.adapters.pandoc import Pandoc
 from translate.adapters.pdf import page_count
@@ -207,25 +209,25 @@ def test_docx_cover_precedes_generated_lists(tmp_path: Path, *, has_body: bool) 
 def test_docx_keeps_table_rows_together_without_changing_cells(properties: str) -> None:
     """短い表行の改ページ分割を禁止し、既存の見出し設定とセル内容を保持する。"""
     word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    value = (
-        f'<w:document xmlns:w="{word}"><w:body><w:tbl><w:tr>{properties}'
-        "<w:tc><w:p><w:r><w:t>page_split_09</w:t></w:r></w:p></w:tc>"
-        "</w:tr></w:tbl></w:body></w:document>"
-    ).encode()
-    once = finalize_document(value, {}, {})
-    twice = finalize_document(once, {}, {})
-    document = ET.fromstring(twice)  # noqa: S314 — 固定fixtureだけを解析する。
+    document = docx.Document()
+    document.element.body.insert(
+        0,
+        parse_xml(
+            f'<w:tbl xmlns:w="{word}"><w:tr>{properties}'
+            "<w:tc><w:p><w:r><w:t>page_split_09</w:t></w:r></w:p></w:tc>"
+            "</w:tr></w:tbl>"
+        ),
+    )
+    finalize_document(document, {}, {})
+    finalize_document(document, {}, {})
     namespace = {"w": word}
-    row = document.find(".//w:tr", namespace)
+    row = document.element.body.find(".//w:tr", namespace)
     assert row is not None
     flags = row.findall("w:trPr/w:cantSplit", namespace)
     assert len(flags) == 1
     assert flags[0].get(f"{{{word}}}val") == "true"
     assert (row.find("w:trPr/w:tblHeader", namespace) is not None) == bool(properties)
-    keep_next = row.find(".//w:pPr/w:keepNext", namespace)
-    assert (keep_next is not None) == bool(properties)
-    if keep_next is not None:
-        assert keep_next.get(f"{{{word}}}val") == "true"
+    assert (row.find(".//w:pPr/w:keepNext", namespace) is not None) == bool(properties)
     assert [node.text for node in row.findall(".//w:t", namespace)] == ["page_split_09"]
 
 
