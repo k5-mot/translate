@@ -14,34 +14,6 @@ import pypdfium2 as pdfium
 from translate.adapters.artifact_store import temporary_task_directory, write_json
 
 
-def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
-    """先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
-
-    Args:
-        item (dict[str, Any]): 変換または位置計算対象の要素Data。
-        fallback (int): 幾何情報がない場合の読み順。
-
-    Returns:
-        tuple[int, float, float, int]: 先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
-    """
-
-    provenance = item.get("prov")
-    entry = provenance[0] if isinstance(provenance, list) and provenance else None
-    if not isinstance(entry, dict):
-        return 10**9, 0, 0, fallback
-    box = entry.get("bbox")
-    if not isinstance(box, dict):
-        return 10**9, 0, 0, fallback
-    page = int(entry.get("page_no", 10**9))
-    top = float(box.get("t", box.get("top", 0)))
-    bottom = float(box.get("b", box.get("bottom", 0)))
-    left = float(box.get("l", box.get("left", 0)))
-    origin = str(box.get("coord_origin", "BOTTOMLEFT")).upper()
-    # Note 1: Normalize top-left and bottom-left coordinate systems to reading order.
-    vertical = min(top, bottom) if origin == "TOPLEFT" else -max(top, bottom)
-    return page, vertical, left, fallback
-
-
 def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | None:
     """bboxを左、右、上、下が同じ向きの比較値へ正規化する。
 

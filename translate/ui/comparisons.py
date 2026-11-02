@@ -148,23 +148,6 @@ def _render_upgrade_context(root: Path, processing_id: str) -> None:
     _render_diff(values[0], values[2], "英語v1", "英語v2")
 
 
-def _live_call_counts(root: Path, task: TaskName) -> tuple[int, int, int]:
-    """実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
-
-    Args:
-        root (Path): 対象処理の成果物Root Directory。
-        task (TaskName): 状態またはCallを記録するTask名。
-
-    Returns:
-        tuple[int, int, int]: 実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
-    """
-
-    calls = _llm_calls(root, task)
-    completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
-    failed = sum(call.status == "failed" for call in calls)
-    return len(calls), completed, failed
-
-
 def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
     """Review対象をIDで取得する。
 
