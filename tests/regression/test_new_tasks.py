@@ -700,7 +700,10 @@ def test_translation_schema_constrains_ids_without_quality_threshold() -> None:
     schema = translation_schema(2)
     translations = schema["properties"]["translations"]
     assert translations["minItems"] == translations["maxItems"] == 2
-    assert translations["items"]["properties"]["text"] == {"type": "string"}
+    item = schema["$defs"]["TranslationItem"]
+    assert item["properties"]["text"]["type"] == "string"
+    assert "maxLength" not in item["properties"]["text"]
+    assert item["additionalProperties"] is False
 
 
 def test_translation_short_ids_restore_original_spans_and_cache(
@@ -1454,11 +1457,12 @@ def test_structure_native_schema_constrains_enum_values() -> None:
     """native structured outputがPydanticと同じBlock列挙値だけを許可する。"""
 
     schema = _schema(1)
-    patches = schema["properties"]["patches"]  # type: ignore[index]
-    properties = patches["items"]["properties"]  # type: ignore[index]
+    assert schema["properties"]["patches"]["maxItems"] == 1  # type: ignore[index]
+    kind = schema["$defs"]["StructurePatch"]["properties"]["kind"]  # type: ignore[index]
+    values = next(item for item in kind["anyOf"] if "enum" in item)["enum"]
 
-    assert "quote" not in properties["kind"]["enum"]
-    assert "blockquote" in properties["kind"]["enum"]
+    assert "quote" not in values
+    assert "blockquote" in values
 
 
 def test_structure_ignores_caption_returned_as_block_kind() -> None:

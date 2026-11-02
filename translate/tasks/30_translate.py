@@ -39,7 +39,9 @@ TranslationContext = dict[str, tuple[str, str]]
 class TranslationModel(BaseModel):
     """未知fieldを無視するTRANSLATE応答モデルの設定。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
 
 class TranslationItem(TranslationModel):
@@ -520,36 +522,20 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """TRANSLATE専用の浅いnative JSON Schemaを作る。
+    """応答モデルからTRANSLATEのnative JSON Schemaを作り、件数を固定する。
 
     Args:
-        maximum_items (int): Structured Outputへ含める最大要素数。
+        maximum_items (int): Structured Outputへ含める要素数。
 
     Returns:
-        dict[str, object]: TRANSLATE専用の浅いnative JSON Schemaを作る。
+        dict[str, object]: `translations`を必須とし件数を固定したJSON Schema。
     """
 
-    return {
-        "type": "object",
-        "properties": {
-            "translations": {
-                "type": "array",
-                "minItems": maximum_items,
-                "maxItems": maximum_items,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "span_id": {"type": "string"},
-                        "text": {"type": "string"},
-                    },
-                    "required": ["span_id", "text"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["translations"],
-        "additionalProperties": False,
-    }
+    schema = TranslationResponse.model_json_schema()
+    translations = schema["properties"]["translations"]
+    translations["minItems"] = translations["maxItems"] = maximum_items
+    schema["required"] = ["translations"]
+    return schema
 
 
 def _user_payload(

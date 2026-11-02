@@ -7,7 +7,6 @@ import shutil
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import get_args
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -53,7 +52,9 @@ MAX_VISION_PIXELS = 1_000_000
 class StructureModel(BaseModel):
     """未知fieldを無視するSTRUCTURE応答モデルの設定。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
 
 class StructurePatch(StructureModel):
@@ -820,44 +821,19 @@ def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """STRUCTURE専用の浅いnative JSON Schemaを作る。
+    """応答モデルからSTRUCTUREのnative JSON Schemaを作り、件数上限を加える。
 
     Args:
         maximum_items (int): Structured Outputへ含める最大要素数。
 
     Returns:
-        dict[str, object]: STRUCTURE専用の浅いnative JSON Schemaを作る。
+        dict[str, object]: `patches`を必須とし件数を制限したJSON Schema。
     """
 
-    return {
-        "type": "object",
-        "properties": {
-            "patches": {
-                "type": "array",
-                "maxItems": maximum_items,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "block_id": {"type": "string"},
-                        "kind": {
-                            "type": "string",
-                            "enum": list(get_args(BlockKind)),
-                        },
-                        "level": {"type": "integer", "minimum": 1, "maximum": 6},
-                        "alert_kind": {
-                            "type": "string",
-                            "enum": list(get_args(AlertKind)),
-                        },
-                        "caption_source_id": {"type": "string"},
-                    },
-                    "required": ["block_id"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["patches"],
-        "additionalProperties": False,
-    }
+    schema = StructureResponse.model_json_schema()
+    schema["properties"]["patches"]["maxItems"] = maximum_items
+    schema["required"] = ["patches"]
+    return schema
 
 
 def _previous_attempts(directory: Path) -> int:
