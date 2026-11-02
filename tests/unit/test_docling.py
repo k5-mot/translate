@@ -1,5 +1,6 @@
 """Docling接続断の間もサーバー側jobを手放さないことを検証する。"""
 
+from importlib import import_module
 from pathlib import Path
 
 import httpx
@@ -62,3 +63,23 @@ def test_convert_stops_after_outage_limit(
     monkeypatch.setattr(docling, "OUTAGE_TOLERANCE_SECONDS", 0.0)
     with pytest.raises(httpx.ConnectError):
         _client().convert(source)
+
+
+def test_converted_part_is_reused_after_failure(tmp_path: Path) -> None:
+    """同じ内容のpartは保存済み結果を返し、Doclingへ再送信しない。"""
+    source = tmp_path / "part.pdf"
+    source.write_bytes(b"%PDF")
+    calls: list[Path] = []
+
+    class Client:
+        """呼び出しを記録するDocling接続。"""
+
+        def convert(self, path: Path) -> tuple[bytes, str, int]:
+            """固定の変換結果を返す。"""
+            calls.append(path)
+            return b"zip", "job", 2
+
+    convert = import_module("translate.tasks.01_docling")._converted_part  # noqa: SLF001
+    assert convert(Client(), source, tmp_path / "cache") == (b"zip", "job", 2)
+    assert convert(Client(), source, tmp_path / "cache") == (b"zip", "job", 2)
+    assert calls == [source]
