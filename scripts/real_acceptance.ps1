@@ -116,7 +116,7 @@ if ($SelfCheck) {
     }
     exit 0
 }
-if (@(git status --porcelain --untracked-files=no).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
+if (@(git status --porcelain --untracked-files=no -- translate scripts main.py pyproject.toml uv.lock).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
 Save-State -Snapshot $state -Path $statePath
 try {
     Ensure-UiServer
