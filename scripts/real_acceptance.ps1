@@ -26,7 +26,7 @@ function Get-Record {
     param([string]$Stem, [string]$Id, [string]$Name)
     $path = Join-Path $root "outputs/$Stem/$Id/state-$Name.json"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+    return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json)
 }
 
 function Wait-Record {
