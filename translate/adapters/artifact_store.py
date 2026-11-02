@@ -80,11 +80,8 @@ def sha256_file(path: Path) -> str:
         OSError: Fileを開けない、または読み込めない場合。
     """
 
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def canonical_hash(value: BaseModel | Any) -> str:
