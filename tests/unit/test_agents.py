@@ -1157,20 +1157,48 @@ def test_review_agent_reselects_after_invalid_operation_response(
     assert not (tmp_path / "calls" / failed.call_id / "response.json").exists()
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        (LLMInvalidResponseError, TimeoutError, 12),
-        (LLMConnectionError, LLMConnectionError, 1),
-    ],
-)
+def test_review_records_repeated_invalid_match_as_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """同じ照合の契約不正が3回続くと、未確認として残し4回目を送信しない。"""
+
+    def failure(_kwargs: dict[str, object]) -> BaseModel:
+        """操作のLLM要求を契約不正にする。"""
+        message = "Operation failed"
+        raise LLMInvalidResponseError(message)
+
+    action = AgentAction(
+        operation="match", references={"source": ["en"], "translation": ["ja"]}
+    )
+    scripted(
+        monkeypatch,
+        [
+            *[item for _ in range(3) for item in (action, failure)],
+            action,
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = ReviewAgent(
+        {"source": document(en="Text"), "translation": document(ja="訳文")},
+        tmp_path,
+        tmp_path,
+        config,
+    ).run()
+    assert sorted(group.kind for group in result.groups) == [
+        "source_only",
+        "translation_only",
+    ]
+    assert len(list(tmp_path.glob("calls/*/call.json"))) == 3
+
+
+@pytest.mark.parametrize("case", [(LLMConnectionError, LLMConnectionError, 1)])
 def test_review_operation_failure_retains_stop_conditions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config: Config,
     case: tuple[type[LLMError], type[Exception], int],
 ) -> None:
-    """契約不正の反復は12stepで止まり、接続失敗は対象選び直しで再送しない。"""
+    """接続失敗は対象選び直しで再送しない。"""
     error_type, expected_error, attempts = case
 
     def failure(_kwargs: dict[str, object]) -> BaseModel:
