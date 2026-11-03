@@ -10,12 +10,10 @@ import httpx
 
 from translate.common.config import Config
 
-_CONTENT_TYPES = {
-    ".pdf": "application/pdf",
-    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-}
 logger = logging.getLogger(__name__)
+# Docling再起動を待てる上限(秒)。短い再試行を使い切った後もこの間は待機する。
+OUTAGE_TOLERANCE_SECONDS = 1800.0
+OUTAGE_RETRY_INTERVAL_SECONDS = 30.0
 
 
 class DoclingClient:
@@ -52,37 +50,33 @@ class DoclingClient:
             tuple[bytes, str, int]: 変換済みZIP、Job IDおよびPolling回数のTuple。
 
         Raises:
-            ValueError: `f'unsupported Docling document: {source.name}'`と判定した場合。
             RuntimeError: `Docling submit response must be an object`、`Docling response has no
                 task_id`、`Docling status response must be an object`、`f'Docling task did not
                 complete: {task_id}'`のいずれかと判定した場合。
             TimeoutError: `f'Docling task timed out: {task_id}'`と判定した場合。
         """
 
-        suffix = source.suffix.casefold()
-        if suffix not in _CONTENT_TYPES:
-            raise ValueError(f"unsupported Docling document: {source.name}")
         deadline = time.monotonic() + self.config.external_task_deadline_seconds
         logger.info("Docling started file=%s", source.name)
         with source.open("rb") as stream:
-            response = self._request(
+            response = self._request_through_outage(
                 "POST",
                 f"{self.base_url}/v1/convert/file/async",
                 deadline,
-                files={"files": (source.name, stream, _CONTENT_TYPES[suffix])},
+                files={"files": (source.name, stream, "application/pdf")},
                 data=self._request_data(),
             )
         submitted = response.json()
         if not isinstance(submitted, dict):
             raise RuntimeError("Docling submit response must be an object")
-        task_id = submitted.get("task_id") or submitted.get("id")
+        task_id = submitted.get("task_id")
         if not isinstance(task_id, str) or not task_id:
             raise RuntimeError("Docling response has no task_id")
         logger.debug("Docling request submitted")
         polls = 0
         while time.monotonic() < deadline:
             polls += 1
-            status_response = self._request(
+            status_response = self._request_through_outage(
                 "GET",
                 f"{self.base_url}/v1/status/poll/{task_id}",
                 deadline,
@@ -90,27 +84,15 @@ class DoclingClient:
             payload = status_response.json()
             if not isinstance(payload, dict):
                 raise RuntimeError("Docling status response must be an object")
-            status = str(
-                payload.get("task_status") or payload.get("status", "")
-            ).casefold()
+            # Docling Serveの状態はsuccess、pending、started、failureだけである。
+            status = str(payload.get("task_status", ""))
             logger.debug(
                 "Docling poll=%d status=%s",
                 polls,
-                status
-                if status
-                in {
-                    "success",
-                    "succeeded",
-                    "completed",
-                    "failure",
-                    "failed",
-                    "error",
-                    "partial",
-                }
-                else "pending",
+                status if status in {"success", "failure"} else "pending",
             )
-            if status in {"success", "succeeded", "completed"}:
-                result = self._request(
+            if status == "success":
+                result = self._request_through_outage(
                     "GET",
                     f"{self.base_url}/v1/result/{task_id}",
                     deadline,
@@ -122,12 +104,50 @@ class DoclingClient:
                     len(result.content),
                 )
                 return result.content, task_id, polls
-            if status in {"failure", "failed", "error", "partial"}:
+            if status == "failure":
                 logger.warning("Docling failed status=%s polls=%d", status, polls)
                 raise RuntimeError(f"Docling task did not complete: {task_id}")
             time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
         logger.warning("Docling failed type=TimeoutError polls=%d", polls)
         raise TimeoutError(f"Docling task timed out: {task_id}")
+
+    def _request_through_outage(
+        self,
+        method: str,
+        url: str,
+        deadline: float,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """接続断と5xxの間は待機し、サーバー側のjobを手放さず要求を続ける。
+
+        Args:
+            method (str): Docling APIへ送信するHTTP Method。
+            url (str): Request送信先URL。
+            deadline (float): Pollingを終了するMonotonic Clock上の期限。
+            **kwargs (Any): HTTP Clientへ渡す追加Request引数。
+
+        Returns:
+            httpx.Response: 成功したHTTP応答。
+
+        Raises:
+            httpx.HTTPError: 待機上限を超えた通信失敗、または再試行できないHTTP応答。
+            TimeoutError: `Docling task deadline exceeded`と判定した場合。
+        """
+
+        limit = min(deadline, time.monotonic() + OUTAGE_TOLERANCE_SECONDS)
+        while True:
+            try:
+                return self._request(method, url, deadline, **kwargs)
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code < 500 or time.monotonic() >= limit:
+                    raise
+            except httpx.TransportError:
+                if time.monotonic() >= limit:
+                    raise
+            logger.warning("Waiting for Docling recovery method=%s", method)
+            time.sleep(
+                min(OUTAGE_RETRY_INTERVAL_SECONDS, max(0.0, limit - time.monotonic()))
+            )
 
     def _request(
         self,
@@ -145,7 +165,7 @@ class DoclingClient:
             **kwargs (Any): HTTP Clientへ渡す追加Request引数。
 
         Returns:
-            httpx.Response: streamを巻き戻し、仕様で再試行可能なHTTP失敗だけを再送する。
+            httpx.Response: 成功したHTTP応答。
 
         Raises:
             httpx.HTTPError: HTTP Retryを使い切り、最後の通信Errorを再送出する場合。
@@ -203,7 +223,7 @@ class DoclingClient:
         """Docling変換品質を固定するmultipart fieldを返す。
 
         Returns:
-            dict[str, str | list[str]]: Docling変換品質を固定するmultipart fieldを返す。
+            dict[str, str | list[str]]: `/v1/convert/file/async`へ送るForm Field。
         """
 
         return {

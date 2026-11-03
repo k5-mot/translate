@@ -56,7 +56,7 @@ def _validate_aware(value: datetime) -> datetime:
         value (datetime): Timezone情報を検証する日時。
 
     Returns:
-        datetime: 永続化日時がUTCへ変換可能なtimezone-aware値であることを保証する。
+        datetime: UTC値へ変換できる入力値。
 
     Raises:
         ValueError: `datetime must be timezone-aware`と判定した場合。
@@ -74,7 +74,7 @@ def _validate_relative_path(value: str) -> str:
         value (str): Artifactへ記録する相対Path。
 
     Returns:
-        str: Artifact pathを安全なPOSIX相対pathに限定する。
+        str: 検証済みの相対Path。
 
     Raises:
         ValueError: `path must be a safe POSIX relative path`と判定した場合。
@@ -173,7 +173,7 @@ class LLMCallIndex(ArtifactModel):
             value (list[str]): 重複を検査するLLM Call ID列。
 
         Returns:
-            list[str]: Call IDを出現順を保った重複なしの一覧へ限定する。
+            list[str]: 重複のないCall ID列。
 
         Raises:
             ValueError: `call IDs must be unique`と判定した場合。
@@ -411,7 +411,7 @@ class CoverResult(ArtifactModel):
         """除外pageを正の昇順かつ重複なしに限定する。
 
         Returns:
-            Self: 除外pageを正の昇順かつ重複なしに限定する。
+            Self: 検証済みのModel Instance。
 
         Raises:
             ValueError: `excluded pages must be unique and sorted`、`excluded pages must be

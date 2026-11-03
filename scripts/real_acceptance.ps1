@@ -26,7 +26,7 @@ function Get-Record {
     param([string]$Stem, [string]$Id, [string]$Name)
     $path = Join-Path $root "outputs/$Stem/$Id/state-$Name.json"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+    return (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json)
 }
 
 function Wait-Record {
@@ -116,23 +116,21 @@ if ($SelfCheck) {
     }
     exit 0
 }
-if (@(git status --porcelain).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
+if (@(git status --porcelain --untracked-files=no -- translate scripts main.py pyproject.toml uv.lock).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
 Save-State -Snapshot $state -Path $statePath
 try {
+    Invoke-Logged (@('uv', 'run', 'python', 'scripts/real_ui_step.py', 'prepare-versions') + $validationSamples) | Out-Null
     Ensure-UiServer
-    & uv run python -c 'from scripts.real_ui_step import prepare_versions; prepare_versions()'
-    if ($LASTEXITCODE -ne 0) { throw 'Upgrade fixture preparation failed' }
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
     foreach ($stem in $validationSamples) {
         $source = (Resolve-Path -LiteralPath "inputs/$stem.pdf").Path
-        $sourceV2 = (Resolve-Path -LiteralPath ".tmp/versions/$stem.pdf").Path
         foreach ($operation in @('register', 'translate', 'review', 'upgrade')) {
             $script:currentStage = "$stem/$operation"
             $files = switch ($operation) {
                 'register' { @($source) }
                 'translate' { @($source) }
                 'review' { @($source, $japanesePdf) }
-                'upgrade' { @($source, $sourceV2, $japanesePdf) }
+                'upgrade' { @($source, (Join-Path $root ".tmp/versions/$stem.pdf"), $japanesePdf) }
             }
             $identifier = Run-Ui $operation $files "$stem/$operation"
             $recordStem = if ($operation -eq 'review') { 'document.ja-office' } else { $stem }

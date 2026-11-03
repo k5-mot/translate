@@ -4,6 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import httpx
 import pytest
 from pydantic import BaseModel
 
@@ -138,3 +139,45 @@ def test_provider_error_exposes_only_safe_http_diagnostics() -> None:
     assert "request_id=req-123" in str(error)
     assert "category=structured_output" in str(error)
     assert "source text" not in str(error)
+
+
+def test_fits_input_uses_counter_only_above_byte_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """byte数が予算内なら問い合わせず、超過時はtoken counterの値で判定する。"""
+    calls: list[str] = []
+
+    def post(url: str, **_kwargs: object) -> httpx.Response:
+        """固定のtoken数を返す。"""
+        calls.append(url)
+        return httpx.Response(
+            200, json={"total_tokens": 500}, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr("translate.adapters.llm.httpx.post", post)
+    client = LLMClient(Config(_env_file=None, openai_base_url="http://litellm/v1"))
+    assert client.fits_input("model", "short", 1000)
+    assert not calls
+    assert client.fits_input("model", "x" * 5000, 1000)
+    assert calls == ["http://litellm/utils/token_counter"]
+    assert not client.fits_input("model", "x" * 5000, 400)
+
+
+def test_fits_input_falls_back_to_bytes_once_without_counter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未対応のendpointではbyte換算で判定し、再度問い合わせない。"""
+    calls: list[str] = []
+
+    def post(url: str, **_kwargs: object) -> httpx.Response:
+        """LM Studio同様にHTTP 200の別形式で応答する。"""
+        calls.append(url)
+        return httpx.Response(
+            200, json={"error": "Unexpected"}, request=httpx.Request("POST", url)
+        )
+
+    monkeypatch.setattr("translate.adapters.llm.httpx.post", post)
+    client = LLMClient(Config(_env_file=None, openai_base_url="http://llm/v1"))
+    assert client.fits_input("model", "x" * 1500, 1000)
+    assert not client.fits_input("model", "x" * 2500, 1000)
+    assert len(calls) == 1

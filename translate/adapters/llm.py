@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
 from openai import (
     APIConnectionError,
     APIError,
@@ -26,6 +27,9 @@ from pydantic import BaseModel, ValidationError
 from translate.common.config import Config
 
 MESSAGE_OVERHEAD_BYTES = 256
+# Role表記などtoken counterへ渡さないmessage形式の分。
+MESSAGE_OVERHEAD_TOKENS = 64
+TOKEN_COUNTER_TIMEOUT_SECONDS = 30.0
 logger = logging.getLogger(__name__)
 
 
@@ -103,6 +107,7 @@ class LLMClient:
             raise ValueError("OpenAI-compatible base URL is required")
         self.config = config
         self.deadline: float | None = None
+        self._counter_available = True
         self._api_key = (
             config.openai_llm_api_key
             if config.openai_llm_base_url
@@ -141,13 +146,13 @@ class LLMClient:
             user (str): LLMへ渡すUser Prompt。
             contract (str): 上限値と対応付けるLLM入出力契約名。
             native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
-            input_tokens (int | None): Providerが報告した入力Token数。
-            output_tokens (int): Providerが報告した出力Token数。
+            input_tokens (int | None): 入力token予算。Noneは送信前検査を省略する。
+            output_tokens (int): 要求へ指定する最大出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
             validate: 対象IDなどの応答契約を検証する関数。ValueErrorはSchema不正と同じ再試行枠を使う。
 
         Returns:
-            StructuredResult[ResponseT]: 一つの論理要求を最大試行数内で送信し、検証済み応答を返す。
+            StructuredResult[ResponseT]: 検証済み応答、試行回数および報告Token数。
 
         Raises:
             LLMInputExceededError: 入力予算またはproviderのcontext上限を超えた場合。
@@ -166,15 +171,18 @@ class LLMClient:
         logger.info("LLM started task=%s model=%s", task, model)
         for attempt in range(1, self.config.llm_retry_attempts + 1):
             logger.debug("LLM request task=%s attempt=%d", task, attempt)
-            _validate_input_size(
-                system=system,
-                user=f"{user}{feedback}",
-                contract=contract,
-                native_schema=native_schema,
-                mode=self.config.llm_structured_output_mode,
-                maximum_bytes=input_tokens,
-                task=task,
-            )
+            if input_tokens is not None:
+                schema_text = (
+                    json.dumps(native_schema, ensure_ascii=False, separators=(",", ":"))
+                    if self.config.llm_structured_output_mode == "json_schema"
+                    else ""
+                )
+                text = f"{system}\n\n{contract}{user}{feedback}{schema_text}"
+                if not self.fits_input(model, text, input_tokens):
+                    raise LLMInputExceededError(
+                        f"LLM input exceeds task limit: {input_tokens}。対策: "
+                        f"{task}_INPUT_TOKENSを増やし、LLM_CONTEXT_TOKENS内に収めてください。"
+                    )
             payload = self._payload(
                 model=model,
                 system=system,
@@ -227,6 +235,12 @@ class LLMClient:
                 UnicodeError,
                 ValidationError,
             ) as error:
+                logger.warning(
+                    "LLM response rejected task=%s attempt=%d detail=%s",
+                    task,
+                    attempt,
+                    _validation_detail(error)[:300],
+                )
                 last_cause = error
                 last_error = LLMInvalidResponseError(
                     "LLM応答がJSON形式または契約に適合しません。対策: "
@@ -296,6 +310,64 @@ class LLMClient:
         last_error.attempts = attempt
         raise last_error from last_cause
 
+    def fits_input(self, model: str, text: str, tokens: int) -> bool:
+        """送信するtextが入力token予算へ収まるかを判定する。
+
+        byte数がtoken数を下回ることはないため、予算以下ならendpointへ問い合わせない。
+        超える場合だけ実際のtoken数を数え、数えられなければbyte換算で判定する。
+
+        Args:
+            model: Token数を数えるModel名。
+            text: System、契約、本文およびSchemaを連結した送信text。
+            tokens: 入力token予算。
+
+        Returns:
+            bool: 予算内に収まる場合はTrue。
+        """
+
+        size = len(text.encode("utf-8")) + MESSAGE_OVERHEAD_BYTES
+        if size <= tokens:
+            return True
+        counted = self._count_tokens(model, text)
+        if counted is None:
+            return size <= self.config.input_bytes(tokens)
+        return counted + MESSAGE_OVERHEAD_TOKENS <= tokens
+
+    def _count_tokens(self, model: str, text: str) -> int | None:
+        """LiteLLMのtoken counterでtextのtoken数を数える。
+
+        Args:
+            model: Token数を数えるModel名。
+            text: 数える送信text。
+
+        Returns:
+            int | None: Token数。endpointが対応していない場合はNone。
+        """
+
+        base_url = self.config.openai_base_url
+        if base_url is None or not self._counter_available:
+            return None
+        headers = (
+            {"Authorization": f"Bearer {self.config.openai_api_key}"}
+            if self.config.openai_api_key
+            else {}
+        )
+        try:
+            response = httpx.post(
+                f"{base_url.rstrip('/').removesuffix('/v1')}/utils/token_counter",
+                headers=headers,
+                json={"model": model, "messages": [{"role": "user", "content": text}]},
+                timeout=TOKEN_COUNTER_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            count = _token_count(response.json().get("total_tokens"))
+        except (httpx.HTTPError, ValueError, AttributeError) as error:
+            logger.warning("Token counter unavailable type=%s", type(error).__name__)
+            count = None
+        # 未対応のendpointへ要求ごとに問い合わせず、以後はbyte換算で判定する。
+        self._counter_available = count is not None
+        return count
+
     def _payload(
         self,
         *,
@@ -315,7 +387,7 @@ class LLMClient:
             user (str): LLMへ渡すUser Prompt。
             contract (str): 上限値と対応付けるLLM入出力契約名。
             native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
-            output_tokens (int): Providerが報告した出力Token数。
+            output_tokens (int): 要求へ指定する最大出力Token数。
             image (Path | None): Multimodal Callへ添付する画像File。
 
         Returns:
@@ -343,7 +415,6 @@ class LLMClient:
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},
             ],
-            ### default
             "reasoning_effort": "none",
             "temperature": 0.7,
             "top_p": 0.80,
@@ -360,37 +431,6 @@ class LLMClient:
                     "preserve_thinking": False,
                 },
             },
-            ### thinking
-            # "reasoning_effort": "none",
-            # "temperature": 1.0,
-            # "top_p": 0.95,
-            # "extra_body": {
-            #     "top_k": 20,
-            #     "min_p": 0.0,
-            #     "presence_penalty": 0.0,
-            #     "repetition_penalty": 1.01,
-            #     "enable_thinking": True,
-            #     "preserve_thinking": True,
-            #     "chat_template_kwargs": {
-            #         "enable_thinking": True,
-            #         "preserve_thinking": True,
-            #     },
-            # },
-            ### instruct
-            # "temperature": 0.7,
-            # "top_p": 0.80,
-            # "extra_body": {
-            #     "top_k": 20,
-            #     "min_p": 0.0,
-            #     "presence_penalty": 1.5,
-            #     "repetition_penalty": 1.00,
-            #     "enable_thinking": False,
-            #     "preserve_thinking": False,
-            #     "chat_template_kwargs": {
-            #         "enable_thinking": False,
-            #         "preserve_thinking": False,
-            #     },
-            # },
         }
         if mode == "json_object":
             payload["response_format"] = {"type": "json_object"}
@@ -446,50 +486,6 @@ def _reject_length_finish(
         )
 
 
-def _validate_input_size(
-    *,
-    system: str,
-    user: str,
-    contract: str,
-    native_schema: dict[str, object],
-    mode: str,
-    maximum_bytes: int | None,
-    task: str,
-) -> None:
-    """実送信するtext全体を保守的に1 UTF-8 byte=1 tokenとして検査する。
-
-    Args:
-        system (str): LLMへ渡すSystem Prompt。
-        user (str): LLMへ渡すUser Prompt。
-        contract (str): 上限値と対応付けるLLM入出力契約名。
-        native_schema (dict[str, object]): Providerへ渡すNative JSON Schema。
-        mode (str): 応答解析または上限判定Mode。
-        maximum_bytes (int | None): Payloadへ含められるUTF-8 Byte数の上限。
-        task (str): Token上限の設定名に用いるTask名。
-
-    Raises:
-        LLMInputExceededError: `f'LLM input exceeds task limit: {size} >
-            {maximum_bytes}'`と判定した場合。
-    """
-
-    if maximum_bytes is None:
-        return
-    system_text = f"{system}\n\n{contract}"
-    schema_text = (
-        json.dumps(native_schema, ensure_ascii=False, separators=(",", ":"))
-        if mode == "json_schema"
-        else ""
-    )
-    size = (
-        len((system_text + user + schema_text).encode("utf-8")) + MESSAGE_OVERHEAD_BYTES
-    )
-    if size > maximum_bytes:
-        raise LLMInputExceededError(
-            f"LLM input exceeds task limit: {size} > {maximum_bytes}。対策: "
-            f"{task}_INPUT_TOKENSを増やし、LLM_CONTEXT_TOKENS内に収めてください。"
-        )
-
-
 def _is_input_overflow(error: APIStatusError) -> bool:
     """OpenAI互換endpointの入力・context超過応答を識別する。
 
@@ -497,7 +493,7 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         error (APIStatusError): 記録または分類する例外。
 
     Returns:
-        bool: OpenAI互換endpointの入力・context超過応答を識別する。
+        bool: 入力・context超過と判定した場合はTrue。
     """
 
     if error.status_code == 413:
@@ -624,9 +620,11 @@ def _response(
             response content must be text`のいずれかと判定した場合。
     """
 
-    if not response.choices:
+    # SDKは非JSONの200応答を例外にせず文字列で返すため、属性の有無から検査する。
+    choices = getattr(response, "choices", None)
+    if not choices:
         raise ValueError("LLM response has no choice")
-    choice = response.choices[0]
+    choice = choices[0]
     content = choice.message.content
     if not isinstance(content, str) and choice.finish_reason != "length":
         raise ValueError("LLM response content must be text")
@@ -646,7 +644,7 @@ def _token_count(value: object) -> int | None:
         value (object): Provider応答から取得したToken数候補。
 
     Returns:
-        int | None: provider値から非負の整数だけをtoken数として採用する。
+        int | None: 非負の整数ならその値、それ以外はNone。
     """
 
     return (
@@ -665,7 +663,7 @@ def _parse_content(content: str, mode: str, maximum_bytes: int) -> object:
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        object: 応答sizeを検査し、prompt方式だけ単一JSON fenceを除去してparseする。
+        object: JSON解析後の値。
 
     Raises:
         LLMResponseTooLargeError: 応答本文がbyte数の安全上限を超えた場合。
@@ -709,23 +707,33 @@ def _validate_contract(
         raise ValueError("LLM response schema exceeds depth limit")
 
 
-def _schema_depth(schema: object) -> int:
+def _schema_depth(schema: object, definitions: dict[str, Any] | None = None) -> int:  # noqa: PLR0911
     """JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
 
     Args:
         schema (object): 深さまたは契約を検証するJSON Schema。
+        definitions: `$ref`の解決に使う`$defs`。省略時はschemaから取得する。
 
     Returns:
-        int: JSON Schemaが表すobject/arrayの意味的な最大入れ子深度を返す。
+        int: `$ref`と`anyOf`を展開した入れ子深度。循環参照は再展開しない。
     """
 
     if not isinstance(schema, dict):
         return 0
+    defs = schema.get("$defs", {}) if definitions is None else definitions
+    reference = schema.get("$ref")
+    if isinstance(reference, str):
+        name = reference.rsplit("/", 1)[-1]
+        rest = {key: value for key, value in defs.items() if key != name}
+        return _schema_depth(defs.get(name), rest)
+    options = schema.get("anyOf")
+    if isinstance(options, list):
+        return max((_schema_depth(item, defs) for item in options), default=0)
     schema_type = schema.get("type")
     if schema_type == "object":
         properties = schema.get("properties", {})
         children = properties.values() if isinstance(properties, dict) else []
-        return 1 + max((_schema_depth(item) for item in children), default=0)
+        return 1 + max((_schema_depth(item, defs) for item in children), default=0)
     if schema_type == "array":
-        return 1 + _schema_depth(schema.get("items"))
+        return 1 + _schema_depth(schema.get("items"), defs)
     return 0

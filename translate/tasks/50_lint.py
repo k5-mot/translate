@@ -15,7 +15,7 @@ def lint(document: Document, asset_root: Path) -> LintResult:
         asset_root (Path): 参照先Assetを検証するRoot Directory。
 
     Returns:
-        LintResult: 公開に必要な構造条件を検査し、すべての診断を返す。
+        LintResult: 検査結果、Document Hashおよび全診断。
     """
 
     diagnostics: list[LintDiagnostic] = []

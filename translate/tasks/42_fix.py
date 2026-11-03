@@ -13,7 +13,7 @@ def apply_revisions(document: Document, review: ReviewResult) -> FixResult:
         review (ReviewResult): Documentへ適用するReview結果。
 
     Returns:
-        FixResult: 有効なRevisionだけを順序どおり原子的にDocumentへ反映する。
+        FixResult: 適用結果と反映後のDocument。
     """
 
     updated = document.model_copy(deep=True)
@@ -58,7 +58,7 @@ def _rejection_reason(  # noqa: PLR0911
         changed_spans (set[str]): 変更済みTextSpan ID集合。
 
     Returns:
-        str | None: Revision全体を拒否する最初の決定的理由を返す。
+        str | None: 最初の拒否理由Code。適用できる場合はNone。
     """
 
     unit = units.get(revision.target_id)

@@ -65,7 +65,7 @@ class MarkdownTask:
             excluded_pages (set[int]): Markdown出力から除外するPage番号集合。
 
         Returns:
-            Path: 表紙とassetを含む一つのPandoc Markdown成果を作る。
+            Path: 書き込んだMarkdownのPath。
         """
 
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -135,7 +135,7 @@ class MarkdownTask:
             block (Block): 変換または検証対象のDocument Block。
 
         Returns:
-            str: 一つのBlockをPandoc Markdown断片へ変換する。
+            str: Pandoc Markdown断片。
         """
 
         text = convert_text_unit(block.content, self.footnote_references)
@@ -192,7 +192,7 @@ class MarkdownTask:
             block (Block): 変換または検証対象のDocument Block。
 
         Returns:
-            str: TableCellをPandoc ASTへ対応付けてgrid tableを得る。
+            str: grid table形式のMarkdown。Cellがなければ空文字列。
         """
 
         if not block.cells:
@@ -267,7 +267,7 @@ def convert_text_unit(
         footnote_references: 本文Span IDと一意に対応した脚注anchor。
 
     Returns:
-        str: TextUnitの最終層と書式をPandoc inline記法へ変換する。
+        str: Pandoc inline記法のMarkdown。Noneでは空文字列。
     """
 
     if unit is None:
@@ -286,7 +286,7 @@ def _convert_span(span: TextSpan) -> str:
         span (TextSpan): 変換またはPayload作成対象のTextSpan。
 
     Returns:
-        str: 一つのTextSpanをescapeし、linkとmarkを適用する。
+        str: Escapeと書式を適用したMarkdown。
     """
 
     if span.kind == "line_break":
@@ -318,7 +318,7 @@ def _table_row(cells: list[TableCell], row: int, columns: int) -> list[object]:
         columns (int): 出力TableのColumn数。
 
     Returns:
-        list[object]: 指定行の全cellを結合なしのPandoc Rowへ変換する。
+        list[object]: Cellごとの属性と本文を持つPandoc Row。
     """
 
     starts = {cell.column: cell for cell in cells if cell.row == row}
@@ -344,7 +344,7 @@ def _pandoc_plain(unit: TextUnit | None) -> dict[str, object]:
         unit (TextUnit | None): 変換または検証対象のTextUnit。
 
     Returns:
-        dict[str, object]: TextUnitを表cell用の単純なPandoc Plainへ変換する。
+        dict[str, object]: Pandoc ASTの`Plain`要素。
     """
 
     text = unit.text() if unit is not None else ""
@@ -362,7 +362,7 @@ def _escape(value: str) -> str:
         value (str): Markdown制御文字をEscapeするPlain Text。
 
     Returns:
-        str: plain textとして解釈させるMarkdown制御文字をescapeする。
+        str: 制御文字をbackslash Escapeした文字列。
     """
 
     return re.sub(r"([\\`*{}\[\]()#+.!_|>~-])", r"\\\1", value)
@@ -375,7 +375,7 @@ def _escape_url(value: str) -> str:
         value (str): Percent EncodeするMarkdown Link Target。
 
     Returns:
-        str: Markdown link target内の空白と括弧をpercent表記にする。
+        str: 空白と括弧をpercent表記にしたURL。
     """
 
     return value.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
@@ -388,7 +388,7 @@ def _anchor(value: str) -> str:
         value (str): Pandoc Anchorへ変換するDocument ID。
 
     Returns:
-        str: Document IDをPandocで安全なanchorへ変換する。
+        str: 英数字、`_`、`-`だけのanchor。空なら`item`。
     """
 
     return re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-") or "item"

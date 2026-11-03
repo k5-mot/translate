@@ -27,6 +27,7 @@ from translate.adapters.llm import (
     LLMRateLimitError,
     LLMTimeoutError,
     _provider_error,
+    _schema_depth,
 )
 from translate.common.config import Config, ConfigError, load_config, validate_config
 from translate.common.logger import configure_logging
@@ -687,7 +688,7 @@ def test_embedding_sdk_preserves_order_and_auth(
     ).embed(["one", "two"])
 
     assert vectors == [[1.0], [2.0]]
-    assert seen["max_retries"] == 0
+    assert seen["max_retries"] == 5
     assert seen["authorization"] == expected_auth
     payload = seen["payload"]
     assert isinstance(payload, dict)
@@ -724,7 +725,7 @@ def test_embedding_retries_temporary_server_errors(
         )
 
     monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
-    monkeypatch.setattr("translate.adapters.embedding.time.sleep", lambda _: None)
+    monkeypatch.setattr("time.sleep", lambda _: None)
     vectors = EmbeddingClient(
         Config(
             _env_file=None,
@@ -768,8 +769,7 @@ def test_embedding_honors_retry_after_header(
         )
 
     monkeypatch.setattr("translate.adapters.embedding.OpenAI", make_client)
-    monkeypatch.setattr("translate.adapters.embedding.time.sleep", delays.append)
-    monkeypatch.setattr("translate.adapters.embedding.random.uniform", lambda *_: 0)
+    monkeypatch.setattr("time.sleep", delays.append)
     vectors = EmbeddingClient(
         Config(
             _env_file=None,
@@ -816,3 +816,55 @@ def test_native_schema_budget_includes_operation_contract(
         create.assert_not_called()
     finally:
         client.client.close()
+
+
+def test_llm_retries_non_json_success_as_invalid_response() -> None:
+    """HTTP 200の非JSON応答をAttributeErrorにせず応答不正として扱う。"""
+    client = LLMClient(
+        Config(_env_file=None, openai_base_url="http://llm/v1", llm_retry_attempts=1)
+    )
+    client.client = OpenAI(
+        api_key="test",
+        base_url="http://llm/v1",
+        max_retries=0,
+        http_client=httpx2.Client(
+            transport=httpx2.MockTransport(
+                lambda request: httpx2.Response(
+                    200,
+                    text="<html>proxy</html>",
+                    headers={"content-type": "text/html"},
+                    request=request,
+                )
+            )
+        ),
+    )
+    with pytest.raises(LLMInvalidResponseError):
+        client.structured(
+            task="REVIEW",
+            model="test",
+            response_type=LLMTaskDiagnostics,
+            system="system",
+            user="user",
+            contract="contract",
+            native_schema={"type": "object"},
+            output_tokens=10,
+        )
+
+
+def test_schema_depth_follows_references() -> None:
+    """Pydanticの$refと省略可能なanyOfを展開して深度を数える。"""
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": {"$ref": "#/$defs/Item"}},
+        },
+        "$defs": {
+            "Item": {
+                "type": "object",
+                "properties": {
+                    "child": {"anyOf": [{"$ref": "#/$defs/Item"}, {"type": "null"}]}
+                },
+            }
+        },
+    }
+    assert _schema_depth(schema) == 3

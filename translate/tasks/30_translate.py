@@ -2,7 +2,6 @@
 
 import json
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -17,7 +16,9 @@ from translate.adapters.artifact_store import (
     load_model,
     load_reusable_llm_response,
     mark_split_llm_call,
+    previous_llm_attempts,
     write_model,
+    write_task_diagnostics,
 )
 from translate.adapters.embedding import EmbeddingClient
 from translate.adapters.glossary import Glossary
@@ -30,7 +31,7 @@ from translate.adapters.llm import (
 )
 from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config
-from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
+from translate.models.artifacts import LLMCallArtifact, LLMCallIndex
 from translate.models.document import Document, TextSpan
 
 TranslationContext = dict[str, tuple[str, str]]
@@ -39,7 +40,9 @@ TranslationContext = dict[str, tuple[str, str]]
 class TranslationModel(BaseModel):
     """未知fieldを無視するTRANSLATE応答モデルの設定。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
 
 class TranslationItem(TranslationModel):
@@ -94,7 +97,7 @@ class TranslationTask:
             processing_directory (Path): 対象処理の成果物Directory。
 
         Returns:
-            Document: 対象Spanをchunk化し、Call成果を再利用しながら日本語訳を設定する。
+            Document: 訳文を設定した複製Document。
 
         Raises:
             ValueError: `translation model is required`と判定した場合。
@@ -105,7 +108,7 @@ class TranslationTask:
         self.task_directory.mkdir(parents=True, exist_ok=True)
         diagnostics_path = processing_directory / "task-translate.json"
         diagnostics: list[str] = []
-        _write_diagnostics(diagnostics_path, diagnostics)
+        write_task_diagnostics(diagnostics_path, "TRANSLATE", diagnostics)
         updated = document.model_copy(deep=True)
         client = LLMClient(self.config)
         client.deadline = time.monotonic() + self.config.llm_task_deadline_seconds
@@ -114,7 +117,7 @@ class TranslationTask:
             chunks = _chunks(
                 updated,
                 self.config.translate_max_units,
-                self.config.translate_input_tokens - overhead,
+                self.config.input_bytes(self.config.translate_input_tokens) - overhead,
                 self.previous_context,
             )
             responses: list[tuple[str, TranslationResponse]] = []
@@ -155,7 +158,7 @@ class TranslationTask:
                         diagnostics.append(f"{call_id} unexpected_span {item.span_id}")
                         continue
                     span.translated = item.text
-            _write_diagnostics(diagnostics_path, diagnostics)
+            write_task_diagnostics(diagnostics_path, "TRANSLATE", diagnostics)
             write_model(
                 self.task_directory / "call-index.json",
                 LLMCallIndex(
@@ -190,7 +193,7 @@ class TranslationTask:
             allow_missing_retry (bool): 欠落IDをまとめて再送する初回Callかどうか。
 
         Returns:
-            list[tuple[str, TranslationResponse]]: 一つの論理Callを再利用または送信し、必要時だけ子Callへ分割する。
+            list[tuple[str, TranslationResponse]]: Call IDと応答の組。子Callの結果も順に含む。
         """
 
         target_ids = [span.id for span in spans]
@@ -219,13 +222,15 @@ class TranslationTask:
                 return [(call_id, response)]
         source = "\n".join(span.source for span in spans)
         payload_budget = (
-            self.config.translate_input_tokens - len(self.rules.encode("utf-8")) - 2048
+            self.config.input_bytes(self.config.translate_input_tokens)
+            - len(self.rules.encode("utf-8"))
+            - 2048
         )
         selected_glossary = self.glossary.select(
             source, maximum_bytes=max(0, payload_budget // 3)
         )
         rag = self._rag_context(source)
-        previous = _previous_attempts(call_directory)
+        previous = previous_llm_attempts(call_directory)
         artifact = begin_llm_call(
             call_directory,
             call_id=call_id,
@@ -362,7 +367,7 @@ class TranslationTask:
             depth (int): 分割LLM Callの現在の深さ。
 
         Returns:
-            list[tuple[str, TranslationResponse]]: 出力超過した親Callを半分の子Callへ置換する。
+            list[tuple[str, TranslationResponse]]: 半分ずつに分けた子Callの全結果。
 
         Raises:
             LLMInputExceededError | LLMOutputExceededError:
@@ -402,7 +407,7 @@ class TranslationTask:
             query (str): RAG検索へ使用する原文Query。
 
         Returns:
-            list[dict[str, object]]: 設定済みの場合だけ英語原文をEmbeddingし、上位5件の参照文脈を得る。
+            list[dict[str, object]]: 関連度順の参照文脈。RAG未設定なら空。
         """
 
         if not query.strip() or not bool(
@@ -429,7 +434,7 @@ def _chunks(
         previous_context (TranslationContext | None): 再翻訳時に参照する旧原文と旧訳。
 
     Returns:
-        list[list[TextSpan]]: TextUnitを通常は分断せず、件数と保守的byte上限内へchunk化する。
+        list[list[TextSpan]]: 順序を保ったSpan Chunk列。
     """
 
     context = previous_context or {}
@@ -478,7 +483,7 @@ def _split_large_group(
         previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
 
     Returns:
-        list[list[TextSpan]]: 単一TextUnitだけが上限を超える場合にSpan境界で分割する。
+        list[list[TextSpan]]: 上限内へ分けたSpan列の一覧。
 
     Raises:
         ValueError: `f'single TextSpan exceeds translation input limit: {span.id}'`と判定した場合。
@@ -510,7 +515,7 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
         previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
 
     Returns:
-        int: prompt overheadを含む保守的なUTF-8 byte数を計算する。
+        int: Payloadの推定byte数。固定余裕1,024 byteを含む。
     """
 
     payload = [_translation_item(span, previous_context) for span in spans]
@@ -518,36 +523,20 @@ def _span_bytes(spans: list[TextSpan], previous_context: TranslationContext) -> 
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """TRANSLATE専用の浅いnative JSON Schemaを作る。
+    """応答モデルからTRANSLATEのnative JSON Schemaを作り、件数を固定する。
 
     Args:
-        maximum_items (int): Structured Outputへ含める最大要素数。
+        maximum_items (int): Structured Outputへ含める要素数。
 
     Returns:
-        dict[str, object]: TRANSLATE専用の浅いnative JSON Schemaを作る。
+        dict[str, object]: `translations`を必須とし件数を固定したJSON Schema。
     """
 
-    return {
-        "type": "object",
-        "properties": {
-            "translations": {
-                "type": "array",
-                "minItems": maximum_items,
-                "maxItems": maximum_items,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "span_id": {"type": "string"},
-                        "text": {"type": "string"},
-                    },
-                    "required": ["span_id", "text"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["translations"],
-        "additionalProperties": False,
-    }
+    schema = TranslationResponse.model_json_schema()
+    translations = schema["properties"]["translations"]
+    translations["minItems"] = translations["maxItems"] = maximum_items
+    schema["required"] = ["translations"]
+    return schema
 
 
 def _user_payload(
@@ -604,7 +593,7 @@ def _translation_item(
         previous_context (TranslationContext): 再翻訳時に参照する旧原文と旧訳。
 
     Returns:
-        dict[str, str]: 一つの翻訳対象と存在する場合だけ旧英日文脈を組み立てる。
+        dict[str, str]: Span IDと原文。旧英日文脈があれば含む辞書。
     """
 
     item = {"span_id": span.id, "source": span.source}
@@ -613,40 +602,3 @@ def _translation_item(
         item["previous_source"] = previous[0]
         item["previous_translation"] = previous[1]
     return item
-
-
-def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。
-
-    Args:
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
-    """
-
-    path = directory / "call.json"
-    if not path.is_file():
-        return 0
-    try:
-        return load_model(path, LLMCallArtifact).attempts
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """TRANSLATEの適用外項目を処理ディレクトリ直下へ保存する。
-
-    Args:
-        path (Path): TRANSLATE診断を書き込むJSON FileのPath。
-        diagnostics (list[str]): 検証中に追記する診断Message列。
-    """
-
-    write_model(
-        path,
-        LLMTaskDiagnostics(
-            task="TRANSLATE",
-            diagnostics=diagnostics,
-            updated_at=datetime.now(UTC),
-        ),
-    )

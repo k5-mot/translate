@@ -1,9 +1,12 @@
 """英文二版と旧訳をAgentで比較し、変更箇所と修正提案を公開する。"""
 
+import logging
 import time
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,6 +35,7 @@ from translate.models.upgrade import (
     VersionChange,
 )
 from translate.pipeline import (
+    ACTION_FAILURE_LIMIT,
     InputError,
     PipelineRun,
     agent_units,
@@ -43,6 +47,27 @@ from translate.pipeline import (
 )
 
 DiffTask = import_module("translate.tasks.21_diff").DiffTask
+logger = logging.getLogger(__name__)
+
+
+def _fallback_action(state: dict[str, object]) -> AgentAction:
+    """未確認の英文から、LLMの判断なしで次に行うUpgrade操作を決める。
+
+    Args:
+        state: Agentへ渡す確認状況。
+
+    Returns:
+        AgentAction: 未確認の英文と旧訳候補の比較。未確認がなければ終了。
+    """
+    pending = cast("dict[str, list[str]]", state["pending_ids"])
+    limit = max(1, cast("int", state["max_reference_ids"]) // 3)
+    references = {role: ids[:limit] for role, ids in pending.items() if ids}
+    if not references:
+        return AgentAction(operation="finish")
+    candidates = cast("list[str]", state["translation_candidates"])[:limit]
+    if candidates:
+        references["translation_v1"] = candidates
+    return AgentAction(operation="evaluate", references=references)
 
 
 class UpgradeOutcome(BaseModel):
@@ -218,11 +243,28 @@ class UpgradeAgent:
                     role, _, identifier = reference.partition(":")
                     action.references.setdefault(role, []).append(identifier)
                 self._execute(action, call.round)
+            identical = self._identical_changes()
+            self.confirmed.extend(identical)
+            llm_required = (
+                bool(restored)
+                or not identical
+                or any(
+                    key
+                    not in {
+                        identifier
+                        for _, item in self.confirmed
+                        for identifier in getattr(item, f"{role}_ids")
+                    }
+                    for role in ("source_v1", "source_v2")
+                    for key in self.units[role]
+                )
+            )
             round_number = max((call.round for call in restored), default=-1) + 1
             idle_steps = 0
             group_steps: dict[str, int] = {}
             one_sided_failures = {"source_v1": 0, "source_v2": 0}
             max_reference_ids = 32
+            action_failures = 0
             observation: object = {"restored_operations": len(restored)}
             while True:
                 covered = {
@@ -237,7 +279,7 @@ class UpgradeAgent:
                     role: [key for key in self.units[role] if key not in ids]
                     for role, ids in covered.items()
                 }
-                if not any(pending.values()) and idle_steps >= 12:
+                if not any(pending.values()) and (idle_steps >= 12 or not llm_required):
                     break
                 # 片側だけが残り、比較失敗または無進捗が続いた場合は対応未確認で記録する。
                 if (
@@ -294,12 +336,16 @@ class UpgradeAgent:
                 if idle_steps >= 36 or time.monotonic() >= deadline:
                     raise TimeoutError("Upgrade Agent reached its step or time limit")
                 try:
-                    action = choose_action(
-                        self.client,
-                        "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
-                        state,
-                        observation,
-                        self.units,
+                    action = (
+                        _fallback_action(state)
+                        if action_failures >= ACTION_FAILURE_LIMIT
+                        else choose_action(
+                            self.client,
+                            "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
+                            state,
+                            observation,
+                            self.units,
+                        )
                     )
                 except LLMInputExceededError:
                     observation = {
@@ -312,6 +358,11 @@ class UpgradeAgent:
                         "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
                     }
                     idle_steps += 1
+                    action_failures += 1
+                    if action_failures >= ACTION_FAILURE_LIMIT:
+                        # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                        logger.warning("Using deterministic Agent action")
+                        idle_steps = 0
                     continue
                 if action.operation == "finish":
                     if any(pending.values()):
@@ -320,15 +371,77 @@ class UpgradeAgent:
                         )
                     break
                 before = sum(map(len, covered.values()))
-                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
-                if action.references:
-                    group_key = repr(action.references)
-                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                    if group_steps[group_key] > 12:
-                        raise TimeoutError(
-                            "Upgrade target group exceeded 12 Agent steps"
+                # 同じ比較範囲が3回進まなければ、上限を縮小して未確認を記録する。
+                stalled_action = False
+                action_group_key = None
+                if action.operation in {"match", "evaluate", "recheck"}:
+                    action_group_key = repr((action.operation, action.references))
+                    previous_no_progress = group_steps.get(action_group_key, 0)
+                    stalled_action = previous_no_progress >= 3
+                    if previous_no_progress >= 1:
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 1:
+                            max_reference_ids = max(
+                                1,
+                                min(max_reference_ids - 1, selected_count // 2),
+                            )
+                if stalled_action:
+                    selected = {
+                        role: set(action.references.get(role, []))
+                        for role in self.units
+                    }
+                    confirmed_ids = {
+                        role: {
+                            identifier
+                            for _, item in self.confirmed
+                            for identifier in getattr(item, f"{role}_ids")
+                        }
+                        for role in ("source_v1", "source_v2")
+                    }
+                    unverified = {
+                        role: sorted(selected[role] - confirmed_ids[role])
+                        for role in ("source_v1", "source_v2")
+                    }
+                    if not any(unverified.values()):
+                        unverified = {
+                            role: pending[role] for role in ("source_v1", "source_v2")
+                        }
+                    retained: list[tuple[str, DiffChange]] = []
+                    translation_ids = set(selected.get("translation_v1", set()))
+                    for identifier, item in self.confirmed:
+                        overlaps = any(
+                            selected[role].intersection(getattr(item, f"{role}_ids"))
+                            for role in ("source_v1", "source_v2")
                         )
-                if action.operation in {"overview", "read", "search"}:
+                        if overlaps:
+                            for role in ("source_v1", "source_v2"):
+                                unverified[role] = sorted(
+                                    set(unverified[role])
+                                    | set(getattr(item, f"{role}_ids"))
+                                )
+                            translation_ids.update(item.translation_v1_ids)
+                        else:
+                            retained.append((identifier, item))
+                    if any(unverified.values()):
+                        self.confirmed[:] = retained
+                        self.confirmed.append(
+                            (
+                                f"unverified-{round_number}-{len(self.confirmed) + 1}",
+                                DiffChange(
+                                    kind="unverified",
+                                    source_v1_ids=unverified["source_v1"],
+                                    source_v2_ids=unverified["source_v2"],
+                                    translation_v1_ids=sorted(translation_ids),
+                                    summary=(
+                                        "同じ対象の再試行で進捗がなかったため、変更内容は未確認です。"
+                                    ),
+                                ),
+                            )
+                        )
+                    observation = {
+                        "error": "Repeated action made no progress. Affected English units were recorded as unverified; continue with remaining work."
+                    }
+                elif action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
                             role: {
@@ -347,7 +460,13 @@ class UpgradeAgent:
                         else self.units
                     )
                     observation = observe_documents(
-                        action, visible, max(512, self.config.review_input_tokens // 3)
+                        action,
+                        visible,
+                        max(
+                            512,
+                            self.config.input_bytes(self.config.review_input_tokens)
+                            // 3,
+                        ),
                     )
                 else:
                     try:
@@ -402,6 +521,15 @@ class UpgradeAgent:
                     for _, item in self.confirmed
                 )
                 idle_steps = idle_steps + 1 if after <= before else 0
+                if after > before:
+                    action_failures = 0
+                if action_group_key is not None:
+                    if after <= before:
+                        group_steps[action_group_key] = (
+                            group_steps.get(action_group_key, 0) + 1
+                        )
+                    else:
+                        group_steps.pop(action_group_key, None)
             result = UpgradePlan(
                 changes=[
                     VersionChange(id=key, **item.model_dump())
@@ -427,6 +555,45 @@ class UpgradeAgent:
             return result
         finally:
             self.client.client.close()
+
+    def _identical_changes(self) -> list[tuple[str, DiffChange]]:
+        """本文が同じ順序で一致する未確認の英文をLLMなしで未変更として確定する。
+
+        Returns:
+            Change IDと未変更項目の組。保存済みCallが確定したIDは含めない。
+        """
+        covered = {
+            role: {
+                key
+                for _, item in self.confirmed
+                for key in getattr(item, f"{role}_ids")
+            }
+            for role in ("source_v1", "source_v2")
+        }
+        old, new = (
+            [
+                (key, unit.text("source").strip())
+                for key, unit in self.units[role].items()
+                if key not in covered[role]
+            ]
+            for role in ("source_v1", "source_v2")
+        )
+        matcher = SequenceMatcher(
+            None, [text for _, text in old], [text for _, text in new], autojunk=False
+        )
+        return [
+            (
+                f"identical-{old[block.a + offset][0]}",
+                DiffChange(
+                    kind="unchanged",
+                    source_v1_ids=[old[block.a + offset][0]],
+                    source_v2_ids=[new[block.b + offset][0]],
+                    summary="英文は新旧で同一です。",
+                ),
+            )
+            for block in matcher.get_matching_blocks()
+            for offset in range(block.size)
+        ]
 
     def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
         """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。

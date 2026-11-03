@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
+from translate.common.docling_json import resolve_ref
 
 SKIPPED = {"page_header", "page_footer"}
 INDEX_RE = re.compile(
@@ -28,7 +29,7 @@ def _clean(value: str) -> str:
         value (str): 決定的な補正を適用する本文Text。
 
     Returns:
-        str: 非code本文の制御文字・連続記号・空白を整えるための決定的なtext補正を行う。
+        str: 補正後のText。
     """
 
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", value)
@@ -44,7 +45,7 @@ def _refs(value: Any) -> set[str]:
         value (Any): 参照を再帰探索するDocling Subtree。
 
     Returns:
-        set[str]: 任意のDocling subtreeに含まれる参照を再帰的に集める。
+        set[str]: Subtree内の全`$ref`の集合。
     """
 
     if isinstance(value, list):
@@ -62,7 +63,7 @@ def _page(item: dict[str, Any]) -> int | None:
         item (dict[str, Any]): 変換または位置計算対象の要素Data。
 
     Returns:
-        int | None: 先頭の出典情報に整数のページ番号がある場合だけ返し、目次ページの識別に使う。
+        int | None: Page番号。取得できない場合はNone。
     """
 
     provenance = item.get("prov")
@@ -172,10 +173,8 @@ def _filter_tree(document: dict[str, Any], node: Any, removed: set[str]) -> None
         ref = child.get("$ref") if isinstance(child, dict) else None
         if not isinstance(ref, str):
             continue
-        value: Any = document
         try:
-            for part in ref.removeprefix("#/").split("/"):
-                value = value[int(part)] if isinstance(value, list) else value[part]
+            value = resolve_ref(document, ref)
         except (KeyError, IndexError, TypeError, ValueError):
             continue
         _filter_tree(document, value, removed)
@@ -189,7 +188,7 @@ def normalize(source: Path, output_dir: Path) -> Path:
         output_dir (Path): Task成果物の出力Directory。
 
     Returns:
-        Path: 不要要素を参照treeから除き、非code本文をcleanする。
+        Path: 保存したdocument.jsonのPath。
     """
 
     document = copy.deepcopy(json.loads(source.read_text(encoding="utf-8")))

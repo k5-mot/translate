@@ -18,7 +18,7 @@ def create_cover(
         processing_directory (Path): 対象処理の成果物Directory。
 
     Returns:
-        CoverResult: 150 DPIの表紙PNGとmanifestを生成する。
+        CoverResult: 表紙Fileの情報とPage寸法。
     """
 
     task_directory.mkdir(parents=True, exist_ok=True)

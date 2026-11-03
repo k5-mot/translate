@@ -1,9 +1,11 @@
 """原文と訳文をAgentで対応付け、指摘と修正提案を一覧化する。"""
 
+import logging
 import time
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,8 +31,9 @@ from translate.models.artifacts import (
     TaskName,
 )
 from translate.models.document import Document
-from translate.models.review import AgentAction, AlignmentGroup, ReviewTarget
+from translate.models.review import AgentAction, AlignmentGroup, Finding, ReviewTarget
 from translate.pipeline import (
+    ACTION_FAILURE_LIMIT,
     InputError,
     PipelineRun,
     agent_units,
@@ -42,6 +45,30 @@ from translate.pipeline import (
 )
 
 ReviewTask = import_module("translate.tasks.41_review").ReviewTask
+logger = logging.getLogger(__name__)
+
+
+def _fallback_action(state: dict[str, object]) -> AgentAction:
+    """未解決の対象から、LLMの判断なしで次に行うReview操作を決める。
+
+    Args:
+        state: Agentへ渡す確認状況。
+
+    Returns:
+        AgentAction: 競合の再確認、未評価の評価、未対応の照合、終了の優先順の操作。
+    """
+    conflicts = cast("list[str]", state["conflicts"])
+    if conflicts:
+        return AgentAction(operation="recheck", target_ids=conflicts[:8])
+    unchecked = cast("list[str]", state["unchecked_targets"])
+    if unchecked:
+        return AgentAction(operation="evaluate", target_ids=unchecked[:8])
+    pending = cast("dict[str, list[str]]", state["pending_ids"])
+    limit = max(1, cast("int", state["max_reference_ids"]) // 2)
+    references = {role: ids[:limit] for role, ids in pending.items() if ids}
+    if references:
+        return AgentAction(operation="match", references=references)
+    return AgentAction(operation="finish")
 
 
 class ReviewOutcome(BaseModel):
@@ -227,6 +254,8 @@ class ReviewAgent:
             idle_steps = 0
             observation: object = {"restored_operations": len(replayed)}
             group_steps: dict[str, int] = {}
+            max_reference_ids = 32
+            action_failures = 0
             while True:
                 assigned = {
                     role: {
@@ -256,6 +285,7 @@ class ReviewAgent:
                 ]
                 state: dict[str, object] = {
                     "roles": list(self.units),
+                    "max_reference_ids": max_reference_ids,
                     "pending_counts": {role: len(ids) for role, ids in pending.items()},
                     "pending_ids": {role: ids[:8] for role, ids in pending.items()},
                     "unmatched_counts": {
@@ -274,12 +304,16 @@ class ReviewAgent:
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
                 try:
-                    action = choose_action(
-                        self.client,
-                        "Review English source against Japanese translation and propose edits.",
-                        state,
-                        observation,
-                        self.units,
+                    action = (
+                        _fallback_action(state)
+                        if action_failures >= ACTION_FAILURE_LIMIT
+                        else choose_action(
+                            self.client,
+                            "Review English source against Japanese translation and propose edits.",
+                            state,
+                            observation,
+                            self.units,
+                        )
                     )
                 except LLMInputExceededError:
                     observation = {
@@ -292,6 +326,11 @@ class ReviewAgent:
                         "error": "Invalid action response. No action was executed. Choose a valid operation from the current state."
                     }
                     idle_steps += 1
+                    action_failures += 1
+                    if action_failures >= ACTION_FAILURE_LIMIT:
+                        # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                        logger.warning("Using deterministic Agent action")
+                        idle_steps = 0
                     continue
                 if action.operation == "finish":
                     if any(pending.values()) or unchecked or self.conflicts:
@@ -304,15 +343,102 @@ class ReviewAgent:
                     + len(self.result.targets)
                     + len(self.result.reviewed_target_ids)
                 )
-                # 概要・検索は対象群を固定しないため、連続する無進捗回数で制限する。
-                if action.references or action.target_ids:
-                    group_key = repr((action.references, action.target_ids))
-                    group_steps[group_key] = group_steps.get(group_key, 0) + 1
-                    if group_steps[group_key] > 12:
-                        raise TimeoutError(
-                            "Review target group exceeded 12 Agent steps"
+                # 同じ照合・評価範囲が3回進まなければ、未確認として結果へ残す。
+                stalled_action = False
+                action_group_key = None
+                if action.operation in {"match", "evaluate", "recheck"}:
+                    action_group_key = repr(
+                        (action.operation, action.references, action.target_ids)
+                    )
+                    previous_no_progress = group_steps.get(action_group_key, 0)
+                    stalled_action = previous_no_progress >= 3
+                    if previous_no_progress >= 1 and action.operation == "match":
+                        selected_count = sum(map(len, action.references.values()))
+                        if selected_count > 2:
+                            max_reference_ids = max(
+                                2,
+                                min(max_reference_ids - 1, selected_count // 2),
+                            )
+                if stalled_action:
+                    if action.operation == "match":
+                        selected_ids = {
+                            role: set(action.references.get(role, []))
+                            for role in self.units
+                        }
+                        assigned_ids = {
+                            role: {
+                                identifier
+                                for group in self.result.groups
+                                for identifier in getattr(group, f"{role}_ids")
+                            }
+                            for role in self.units
+                        }
+                        for role, identifiers in selected_ids.items():
+                            for identifier in sorted(identifiers - assigned_ids[role]):
+                                self._add_unverified(
+                                    role,
+                                    identifier,
+                                    "同じ範囲の照合が進まなかったため、対応関係は未確認です。",
+                                )
+                        if not any(
+                            identifiers - assigned_ids[role]
+                            for role, identifiers in selected_ids.items()
+                        ):
+                            for role, identifiers in pending.items():
+                                for identifier in identifiers:
+                                    self._add_unverified(
+                                        role,
+                                        identifier,
+                                        "Agentが同じ照合を繰り返したため、対応関係は未確認です。",
+                                    )
+                        target_ids = [
+                            target.id
+                            for group in self.result.groups
+                            if group.kind == "matched"
+                            and (
+                                selected_ids["source"].intersection(group.source_ids)
+                                or selected_ids["translation"].intersection(
+                                    group.translation_ids
+                                )
+                            )
+                            for target in self.result.targets
+                            if target.id == f"review/{group.id}"
+                        ]
+                    else:
+                        target_ids = list(action.target_ids)
+                    targets_by_id = {
+                        target.id: target for target in self.result.targets
+                    }
+                    target_ids = [
+                        target_id
+                        for target_id in target_ids
+                        if target_id in targets_by_id
+                    ] or list(unchecked)
+                    unresolved_targets = [
+                        target_id
+                        for target_id in target_ids
+                        if target_id not in self.result.reviewed_target_ids
+                    ]
+                    for target_id in unresolved_targets:
+                        target = targets_by_id[target_id]
+                        self.result.findings.append(
+                            Finding(
+                                id=f"review/unverified/{target_id}",
+                                category="未確認",
+                                severity="warning",
+                                target_ids=target.target_ids,
+                                message="同じ対象の再試行で進捗がなかったため、内容を確認できませんでした。",
+                            )
                         )
-                if action.operation in {"overview", "read", "search"}:
+                    self.result.reviewed_target_ids = list(
+                        dict.fromkeys(
+                            [*self.result.reviewed_target_ids, *unresolved_targets]
+                        )
+                    )
+                    observation = {
+                        "error": "Repeated action made no progress. Affected targets were recorded as unverified; continue with remaining work."
+                    }
+                elif action.operation in {"overview", "read", "search"}:
                     visible = (
                         {
                             role: {
@@ -325,15 +451,50 @@ class ReviewAgent:
                         else self.units
                     )
                     observation = observe_documents(
-                        action, visible, max(512, self.config.review_input_tokens // 3)
+                        action,
+                        visible,
+                        max(
+                            512,
+                            self.config.input_bytes(self.config.review_input_tokens)
+                            // 3,
+                        ),
                     )
                 else:
                     try:
                         observation = self._execute(action, round_number)
                     except (LLMInputExceededError, LLMOutputExceededError):
-                        observation = {
-                            "error": "Selected scope exceeds the budget. Select fewer units or targets."
-                        }
+                        if action.operation == "match":
+                            selected = sum(map(len, action.references.values()))
+                            scope = tuple(
+                                tuple(sorted(action.references.get(role, [])))
+                                for role in self.units
+                            )
+                            if selected > 2:
+                                max_reference_ids = max(
+                                    2, min(max_reference_ids - 1, selected // 2)
+                                )
+                                message = (
+                                    "Match scope exceeded the budget. Select at most "
+                                    f"{max_reference_ids} document IDs."
+                                )
+                            else:
+                                self.match_scopes.add(scope)
+                                for role, ids in action.references.items():
+                                    for identifier in ids:
+                                        self._add_unverified(
+                                            role,
+                                            identifier,
+                                            "入力上限により照合できず、対応関係は未確認です。",
+                                        )
+                                message = (
+                                    "Minimum match scope exceeded the budget. "
+                                    "Selected units were recorded as unverified; continue with other units."
+                                )
+                            observation = {"error": message}
+                        else:
+                            observation = {
+                                "error": "Selected scope exceeds the budget. Select fewer units or targets."
+                            }
                     except InputError as error:
                         observation = {
                             "error": f"{error}. No action was executed; choose valid references from the current state."
@@ -354,6 +515,15 @@ class ReviewAgent:
                     + len(self.result.reviewed_target_ids)
                 )
                 idle_steps = idle_steps + 1 if progress_after <= progress_before else 0
+                if progress_after > progress_before:
+                    action_failures = 0
+                if action_group_key is not None:
+                    if progress_after <= progress_before:
+                        group_steps[action_group_key] = (
+                            group_steps.get(action_group_key, 0) + 1
+                        )
+                    else:
+                        group_steps.pop(action_group_key, None)
             write_model(
                 self.directory / "call-index.json",
                 LLMCallIndex(
@@ -364,6 +534,26 @@ class ReviewAgent:
             return self.result
         finally:
             self.client.client.close()
+
+    def _add_unverified(self, role: str, identifier: str, reason: str) -> None:
+        """照合できなかった要素を片側だけの未確認対応として結果へ加える。
+
+        Args:
+            role: `source`または`translation`。
+            identifier: 対象のTextUnit ID。
+            reason: 未確認となった理由。
+        """
+        self.group_number += 1
+        is_source = role == "source"
+        self.result.groups.append(
+            AlignmentGroup(
+                id=f"alignment-{self.group_number:06d}",
+                kind="source_only" if is_source else "translation_only",
+                source_ids=[identifier] if is_source else [],
+                translation_ids=[] if is_source else [identifier],
+                reason=reason,
+            )
+        )
 
     def _execute(
         self, action: AgentAction, round_number: int, *, replay: bool = False

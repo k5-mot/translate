@@ -37,7 +37,7 @@ def _upgrade_context(root: Path) -> tuple[str, str, str] | None:  # noqa: PLR091
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        tuple[str, str, str] | None: 同一VersionChangeの英文v1、日本語v1、英文v2を返す。
+        tuple[str, str, str] | None: 英語v1、日本語v1、英語v2の表示Text。表示できない場合はNone。
     """
 
     plan_path = root / "tasks/21-diff/plan.json"
@@ -112,7 +112,7 @@ def _llm_call_directory(root: Path, task: TaskName) -> Path | None:
         task (TaskName): 状態またはCallを記録するTask名。
 
     Returns:
-        Path | None: 処理種類によるSTRUCTURE配置差を吸収してCall directoryを返す。
+        Path | None: Call Directory。存在しない場合はNone。
     """
 
     candidates = {
@@ -146,23 +146,6 @@ def _render_upgrade_context(root: Path, processing_id: str) -> None:
         f"upgrade-context-{processing_id}",
     )
     _render_diff(values[0], values[2], "英語v1", "英語v2")
-
-
-def _live_call_counts(root: Path, task: TaskName) -> tuple[int, int, int]:
-    """実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
-
-    Args:
-        root (Path): 対象処理の成果物Root Directory。
-        task (TaskName): 状態またはCallを記録するTask名。
-
-    Returns:
-        tuple[int, int, int]: 実行中LLM TaskのCall Artifactから観測数、完了数、失敗数を返す。
-    """
-
-    calls = _llm_calls(root, task)
-    completed = sum(call.status in {"succeeded", "partial", "split"} for call in calls)
-    failed = sum(call.status == "failed" for call in calls)
-    return len(calls), completed, failed
 
 
 def _review_targets(root: Path) -> dict[str, tuple[str, str]]:
@@ -279,7 +262,7 @@ def _unit_text(
         layer (TextLayer): 取得するTextの優先Layer。
 
     Returns:
-        str | None: 複数TextUnit IDを検証済み索引から一つの表示textへ解決する。
+        str | None: 改行で連結したText。IDが不足する場合はNone。
     """
 
     if not unit_ids or any(unit_id not in units for unit_id in unit_ids):
@@ -295,7 +278,7 @@ def _comparison_text(rows: list[tuple[str, str]], empty: str = "") -> str:
         empty (str): 表示対象がない場合の代替Text。
 
     Returns:
-        str: 同じ対象順の最大3件をTextArea用plain textへ整形する。
+        str: 対象IDと本文を最大3件並べたText。対象がなければempty。
     """
 
     if not rows:
@@ -314,7 +297,7 @@ def _load_first_document(root: Path, candidates: list[str]) -> Document | None:
         candidates (list[str]): 読込み候補のDocument File名。
 
     Returns:
-        Document | None: 候補から最初に存在する検証済みDocumentを読む。
+        Document | None: 読めた最初のDocument。なければNone。
     """
 
     for relative in candidates:
@@ -349,7 +332,7 @@ def _markdown_code(value: str) -> str:
         value (str): Inline Codeとして表示するArtifact Text。
 
     Returns:
-        str: Artifact由来textを安全な一つのMarkdown inline codeへ変換する。
+        str: 最長のbacktick列より長いfenceで囲んだInline Code。
     """
 
     normalized = " ".join(value.split())
@@ -434,7 +417,7 @@ def _fix_rejections(root: Path) -> list[tuple[str, str]]:
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        list[tuple[str, str]]: FIXが拒否したRevision IDと理由codeの組を返す。
+        list[tuple[str, str]]: Revision IDと理由Codeの組。記録がなければ空。
     """
 
     path = root / "tasks/42-fix/outcomes.json"
@@ -459,7 +442,7 @@ def _llm_calls(root: Path, task: TaskName) -> list[LLMCallArtifact]:
         task (TaskName): 状態またはCallを記録するTask名。
 
     Returns:
-        list[LLMCallArtifact]: 一階層のCall記録だけを読み、壊れた途中fileを無視する。
+        list[LLMCallArtifact]: 読めたCall記録。Directoryがなければ空。
     """
 
     directory = _llm_call_directory(root, task)
@@ -481,7 +464,7 @@ def _translation_comparison(root: Path) -> tuple[str, str] | None:
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        tuple[str, str] | None: 直近の同一TRANSLATE Callから英語と検証済み日本語を返す。
+        tuple[str, str] | None: 英語と日本語の表示Text。表示できない場合はNone。
     """
 
     document = _load_first_document(
@@ -525,7 +508,7 @@ def _preview(value: str) -> str:
         value (str): 一行のPreviewへ短縮する文書Text。
 
     Returns:
-        str: 文書由来textを一行240文字以内のplain textへ省略する。
+        str: 空白を畳み、超過分を`…`で省略した文字列。
     """
 
     normalized = " ".join(value.split())
@@ -550,7 +533,7 @@ def _verified_response(
         call (LLMCallArtifact): 応答Fileを検証するLLM Call Artifact。
 
     Returns:
-        StructureResponse | TranslationResponse | AlignmentResponse | ReviewResponse | DiffResponse | None: 確定状態、hashおよびSchemaを検証したLLM応答だけを返す。
+        StructureResponse | TranslationResponse | AlignmentResponse | ReviewResponse | DiffResponse | None: 検証済み応答。確定前や検証失敗ではNone。
     """
 
     if call.status not in {"succeeded", "partial"} or call.response_sha256 is None:
@@ -587,7 +570,7 @@ def _review_context(root: Path) -> tuple[str, str] | None:
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        tuple[str, str] | None: 同一ReviewTargetの英語原文と日本語訳を返す。
+        tuple[str, str] | None: 英語原文と日本語訳の表示Text。対象がなければNone。
     """
 
     targets = _review_targets(root)
@@ -617,7 +600,7 @@ def _call_v2_unit_ids(root: Path, document: Document) -> list[str]:
         document (Document): 変換または検証対象のDocument。
 
     Returns:
-        list[str]: Upgradeの実行中または直近Call対象を英文v2 TextUnit IDへ解決する。
+        list[str]: 実在する英文v2のTextUnit ID列。
     """
 
     call = _latest_call(root, TaskName.DIFF, "processing") or _latest_verified_call(
@@ -639,7 +622,7 @@ def _review_comparison(root: Path) -> tuple[str, str] | None:
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        tuple[str, str] | None: 直近の同一REVIEW Callから現在訳と修正候補を返す。
+        tuple[str, str] | None: 現在訳と修正候補の表示Text。表示できない場合はNone。
     """
 
     targets = _review_targets(root)
@@ -691,7 +674,7 @@ def _fix_comparison(root: Path) -> tuple[str, str] | None:
         root (Path): 対象処理の成果物Root Directory。
 
     Returns:
-        tuple[str, str] | None: 適用済みRevision対象のFIX前後を同じTextUnit IDで返す。
+        tuple[str, str] | None: 修正前後の表示Text。適用済みの対象がなければNone。
     """
 
     outcomes_path = root / "tasks/42-fix/outcomes.json"
@@ -739,7 +722,7 @@ def _latest_call(root: Path, task: TaskName, status: str) -> LLMCallArtifact | N
         status (str): 抽出対象のLLM Call状態。
 
     Returns:
-        LLMCallArtifact | None: 指定状態で更新時刻が最も新しいLLM Callを返す。
+        LLMCallArtifact | None: 該当するCall記録。なければNone。
     """
 
     calls = [call for call in _llm_calls(root, task) if call.status == status]
@@ -756,7 +739,7 @@ def _diff_text(before: str, after: str, before_label: str, after_label: str) -> 
         after_label (str): 変更後TextのLabel。
 
     Returns:
-        str: 二つの表示textから行単位のunified diffを作る。
+        str: Unified Diff。差分がなければ空文字列。
     """
 
     return "\n".join(
@@ -814,7 +797,7 @@ def _latest_verified_call(root: Path, task: TaskName) -> LLMCallArtifact | None:
         task (TaskName): 状態またはCallを記録するTask名。
 
     Returns:
-        LLMCallArtifact | None: hashとSchemaを検証できる最新の確定済みLLM Callを返す。
+        LLMCallArtifact | None: 該当するCall記録。なければNone。
     """
 
     calls = sorted(

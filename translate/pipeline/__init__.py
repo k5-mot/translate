@@ -31,6 +31,9 @@ from translate.models.artifacts import (
 from translate.models.document import Document, TextUnit
 from translate.models.review import AgentAction
 
+# 連続でこの回数の判断が応答不正なら、状態から決まる操作で進める。
+ACTION_FAILURE_LIMIT = 3
+
 
 class InputError(ValueError):
     """入力またはResume指定の不備。"""
@@ -44,7 +47,7 @@ def resolve_processing_id(processing_id: str | None, resume_id: str | None) -> s
         resume_id (str | None): Resume対象として指定された処理ID。
 
     Returns:
-        str: UI指定ID、Resume IDまたは新規UUIDv7を一意に決定する。
+        str: UUIDv7形式の処理ID。
 
     Raises:
         InputError: `processing ID and resume ID cannot be used together`、`processing ID
@@ -287,12 +290,16 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
-    per_role_limit = max(1, maximum_references // len(units)) if upgrade else 32
+    per_role_limit = (
+        max(1, maximum_references // len(units)) if upgrade else maximum_references
+    )
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
             f"total document IDs from all roles and at most {per_role_limit} per role."
         )
+    else:
+        contract += f" Use at most {maximum_references} document IDs in each operation."
 
     def validate(action: AgentAction) -> None:
         """現在の状態で実行できない操作を既存の応答訂正枠へ返す。
@@ -322,9 +329,7 @@ def choose_action(
             )
         reference_count = sum(map(len, action.references.values()))
         if action.operation in {"read", "match"}:
-            limit = (
-                maximum_references if upgrade and action.operation == "match" else 32
-            )
+            limit = maximum_references
             if not 1 <= reference_count <= limit:
                 raise ValueError(
                     f"{action.operation} requires 1 to {limit} document unit IDs in references"
@@ -404,8 +409,9 @@ def choose_action(
                     else ""
                 )
                 + "Read or search when correspondence is unclear. Finish only when all pending counts are zero. "
-                "For Review, unmatched_ids have already been checked but no counterpart was found. "
-                "They are not pending and do not block finish; zero unmatched IDs is not required. "
+                "For Review, unmatched_ids are not pending and do not block finish. "
+                "Their reason may say no counterpart was found or that the scope remains unverified. "
+                "Revisit unverified IDs with new evidence or a smaller scope; zero unmatched IDs is not required. "
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "
                 "and discovers the pairs itself. Include multiple pending and unmatched candidates from both "
                 "roles together, up to 32 total, instead of repeatedly trying isolated pairs. "

@@ -5,9 +5,7 @@ import math
 import re
 import shutil
 import time
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import get_args
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -18,11 +16,12 @@ from translate.adapters.artifact_store import (
     complete_llm_call,
     fail_llm_call,
     llm_call_id,
-    load_model,
     load_reusable_llm_response,
     mark_split_llm_call,
+    previous_llm_attempts,
     sha256_file,
     write_model,
+    write_task_diagnostics,
 )
 from translate.adapters.llm import (
     LLMClient,
@@ -33,7 +32,7 @@ from translate.adapters.llm import (
 )
 from translate.adapters.pdf import render_page
 from translate.common.config import Config
-from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, LLMTaskDiagnostics
+from translate.models.artifacts import LLMCallIndex
 from translate.models.document import (
     AlertKind,
     Block,
@@ -53,7 +52,9 @@ MAX_VISION_PIXELS = 1_000_000
 class StructureModel(BaseModel):
     """未知fieldを無視するSTRUCTURE応答モデルの設定。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(
+        extra="ignore", json_schema_extra={"additionalProperties": False}
+    )
 
 
 class StructurePatch(StructureModel):
@@ -74,7 +75,7 @@ class StructurePatch(StructureModel):
             value (object): STRUCTURE応答が返したBlock種別候補。
 
         Returns:
-            object: captionをBlock種別と誤認した応答だけを未指定として扱う。
+            object: `caption`ならNone。それ以外は入力値。
         """
 
         if isinstance(value, str) and value.strip().casefold() == "caption":
@@ -118,7 +119,7 @@ class StructureTask:
             processing_directory (Path): 対象処理の成果物Directory。
 
         Returns:
-            Document: page画像ごとにBlock差分を取得し、整合するpatchだけを適用する。
+            Document: 整合するpatchを適用した複製Document。
 
         Raises:
             ValueError: `structure model is required`と判定した場合。
@@ -134,7 +135,7 @@ class StructureTask:
             )
         diagnostics_path = processing_directory / "task-structure.json"
         diagnostics: list[str] = []
-        _write_diagnostics(diagnostics_path, diagnostics)
+        write_task_diagnostics(diagnostics_path, "STRUCTURE", diagnostics)
         updated = document.model_copy(deep=True)
         baseline_levels = {
             block.id: block.level
@@ -160,7 +161,8 @@ class StructureTask:
                 chunks = _chunks(
                     page.blocks,
                     self.config.structure_max_blocks,
-                    self.config.structure_input_tokens - overhead,
+                    self.config.input_bytes(self.config.structure_input_tokens)
+                    - overhead,
                 )
                 for index, blocks in enumerate(chunks):
                     page_responses.extend(
@@ -187,7 +189,7 @@ class StructureTask:
                 write_model(
                     self.task_directory / "pages" / f"page-{page.number:04d}.json", page
                 )
-            _write_diagnostics(diagnostics_path, diagnostics)
+            write_task_diagnostics(diagnostics_path, "STRUCTURE", diagnostics)
             write_model(
                 self.task_directory / "call-index.json",
                 LLMCallIndex(task="STRUCTURE", call_ids=used_call_ids),
@@ -260,7 +262,7 @@ class StructureTask:
             depth (int): 分割LLM Callの現在の深さ。
 
         Returns:
-            list[tuple[str, StructureResponse]]: 一つのSTRUCTURE Callを再利用または送信し、出力超過時は分割する。
+            list[tuple[str, StructureResponse]]: Call IDと応答の組。分割時は子Callの全結果。
         """
 
         target_ids = [block.id for block in blocks]
@@ -317,7 +319,7 @@ class StructureTask:
             task="STRUCTURE",
             fingerprint=fingerprint,
             target_ids=target_ids,
-            previous_attempts=_previous_attempts(call_directory),
+            previous_attempts=previous_llm_attempts(call_directory),
         )
         try:
             result = client.structured(
@@ -409,7 +411,7 @@ def _chunks(
         maximum_bytes (int): Payloadへ含められるUTF-8 Byte数の上限。
 
     Returns:
-        list[list[Block]]: 連続Blockを件数と保守的UTF-8 byte上限内へ分割する。
+        list[list[Block]]: 順序を保ったBlock Chunk列。
 
     Raises:
         ValueError: `f'single Block exceeds structure input limit: {block.id}'`と判定した場合。
@@ -540,7 +542,7 @@ def _block_bytes(blocks: list[Block]) -> int:
         blocks (list[Block]): STRUCTURE Callへ含めるBlock列。
 
     Returns:
-        int: STRUCTURE promptへ渡すBlock要約の保守的byte数を返す。
+        int: Payloadの推定byte数。固定余裕1,024 byteを含む。
     """
 
     value = [_block_payload(block) for block in blocks]
@@ -554,7 +556,7 @@ def _block_payload(block: Block) -> dict[str, object]:
         block (Block): 変換または検証対象のDocument Block。
 
     Returns:
-        dict[str, object]: 分類対象の本文を省略せずSTRUCTURE入力へ含める。
+        dict[str, object]: Block ID、種別、本文、Level、bboxおよびCell数。
     """
 
     text = block.content.text("source") if block.content is not None else ""
@@ -819,78 +821,16 @@ def _kind_is_compatible(block: Block, patch: StructurePatch) -> bool:
 
 
 def _schema(maximum_items: int) -> dict[str, object]:
-    """STRUCTURE専用の浅いnative JSON Schemaを作る。
+    """応答モデルからSTRUCTUREのnative JSON Schemaを作り、件数上限を加える。
 
     Args:
         maximum_items (int): Structured Outputへ含める最大要素数。
 
     Returns:
-        dict[str, object]: STRUCTURE専用の浅いnative JSON Schemaを作る。
+        dict[str, object]: `patches`を必須とし件数を制限したJSON Schema。
     """
 
-    return {
-        "type": "object",
-        "properties": {
-            "patches": {
-                "type": "array",
-                "maxItems": maximum_items,
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "block_id": {"type": "string"},
-                        "kind": {
-                            "type": "string",
-                            "enum": list(get_args(BlockKind)),
-                        },
-                        "level": {"type": "integer", "minimum": 1, "maximum": 6},
-                        "alert_kind": {
-                            "type": "string",
-                            "enum": list(get_args(AlertKind)),
-                        },
-                        "caption_source_id": {"type": "string"},
-                    },
-                    "required": ["block_id"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["patches"],
-        "additionalProperties": False,
-    }
-
-
-def _previous_attempts(directory: Path) -> int:
-    """Resume前の累計試行数を読める場合だけ引き継ぐ。
-
-    Args:
-        directory (Path): LLM Call Artifactの保存Directory。
-
-    Returns:
-        int: Resume前の累計試行数を読める場合だけ引き継ぐ。
-    """
-
-    path = directory / "call.json"
-    if not path.is_file():
-        return 0
-    try:
-        return load_model(path, LLMCallArtifact).attempts
-    except Exception:  # noqa: BLE001
-        return 0
-
-
-def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """STRUCTUREの適用外項目を処理ディレクトリ直下へ保存する。
-
-    Args:
-        path (Path): STRUCTURE診断を書き込むJSON FileのPath。
-        diagnostics (list[str]): 検証中に追記する診断Message列。
-    """
-
-    write_model(
-        path,
-        LLMTaskDiagnostics(
-            task="STRUCTURE",
-            diagnostics=diagnostics,
-            updated_at=datetime.now(UTC),
-        ),
-    )
+    schema = StructureResponse.model_json_schema()
+    schema["properties"]["patches"]["maxItems"] = maximum_items
+    schema["required"] = ["patches"]
+    return schema

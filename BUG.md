@@ -182,3 +182,34 @@
 - 追跡結果: round 857（text 1096）まで到達。複数の`LLMInvalidResponseError`が発生したが、多くは後続callで回復。最終call後にstateは`succeeded`となり、DIFF成果物が作成された。Resume実行から約2時間28分（開始・終了UTC時刻の差）。
 - 影響: sample2のUpgrade完了まで長時間を要し、worker停止後のstateがprocessingのまま残るケースもある。
 - 記録: `outputs/sample2/01a190b1-157a-7131-9b8f-71543b87efc3/upgrade.log`、`tasks/21-diff/calls/`、`state-upgrade.json`.
+
+## 🔌 LLM endpoint停止中にTranslateが数秒で失敗する
+
+- 再現条件: `OPENAI_LLM_BASE_URL`の`192.168.1.183:1234`が接続を拒否している状態でTranslateを実行する。
+- 結果: 2026-11-02 20:19、STRUCTUREの全試行が`LLMConnectionError`となり、約15秒でTranslateが`failed`になった。直接の接続確認も`WinError 10061`で拒否された。endpoint復旧後は再実行で先へ進んだ。
+- 影響: Docling断線と異なりLLMの短時間の停止を待機しないため、数秒の再試行枠を使い切ると処理全体が止まる。
+- 記録: `outputs/sample/01a19bfb-981d-71b1-9860-7f18c1459fb9/translation.log`、`state-translation.json`。
+
+## 🧾 受け入れスクリプトが日本語を含む処理記録を解析できない
+
+- 再現条件: 失敗理由に日本語を含む処理記録を`scripts/real_acceptance.ps1`が読む。
+- 結果: PowerShell 5の`Get-Content`がUTF-8を既定で解釈せず、`ConvertFrom-Json`が例外になった。
+- 影響: 本来の失敗理由が表示されない。
+- 対応: `cb409ad`で`-Encoding UTF8`を指定して修正済み。
+
+## 🪝 rulesyncのguard hookが日本語を含むコマンドを拒否する
+
+- 再現条件: Windowsで日本語を含むBashコマンドを実行する。
+- 結果: `.rulesync/hooks/harness.py guard`が`Destructive or unknown shell command blocked by project hook.`で拒否した。破壊的な操作は含まない。
+- 原因の推定: `sys.stdin`をcp932で読み、JSON解析に失敗して「不明なコマンド」扱いになると見られる。コードからの推定で、再現試験は未実施。
+- 影響: コミットメッセージなどを直接渡すコマンドが実行できない。
+- 対応: 未修正。`sys.stdin`をUTF-8で読む修正を想定する。
+
+
+## 🧭 操作選択の応答不正が続くとReviewがTimeoutErrorで失敗する
+
+- 再現条件: `sample.pdf`と訳文PDFをReviewする。再現性はなく、同じ状態から再生すると先へ進んだ。
+- 結果: 2026-11-02 21:41、round 33の後に`choose_action`の`LLMInvalidResponseError`が連続し、Agentの12手上限で`TimeoutError`となった。応答検証の詳しい理由はログに残っていなかった。
+- 影響: 残り作業が明確でも、操作選択の失敗だけでReview全体が止まる。
+- 対応: 連続3回の不正で状態から決まる次の操作へ進め、拒否理由をログへ残すよう修正した。
+- 記録: `outputs/document.ja-office/01a19c28-1c4a-7c23-9850-89614f2a31e6/review.log`、`tasks/41-review/calls/`。

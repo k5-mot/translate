@@ -21,7 +21,6 @@ def test_pandoc_checks_features_once_for_multiple_tables(
             SimpleNamespace(stdout="+native_numbering"),
             SimpleNamespace(stdout='{"pandoc-api-version":[1,23],"blocks":[]}'),
             SimpleNamespace(stdout="first table"),
-            SimpleNamespace(stdout='{"pandoc-api-version":[1,23],"blocks":[]}'),
             SimpleNamespace(stdout="second table"),
         ]
     )
@@ -31,5 +30,5 @@ def test_pandoc_checks_features_once_for_multiple_tables(
     assert adapter.table_to_markdown({"t": "Table", "c": []}) == "first table"
     assert adapter.table_to_markdown({"t": "Table", "c": []}) == "second table"
     executable.assert_called_once_with("pandoc")
-    assert run.call_count == 6
+    assert run.call_count == 5
     assert all(call.kwargs["timeout"] == 7 for call in run.call_args_list)

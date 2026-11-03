@@ -12,34 +12,7 @@ from typing import Any
 import pypdfium2 as pdfium
 
 from translate.adapters.artifact_store import temporary_task_directory, write_json
-
-
-def _key(item: dict[str, Any], fallback: int) -> tuple[int, float, float, int]:
-    """先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
-
-    Args:
-        item (dict[str, Any]): 変換または位置計算対象の要素Data。
-        fallback (int): 幾何情報がない場合の読み順。
-
-    Returns:
-        tuple[int, float, float, int]: 先頭bboxの座標原点を補正して読み順keyを作り、座標欠落要素は末尾で元の順序を保つ。
-    """
-
-    provenance = item.get("prov")
-    entry = provenance[0] if isinstance(provenance, list) and provenance else None
-    if not isinstance(entry, dict):
-        return 10**9, 0, 0, fallback
-    box = entry.get("bbox")
-    if not isinstance(box, dict):
-        return 10**9, 0, 0, fallback
-    page = int(entry.get("page_no", 10**9))
-    top = float(box.get("t", box.get("top", 0)))
-    bottom = float(box.get("b", box.get("bottom", 0)))
-    left = float(box.get("l", box.get("left", 0)))
-    origin = str(box.get("coord_origin", "BOTTOMLEFT")).upper()
-    # Note 1: Normalize top-left and bottom-left coordinate systems to reading order.
-    vertical = min(top, bottom) if origin == "TOPLEFT" else -max(top, bottom)
-    return page, vertical, left, fallback
+from translate.common.docling_json import resolve_ref
 
 
 def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | None:
@@ -49,7 +22,7 @@ def _geometry(item: dict[str, Any]) -> tuple[int, float, float, float, float] | 
         item (dict[str, Any]): 変換または位置計算対象の要素Data。
 
     Returns:
-        tuple[int, float, float, float, float] | None: bboxを左、右、上、下が同じ向きの比較値へ正規化する。
+        tuple[int, float, float, float, float] | None: Page番号と左、右、上、下の座標。bboxが不正な場合はNone。
     """
 
     provenance = item.get("prov")
@@ -120,7 +93,7 @@ def _tail_geometry(
         item (dict[str, Any]): 変換または位置計算対象の要素Data。
 
     Returns:
-        tuple[int, float, float, float, float] | None: 連鎖結合では最後の断片の座標を使い、先頭bboxとの距離で後続を取り残さない。
+        tuple[int, float, float, float, float] | None: 最後の断片のPage番号と座標。取得できない場合はNone。
     """
 
     provenance = item.get("prov")
@@ -137,7 +110,7 @@ def _mapped_ref(ref: str, mapping: dict[str, str]) -> str:
         mapping (dict[str, str]): 旧参照から新参照への対応表。
 
     Returns:
-        str: 完全なIDを優先し、残るcollection参照はindex segment単位で一度だけ写す。
+        str: 写像後の参照。対象外なら入力のまま。
     """
 
     if ref in mapping:
@@ -155,7 +128,7 @@ def _rewrite_ref(value: Any, mapping: dict[str, str]) -> Any:
         mapping (dict[str, str]): 旧参照から新参照への対応表。
 
     Returns:
-        Any: 構造上の参照だけを更新し、本文やURL等の一般文字列は保持する。
+        Any: 参照だけを書き換えた値。
     """
 
     if isinstance(value, list):
@@ -178,7 +151,7 @@ def _merge_metadata_safe(first: dict[str, Any], second: dict[str, Any]) -> bool:
         second (dict[str, Any]): Metadataを統合する後続要素。
 
     Returns:
-        bool: 所有内容や異なる表示属性を黙って捨てる結合を拒否する。
+        bool: 情報を失わず結合できる場合はTrue。
     """
 
     first_geometry, second_geometry = _geometry(first), _geometry(second)
@@ -220,7 +193,7 @@ def _compact_fragments(
         merged (list[dict[str, str]]): 統合先または統合済みのDocument要素。
 
     Returns:
-        dict[str, Any]: 消費元だけを除去して全構造参照を再採番し、reportに出力側IDを残す。
+        dict[str, Any]: 再採番後の文書。mergedへ出力側IDも追記する。
     """
 
     consumed = {item["from"] for item in merged}
@@ -249,7 +222,7 @@ def _table_shape(data: dict[str, Any], key: str) -> tuple[int, int] | None:  # n
         key (str): Data内で行数または列数を保持するKey。
 
     Returns:
-        tuple[int, int] | None: セル範囲と宣言寸法を検査し、不整合や重なるセルを結合対象から外す。
+        tuple[int, int] | None: 行数と列数。結合対象にできない場合はNone。
     """
 
     cells = data[key]
@@ -296,7 +269,7 @@ def _merge_table(  # noqa: PLR0911
         second (dict[str, Any]): 結合可否を判定する後続Table Fragment。
 
     Returns:
-        bool: 同一ページで近接し列数が一致する表を、セル行位置と参照を補正して先頭の表へ結合する。
+        bool: 結合した場合はTrue。不可の場合は入力を変更せずFalse。
     """
 
     if first.get("label") != "table" or second.get("label") != "table":
@@ -534,13 +507,11 @@ class PositionTask:
             ref (str): Docling要素を指すJSON参照。
 
         Returns:
-            dict[str, Any] | None: Doclingの文書内参照を辞書へ解決し、参照不正や辞書以外の値ではNoneを返す。
+            dict[str, Any] | None: 解決した辞書。解決できない場合はNone。
         """
 
-        value: Any = self.document
         try:
-            for part in ref.removeprefix("#/").split("/"):
-                value = value[int(part)] if isinstance(value, list) else value[part]
+            value = resolve_ref(self.document, ref)
         except (KeyError, IndexError, TypeError, ValueError):
             return None
         return value if isinstance(value, dict) else None
@@ -549,7 +520,7 @@ class PositionTask:
         """所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
 
         Returns:
-            set[str]: 所有childrenとセルparentの逆参照を区別し、共有・外部参照のある候補を除く。
+            set[str]: 結合候補から除外する参照の集合。
         """
 
         incoming: dict[str, list[tuple[str, ...]]] = defaultdict(list)
@@ -702,7 +673,7 @@ class PositionTask:
             children (list[dict[str, Any]]): 読み順を決定する子要素列。
 
         Returns:
-            list[dict[str, Any]]: 座標のある要素をページ・段組・領域ごとに並べ、座標のない要素は元の順で末尾へ残す。
+            list[dict[str, Any]]: 読み順へ並べ替えた子要素列。
         """
 
         positioned: dict[
@@ -843,7 +814,7 @@ def position(source: Path, output_dir: Path, pdf_source: Path | None = None) -> 
         pdf_source: 見出しの行境界を照合する原本PDF。省略時は分割しない。
 
     Returns:
-        Path: 読み順を補正してJSONとreportを原子的に保存する。
+        Path: 保存したdocument.jsonのPath。
     """
 
     document, report = PositionTask(

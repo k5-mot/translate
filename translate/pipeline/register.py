@@ -7,6 +7,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from itertools import accumulate
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
@@ -25,6 +26,7 @@ from translate.adapters.pdf import split_pdf
 from translate.adapters.qdrant import QdrantStore
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
+from translate.common.sentences import split_sentences
 from translate.models.artifacts import (
     InputFile,
     ProcessingError,
@@ -99,7 +101,7 @@ class RegisterPipeline:
             resume_id (str | None): Resume対象として指定された処理ID。
 
         Returns:
-            RegistrationOutcome: 入力を列挙・抽出・分割し、決定的Point IDでQdrantへ登録する。
+            RegistrationOutcome: Registration IDと記録Path。
 
         Raises:
             InputError: `at least one registration path is required`、`Docling settings are required
@@ -275,7 +277,7 @@ class RegisterPipeline:
             path (Path): 本文を抽出する登録対象FileのPath。
 
         Returns:
-            str: PDFを分割し、Docling本文を抽出する。
+            str: Part順に連結した抽出Text。
         """
 
         with tempfile.TemporaryDirectory(
@@ -343,7 +345,7 @@ def _collect(paths: list[Path], outputs_root: Path) -> list[_Source]:
         outputs_root (Path): 成果物Root Directory。
 
     Returns:
-        list[_Source]: 入力をsymlink非追跡で展開し、重複しない論理path順へ正規化する。
+        list[_Source]: 論理Path順の登録対象。
 
     Raises:
         ValueError: `f'unsupported registration file: {root.name}'`、`f'registration path
@@ -404,7 +406,7 @@ def _chunks(value: str) -> list[str]:
         value (str): Chunkへ分割する抽出済み本文Text。
 
     Returns:
-        list[str]: 段落境界を優先し、文を途中で切らず最大1000文字・最大100文字重複で分割する。
+        list[str]: 空でない順序付きChunk列。
 
     """
 
@@ -416,12 +418,7 @@ def _chunks(value: str) -> list[str]:
             atoms.append(paragraph)
             continue
         start = 0
-        for boundary in [
-            match.end()
-            for match in re.finditer(
-                r"(?<![A-Z]\.)(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*|\n+", paragraph
-            )
-        ] + [len(paragraph)]:
+        for boundary in accumulate(map(len, split_sentences(paragraph))):
             atom = paragraph[start:boundary]
             while len(atom.strip()) > _CHUNK_SIZE:
                 split_at = max(
@@ -462,7 +459,7 @@ def _revision(source: _Source, config: Config) -> str:
         config (Config): 接続先、上限値および処理Optionを保持する設定。
 
     Returns:
-        str: 入力hash、抽出条件、chunk schema、Embedding modelからrevisionを作る。
+        str: 登録内容の世代を表すHash。
     """
 
     return canonical_hash(
@@ -520,7 +517,7 @@ def _record(
         resuming (bool): 既存処理をResumeしているかどうか。
 
     Returns:
-        RegistrationRecord: 新規Register記録を作るか、入力とfingerprint一致後に保存済み記録を返す。
+        RegistrationRecord: 新規作成または照合済みの処理記録。
 
     Raises:
         InputError: `resume inputs do not match the saved
@@ -563,7 +560,7 @@ def _single_top_name(paths: list[Path]) -> str:
         paths (list[Path]): 列挙された入力Path。
 
     Returns:
-        str: 単一fileまたはdirectoryの成果物最上位名を返す。
+        str: 単一入力の名前。複数入力では`register`。
 
     """
 

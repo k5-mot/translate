@@ -54,6 +54,8 @@ class Config(BaseSettings):
     review_input_tokens: int = Field(default=8192, gt=0)
     review_output_tokens: int = Field(default=4096, gt=0)
     review_max_targets: int = Field(default=32, gt=0, le=32)
+    # Tokenizerのないendpoint向け。実績は日本語を含むpromptで約3 byte/tokenのため余裕を残す。
+    llm_input_bytes_per_token: int = Field(default=2, ge=1, le=4)
     llm_retry_attempts: int = Field(default=5, gt=0, le=5)
     llm_split_max_depth: int = Field(default=10, gt=0, le=10)
     llm_request_timeout_seconds: float = Field(default=1800, gt=0, le=1800)
@@ -68,6 +70,17 @@ class Config(BaseSettings):
     review_max_findings: int = Field(default=32, gt=0, le=32)
     review_max_revisions: int = Field(default=32, gt=0, le=32)
     review_max_edits_per_revision: int = Field(default=16, gt=0, le=16)
+
+    def input_bytes(self, tokens: int) -> int:
+        """入力token予算を送信前検査で使うUTF-8 byte数へ換算する。
+
+        Args:
+            tokens: `*_INPUT_TOKENS`由来の入力token予算。
+
+        Returns:
+            `LLM_INPUT_BYTES_PER_TOKEN`を乗じたbyte上限。
+        """
+        return tokens * self.llm_input_bytes_per_token
 
 
 def validate_config(config: Config, operation: str | None = None) -> None:

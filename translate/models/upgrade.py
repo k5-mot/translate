@@ -15,7 +15,7 @@ from translate.models.artifacts import (
     TaskState,
 )
 
-ChangeKind = Literal["unchanged", "moved", "modified", "added", "deleted"]
+ChangeKind = Literal["unchanged", "moved", "modified", "added", "deleted", "unverified"]
 
 
 def _validate_aware(value: datetime) -> datetime:
@@ -25,7 +25,7 @@ def _validate_aware(value: datetime) -> datetime:
         value (datetime): Timezone情報を検証する日時。
 
     Returns:
-        datetime: Upgradeの永続化日時をtimezone-aware値に限定する。
+        datetime: timezone情報を持つ入力値。
 
     Raises:
         ValueError: `datetime must be timezone-aware`と判定した場合。
@@ -51,7 +51,7 @@ class VersionChange(DiffChange):
     """利用者へ提示する一つの変更箇所と修正提案。"""
 
     id: str
-    kind: Literal["moved", "modified", "added", "deleted"]
+    kind: Literal["moved", "modified", "added", "deleted", "unverified"]
 
 
 class DiffResponse(ArtifactModel):

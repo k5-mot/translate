@@ -34,7 +34,7 @@ def _stage_translate(upload: UploadedFile, processing_id: str) -> Path:
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        Path: Translate用PDFを原のbasenameで保存する。
+        Path: 保存したPDFのPath。
     """
 
     name = _safe_upload_name(upload.name, {".pdf"})
@@ -60,7 +60,7 @@ def _stage_uploads(
         work_root (Path | None): Uploadの一時保存Root Directory。
 
     Returns:
-        list[Path]: upload群を一時directoryで完成させてから原子的に公開する。
+        list[Path]: 入力順に保存したFile Path。
 
     Raises:
         InputError: `staged inputs already exist for processing ID`、`staged upload path must
@@ -106,7 +106,7 @@ def _stage_review(
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        tuple[Path, Path]: Reviewの原文PDFと訳文PDFをrole別directoryへ保存する。
+        tuple[Path, Path]: 原文PDFと訳文PDFのPath。
     """
 
     source_name = _safe_upload_name(source.name, {".pdf"})
@@ -130,7 +130,7 @@ def _safe_upload_name(name: str, suffixes: set[str]) -> str:
         suffixes (set[str]): 許可する小文字のFile拡張子集合。
 
     Returns:
-        str: upload名を安全な単一basenameと対応拡張子に限定する。
+        str: 拡張子を確認したbasename。
 
     Raises:
         InputError: `upload name must be a safe file basename`、`uploaded file extension is
@@ -160,7 +160,7 @@ def _stage_register(uploads: list[UploadedFile], processing_id: str) -> list[Pat
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        list[Path]: Register入力を保存し、ディレクトリ選択時は相対pathを保持する。
+        list[Path]: 保存した入力Path。
 
     Raises:
         InputError: `at most 100 registration files can be uploaded`、`registration uploads
@@ -209,7 +209,7 @@ def _stored_resume_paths(entry: HistoryEntry) -> list[Path] | None:
         entry (HistoryEntry): 表示または操作対象の処理履歴。
 
     Returns:
-        list[Path] | None: UI保存済み入力をrole順に取得し、最上位記録のhashと比較する。
+        list[Path] | None: role順の保存済みPath。不足や不一致があればNone。
     """
 
     processing_id = entry.processing_id
@@ -275,7 +275,7 @@ def _stage_resume_uploads(
         uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
 
     Returns:
-        list[Path]: CLI処理の再uploadを保存済み入力情報と比較して保存する。
+        list[Path]: role順に保存したPath。
 
     Raises:
         InputError: `processing record is unavailable`、`directory registration must be
@@ -338,7 +338,7 @@ def _stage_upgrade(
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        tuple[Path, Path, Path]: Upgrade三入力をrole別directoryへ保存する。
+        tuple[Path, Path, Path]: 英文v1、英文v2、日本語v1のPath。
     """
 
     values = [
@@ -371,7 +371,7 @@ def _matches_input(upload: UploadedFile, logical_path: str, sha256: str) -> bool
         sha256 (str): 保存済み入力と照合するSHA-256 Hash。
 
     Returns:
-        bool: uploadのbasenameとSHA-256が保存済み入力に一致するかを返す。
+        bool: Basenameとhashが一致する場合はTrue。
     """
 
     return (

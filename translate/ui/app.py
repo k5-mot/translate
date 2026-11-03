@@ -15,10 +15,13 @@ from uuid_utils import uuid7
 from translate.adapters.artifact_store import (
     ArtifactError,
     ArtifactStore,
+    ProcessingInUseError,
+    ProcessingLock,
     load_model,
     write_model,
 )
 from translate.models.artifacts import (
+    ProcessingError,
     RegistrationRecord,
     ReviewRecord,
     TranslationRecord,
@@ -80,7 +83,7 @@ class TranslationApp:
             upload (UploadedFile): 保存または照合するUpload File。
 
         Returns:
-            str: Translate入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -101,7 +104,7 @@ class TranslationApp:
             translation_upload (UploadedFile): Review訳文のUpload File。
 
         Returns:
-            str: Review二入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -121,7 +124,7 @@ class TranslationApp:
             uploads (list[UploadedFile]): 保存または照合するUpload File一覧。
 
         Returns:
-            str: Register入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
 
         Raises:
             InputError: `at least one registration file is required`と判定した場合。
@@ -151,7 +154,7 @@ class TranslationApp:
             translation_v1 (UploadedFile): 比較基準にする日本語v1。
 
         Returns:
-            str: Upgrade三入力を保存し、background workerへ登録する。
+            str: 登録した処理ID。
         """
 
         processing_id = str(uuid7())
@@ -326,7 +329,7 @@ class TranslationApp:
             paths (list[Path]): 列挙された入力Path。
 
         Returns:
-            bool: 検証済み入力を使って処理種類別のResumeを登録する。
+            bool: Resumeを登録できた場合はTrue。
         """
 
         processing_id = entry.processing_id
@@ -521,6 +524,46 @@ class TranslationApp:
         if entry is None:
             self._render_future_state(processing_id)
             return
+        record = entry.record
+        if (
+            record is not None
+            and record.status == "processing"
+            and not self.registry.active(processing_id)
+        ):
+            try:
+                with ProcessingLock(entry.record_path.parent):
+                    current = load_model(entry.record_path, type(record))
+                    if current.status == "processing":
+                        now = datetime.now(UTC)
+                        error = ProcessingError(
+                            code="worker_exited",
+                            message="Worker ended before processing completed.",
+                            cause_type="WorkerError",
+                            retryable=True,
+                        )
+                        current.status = "failed"
+                        current.updated_at = now
+                        current.error = error
+                        if isinstance(
+                            current,
+                            (TranslationRecord, ReviewRecord, UpgradeRecord),
+                        ):
+                            current.tasks = [
+                                task.model_copy(
+                                    update={
+                                        "status": "failed",
+                                        "completed_at": now,
+                                        "error": error,
+                                    }
+                                )
+                                if task.status == "processing"
+                                else task
+                                for task in current.tasks
+                            ]
+                        write_model(entry.record_path, current)
+            except ProcessingInUseError:
+                pass
+            entry = _entry_by_id(processing_id) or entry
         _render_record(entry)
 
     def _render_processing_panel(
@@ -679,7 +722,18 @@ class TranslationApp:
             """選択中セッションの進捗と成果物を表示する。"""
 
             if selected_id is not None:
-                st.title("Translate")
+                entry = next(
+                    (item for item in entries if item.processing_id == selected_id),
+                    None,
+                )
+                titles = {
+                    "translate": "Translate",
+                    "review": "Review",
+                    "upgrade": "Upgrade",
+                    "register": "Register",
+                }
+                title = titles.get(entry.kind, "Translate") if entry else "Translate"
+                st.title(title)
                 self._render_processing_panel(selected_id, entries)
 
         workflow_page = st.Page(

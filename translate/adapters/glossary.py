@@ -2,6 +2,7 @@
 
 import csv
 import io
+import re
 from functools import lru_cache
 
 
@@ -59,7 +60,7 @@ def _csv_row(row: tuple[str, ...]) -> str:
         row (tuple[str, ...]): CSV形式へ直列化する一行分のField列。
 
     Returns:
-        str: 一つのCSV行を標準csv規則で直列化する。
+        str: 行末LFを含むCSV文字列。
     """
 
     output = io.StringIO(newline="")
@@ -75,7 +76,7 @@ def _rows(glossary: str) -> tuple[tuple[str, ...], ...]:
         glossary (str): 対象文書へ適用するCSV形式の用語集。
 
     Returns:
-        tuple[tuple[str, ...], ...]: 同じ用語集をCallごとに再parseせず、変更時だけ読直す。
+        tuple[tuple[str, ...], ...]: Headerを含む全行のTuple。
     """
 
     return tuple(
@@ -91,35 +92,12 @@ def _contains_term(folded_source: str, term: str) -> bool:
         term (str): 用語集から検索する見出し語。
 
     Returns:
-        bool: ASCII英数字の語境界を保ちながら大小文字を無視して検索する。
+        bool: 語の端がASCII英数字の場合に、隣接文字が英数字でない出現があればTrue。
     """
 
     value = term.strip().casefold()
     if not value:
         return False
-    start = folded_source.find(value)
-    while start >= 0:
-        end = start + len(value)
-        left_ok = not value[0].isascii() or not value[0].isalnum()
-        right_ok = not value[-1].isascii() or not value[-1].isalnum()
-        if not left_ok:
-            left_ok = start == 0 or not _ascii_alnum(folded_source[start - 1])
-        if not right_ok:
-            right_ok = end == len(folded_source) or not _ascii_alnum(folded_source[end])
-        if left_ok and right_ok:
-            return True
-        start = folded_source.find(value, start + 1)
-    return False
-
-
-def _ascii_alnum(value: str) -> bool:
-    """一文字がASCII英数字かを返す。
-
-    Args:
-        value (str): ASCII英数字か判定する一文字。
-
-    Returns:
-        bool: 一文字がASCII英数字かを返す。
-    """
-
-    return value.isascii() and value.isalnum()
+    left = r"(?<![0-9a-z])" if re.match(r"[0-9a-z]", value) else ""
+    right = r"(?![0-9a-z])" if re.search(r"[0-9a-z]$", value) else ""
+    return re.search(f"{left}{re.escape(value)}{right}", folded_source) is not None

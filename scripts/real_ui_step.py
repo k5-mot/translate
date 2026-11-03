@@ -41,11 +41,15 @@ def resume(page: Page, operation: str, processing_id: str) -> None:
         page.wait_for_timeout(250)
 
 
-def prepare_versions() -> None:
-    """検証用の英文新版を原本から作り、最後の1ページを削除した変更を記録する。"""
+def prepare_versions(stems: list[str]) -> None:
+    """英文新版を原本の最終ページ削除で作成する。
+
+    Args:
+        stems: 新版を生成する入力PDFの拡張子を除く名前。
+    """
     destination = Path(".tmp/versions")
     destination.mkdir(parents=True, exist_ok=True)
-    for stem in ("sample", "sample1", "sample2", "sample3", "sample4", "sample5"):
+    for stem in stems:
         source = Path("inputs") / f"{stem}.pdf"
         target = destination / source.name
         with pdfium.PdfDocument(source) as document:
@@ -91,12 +95,13 @@ def inspect_result(page: Page, operation: str, processing_id: str) -> None:
     ).to_have_count(0)
 
 
-def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序どおり記述する。
+def main() -> None:  # noqa: C901, PLR0912, PLR0915 — 1工程のbrowser操作を順序どおり記述する。
     """指定された実ファイルをuploadしてUI処理を開始する。"""
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "operation", choices=("register", "translate", "review", "upgrade")
+        "operation",
+        choices=("register", "translate", "review", "upgrade", "prepare-versions"),
     )
     parser.add_argument("files", nargs="*", type=Path)
     parser.add_argument("--resume")
@@ -104,6 +109,9 @@ def main() -> None:  # noqa: C901, PLR0915 — 1工程のbrowser操作を順序�
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--url", default="http://127.0.0.1:8502")
     args = parser.parse_args()
+    if args.operation == "prepare-versions":
+        prepare_versions([path.stem for path in args.files])
+        return
     labels = {
         "register": ["参照資料"],
         "translate": ["英語PDF"],

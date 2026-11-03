@@ -1,13 +1,13 @@
 """問題指摘と修正候補を生成するREVIEW Task。"""
 
 import time
-from datetime import UTC, datetime
 from pathlib import Path
 
 from translate.adapters.artifact_store import (
     llm_call_id,
     load_model,
     write_model,
+    write_task_diagnostics,
 )
 from translate.adapters.llm import (
     LLMClient,
@@ -19,7 +19,6 @@ from translate.common.config import Config
 from translate.models.artifacts import (
     LLMCallArtifact,
     LLMCallIndex,
-    LLMTaskDiagnostics,
     ReviewResult,
 )
 from translate.models.document import TextUnit
@@ -84,7 +83,7 @@ class ReviewTask:
             span_owners: Span IDと所有TextUnit IDの対応。単一要素の対象は入力から補う。
 
         Returns:
-            ReviewResult: ReviewTargetをchunk化し、LLMの指摘と修正候補へ決定的なIDを付ける。
+            ReviewResult: 全Targetの指摘、修正候補および確認済みID。
 
         Raises:
             ValueError: `review model is required`と判定した場合。
@@ -95,7 +94,7 @@ class ReviewTask:
         self.task_directory.mkdir(parents=True, exist_ok=True)
         diagnostics_path = self.task_directory / "diagnostics.json"
         diagnostics: list[str] = []
-        _write_diagnostics(diagnostics_path, diagnostics)
+        write_task_diagnostics(diagnostics_path, "REVIEW", diagnostics)
         owns_client = client is None
         client = client or LLMClient(self.config)
         if owns_client:
@@ -115,7 +114,7 @@ class ReviewTask:
                 + self.config.review_output_tokens
                 - output_tokens
             )
-            payload_budget = input_tokens - overhead
+            payload_budget = self.config.input_bytes(input_tokens) - overhead
             envelope_bytes = len(
                 _user_payload([], [], "", [], payload_budget).encode("utf-8")
             ) - _target_bytes([])
@@ -188,7 +187,7 @@ class ReviewTask:
                 findings=findings,
                 revisions=revisions,
             )
-            _write_diagnostics(diagnostics_path, diagnostics)
+            write_task_diagnostics(diagnostics_path, "REVIEW", diagnostics)
             if publish:
                 write_model(
                     self.task_directory / "call-index.json",
@@ -349,21 +348,3 @@ class ReviewTask:
     ) -> tuple[str, AlignmentResponse]:
         """Agentが選んだ原文と訳文の対応候補を取得する。"""
         return _match_documents(self.calls, units, client, round_number)
-
-
-def _write_diagnostics(path: Path, diagnostics: list[str]) -> None:
-    """REVIEWの適用外項目を処理ディレクトリ直下へ保存する。
-
-    Args:
-        path (Path): REVIEW診断を書き込むJSON FileのPath。
-        diagnostics (list[str]): 検証中に追記する診断Message列。
-    """
-
-    write_model(
-        path,
-        LLMTaskDiagnostics(
-            task="REVIEW",
-            diagnostics=diagnostics,
-            updated_at=datetime.now(UTC),
-        ),
-    )

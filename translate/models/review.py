@@ -58,7 +58,7 @@ class ReviewTarget(ReviewModel):
             document (Document): 変換または検証対象のDocument。
 
         Returns:
-            list[ReviewTarget]: Translate後のDocument内IDからREVIEWの対象を作る。
+            list[Self]: 本文のあるTextUnitごとのReview対象。数式は除く。
         """
 
         formula_ids = {

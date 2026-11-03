@@ -77,7 +77,7 @@ class QdrantStore:
             vector_size (int): Qdrant CollectionのVector次元数。
 
         Returns:
-            bool: 新revisionを確認後に旧revisionへ置換し、既存なら書込みを省略する。
+            bool: 新規書込みをした場合はTrue、既存を流用した場合はFalse。
 
         Raises:
             RuntimeError: `Qdrant registration verification failed`と判定した場合。
@@ -199,7 +199,7 @@ class QdrantStore:
             limit (int): Qdrantから取得する最大件数。
 
         Returns:
-            list[dict[str, Any]]: Qdrantからscore降順、同score時Point ID順で参照文脈を返す。
+            list[dict[str, Any]]: IDとscoreへPayloadを展開した検索結果。
         """
 
         client = self.client

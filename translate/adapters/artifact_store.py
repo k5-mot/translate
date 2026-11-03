@@ -23,6 +23,7 @@ from translate.adapters.llm import LLMError
 from translate.models.artifacts import (
     ArtifactFile,
     LLMCallArtifact,
+    LLMTaskDiagnostics,
     LLMTaskName,
     ProcessingError,
     ReviewRecord,
@@ -80,11 +81,8 @@ def sha256_file(path: Path) -> str:
         OSError: Fileを開けない、または読み込めない場合。
     """
 
-    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
 def canonical_hash(value: BaseModel | Any) -> str:
@@ -94,7 +92,7 @@ def canonical_hash(value: BaseModel | Any) -> str:
         value (BaseModel | Any): JSONへ正規化してHashを計算する値。
 
     Returns:
-        str: Pydantic JSON modeまたはJSON互換値のcanonical SHA-256を返す。
+        str: key順に整列したJSONの、小文字64桁のSHA-256 Hash。
     """
 
     data = to_jsonable_python(value)
@@ -182,7 +180,7 @@ def load_model[ModelT: BaseModel](path: Path, model_type: type[ModelT]) -> Model
         model_type (type[ModelT]): JSON検証用のPydantic Model Type。
 
     Returns:
-        ModelT: JSON成果物を読み、指定Pydantic modelで検証する。
+        ModelT: 検証済みのModel Instance。
 
     Raises:
         ArtifactError: JSON成果物を読み、指定Pydantic modelで検証する処理を完了できない場合。
@@ -252,7 +250,7 @@ def begin_llm_call(
         round_number: Agentによる再確認の連番。
 
     Returns:
-        LLMCallArtifact: 送信前のCall状態を原子的に保存する。
+        LLMCallArtifact: `processing`状態で保存したCall記録。
     """
 
     now = datetime.now(UTC)
@@ -296,7 +294,7 @@ def complete_llm_call(
         child_call_ids (list[str] | None): 分割実行で生成した子Call ID列。
 
     Returns:
-        LLMCallArtifact: 検証済み応答を先に保存し、そのhash付きCall状態を公開する。
+        LLMCallArtifact: 応答hashと使用量を記録した更新後のCall記録。
     """
 
     response_path = directory / "response.json"
@@ -333,7 +331,7 @@ def fail_llm_call(
         attempts (int): LLMError以外の失敗で消費した試行回数。LLMErrorでは実試行回数を使う。
 
     Returns:
-        LLMCallArtifact: LLM Call失敗を本文なしのProcessingErrorとして保存する。
+        LLMCallArtifact: `failed`状態とErrorを記録した更新後のCall記録。
     """
 
     updated = artifact.model_copy(
@@ -369,7 +367,7 @@ def mark_split_llm_call(
         child_call_ids (list[str]): 分割実行で生成した子Call ID列。
 
     Returns:
-        LLMCallArtifact: 親Callを再送しないよう子Call IDとsplit状態を先に保存する。
+        LLMCallArtifact: `split`状態と子Call IDを記録した更新後のCall記録。
     """
 
     updated = artifact.model_copy(
@@ -399,7 +397,7 @@ def load_reusable_llm_response[ResponseT: BaseModel](
         response_type (type[ResponseT]): 応答を検証するPydantic Model Type。
 
     Returns:
-        tuple[LLMCallArtifact, ResponseT] | None: ID、fingerprint、hash、Schemaが一致する成功Callだけを再利用する。
+        tuple[LLMCallArtifact, ResponseT] | None: Call記録と検証済み応答の組。再利用できない場合はNone。
     """
 
     call_path = directory / "call.json"
@@ -420,6 +418,44 @@ def load_reusable_llm_response[ResponseT: BaseModel](
         return None
 
 
+def previous_llm_attempts(directory: Path) -> int:
+    """Resume前の累計試行数を、読める場合だけ引き継ぐ。
+
+    Args:
+        directory (Path): LLM Call Artifactの保存Directory。
+
+    Returns:
+        int: 保存済みの試行回数。記録がない、または壊れている場合は0。
+    """
+
+    path = directory / "call.json"
+    if not path.is_file():
+        return 0
+    try:
+        return load_model(path, LLMCallArtifact).attempts
+    except ArtifactError:
+        return 0
+
+
+def write_task_diagnostics(
+    path: Path, task: LLMTaskName, diagnostics: list[str]
+) -> None:
+    """LLM Taskの適用外項目を診断JSONへ保存する。
+
+    Args:
+        path (Path): 診断を書き込むJSON FileのPath。
+        task (LLMTaskName): 診断を記録するTask名。
+        diagnostics (list[str]): 検証中に追記した診断Message列。
+    """
+
+    write_model(
+        path,
+        LLMTaskDiagnostics(
+            task=task, diagnostics=diagnostics, updated_at=datetime.now(UTC)
+        ),
+    )
+
+
 def describe_artifact(processing_directory: Path, path: Path) -> ArtifactFile:
     """処理ディレクトリ配下のfileをArtifactFileへ変換する。
 
@@ -428,7 +464,7 @@ def describe_artifact(processing_directory: Path, path: Path) -> ArtifactFile:
         path (Path): Artifact情報を作成する公開済みFileのPath。
 
     Returns:
-        ArtifactFile: 処理ディレクトリ配下のfileをArtifactFileへ変換する。
+        ArtifactFile: 処理Directory基準のPOSIX相対Path、Hash、Sizeを持つ情報。
 
     Raises:
         ArtifactError: `artifact must be a file inside the processing directory`と判定した場合。
@@ -458,7 +494,7 @@ def describe_staged_artifact(
         staged_path (Path): 一時Directory内の成果物Path。
 
     Returns:
-        ArtifactFile: 一時fileの内容を、公開後の相対pathでArtifactFileへ変換する。
+        ArtifactFile: 公開後の相対Pathと一時Fileの内容Hash、Sizeを持つ情報。
 
     Raises:
         ArtifactError: `staged artifact must publish inside processing directory`と判定した場合。
@@ -488,7 +524,7 @@ def task_artifacts(
         task_directory (Path): 対象Taskの成果物Directory。
 
     Returns:
-        list[ArtifactFile]: Task directory内の公開fileをpath順のArtifact一覧へ変換する。
+        list[ArtifactFile]: 相対Path順の成果物情報。Fileがない場合は空。
     """
 
     return [
@@ -524,7 +560,7 @@ class ArtifactStore:
             fingerprint (str): 文書由来の入力から算出した再利用判定Hash。
 
         Returns:
-            bool: 成功状態、fingerprintおよび全成果物hashが一致するTaskだけを再利用する。
+            bool: 再利用できる場合はTrue。
         """
 
         state = next((item for item in self.record.tasks if item.task == task), None)
@@ -677,7 +713,7 @@ def processing_directory(outputs: Path, source: Path, processing_id: str) -> Pat
         processing_id (str): 新規処理またはResume対象の処理ID。
 
     Returns:
-        Path: 入力basenameと処理IDから成果物rootを決定する。
+        Path: `outputs/<入力名>/<処理ID>`形式のPath。
     """
 
     basename = source.stem if source.is_file() else source.name
@@ -718,7 +754,7 @@ def _replace_directory(temporary: Path, path: Path) -> Path | None:
         path (Path): 一時Directoryの公開先Task Directory。
 
     Returns:
-        Path | None: 既存Taskを退避し、一時directoryを同一volume内で公開する。
+        Path | None: 退避した旧DirectoryのPath。既存Taskがない場合はNone。
 
     Raises:
         ArtifactError: `f'refusing to replace linked task directory: {path}'`と判定した場合。
@@ -757,7 +793,7 @@ class ProcessingLock:
         """非待機でlockを取得し、競合時は専用例外を送出する。
 
         Returns:
-            Self: 非待機でlockを取得し、競合時は専用例外を送出する。
+            Self: 取得済みlockを保持するこのInstance。
 
         Raises:
             ProcessingInUseError: `f'processing ID is already in use:

@@ -39,6 +39,14 @@ from translate.pipeline import (
 from translate.pipeline.review import ReviewAgent
 from translate.pipeline.upgrade import UpgradeAgent
 
+_identical_changes = UpgradeAgent._identical_changes  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def agent_loop_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一本文の文書でもAgentの操作を検証できるよう事前照合を外す。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", lambda _self: [])
+
 
 def document(**units: str) -> Document:
     """IDと本文を保持する小さな比較用文書を作る。"""
@@ -68,7 +76,11 @@ def test_agent_fits_observation_without_cutting_units(
     config: Config, monkeypatch: pytest.MonkeyPatch, operation: str, count: int
 ) -> None:
     """状態とSchema込みの上限を守り、候補本文を切らず後続の閲覧位置を保持する。"""
-    client = LLMClient(config.model_copy(update={"review_input_tokens": 11264}))
+    client = LLMClient(
+        config.model_copy(
+            update={"review_input_tokens": 11264, "llm_input_bytes_per_token": 1}
+        )
+    )
     units = agent_units(
         {
             "source": document(
@@ -1023,10 +1035,7 @@ def test_agent_recovers_invalid_action_without_losing_confirmed_units(
 @pytest.mark.parametrize("kind", ["review", "upgrade"])
 @pytest.mark.parametrize(
     "case",
-    [
-        (LLMInvalidResponseError, TimeoutError, 12),
-        (LLMConnectionError, LLMConnectionError, 1),
-    ],
+    [(LLMConnectionError, LLMConnectionError, 1)],
 )
 def test_agent_action_failure_keeps_stop_conditions(
     tmp_path: Path,
@@ -1145,20 +1154,48 @@ def test_review_agent_reselects_after_invalid_operation_response(
     assert not (tmp_path / "calls" / failed.call_id / "response.json").exists()
 
 
-@pytest.mark.parametrize(
-    "case",
-    [
-        (LLMInvalidResponseError, TimeoutError, 12),
-        (LLMConnectionError, LLMConnectionError, 1),
-    ],
-)
+def test_review_records_repeated_invalid_match_as_unverified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """同じ照合の契約不正が3回続くと、未確認として残し4回目を送信しない。"""
+
+    def failure(_kwargs: dict[str, object]) -> BaseModel:
+        """操作のLLM要求を契約不正にする。"""
+        message = "Operation failed"
+        raise LLMInvalidResponseError(message)
+
+    action = AgentAction(
+        operation="match", references={"source": ["en"], "translation": ["ja"]}
+    )
+    scripted(
+        monkeypatch,
+        [
+            *[item for _ in range(3) for item in (action, failure)],
+            action,
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = ReviewAgent(
+        {"source": document(en="Text"), "translation": document(ja="訳文")},
+        tmp_path,
+        tmp_path,
+        config,
+    ).run()
+    assert sorted(group.kind for group in result.groups) == [
+        "source_only",
+        "translation_only",
+    ]
+    assert len(list(tmp_path.glob("calls/*/call.json"))) == 3
+
+
+@pytest.mark.parametrize("case", [(LLMConnectionError, LLMConnectionError, 1)])
 def test_review_operation_failure_retains_stop_conditions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config: Config,
     case: tuple[type[LLMError], type[Exception], int],
 ) -> None:
-    """契約不正の反復は12stepで止まり、接続失敗は対象選び直しで再送しない。"""
+    """接続失敗は対象選び直しで再送しない。"""
     error_type, expected_error, attempts = case
 
     def failure(_kwargs: dict[str, object]) -> BaseModel:
@@ -2112,3 +2149,90 @@ def test_agent_retries_action_from_state_when_observation_exceeds_budget(
     agent.run()
 
     assert len(observations) == 2
+
+
+def test_upgrade_confirms_identical_units_without_llm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """全英文が同一順序で一致する場合はLLMを呼ばず変更なしで完了する。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", _identical_changes)
+    calls = scripted(monkeypatch, [])
+    result = UpgradeAgent(
+        {
+            "source_v1": document(a="One.", b="Two."),
+            "source_v2": document(x="One.", y="Two."),
+            "translation_v1": document(ja="一。"),
+        },
+        tmp_path,
+        config,
+    ).run()
+    assert not calls
+    assert result.changes == []
+    assert result.reviewed_source_v2_ids == ["x", "y"]
+
+
+def test_upgrade_sends_only_differing_units_to_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """一致した英文は確定済みとなり、差分のIDだけがAgentの未確認に残る。"""
+    monkeypatch.setattr(UpgradeAgent, "_identical_changes", _identical_changes)
+    agent = UpgradeAgent(
+        {
+            "source_v1": document(a="One.", b="Old."),
+            "source_v2": document(x="One.", y="New."),
+            "translation_v1": document(ja="一。"),
+        },
+        tmp_path,
+        config,
+    )
+    agent.confirmed = []
+    assert [
+        (item.source_v1_ids, item.source_v2_ids)
+        for _, item in agent._identical_changes()  # noqa: SLF001
+    ] == [(["a"], ["x"])]
+
+
+@pytest.mark.parametrize("interleaved", [False, True])
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+def test_agent_runs_next_work_after_repeated_invalid_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    kind: str,
+    interleaved: bool,  # noqa: FBT001
+) -> None:
+    """進捗のないまま応答不正が3回に達すると、LLMの判断なしで未確認の作業へ進む。"""
+    roles = (
+        ["source", "translation"]
+        if kind == "review"
+        else ["source_v1", "source_v2", "translation_v1"]
+    )
+    expected = AlignmentResponse if kind == "review" else DiffResponse
+
+    def invalid(kwargs: dict[str, object]) -> BaseModel:
+        """Agent判断を応答不正にする。"""
+        assert kwargs["response_type"] is AgentAction
+        message = "Action failed"
+        raise LLMInvalidResponseError(message)
+
+    def next_work(kwargs: dict[str, object]) -> BaseModel:
+        """判断を挟まず比較操作が送信されたことを確認して止める。"""
+        assert kwargs["response_type"] is expected
+        message = "stop"
+        raise LLMConnectionError(message)
+
+    idle = AgentAction(operation="overview")
+    answers = (
+        [invalid, idle, invalid, idle, invalid, next_work]
+        if interleaved
+        else [invalid, invalid, invalid, next_work]
+    )
+    scripted(monkeypatch, answers)
+    documents = {role: document(unit="Text") for role in roles}
+    agent = (
+        ReviewAgent(documents, tmp_path, tmp_path, config)
+        if kind == "review"
+        else UpgradeAgent(documents, tmp_path, config)
+    )
+    with pytest.raises(LLMConnectionError):
+        agent.run()
