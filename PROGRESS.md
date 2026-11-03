@@ -26,7 +26,7 @@ Reviewの訳文はTranslateのDOCXをWordでPDF化したものを使う。Upgrad
 
 sample2 Translateの内部REVIEWでは、2026-11-03 15:19に1対象が`Assessment references an unselected or unowned span`で5回のLLM試行後も失敗した。その後、処理は次の対象へ継続し、Translate全体が成功して成果物を作成した。
 
-sample2 Reviewは2026-11-03 16:15に開始。17:07時点でLLM応答検証の拒否が150件、失敗したLLM callが24件あり、7回の`Using deterministic Agent action`を記録した。workerは`processing`のまま次の照合を続けており、最終結果は未確定。
+sample2 Reviewは2026-11-03 16:15に開始。17:12時点でLLM応答検証の拒否が183件、失敗したLLM callが30件あり、9回の`Using deterministic Agent action`を記録した。workerは`processing`のまま次の照合を続けており、最終結果は未確定。
 
 ## ✅ 実装済みの修正
 
