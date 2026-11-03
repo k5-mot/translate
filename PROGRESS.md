@@ -22,13 +22,13 @@ Reviewの訳文はTranslateのDOCXをWordでPDF化したものを使う。Upgrad
 | sample4 | 成功 (`01a19d75-7293-7281-a82a-53c5b5f69c70`) | 成功 (`01a19d7e-7d4e-7600-b001-4b4efd8b8979`) | 成功 (`01a19d9a-a44d-7d73-980e-61ede59e59bb`) | 成功 (`01a19de8-a4ba-7b80-8e27-37e629478037`) |
 | sample3 | 成功 (`01a19ded-1c63-7382-a00f-9efa86f6b2bd`) | 成功 (`01a19df6-d813-7fa1-832d-0e89ea9ed911`) | 成功 (`01a19e1a-96b2-7f73-835e-6adaf2252131`) | 成功 (`01a19e38-0950-7641-9c93-077cc9e0d421`) |
 | sample2 | 成功 (`01a19f9d-ef80-7c83-a096-3637c23f8bfc`) | 成功 (`01a19fc3-3534-7671-8bb0-baf717c4b0df`, 88ページ・859 units) | 成功 (`01a1a043-6246-76b0-9fcb-a743005bb887`) | 成功 (`01a1a144-3d5f-7a82-b3f7-44c7ccedbd79`) |
-| sample1 | 処理中 (`01a1a14a-2b3c-7961-980c-4bd975341274`) | 実行待ち | 実行待ち | 実行待ち |
+| sample1 | 成功 (`01a1a14a-2b3c-7961-980c-4bd975341274`) | 処理中 (`01a1a1fe-c9fa-77b0-bc92-5bc68e83de36`) | 実行待ち | 実行待ち |
 
 sample2 Translateの内部REVIEWでは、2026-11-03 15:19に1対象が`Assessment references an unselected or unowned span`で5回のLLM試行後も失敗した。その後、処理は次の対象へ継続し、Translate全体が成功して成果物を作成した。
 
 sample2 Reviewは2026-11-03 16:15に開始。18:13にEmbedding endpointのHTTP 500で一度失敗したが、20:06にUIから同じIDでResumeし、20:55に成功した。最終ログはLLM完了call 461件、応答検証拒否582件、決定的fallback32回。Review結果画面の確認後、sample2 Upgradeも成功した（`01a1a144-3d5f-7a82-b3f7-44c7ccedbd79`）。
 
-sample1 Registerは21:02に開始。PDFの36 partすべてをDocling変換し、21:27からEmbedding 1,037件を要求中。応答後にRegisterの成果物確認を行い、Translate、Review、Upgradeの順で続ける。
+sample1 Registerは11月3日21:02に開始し、11月4日00:19に成功した。PDFの36 partをDocling変換し、Embedding 1,037件・1024次元の登録まで完了。続くTranslateは00:19に開始し、01:21時点でLLM翻訳中。Translate完了後にReview、Upgradeを順に実行する。
 
 ## ✅ 実装済みの修正
 
