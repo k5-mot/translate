@@ -24,6 +24,8 @@ Reviewの訳文はTranslateのDOCXをWordでPDF化したものを使う。Upgrad
 | sample2 | 成功 (`01a19f9d-ef80-7c83-a096-3637c23f8bfc`) | 処理中 (`01a19fc3-3534-7671-8bb0-baf717c4b0df`) | 実行待ち | 実行待ち |
 | sample1 | 実行待ち | 実行待ち | 実行待ち | 実行待ち |
 
+sample2 Translateの内部REVIEWでは、2026-11-03 15:19に1対象が`Assessment references an unselected or unowned span`で5回のLLM試行後も失敗した。その後、処理は次の対象へ継続しており、Translate全体の状態は`processing`。
+
 ## ✅ 実装済みの修正
 
 - Upgrade: 同一英文を`difflib`で事前照合し、LLMへ送らない
