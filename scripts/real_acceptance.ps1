@@ -119,6 +119,7 @@ if ($SelfCheck) {
 if (@(git status --porcelain --untracked-files=no -- translate scripts main.py pyproject.toml uv.lock).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
 Save-State -Snapshot $state -Path $statePath
 try {
+    Invoke-Logged (@('uv', 'run', 'python', 'scripts/real_ui_step.py', 'prepare-versions') + $validationSamples) | Out-Null
     Ensure-UiServer
     # 各PDFの全工程を順番に実行し、修正後は新規IDで先頭からやり直す。
     foreach ($stem in $validationSamples) {
@@ -129,7 +130,7 @@ try {
                 'register' { @($source) }
                 'translate' { @($source) }
                 'review' { @($source, $japanesePdf) }
-                'upgrade' { @($source, $source, $japanesePdf) }
+                'upgrade' { @($source, (Join-Path $root ".tmp/versions/$stem.pdf"), $japanesePdf) }
             }
             $identifier = Run-Ui $operation $files "$stem/$operation"
             $recordStem = if ($operation -eq 'review') { 'document.ja-office' } else { $stem }
