@@ -7,7 +7,7 @@
 - 作業ブランチ: `feature/reduce-scratch-implementations`
 - 実装: 完了。Review／Upgrade Agentの連続した操作選択失敗からの回復を追加
 - 品質検査: 回帰テスト68件成功。Ruff・型検査は全体実行中
-- 実機検証: sample2、sample1を各Register→Translate→Review→Upgradeの順で再検証中
+- 実機検証: sample2 RegisterでEmbeddingの応答を待機中。実行記録は`.tmp/acceptance/20261103-131445-8554b4b8/state.json`
 
 ## 🧪 実機検証
 
@@ -21,7 +21,7 @@ Reviewの訳文はTranslateのDOCXをWordでPDF化したものを使う。Upgrad
 | sample5 | 成功 (`01a19ca0-2f7f-7cd3-8ae1-8b1c0fbadc46`) | 成功 (`01a19cc6-99de-7441-9c48-f0bce42649cb`) | 成功 (`01a19cf1-bc56-7be0-8049-5b34d11b211a`) | 成功 (`01a19d2e-8f8a-79f2-9616-4a7d66f60b09`) |
 | sample4 | 成功 (`01a19d75-7293-7281-a82a-53c5b5f69c70`) | 成功 (`01a19d7e-7d4e-7600-b001-4b4efd8b8979`) | 成功 (`01a19d9a-a44d-7d73-980e-61ede59e59bb`) | 成功 (`01a19de8-a4ba-7b80-8e27-37e629478037`) |
 | sample3 | 成功 (`01a19ded-1c63-7382-a00f-9efa86f6b2bd`) | 成功 (`01a19df6-d813-7fa1-832d-0e89ea9ed911`) | 成功 (`01a19e1a-96b2-7f73-835e-6adaf2252131`) | 成功 (`01a19e38-0950-7641-9c93-077cc9e0d421`) |
-| sample2 | 実行予定 | 実行予定 | 実行予定 | 実行予定 |
+| sample2 | 処理中 (`01a19f9d-ef80-7c83-a096-3637c23f8bfc`) | 実行待ち | 実行待ち | 実行待ち |
 | sample1 | 実行待ち | 実行待ち | 実行待ち | 実行待ち |
 
 ## ✅ 実装済みの修正
