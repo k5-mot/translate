@@ -1,0 +1,364 @@
+{
+  "permissions": [
+    {
+      "action": "shell",
+      "resource": "git status *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git log *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git show *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "ls",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "ls -la",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "find",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "head",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "which",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "dir",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "pwd",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "Get-Location",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "Get-ChildItem",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "Get-ChildItem -Force",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "grep *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "sed *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "rg *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "Get-Content *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "Select-String *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git merge *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git rebase *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "uv add *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "uv remove *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "uv sync *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "uv pip install *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "pip install *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "python -m pip install *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "npm install *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "npm ci *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "pnpm add *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "pnpm install *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "pnpm update *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "podman build *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "podman run *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "podman rm *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "podman system prune *",
+      "effect": "ask"
+    },
+    {
+      "action": "shell",
+      "resource": "git reset --hard *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git clean *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git push --force *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git push -f *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -rf *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rm -fr *",
+      "effect": "deny"
+    },
+    {
+      "action": "external_directory",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".env",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".env.sample",
+      "effect": "allow"
+    },
+    {
+      "action": "read",
+      "resource": ".env.local",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".env.development",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".env.production",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".env.test",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "secrets/**",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "credentials/**",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".npmrc",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": ".pypirc",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "~/.ssh/**",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "~/.aws/**",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "~/.config/gcloud/**",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": ".git",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": ".rulesync/**",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": ".claude/**",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": ".codex/**",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": ".github/workflows/**",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "CLAUDE.md",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "AGENTS.md",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "pyproject.toml",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "uv.lock",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "package.json",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "package-lock.json",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "pnpm-lock.yaml",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "Dockerfile",
+      "effect": "ask"
+    },
+    {
+      "action": "edit",
+      "resource": "Containerfile",
+      "effect": "ask"
+    }
+  ]
+}
