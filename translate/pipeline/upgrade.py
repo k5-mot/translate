@@ -336,12 +336,16 @@ class UpgradeAgent:
                 if idle_steps >= 36 or time.monotonic() >= deadline:
                     raise TimeoutError("Upgrade Agent reached its step or time limit")
                 try:
-                    action = choose_action(
-                        self.client,
-                        "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
-                        state,
-                        observation,
-                        self.units,
+                    action = (
+                        _fallback_action(state)
+                        if action_failures >= ACTION_FAILURE_LIMIT
+                        else choose_action(
+                            self.client,
+                            "Compare English source_v1/source_v2 and Japanese translation_v1. List changes and proposed edits.",
+                            state,
+                            observation,
+                            self.units,
+                        )
                     )
                 except LLMInputExceededError:
                     observation = {
@@ -355,12 +359,11 @@ class UpgradeAgent:
                     }
                     idle_steps += 1
                     action_failures += 1
-                    if action_failures < ACTION_FAILURE_LIMIT:
-                        continue
-                    # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
-                    logger.warning("Using deterministic Agent action")
-                    action = _fallback_action(state)
-                action_failures = 0
+                    if action_failures >= ACTION_FAILURE_LIMIT:
+                        # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                        logger.warning("Using deterministic Agent action")
+                        idle_steps = 0
+                    continue
                 if action.operation == "finish":
                     if any(pending.values()):
                         raise InputError(
@@ -518,6 +521,8 @@ class UpgradeAgent:
                     for _, item in self.confirmed
                 )
                 idle_steps = idle_steps + 1 if after <= before else 0
+                if after > before:
+                    action_failures = 0
                 if action_group_key is not None:
                     if after <= before:
                         group_steps[action_group_key] = (

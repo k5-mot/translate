@@ -2192,11 +2192,16 @@ def test_upgrade_sends_only_differing_units_to_agent(
     ] == [(["a"], ["x"])]
 
 
+@pytest.mark.parametrize("interleaved", [False, True])
 @pytest.mark.parametrize("kind", ["review", "upgrade"])
 def test_agent_runs_next_work_after_repeated_invalid_actions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, kind: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: Config,
+    kind: str,
+    interleaved: bool,  # noqa: FBT001
 ) -> None:
-    """操作選択の応答不正が3回続くと、LLMの判断なしで未確認の作業へ進む。"""
+    """進捗のないまま応答不正が3回に達すると、LLMの判断なしで未確認の作業へ進む。"""
     roles = (
         ["source", "translation"]
         if kind == "review"
@@ -2216,7 +2221,13 @@ def test_agent_runs_next_work_after_repeated_invalid_actions(
         message = "stop"
         raise LLMConnectionError(message)
 
-    scripted(monkeypatch, [invalid, invalid, invalid, next_work])
+    idle = AgentAction(operation="overview")
+    answers = (
+        [invalid, idle, invalid, idle, invalid, next_work]
+        if interleaved
+        else [invalid, invalid, invalid, next_work]
+    )
+    scripted(monkeypatch, answers)
     documents = {role: document(unit="Text") for role in roles}
     agent = (
         ReviewAgent(documents, tmp_path, tmp_path, config)

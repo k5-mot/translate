@@ -304,12 +304,16 @@ class ReviewAgent:
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
                 try:
-                    action = choose_action(
-                        self.client,
-                        "Review English source against Japanese translation and propose edits.",
-                        state,
-                        observation,
-                        self.units,
+                    action = (
+                        _fallback_action(state)
+                        if action_failures >= ACTION_FAILURE_LIMIT
+                        else choose_action(
+                            self.client,
+                            "Review English source against Japanese translation and propose edits.",
+                            state,
+                            observation,
+                            self.units,
+                        )
                     )
                 except LLMInputExceededError:
                     observation = {
@@ -323,12 +327,11 @@ class ReviewAgent:
                     }
                     idle_steps += 1
                     action_failures += 1
-                    if action_failures < ACTION_FAILURE_LIMIT:
-                        continue
-                    # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
-                    logger.warning("Using deterministic Agent action")
-                    action = _fallback_action(state)
-                action_failures = 0
+                    if action_failures >= ACTION_FAILURE_LIMIT:
+                        # 判断を繰り返し得られない間も、状態から決まる次の作業は止めない。
+                        logger.warning("Using deterministic Agent action")
+                        idle_steps = 0
+                    continue
                 if action.operation == "finish":
                     if any(pending.values()) or unchecked or self.conflicts:
                         raise InputError(
@@ -512,6 +515,8 @@ class ReviewAgent:
                     + len(self.result.reviewed_target_ids)
                 )
                 idle_steps = idle_steps + 1 if progress_after <= progress_before else 0
+                if progress_after > progress_before:
+                    action_failures = 0
                 if action_group_key is not None:
                     if progress_after <= progress_before:
                         group_steps[action_group_key] = (
