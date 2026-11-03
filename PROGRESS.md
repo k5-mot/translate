@@ -28,7 +28,7 @@ sample2 Translateの内部REVIEWでは、2026-11-03 15:19に1対象が`Assessmen
 
 sample2 Reviewは2026-11-03 16:15に開始。18:13にEmbedding endpointのHTTP 500で一度失敗したが、20:06にUIから同じIDでResumeし、20:55に成功した。最終ログはLLM完了call 461件、応答検証拒否582件、決定的fallback32回。Review結果画面の確認後、sample2 Upgradeも成功した（`01a1a144-3d5f-7a82-b3f7-44c7ccedbd79`）。
 
-sample1 Registerは11月3日21:02に開始し、11月4日00:19に成功した。PDFの36 partをDocling変換し、Embedding 1,037件・1024次元の登録まで完了。続くTranslateは00:19に開始し、01:21時点でLLM翻訳中。Translate完了後にReview、Upgradeを順に実行する。
+sample1 Registerは11月3日21:02に開始し、11月4日00:19に成功した。PDFの36 partをDocling変換し、Embedding 1,037件・1024次元の登録まで完了。続くTranslateは00:19に開始し、02:54時点で処理中。LLM完了callは410件、応答検証拒否108件、失敗call 9件。Translate完了後にReview、Upgradeを順に実行する。
 
 ## ✅ 実装済みの修正
 
