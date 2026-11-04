@@ -203,6 +203,9 @@ class UpgradeAgent:
             config: LLMの接続と処理予算。
         """
         self.units = agent_units(documents)
+        self.contexts = {
+            role: document.unit_contexts() for role, document in documents.items()
+        }
         self.directory = directory
         self.config = config
 
@@ -232,7 +235,9 @@ class UpgradeAgent:
                 "do not rewrite the full document."
             )
             glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
-            self.diff = DiffTask(self.client, self.directory, rules, glossary)
+            self.diff = DiffTask(
+                self.client, self.directory, rules, glossary, contexts=self.contexts
+            )
             self.confirmed: list[tuple[str, DiffChange]] = []
             self.call_ids: list[str] = []
 
@@ -467,6 +472,7 @@ class UpgradeAgent:
                             self.config.input_bytes(self.config.review_input_tokens)
                             // 3,
                         ),
+                        contexts=self.contexts,
                     )
                 else:
                     try:

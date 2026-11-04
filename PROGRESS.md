@@ -4,10 +4,12 @@
 
 ## 🧭 現在の状況
 
-- 作業ブランチ: `feature/reduce-scratch-implementations`
-- 実装: 完了。Review／Upgrade Agentの連続した操作選択失敗からの回復を追加
-- 品質検査: 回帰テスト68件成功。Ruff・型検査は全体実行中
-- 実機検証: sample2 RegisterでEmbeddingの応答を待機中。実行記録は`.tmp/acceptance/20261103-131445-8554b4b8/state.json`
+- 作業ブランチ: `feature/improve-unit-matching`（`main`の`11146bc`から分岐）
+- 実装: Review／Upgradeの候補選択と照合に構造情報を追加し、照合時のIDを文書ごとに短縮
+- 品質検査: unit／regressionテスト327件成功。Ruff・型検査成功
+- 精度検証: sample／sample1〜5の保存済み結果から誤対応を確認。sampleとsample5の既知の失敗候補は実LLMで期待する3組ずつに一致。全文の再検証は継続中
+
+監査した結果、採用した修正と再検証の証跡は[対応付け精度検証](docs/MATCHING_VALIDATION.md)へ記録する。
 
 ## 🧪 実機検証
 

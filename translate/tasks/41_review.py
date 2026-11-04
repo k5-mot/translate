@@ -45,7 +45,13 @@ class ReviewTask:
     """原文と訳文の対応付け・評価を、共有する規則とCall保存先で実行する。"""
 
     def __init__(
-        self, config: Config, task_directory: Path, rules: str, glossary: str
+        self,
+        config: Config,
+        task_directory: Path,
+        rules: str,
+        glossary: str,
+        *,
+        contexts: dict[str, dict[str, dict[str, str]]] | None = None,
     ) -> None:
         """比較処理の依存関係と保存済み要求の管理を準備する。
 
@@ -54,11 +60,13 @@ class ReviewTask:
             task_directory: Callと評価結果の保存先。
             rules: 対応付けと品質評価の判断規則。
             glossary: 原文に関連する語を選ぶCSV用語集。
+            contexts: 文書roleとTextUnit IDごとの照合用構造情報。
         """
         self.config = config
         self.task_directory = task_directory
         self.rules = rules
         self.calls = SavedLLMCalls("REVIEW", task_directory, rules, glossary)
+        self.contexts = contexts or {}
 
     def run(
         self,
@@ -347,4 +355,4 @@ class ReviewTask:
         round_number: int,
     ) -> tuple[str, AlignmentResponse]:
         """Agentが選んだ原文と訳文の対応候補を取得する。"""
-        return _match_documents(self.calls, units, client, round_number)
+        return _match_documents(self.calls, units, client, round_number, self.contexts)

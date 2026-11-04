@@ -12,7 +12,13 @@ class DiffTask:
     """Agentの接続と判断規則を共有し、版間の変更と修正提案を検証する。"""
 
     def __init__(
-        self, client: LLMClient, directory: Path, rules: str, glossary: str
+        self,
+        client: LLMClient,
+        directory: Path,
+        rules: str,
+        glossary: str,
+        *,
+        contexts: dict[str, dict[str, dict[str, str]]] | None = None,
     ) -> None:
         """Agentが所有する接続と、比較結果の保存先を受け取る。
 
@@ -21,9 +27,11 @@ class DiffTask:
             directory: DIFFのCall保存先。
             rules: 比較と提案の判断規則。
             glossary: 原文と照合するCSV用語集。
+            contexts: 文書roleとTextUnit IDごとの照合用構造情報。
         """
         self.client = client
         self.calls = SavedLLMCalls("DIFF", directory, rules, glossary)
+        self.contexts = contexts or {}
 
     def run(
         self,
@@ -92,7 +100,18 @@ class DiffTask:
                 raise ValueError("Invalid or duplicated previous translation reference")
 
         payload: dict[str, object] = {
-            role: [{"id": unit.id, "text": unit.text("source")} for unit in values]
+            role: [
+                {
+                    "id": unit.id,
+                    "text": unit.text("source"),
+                    **(
+                        {"context": self.contexts[role][unit.id]}
+                        if unit.id in self.contexts.get(role, {})
+                        else {}
+                    ),
+                }
+                for unit in values
+            ]
             for role, values in units.items()
         }
         return self.calls.request(
@@ -114,6 +133,10 @@ class DiffTask:
             "Cover every selected English ID exactly once. Propose Japanese edits for added/modified text. "
             "Use only IDs from the corresponding input role. Leave translation_v1_ids empty "
             "when no supplied translation matches. "
+            "context describes kind, section and table row/column labels, not extra comparison text. "
+            "Establish correspondence by complete content and row/column meaning before classifying changes. "
+            "Paragraph and sentence boundaries can differ; combine split fragments, including page continuations. "
+            "Never pair unrelated records or a formula with prose because their positions or equation numbers resemble. "
             "Keep unchanged only for coverage. Do not create a complete document.",
             validate,
         )
