@@ -58,7 +58,7 @@ class DiffTask:
         }
 
         def validate(response: DiffResponse) -> None:
-            """変更項目と確認済みIDが選択範囲に一致することを検証する。
+            """変更項目の網羅性を検証し、確認済みIDを導出する。
 
             Args:
                 response: Schema検証済みの変更候補。
@@ -72,12 +72,11 @@ class DiffTask:
                     for change in response.changes
                     for key in getattr(change, f"{role}_ids")
                 ]
-                if sorted(found) != sorted(expected[role]) or sorted(
-                    getattr(response, f"reviewed_{role}_ids")
-                ) != sorted(expected[role]):
+                if sorted(found) != sorted(expected[role]):
                     raise ValueError(
                         "DIFF must account for every selected source ID exactly once"
                     )
+                setattr(response, f"reviewed_{role}_ids", list(expected[role]))
             translation_ids = []
             for change in response.changes:
                 if not change.summary.strip():
@@ -128,9 +127,9 @@ class DiffTask:
             DiffResponse,
             '{"changes":[{"kind":"unchanged|moved|modified|added|deleted",'
             '"source_v1_ids":["id"],"source_v2_ids":["id"],"translation_v1_ids":["id"],'
-            '"summary":"change and proposed action or uncertainty","suggested_translation":null}],'
-            '"reviewed_source_v1_ids":["id"],"reviewed_source_v2_ids":["id"]}. '
+            '"summary":"change and proposed action or uncertainty","suggested_translation":null}]}. '
             "Cover every selected English ID exactly once. Propose Japanese edits for added/modified text. "
+            "The application derives reviewed coverage from these change IDs; do not repeat coverage arrays. "
             "Use only IDs from the corresponding input role. Leave translation_v1_ids empty "
             "when no supplied translation matches. "
             "context describes kind, section and table row/column labels, not extra comparison text. "

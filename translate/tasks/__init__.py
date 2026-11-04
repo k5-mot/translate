@@ -210,8 +210,13 @@ class SavedLLMCalls:
                     },
                 }
                 candidate["required"] = list(candidate["properties"])
+                candidate["properties"]["kind"]["enum"] = ["matched"]
+                schema["properties"]["groups"]["maxItems"] = min(
+                    map(len, role_aliases.values())
+                )
                 for role in ("source", "translation"):
                     field = candidate["properties"][f"{role}_ids"]
+                    field["minItems"] = 1
                     field["maxItems"] = len(role_aliases[role])
                     if role_aliases[role]:
                         field["items"]["enum"] = list(role_aliases[role].values())
@@ -247,9 +252,8 @@ class SavedLLMCalls:
                     if ids:
                         selected_ids["items"]["enum"] = ids
                     if role != "translation_v1":
-                        reviewed = schema["properties"][f"reviewed_{role}_ids"]
-                        reviewed["items"] = selected_ids["items"]
-                        reviewed["minItems"] = reviewed["maxItems"] = len(ids)
+                        # 確認範囲はchangeの網羅性検証後に導出し、LLMに同じIDを二重出力させない。
+                        schema["properties"].pop(f"reviewed_{role}_ids")
             # 本文・用語・参考文の前に、送信する契約とnative Schemaの枠を確保する。
             schema_text = (
                 json.dumps(schema, ensure_ascii=False, separators=(",", ":"))

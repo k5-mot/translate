@@ -50,12 +50,23 @@ Docling変換の繰り返しは行わず、同一PDFから得た文書表現を�
 |---|---|
 | 保存済みsampleの長表検査 | 異なる行番号の対応6組を検出し、検査は失敗。再現できることを確認 |
 | sampleのmatch round 12の16候補 | 構造情報追加後は正しい3組だけがmatchedとなり、候補内に相手がいない残りは未対応。期待結果と一致 |
-| sample5のmatch round 4の16候補 | 構造情報のみでは数式・本文の誤対応は解消したが、本来対応する説明文1組を取りこぼした |
-| 同じsample5候補で短いIDを追加 | 正しい3組すべてがmatchedとなり、数式と説明文の取り違えなし。期待結果と一致 |
+| sample5のmatch round 4の16候補 | 数式・本文の誤対応は解消。初期の正解データには原文102と訳文63の取り違えが1組あり、式の前後を確認して訂正した。訳文63の実際の相手は原文108で、元の候補には入っていない |
+| 同じsample5候補で短いIDを追加 | 初回は3組を返したが、訂正後の正解に照らすと原文102と訳文63の1組が誤対応。短いIDだけで精度改善完了とは判定しない |
+| 対応が確認できた組だけをLLMから返す方式 | sampleの正しい3組、sample5の正しい2組に一致。候補に実際の相手を加えた検証も継続中 |
 | sample全文Review、構造情報のみの途中版 | 同じIDの重複出力による再試行を確認。ログを保存して停止し、短いIDを含む版で再検証する |
+| sample1〜4の既知の誤対応に実在する正しい相手を追加 | 短いID版でそれぞれ8組・1組・2組・1組の正解に一致。sample4は英語2段落と日本語1unitの対応を確認 |
+| sample5で原文106・108を候補に追加 | 対応が確認できた組だけを返す方式で、正しい説明文2組を含む計4組に一致。似た表現の原文102へは誤対応しない |
+| sample5 Upgrade全文（旧5ページ・新4ページ） | `de6d32d`で旧88unit／新81unitを確認し、末尾ページの7unitだけを削除と判定。誤った追加・変更・訳文参照はなし。ただし冗長な確認済みID配列の省略で再試行が発生 |
+| 同じUpgradeの失敗callを応答保存付きで再現 | LLMは削除7件を正しく返していたが、確認済みID配列の省略で失敗したことを確認。確認範囲をchange一覧から導出する修正後、1回で7件を正しく処理 |
+| sample1〜4の同じ正解集合を応答形式の修正版で再検証 | 全ケースが1試行で正解8組・1組・2組・1組に一致。`.tmp/matching-audit/other-pdfs-v4/*/check.json`に入力IDと正解・実結果を保存 |
 
-実行した検査は`.venv/Scripts/python.exe -m pytest tests/unit tests/regression -q`（327件成功）、
-`.venv/Scripts/python.exe -m pytest tests/unit/test_agents.py -q`（70件成功、ID復元の回帰テスト追加前）、
+2回目の修正では、Reviewの残余候補をアプリ側で未確認として補い、LLMへ全候補の列挙を要求しない。
+不明ID・重複IDの拒否は維持する。Upgradeはchange一覧による全英文IDの一度限りの網羅を引き続き検証し、
+同じIDを繰り返す確認済み配列だけをアプリ側で導出する。
+`de6d32d`の全文Reviewはこの応答形式の再試行を記録して停止し、修正版でやり直す。
+
+実行した検査は`.venv/Scripts/python.exe -m pytest tests/unit tests/regression -q`（329件成功）、
+`.venv/Scripts/python.exe -m pytest tests/unit/test_agents.py -q`（73件成功）、
 `.venv/Scripts/ruff.exe check translate tests/unit/test_agents.py`、`.venv/Scripts/ty.exe check`。
 
 全文Review／Upgradeと、残るPDFの失敗箇所の再検証は継続中。現段階では誤検知がなくなったとは判定していない。
