@@ -115,7 +115,25 @@ class SavedLLMCalls:
         try:
             id_aliases: dict[str, str] = {}
             span_aliases: dict[str, str] = {}
+            role_aliases: dict[str, dict[str, str]] = {}
             llm_payload = payload
+            if self.task == "DIFF" or (self.task == "REVIEW" and operation == "match"):
+                roles = (
+                    ("source_v1", "source_v2", "translation_v1")
+                    if self.task == "DIFF"
+                    else ("source", "translation")
+                )
+                llm_payload = dict(payload)
+                for prefix, role in zip("abc", roles, strict=False):
+                    items = cast(list[dict[str, object]], payload[role])
+                    role_aliases[role] = {
+                        cast(str, item["id"]): f"{prefix}{index}"
+                        for index, item in enumerate(items, 1)
+                    }
+                    llm_payload[role] = [
+                        {**item, "id": role_aliases[role][cast(str, item["id"])]}
+                        for item in items
+                    ]
             target_items = payload.get("targets")
             if (
                 self.task == "REVIEW"
@@ -192,6 +210,16 @@ class SavedLLMCalls:
                     },
                 }
                 candidate["required"] = list(candidate["properties"])
+                candidate["properties"]["kind"]["enum"] = ["matched"]
+                schema["properties"]["groups"]["maxItems"] = min(
+                    map(len, role_aliases.values())
+                )
+                for role in ("source", "translation"):
+                    field = candidate["properties"][f"{role}_ids"]
+                    field["minItems"] = 1
+                    field["maxItems"] = len(role_aliases[role])
+                    if role_aliases[role]:
+                        field["items"]["enum"] = list(role_aliases[role].values())
             if self.task == "REVIEW" and operation in {"evaluate", "recheck"}:
                 # 確認済み対象IDと訳文要素IDは別物なので、生成時にも候補を限定する。
                 confirmed = schema["properties"]["assessments"]
@@ -216,11 +244,7 @@ class SavedLLMCalls:
                     for role in ("source_v1", "source_v2")
                 )
                 for role in ("source_v1", "source_v2", "translation_v1"):
-                    ids = [
-                        key.removeprefix(f"{role}:")
-                        for key in target_ids
-                        if key.startswith(f"{role}:")
-                    ]
+                    ids = list(role_aliases[role].values())
                     selected_ids = schema["$defs"]["DiffChange"]["properties"][
                         f"{role}_ids"
                     ]
@@ -228,9 +252,8 @@ class SavedLLMCalls:
                     if ids:
                         selected_ids["items"]["enum"] = ids
                     if role != "translation_v1":
-                        reviewed = schema["properties"][f"reviewed_{role}_ids"]
-                        reviewed["items"] = selected_ids["items"]
-                        reviewed["minItems"] = reviewed["maxItems"] = len(ids)
+                        # 確認範囲はchangeの網羅性検証後に導出し、LLMに同じIDを二重出力させない。
+                        schema["properties"].pop(f"reviewed_{role}_ids")
             # 本文・用語・参考文の前に、送信する契約とnative Schemaの枠を確保する。
             schema_text = (
                 json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
@@ -268,9 +291,40 @@ class SavedLLMCalls:
                         "Selected document scope exceeds REVIEW_INPUT_TOKENS"
                     )
 
+            decoded_response: ResponseT | None = None
+
             def validate_response(response: ResponseT) -> None:
                 """短縮IDを元に戻して、操作固有の応答を検証する。"""
-                if id_aliases:
+                nonlocal decoded_response
+                if role_aliases and response is not decoded_response:
+                    for role, aliases in role_aliases.items():
+                        originals = {
+                            alias: original for original, alias in aliases.items()
+                        }
+                        for item in [
+                            *getattr(response, "groups", []),
+                            *getattr(response, "changes", []),
+                        ]:
+                            field = f"{role}_ids"
+                            setattr(
+                                item,
+                                field,
+                                [
+                                    originals.get(key, key)
+                                    for key in getattr(item, field)
+                                ],
+                            )
+                        field = f"reviewed_{role}_ids"
+                        if hasattr(response, field):
+                            setattr(
+                                response,
+                                field,
+                                [
+                                    originals.get(key, key)
+                                    for key in getattr(response, field)
+                                ],
+                            )
+                if id_aliases and response is not decoded_response:
                     originals = {
                         alias: original for original, alias in id_aliases.items()
                     }
@@ -285,6 +339,7 @@ class SavedLLMCalls:
                             edit.span_id = original_spans.get(
                                 edit.span_id, edit.span_id
                             )
+                decoded_response = response
                 validate(response)
 
             result = client.structured(

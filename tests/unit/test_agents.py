@@ -21,7 +21,14 @@ from translate.adapters.llm import (
 )
 from translate.common.config import Config
 from translate.models.artifacts import LLMCallArtifact
-from translate.models.document import Block, Document, Page, TextSpan, TextUnit
+from translate.models.document import (
+    Block,
+    Document,
+    Page,
+    TableCell,
+    TextSpan,
+    TextUnit,
+)
 from translate.models.review import (
     AgentAction,
     AlignmentResponse,
@@ -68,6 +75,142 @@ def document(**units: str) -> Document:
             )
         ]
     )
+
+
+def test_agent_context_distinguishes_repeated_table_values() -> None:
+    """同じ数値でも行の識別子と列見出しを渡し、PDF内の表番号に依存しない。"""
+    doc = document(section="Measurements", formula="x = y")
+    doc.pages[0].blocks[0].kind = "heading"
+    doc.pages[0].blocks[1].kind = "formula"
+    doc.pages.append(
+        Page(
+            number=2,
+            blocks=[
+                Block(
+                    id="unrelated-table-number",
+                    order=0,
+                    kind="table",
+                    cells=[
+                        TableCell(
+                            id=key,
+                            row=row,
+                            column=column,
+                            header=header,
+                            content=TextUnit(
+                                id=key, spans=[TextSpan(id=f"{key}/span", source=text)]
+                            ),
+                        )
+                        for key, row, column, header, text in [
+                            ("label-header", 0, 0, True, "Record"),
+                            ("value-header", 0, 1, True, "Count"),
+                            ("row-5", 1, 0, True, "page_split_05"),
+                            ("value-5", 1, 1, False, "5"),
+                            ("row-7", 2, 0, True, "page_split_07"),
+                            ("value-7", 2, 1, False, "5"),
+                        ]
+                    ],
+                )
+            ],
+        )
+    )
+    contexts = doc.unit_contexts()
+    assert contexts["formula"] == {"section": "Measurements", "kind": "formula"}
+    assert contexts["value-5"] == {
+        "kind": "table_cell",
+        "section": "Measurements",
+        "row_label": "page_split_05",
+        "column_label": "Count",
+    }
+    assert contexts["value-7"]["row_label"] == "page_split_07"
+    assert contexts["row-7"]["column_label"] == "Record"
+    view = observe_documents(
+        AgentAction(operation="overview"),
+        agent_units({"source": doc}),
+        4096,
+        contexts={"source": contexts},
+    )
+    assert (
+        next(item for item in view["items"] if item["id"] == "value-7")["context"]
+        == contexts["value-7"]
+    )
+
+
+@pytest.mark.parametrize("task_name", ["REVIEW", "DIFF"])
+def test_comparison_sends_context_separately_from_content(
+    task_name: str, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じ本文を持つ別行の区別を、ReviewとUpgradeの実LLM境界まで保持する。"""
+    roles = (
+        ("source", "translation")
+        if task_name == "REVIEW"
+        else ("source_v1", "source_v2", "translation_v1")
+    )
+    units = {
+        role: [TextUnit(id=role, spans=[TextSpan(id=f"{role}/span", source="5")])]
+        for role in roles
+    }
+    contexts = {
+        role: {
+            role: {
+                "kind": "table_cell",
+                "row_label": "Record 07",
+                "column_label": "Count",
+            }
+        }
+        for role in roles
+    }
+    if task_name == "REVIEW":
+        response = AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": ["a1"],
+                        "translation_ids": ["b1"],
+                        "kind": "matched",
+                    }
+                ]
+            }
+        )
+    else:
+        response = DiffResponse.model_validate(
+            {
+                "changes": [
+                    {
+                        "kind": "unchanged",
+                        "source_v1_ids": ["a1"],
+                        "source_v2_ids": ["b1"],
+                        "translation_v1_ids": ["c1"],
+                        "summary": "Same record and value.",
+                    }
+                ],
+                "reviewed_source_v1_ids": ["a1"],
+                "reviewed_source_v2_ids": ["b1"],
+            }
+        )
+    calls = scripted(monkeypatch, [response])
+    client = LLMClient(config)
+    try:
+        if task_name == "REVIEW":
+            import_module("translate.tasks.41_review").ReviewTask(
+                config, tmp_path, "", "", contexts=contexts
+            ).match_documents(units, client, 0)
+        else:
+            import_module("translate.tasks.21_diff").DiffTask(
+                client, tmp_path, "", "", contexts=contexts
+            ).run(units, "match", 0)
+    finally:
+        client.client.close()
+    payload = json.loads(calls[0]["user"])
+    for prefix, role in zip("abc", roles, strict=False):
+        assert payload[role] == [
+            {"id": f"{prefix}1", "text": "5", "context": contexts[role][role]}
+        ]
+    if task_name == "REVIEW":
+        assert response.groups[0].source_ids == ["source"]
+        assert response.groups[0].translation_ids == ["translation"]
+    else:
+        assert response.changes[0].source_v1_ids == ["source_v1"]
+        assert response.reviewed_source_v2_ids == ["source_v2"]
 
 
 @pytest.mark.parametrize("operation", ["overview", "read"])
@@ -417,7 +560,18 @@ def test_match_schema_requests_only_correspondence(
     )
     response = MagicMock()
     response.choices = [MagicMock(finish_reason="stop")]
-    response.choices[0].message.content = json.dumps({"groups": groups})
+    response.choices[0].message.content = json.dumps(
+        {
+            "groups": [
+                {
+                    **group,
+                    "source_ids": ["a1"] if group["source_ids"] else [],
+                    "translation_ids": ["b1"] if group["translation_ids"] else [],
+                }
+                for group in groups
+            ]
+        }
+    )
     response.usage = None
     create = MagicMock(return_value=response)
     monkeypatch.setattr(client.client.chat.completions, "create", create)
@@ -445,9 +599,71 @@ def test_match_schema_requests_only_correspondence(
         ]
         assert set(candidate["required"]) == set(candidate["properties"])
         assert candidate["properties"]["reason"] == {"type": "string", "minLength": 1}
+        assert candidate["properties"]["source_ids"]["items"]["enum"] == ["a1"]
+        assert candidate["properties"]["translation_ids"]["items"]["enum"] == ["b1"]
         assert [key for group in result.groups for key in group.translation_ids] == [
             "ja"
         ]
+        create.assert_called_once()
+    finally:
+        client.client.close()
+
+
+@pytest.mark.parametrize("paired_count", [0, 1, 2])
+def test_match_restores_original_ids_once_and_reuses_them(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, paired_count: int
+) -> None:
+    """短縮IDが元IDと衝突しても再開時の参照を保ち、省略候補を未確認として残す。"""
+    client = LLMClient(config)
+    response = MagicMock()
+    response.choices = [MagicMock(finish_reason="stop")]
+    response.choices[0].message.content = json.dumps(
+        {
+            "groups": [
+                {
+                    "source_ids": [f"a{i}"],
+                    "translation_ids": [f"b{i}"],
+                    "kind": "matched",
+                    "reason": "Same content.",
+                }
+                for i in range(1, paired_count + 1)
+            ]
+        }
+    )
+    response.usage = None
+    create = MagicMock(return_value=response)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    units = {
+        role: list(doc.unit_index().values())
+        for role, doc in {
+            "source": document(a2="First.", a1="Second."),
+            "translation": document(b2="一つ目。", b1="二つ目。"),
+        }.items()
+    }
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config, tmp_path, "", ""
+    )
+    try:
+        _, first = task.match_documents(units, client, 0)
+        _, replay = task.match_documents(units, client, 0)
+        assert first == replay
+        assert [
+            (group.source_ids, group.translation_ids)
+            for group in first.groups
+            if group.kind == "matched"
+        ] == [(["a2"], ["b2"]), (["a1"], ["b1"])][:paired_count]
+        assert sorted(key for group in first.groups for key in group.source_ids) == [
+            "a1",
+            "a2",
+        ]
+        assert sorted(
+            key for group in first.groups for key in group.translation_ids
+        ) == ["b1", "b2"]
+        assert all(
+            "文書全体に相手がないことは意味しません" in group.reason
+            for group in first.groups
+            if group.kind != "matched"
+        )
         create.assert_called_once()
     finally:
         client.client.close()
@@ -568,10 +784,10 @@ def test_match_rejects_inconsistent_groups_before_saving(
         client.client.close()
 
 
-def test_match_retry_identifies_missing_duplicate_and_unknown_ids(
+def test_match_retry_identifies_duplicate_and_unknown_ids(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """対応付けの再試行で、訳文側の不足・重複・範囲外IDを具体的に伝える。"""
+    """対応付けの再試行で、訳文側の重複・範囲外IDを具体的に伝える。"""
     client = LLMClient(config)
     invalid = {
         "groups": [
@@ -615,7 +831,7 @@ def test_match_retry_identifies_missing_duplicate_and_unknown_ids(
             )
         )
         feedback = create.call_args.kwargs["messages"][-1]["content"]
-        assert "translation: missing=['ja2']" in feedback
+        assert "translation: duplicate=['ja1']" in feedback
         assert "duplicate=['ja1']" in feedback
         assert "unknown=['unknown']" in feedback
         assert (
@@ -1632,17 +1848,17 @@ def test_diff_schema_limits_ids_to_each_selected_document(
         """送信Schemaの候補制約を検査して、入力に整合する応答を返す。"""
         schema = kwargs["native_schema"]
         fields = schema["$defs"]["DiffChange"]["properties"]
+        payload = json.loads(kwargs["user"])
+        sent = {role: [item["id"] for item in payload[role]] for role in expected}
         for role, ids in expected.items():
             selected = fields[f"{role}_ids"]
             if ids:
-                assert selected["items"]["enum"] == ids
+                assert selected["items"]["enum"] == sent[role]
+                assert not set(ids).intersection(sent[role])
             else:
                 assert selected["maxItems"] == 0
             if role != "translation_v1":
-                reviewed = schema["properties"][f"reviewed_{role}_ids"]
-                assert reviewed["minItems"] == reviewed["maxItems"] == len(ids)
-                if ids:
-                    assert reviewed["items"]["enum"] == ids
+                assert f"reviewed_{role}_ids" not in schema["properties"]
         return DiffResponse.model_validate(
             {
                 "changes": [
@@ -1650,12 +1866,10 @@ def test_diff_schema_limits_ids_to_each_selected_document(
                         "kind": {"source_v1": "added", "source_v2": "deleted"}.get(
                             empty_role, "unchanged"
                         ),
-                        **{f"{role}_ids": ids for role, ids in expected.items()},
+                        **{f"{role}_ids": ids for role, ids in sent.items()},
                         "summary": "選択範囲の比較",
                     }
                 ],
-                "reviewed_source_v1_ids": expected["source_v1"],
-                "reviewed_source_v2_ids": expected["source_v2"],
             }
         )
 
@@ -1665,7 +1879,9 @@ def test_diff_schema_limits_ids_to_each_selected_document(
         task = import_module("translate.tasks.21_diff").DiffTask(
             client, tmp_path, "", ""
         )
-        task.run(units, "match", 0)
+        _, response = task.run(units, "match", 0)
+        assert response.reviewed_source_v1_ids == expected["source_v1"]
+        assert response.reviewed_source_v2_ids == expected["source_v2"]
     finally:
         client.client.close()
 
