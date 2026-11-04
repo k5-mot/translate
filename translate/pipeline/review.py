@@ -200,6 +200,9 @@ class ReviewAgent:
             config: LLMの接続と処理予算。
         """
         self.units = agent_units(documents)
+        self.contexts = {
+            role: document.unit_contexts() for role, document in documents.items()
+        }
         self.directory = directory
         self.config = config
         self.root = root
@@ -222,7 +225,9 @@ class ReviewAgent:
             templates = Path(__file__).parents[1] / "templates"
             rules = (templates / "review-rules.md").read_text(encoding="utf-8")
             glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
-            self.review = ReviewTask(self.config, self.directory, rules, glossary)
+            self.review = ReviewTask(
+                self.config, self.directory, rules, glossary, contexts=self.contexts
+            )
             self.result = ReviewResult()
             self.conflicts: set[str] = set()
             self.call_ids: list[str] = []
@@ -458,6 +463,7 @@ class ReviewAgent:
                             self.config.input_bytes(self.config.review_input_tokens)
                             // 3,
                         ),
+                        contexts=self.contexts,
                     )
                 else:
                     try:

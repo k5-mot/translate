@@ -176,3 +176,52 @@ class Document(DocumentModel):
         """
 
         return {unit.id: unit for _, unit in self.text_units()}
+
+    def unit_contexts(self) -> dict[str, dict[str, str]]:
+        """照合対象の種別、節、表の行見出しと列見出しを本文とは別に取得する。
+
+        Returns:
+            TextUnit IDごとの構造上の文脈。PDFごとの表番号やページ番号は対応の根拠にしない。
+        """
+        contexts: dict[str, dict[str, str]] = {}
+        section = ""
+        for page in sorted(self.pages, key=lambda item: item.number):
+            for block in sorted(page.blocks, key=lambda item: item.order):
+                if block.kind == "heading" and block.content is not None:
+                    section = block.content.text("source")
+                base = {"section": section} if section else {}
+                if block.content is not None:
+                    contexts[block.content.id] = {**base, "kind": block.kind}
+                captions = [block.caption]
+                if block.image is not None:
+                    captions.append(block.image.caption)
+                for caption in captions:
+                    if caption is not None:
+                        contexts[caption.id] = {**base, "kind": "caption"}
+                cells = sorted(block.cells, key=lambda item: (item.row, item.column))
+                for cell in cells:
+                    row = [
+                        value.content.text("source")
+                        for value in cells
+                        if value.row == cell.row
+                        and value.content.text("source").strip()
+                    ]
+                    headers = [
+                        value.content.text("source")
+                        for value in cells
+                        if value.header
+                        and value.column == cell.column
+                        and value.row == cells[0].row
+                        and value.row < cell.row
+                        and value.content.text("source").strip()
+                    ]
+                    contexts[cell.content.id] = {
+                        **base,
+                        "kind": "table_cell",
+                        **({"row_label": row[0]} if row else {}),
+                        **({"column_label": headers[-1]} if headers else {}),
+                    }
+                    for image in cell.images:
+                        if image.caption is not None:
+                            contexts[image.caption.id] = {**base, "kind": "caption"}
+        return contexts

@@ -415,6 +415,10 @@ def choose_action(
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "
                 "and discovers the pairs itself. Include multiple pending and unmatched candidates from both "
                 "roles together, up to 32 total, instead of repeatedly trying isolated pairs. "
+                "Use context.kind, section and row/column labels to distinguish repeated text and values. "
+                "A unit can contain several sentences; paragraph boundaries and page breaks can differ. "
+                "Read neighboring candidates and include all counterpart fragments rather than forcing a one-to-one match. "
+                "Matching locates the intended passage; translation defects are assessed later. "
                 "Search or read other candidates before declaring no counterpart; a mismatch in one selected pair "
                 "does not prove the counterpart is absent from the document. Revisit unmatched_ids with new "
                 "candidates or evidence; confirmed matched units cannot be reassigned. "
@@ -454,7 +458,11 @@ def choose_action(
 
 
 def observe_documents(
-    action: AgentAction, units: dict[str, dict[str, TextUnit]], maximum_bytes: int
+    action: AgentAction,
+    units: dict[str, dict[str, TextUnit]],
+    maximum_bytes: int,
+    *,
+    contexts: dict[str, dict[str, dict[str, str]]] | None = None,
 ) -> dict[str, object]:
     """許可された文書閲覧・候補検索だけを実行し、文の途中で切らず返す。
 
@@ -462,6 +470,7 @@ def observe_documents(
         action: overview、readまたはsearch。
         units: 文書role別の本文索引。
         maximum_bytes: 観察結果の本文枠。全件はoffsetで順に取得できる。
+        contexts: 文書roleとTextUnit IDごとの構造情報。候補選択時にも行・列を区別する。
 
     Returns:
         対象と次のoffset。search結果は対応を確定しない候補ID。
@@ -517,14 +526,21 @@ def observe_documents(
     size = 2
     end = action.offset
     for part in parts[action.offset :]:
+        role = cast(str, part["role"])
+        identifier = cast(str, part.get("id", part.get("unit_id")))
+        item = (
+            {**part, "context": contexts[role][identifier]}
+            if contexts and identifier in contexts.get(role, {})
+            else part
+        )
         if action.operation != "read" and len(selected) == 32:
             break
-        size += len(json.dumps(part, ensure_ascii=False).encode("utf-8")) + 2
+        size += len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 2
         if size > maximum_bytes:
             if not selected:
                 raise ValueError("A single sentence exceeds the Agent context budget")
             break
-        selected.append(part)
+        selected.append(item)
         end += 1
     return {
         "items": selected,

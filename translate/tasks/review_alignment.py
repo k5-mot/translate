@@ -11,6 +11,7 @@ def match_documents(
     units: dict[str, list[TextUnit]],
     client: LLMClient,
     round_number: int,
+    contexts: dict[str, dict[str, dict[str, str]]] | None = None,
 ) -> tuple[str, AlignmentResponse]:
     """Agentが選んだ原文と訳文の対応候補を取得し、参照と網羅性を検証する。
 
@@ -18,6 +19,7 @@ def match_documents(
         units: sourceとtranslationの候補TextUnit。
         client: LLM接続。
         round_number: Agent操作の連番。
+        contexts: 文書roleとTextUnit IDごとの構造情報。本文とは別に照合の根拠へ使う。
 
     Returns:
         成功Call IDと対応付け応答。
@@ -64,7 +66,18 @@ def match_documents(
                 raise ValueError("Unmatched correspondence requires a reason")
 
     payload: dict[str, object] = {
-        role: [{"id": unit.id, "text": unit.text("source")} for unit in values]
+        role: [
+            {
+                "id": unit.id,
+                "text": unit.text("source"),
+                **(
+                    {"context": contexts[role][unit.id]}
+                    if contexts and unit.id in contexts.get(role, {})
+                    else {}
+                ),
+            }
+            for unit in values
+        ]
         for role, values in units.items()
     }
     return calls.request(
@@ -75,14 +88,21 @@ def match_documents(
         payload,
         "\n".join(unit.text("source") for unit in units["source"]),
         AlignmentResponse,
-        '{"groups":[{"reason":"brief content comparison",'
+        '{"groups":[{"reason":"quote distinguishing content from both sides and explain its correspondence",'
         '"kind":"matched|source_only|translation_only",'
         '"source_ids":["id"],"translation_ids":["id"]}]}. '
         "Every source ID and every translation ID must appear exactly once, including unmatched IDs. "
         "The source and translation arrays are independent candidate pools, not parallel rows. "
+        "context describes the kind, section and table row/column labels; it is not part of text to compare. "
+        "Use row and column meaning to distinguish repeated table values. Never match a formula to its explanatory prose, "
+        "or unrelated records merely to consume every ID. A shared equation number or similar wording is insufficient. "
         "For each source, search ALL translation candidates for the same content; "
         "never pair by array position or similar IDs. "
-        "Match only the same content, not related topics. "
+        "Find the intended counterpart passage, not merely a related topic. "
+        "Correspondence does not certify translation quality: additions, omissions, paraphrasing or incorrect values "
+        "can exist within a matched passage when its distinctive content and structural context identify it. "
+        "Leave translation-quality judgments to the later evaluation; do not reject an identifiable counterpart "
+        "just because it contains extra detail or a translation defect. "
         "When two texts do not correspond, return two groups: source_only and translation_only, "
         "each with its own IDs and reason. "
         "For every group, first name the actual source text and corresponding translation text in reason, "
@@ -90,7 +110,8 @@ def match_documents(
         "Then select the kind and the IDs that belong to those texts. "
         "Do not use generic reasons such as matched content. "
         "Keep separate table cells separate: an identifier, its description, and its value are distinct content, even in the same row. "
-        "A group with multiple units is valid only when those units are split fragments of the SAME content expressed on the other side. "
+        "Paragraph and sentence boundaries can differ between PDFs: combine multiple units when their complete content "
+        "together corresponds to the other side, including fragments continued across a page break. "
         "Account for the content of EVERY selected unit on BOTH sides; do not absorb an unmatched unit into a related match. "
         "If the identifier itself has no counterpart in this candidate pool, leave it source_only or translation_only.",
         validate,
