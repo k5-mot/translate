@@ -609,10 +609,11 @@ def test_match_schema_requests_only_correspondence(
         client.client.close()
 
 
+@pytest.mark.parametrize("paired_count", [0, 1, 2])
 def test_match_restores_original_ids_once_and_reuses_them(
-    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch, paired_count: int
 ) -> None:
-    """元IDが別の短縮IDと同じ場合も、二重復元による誤対応を作らない。"""
+    """短縮IDが元IDと衝突しても再開時の参照を保ち、省略候補を未確認として残す。"""
     client = LLMClient(config)
     response = MagicMock()
     response.choices = [MagicMock(finish_reason="stop")]
@@ -625,7 +626,7 @@ def test_match_restores_original_ids_once_and_reuses_them(
                     "kind": "matched",
                     "reason": "Same content.",
                 }
-                for i in (1, 2)
+                for i in range(1, paired_count + 1)
             ]
         }
     )
@@ -647,8 +648,22 @@ def test_match_restores_original_ids_once_and_reuses_them(
         _, replay = task.match_documents(units, client, 0)
         assert first == replay
         assert [
-            (group.source_ids, group.translation_ids) for group in first.groups
-        ] == [(["a2"], ["b2"]), (["a1"], ["b1"])]
+            (group.source_ids, group.translation_ids)
+            for group in first.groups
+            if group.kind == "matched"
+        ] == [(["a2"], ["b2"]), (["a1"], ["b1"])][:paired_count]
+        assert sorted(key for group in first.groups for key in group.source_ids) == [
+            "a1",
+            "a2",
+        ]
+        assert sorted(
+            key for group in first.groups for key in group.translation_ids
+        ) == ["b1", "b2"]
+        assert all(
+            "文書全体に相手がないことは意味しません" in group.reason
+            for group in first.groups
+            if group.kind != "matched"
+        )
         create.assert_called_once()
     finally:
         client.client.close()
@@ -769,10 +784,10 @@ def test_match_rejects_inconsistent_groups_before_saving(
         client.client.close()
 
 
-def test_match_retry_identifies_missing_duplicate_and_unknown_ids(
+def test_match_retry_identifies_duplicate_and_unknown_ids(
     tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """対応付けの再試行で、訳文側の不足・重複・範囲外IDを具体的に伝える。"""
+    """対応付けの再試行で、訳文側の重複・範囲外IDを具体的に伝える。"""
     client = LLMClient(config)
     invalid = {
         "groups": [
@@ -816,7 +831,7 @@ def test_match_retry_identifies_missing_duplicate_and_unknown_ids(
             )
         )
         feedback = create.call_args.kwargs["messages"][-1]["content"]
-        assert "translation: missing=['ja2']" in feedback
+        assert "translation: duplicate=['ja1']" in feedback
         assert "duplicate=['ja1']" in feedback
         assert "unknown=['unknown']" in feedback
         assert (
@@ -1843,10 +1858,7 @@ def test_diff_schema_limits_ids_to_each_selected_document(
             else:
                 assert selected["maxItems"] == 0
             if role != "translation_v1":
-                reviewed = schema["properties"][f"reviewed_{role}_ids"]
-                assert reviewed["minItems"] == reviewed["maxItems"] == len(ids)
-                if ids:
-                    assert reviewed["items"]["enum"] == sent[role]
+                assert f"reviewed_{role}_ids" not in schema["properties"]
         return DiffResponse.model_validate(
             {
                 "changes": [
@@ -1858,8 +1870,6 @@ def test_diff_schema_limits_ids_to_each_selected_document(
                         "summary": "選択範囲の比較",
                     }
                 ],
-                "reviewed_source_v1_ids": sent["source_v1"],
-                "reviewed_source_v2_ids": sent["source_v2"],
             }
         )
 

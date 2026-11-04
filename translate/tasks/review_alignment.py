@@ -2,7 +2,7 @@
 
 from translate.adapters.llm import LLMClient
 from translate.models.document import TextUnit
-from translate.models.review import AlignmentResponse
+from translate.models.review import AlignmentCandidate, AlignmentResponse
 from translate.tasks import SavedLLMCalls
 
 
@@ -13,7 +13,7 @@ def match_documents(
     round_number: int,
     contexts: dict[str, dict[str, dict[str, str]]] | None = None,
 ) -> tuple[str, AlignmentResponse]:
-    """Agentが選んだ原文と訳文の対応候補を取得し、参照と網羅性を検証する。
+    """Agentの対応候補の参照を検証し、残りの候補を未確認として補う。
 
     Args:
         units: sourceとtranslationの候補TextUnit。
@@ -31,7 +31,7 @@ def match_documents(
     expected = {role: [unit.id for unit in values] for role, values in units.items()}
 
     def validate(response: AlignmentResponse) -> None:
-        """選択した各IDが一つのgroupに属し、未対応には理由があることを確認する。
+        """不明・重複IDを拒否し、対応が返らなかった候補を未確認として補う。
 
         Args:
             response: 対応付け応答。
@@ -45,10 +45,10 @@ def match_documents(
                 for group in response.groups
                 for key in getattr(group, f"{role}_ids")
             ]
-            if sorted(found) != sorted(expected[role]):
+            if len(found) != len(set(found)) or not set(found).issubset(expected[role]):
                 raise ValueError(
-                    "Correspondence must cover the selected IDs exactly once. "
-                    f"{role}: missing={sorted(set(expected[role]) - set(found))}; "
+                    "Correspondence contains duplicate or unknown selected IDs. "
+                    f"{role}: "
                     f"duplicate={sorted({key for key in found if found.count(key) > 1})}; "
                     f"unknown={sorted(set(found) - set(expected[role]))}"
                 )
@@ -64,6 +64,24 @@ def match_documents(
                 raise ValueError("Invalid correspondence kind")
             if group.kind != "matched" and not (group.reason or "").strip():
                 raise ValueError("Unmatched correspondence requires a reason")
+        for role in ("source", "translation"):
+            covered = {
+                key
+                for group in response.groups
+                for key in getattr(group, f"{role}_ids")
+            }
+            for key in expected[role]:
+                if key not in covered:
+                    response.groups.append(
+                        AlignmentCandidate(
+                            source_ids=[key] if role == "source" else [],
+                            translation_ids=[key] if role == "translation" else [],
+                            kind="source_only"
+                            if role == "source"
+                            else "translation_only",
+                            reason="選択した候補集合では対応を確認できませんでした。文書全体に相手がないことは意味しません。",
+                        )
+                    )
 
     payload: dict[str, object] = {
         role: [
@@ -89,9 +107,11 @@ def match_documents(
         "\n".join(unit.text("source") for unit in units["source"]),
         AlignmentResponse,
         '{"groups":[{"reason":"quote distinguishing content from both sides and explain its correspondence",'
-        '"kind":"matched|source_only|translation_only",'
+        '"kind":"matched",'
         '"source_ids":["id"],"translation_ids":["id"]}]}. '
-        "Every source ID and every translation ID must appear exactly once, including unmatched IDs. "
+        "Return only established correspondence groups. Every ID can appear at most once. "
+        "Omit IDs whose counterpart is unclear or absent from this candidate pool; the application records them as unverified. "
+        "Return groups:[] when no correspondence is established. Never pair leftover IDs merely to cover the input. "
         "The source and translation arrays are independent candidate pools, not parallel rows. "
         "context describes the kind, section and table row/column labels; it is not part of text to compare. "
         "Use row and column meaning to distinguish repeated table values. Never match a formula to its explanatory prose, "
@@ -103,8 +123,6 @@ def match_documents(
         "can exist within a matched passage when its distinctive content and structural context identify it. "
         "Leave translation-quality judgments to the later evaluation; do not reject an identifiable counterpart "
         "just because it contains extra detail or a translation defect. "
-        "When two texts do not correspond, return two groups: source_only and translation_only, "
-        "each with its own IDs and reason. "
         "For every group, first name the actual source text and corresponding translation text in reason, "
         "or briefly state which content has no counterpart. "
         "Then select the kind and the IDs that belong to those texts. "
@@ -112,7 +130,7 @@ def match_documents(
         "Keep separate table cells separate: an identifier, its description, and its value are distinct content, even in the same row. "
         "Paragraph and sentence boundaries can differ between PDFs: combine multiple units when their complete content "
         "together corresponds to the other side, including fragments continued across a page break. "
-        "Account for the content of EVERY selected unit on BOTH sides; do not absorb an unmatched unit into a related match. "
-        "If the identifier itself has no counterpart in this candidate pool, leave it source_only or translation_only.",
+        "Account for the complete content of each matched unit on BOTH sides; do not absorb unrelated units. "
+        "If an identifier itself has no counterpart in this candidate pool, omit it from groups.",
         validate,
     )
