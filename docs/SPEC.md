@@ -1586,6 +1586,10 @@ Resume buttonは `failed`、`cancelled`、または現在のUI worker登録表�
 - previewおよびdownload buttonは `進捗と処理内容` Collapseの外側へ表示する。
 - TranslateのMarkdownとDOCXのdownload buttonは横並びにする。
 - 現行実装はMarkdownとDOCXの各buttonを `st.columns(2)` の固定二列へ配置する。
+- DOCX buttonの上に `translate/templates/` 配下の `*.docx` を選ぶ `DOCX書式` pulldownを
+  置く。既定値は `template.docx` とし、既定値では公開済みDOCXをそのまま渡す。
+  他の書式を選んだ場合は、click時に公開済みMarkdownからPANDOCとOOXMLと同じ変換を
+  一時directoryで行い、処理成果物は変更しない。
 - browser上のpreviewは利便性のための表示であり、downloadされるbyte列を変換しない。
 - 履歴の確認付き削除操作を除き、UIから成果物、処理directoryまたは入力fileを個別に削除しない。
 
@@ -1947,7 +1951,7 @@ PANDOCで使用するoptionは次に固定する。
 | `--from` | `markdown-smart` |
 | `--to` | `docx+native_numbering` |
 | `--standalone` | 有効 |
-| `--reference-doc` | package同梱の `templates/template.docx` |
+| `--reference-doc` | package同梱の `templates/template.docx`。UIのdownload時は選択した `templates/` 配下のDOCX |
 | `--resource-path` | 生成したMarkdownの親directory |
 | `--toc` | 有効 |
 | `--toc-depth` | `6` |
