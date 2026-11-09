@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import streamlit as st
@@ -11,6 +12,7 @@ from translate.adapters.artifact_store import (
     ArtifactError,
     load_model,
 )
+from translate.common.config import load_config
 from translate.models.artifacts import (
     RegistrationRecord,
     ReviewRecord,
@@ -22,6 +24,12 @@ from translate.models.upgrade import (
     UpgradeRecord,
 )
 from translate.pipeline import InputError
+from translate.pipeline.translate import (
+    DEFAULT_DOCX_TEMPLATE,
+    TEMPLATES,
+    docx_templates,
+    render_docx,
+)
 
 from .comparisons import _load_first_document, _review_targets, _unit_text
 from .history import HistoryEntry
@@ -97,8 +105,24 @@ def _review_rows(root: Path) -> tuple[list[dict[str, str]], list[dict[str, str]]
     return finding_rows, revision_rows
 
 
+def _render_docx_with_config(markdown: Path, template: Path) -> bytes:
+    """現在の設定のTimeoutで、Markdownを選択書式のDOCXへ変換する。
+
+    Args:
+        markdown (Path): 翻訳Pipelineが公開したMarkdown Path。
+        template (Path): 利用者が選択したReference DOCX Path。
+
+    Returns:
+        bytes: 選択書式で生成したDOCXの内容。
+    """
+
+    return render_docx(markdown, template, load_config().http_request_timeout_seconds)
+
+
 def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) -> None:
     """hash検証済みMarkdownとDOCXのpreview・downloadを表示する。
+
+    既定以外のDOCX書式を選んだ場合は、download時にMarkdownから再生成する。
 
     Args:
         entry (HistoryEntry): 表示または操作対象の処理履歴。
@@ -120,7 +144,7 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
     if markdown is not None:
         with st.expander("Markdown preview"):
             _render_markdown_preview(markdown[0], markdown[1].decode("utf-8"))
-    download_columns = st.columns(2, vertical_alignment="center")
+    download_columns = st.columns(2, vertical_alignment="bottom")
     if markdown is not None:
         with download_columns[0]:
             st.download_button(
@@ -131,9 +155,28 @@ def _render_translation_outputs(entry: HistoryEntry, record: TranslationRecord) 
             )
     if docx is not None:
         with download_columns[1]:
+            templates = docx_templates()
+            template = st.selectbox(
+                "DOCX書式",
+                templates,
+                index=templates.index(DEFAULT_DOCX_TEMPLATE)
+                if DEFAULT_DOCX_TEMPLATE in templates
+                else 0,
+                format_func=lambda path: path.relative_to(TEMPLATES).as_posix(),
+                key=f"docx-template-{entry.processing_id}",
+            )
+            # 既定書式は公開済みDOCXを返し、他の書式はclick時だけ再変換する。
+            if (
+                template is None
+                or template == DEFAULT_DOCX_TEMPLATE
+                or markdown is None
+            ):
+                data = docx[1]
+            else:
+                data = partial(_render_docx_with_config, markdown[0], template)
             st.download_button(
                 "DOCXをdownload",
-                docx[1],
+                data,
                 file_name=docx[0].name,
                 mime=(
                     "application/vnd.openxmlformats-officedocument."

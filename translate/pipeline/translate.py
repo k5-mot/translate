@@ -1,5 +1,6 @@
 """英語PDFを日本語MarkdownとDOCXへ変換するTranslate Pipeline。"""
 
+import tempfile
 from datetime import UTC, datetime
 from functools import partial
 from importlib import import_module
@@ -49,6 +50,51 @@ MarkdownTask = import_module("translate.tasks.52_markdown").MarkdownTask
 apply_revisions = import_module("translate.tasks.42_fix").apply_revisions
 ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 TranslationTask = import_module("translate.tasks.30_translate").TranslationTask
+
+
+# DOCX Style用Reference DOCXの配置先と、Pipelineが既定で使う書式。
+TEMPLATES = Path(__file__).parents[1] / "templates"
+DEFAULT_DOCX_TEMPLATE = TEMPLATES / "template.docx"
+
+
+def docx_templates() -> list[Path]:
+    """Template directory配下で選択可能なReference DOCXを列挙する。
+
+    Wordが編集中に作る`~$`始まりのLock Fileは除外する。
+
+    Returns:
+        list[Path]: Template directoryからの相対Path順に並べたDOCX Path。
+    """
+
+    return sorted(
+        path for path in TEMPLATES.rglob("*.docx") if not path.name.startswith("~$")
+    )
+
+
+def render_docx(markdown: Path, template: Path, timeout: float) -> bytes:
+    """公開済みMarkdownを指定書式のDOCXへ変換し、内容を返す。
+
+    PANDOCとOOXMLと同じ変換を一時directoryで行い、処理成果物は変更しない。
+
+    Args:
+        markdown (Path): 翻訳Pipelineが公開したMarkdown Path。画像は同じdirectoryから解決する。
+        template (Path): DOCX Style用のReference DOCX Path。
+        timeout (float): Pandoc実行のTimeout秒数。
+
+    Returns:
+        bytes: 最終DOCXの内容。
+
+    Raises:
+        PandocError: Markdownまたはtemplateがない場合、またはPandoc変換に失敗した場合。
+    """
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        raw = root / "pandoc" / "document.raw.docx"
+        output = root / "ooxml" / "document.ja.docx"
+        publish_pandoc(markdown, raw, template, timeout)
+        publish_ooxml(raw, output)
+        return output.read_bytes()
 
 
 class PipelineError(RuntimeError):
@@ -147,7 +193,7 @@ class TranslatePipeline:
             PipelineError: LINTが文書構造の問題を検出した場合。
             Exception: Taskが失敗した場合。
         """
-        templates = Path(__file__).parents[1] / "templates"
+        templates = TEMPLATES
         rules = {
             task: (templates / f"{name}-rules.md").read_text(encoding="utf-8")
             for task, name in (
@@ -300,7 +346,7 @@ class TranslatePipeline:
                         publish_pandoc,
                         markdown_path,
                         raw_docx,
-                        templates / "template.docx",
+                        DEFAULT_DOCX_TEMPLATE,
                         self.config.http_request_timeout_seconds,
                     ),
                 )

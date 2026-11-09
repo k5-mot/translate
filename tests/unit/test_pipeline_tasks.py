@@ -1,5 +1,6 @@
 """Taskの保存・再開と失敗状態を統合して検証する。"""
 
+import shutil
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
@@ -167,3 +168,24 @@ def test_review_splits_target_after_invalid_llm_response(
     assert calls > 2
     assert result.reviewed_target_ids == ["review/unit"]
     assert load_model(parent_path, LLMCallArtifact).status == "split"
+
+
+def test_render_docx_uses_selected_template_without_touching_markdown(
+    tmp_path: Path,
+) -> None:
+    """選択書式でDOCXを生成し、Markdownの配置directoryへ一時fileを残さない。"""
+    if shutil.which("pandoc") is None:
+        pytest.skip("pandoc is not installed")
+    translate = import_module("translate.pipeline.translate")
+    assert translate.DEFAULT_DOCX_TEMPLATE in translate.docx_templates()
+    template = tmp_path / "templates" / "alternate.docx"
+    template.parent.mkdir()
+    shutil.copyfile(translate.DEFAULT_DOCX_TEMPLATE, template)
+    markdown = tmp_path / "markdown" / "document.ja.md"
+    markdown.parent.mkdir()
+    markdown.write_text("# 見出し\n\n本文\n", encoding="utf-8")
+
+    data = translate.render_docx(markdown, template, 30.0)
+
+    assert data.startswith(b"PK")
+    assert sorted(markdown.parent.iterdir()) == [markdown]
