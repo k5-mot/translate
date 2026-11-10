@@ -260,6 +260,8 @@ source `#/texts/341`→translation `#/texts/482`は本文の残りではなく�
 
 一方、訳PDFページ7の`#/texts/78`はsource PDFの式(18)と同じ式を持つが番号が(13)になっており、実際の訳誤記である。保存Reviewはこれをsource `#/texts/113`（別の式(13)定義）へ誤対応していた。source LOADには式(16)（`#/texts/121`）の後の式(17)/(18)がTextUnitとして存在せず、現行Reviewが評価するmatched groupから外すと、translation-onlyの`#/texts/78`は品質評価されない。誤対応を正すだけではこの実誤記を再検出できない、原文抽出欠落に由来する残課題として記録する。PDF画像は`.tmp/matching-audit/sample5-audit-source-p4.png`と上記translation page 6/7.
 
+2026-11-10訂正: 式(17)/(18)は原文LOADに存在した。「LOADの抽出漏れとされた3件の再調査」を参照。
+
 #### 🧪 現行コードのsample Upgrade再検証
 
 2026-11-06に保存済みsample Upgrade入力でUpgradeAgentを実行（`.tmp/matching-audit/upgrade-sample-current-v80/`）。現行コード指紋`883ad05a…`で成功し、変更4件を検出した。原文v1の`Appendix A`、`Chapter Title`、`Section Title`、`Appendix body text sample.`各unitが原文v2に存在せず、対応する日本語unitを削除とする結果は入力差分どおりだった。1件でLLMのmatch参照制約違反を検出したが、再試行で回復し、成果物を生成した。
@@ -435,3 +437,15 @@ sample3 source `#/texts/91/content`の`$43 million`も誤検知の可能性を�
 sample1の保存Reviewには、参考文献付録「Chairman of the Joint Chiefs of Staff Publications」「Service Publications」にある番号付き公式タイトルが未訳として複数指摘されていた。`JP 3-60, Joint Targeting`、`AFDA 3-12, Cyberspace Operations`、`ADP 5-0, The Operations Process`は番号で識別される出版物の正式タイトルであり、参照目的で英語保持が妥当と分類した。規則へ書誌・出版物一覧の公式タイトルを識別名称として扱う文を加え、現行ReviewTask／実LLMでこの3件にfinding・revisionが出ないことを確認（`.tmp/matching-audit/sample1-publication-citations-v1/check.json`）。同じ一覧にある他のfinding、全文Review、sample1の全付録の網羅監査は未完了。
 
 sample3 `#/texts/129/content`では`Lawrence Livermore National Laboratory`を「ローレンス・リバモア国立研究所」と訳した表記へ、旧Reviewが「リバーモア」への任意置換を提案していた。施設を一意に特定でき、意味の違いもないため、許容される固有名詞の音訳差によるfalse positiveとした。規則へ公式の定着訳と許容音訳の揺れを区別する指示を加え、実LLMで当該targetがfindingなしとなることを確認。同じ再評価要求に含めた`#/texts/91/content`では、`$43 million`に対する訳文`4,300万ドリン`の誤字をfindingとして維持した（`.tmp/matching-audit/sample3-livermore-transliteration-v1/check.json`）。
+
+#### 2026-11-10 LOADの抽出漏れとされた3件の再調査
+
+以前「LOADの抽出漏れ」として残課題にした3件を、Doclingの出力から各Taskの成果物まで追跡した。3件ともLOADの問題ではなかった。
+
+| 文書 | 以前の記録 | 再調査の結果 |
+|---|---|---|
+| sample5 | 原文LOADに式(17)・(18)がない | 誤り。Review `01a19cf1-bc56-7be0-8049-5b34d11b211a`の原文LOADに`#/texts/131/content`（式(17)）と`#/texts/133/content`（式(18)）が存在する。LaTeXでは番号が`( 1 7 )`と空白区切りになるため、文字列検索で見落とした |
+| sample3 | LOADが表の負号を落とす | 元PDFのテキスト層に負号がない。p.16の画像では`−1,796`だが、テキスト層は`766 1,796`で、直前の文字は空白（`0x20`）だった。負号は図形として描かれている |
+| sample1 | 訳文表紙の`Joint Planning`がLOADにない | 訳文PDFの表紙は画像で、テキスト層がない。DoclingのOCRは`Joint Publication 5-0`を読めたが、紺地の`Joint Planning`は読めなかった |
+
+sample5の式(18)の原文LOADは、先頭にDoclingの数式認識由来の`( 1 3 )`を含む。訳文の番号誤記（式(18)を(13)と記載した`#/texts/78`）を原文の`#/texts/133`へ対応付けられるかは、全文Reviewで確認する。
