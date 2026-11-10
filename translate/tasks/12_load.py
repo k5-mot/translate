@@ -7,11 +7,29 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import import_module
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, cast
 
+from docling_core.types.doc import (
+    BoundingBox,
+    ContentLayer,
+    CoordOrigin,
+    DocItem,
+    DoclingDocument,
+    GroupItem,
+    GroupLabel,
+    ListItem,
+    NodeItem,
+    PictureItem,
+    RichTableCell,
+    Script,
+    TableItem,
+    TextItem,
+)
+from docling_core.types.doc import TableCell as DoclingCell
+from pydantic import AnyUrl
+
 from translate.adapters.artifact_store import temporary_task_directory, write_model
-from translate.common.docling_json import resolve_ref
 from translate.common.sentences import split_sentences
 from translate.models.document import (
     Block,
@@ -28,8 +46,8 @@ from translate.models.document import (
 
 index_refs = import_module("translate.tasks.11_normalize").index_refs
 
-COLLECTIONS = ("texts", "tables", "pictures", "key_value_items", "form_items", "groups")
 SKIPPED_LABELS = {"page_header", "page_footer"}
+LIST_LABELS = {"list_item", "checkbox_selected", "checkbox_unselected"}
 TEXT_KINDS = {
     "title": "heading",
     "section_header": "heading",
@@ -46,28 +64,59 @@ TEXT_KINDS = {
     "program_listing": "code",
     "formula": "formula",
 }
+MARK_FIELDS: tuple[tuple[str, TextMark], ...] = (
+    ("bold", "strong"),
+    ("italic", "emphasis"),
+    ("strikethrough", "strikethrough"),
+    ("underline", "underline"),
+)
 
 
-def _visible_content(item: dict[str, Any]) -> bool:
+def _label(item: NodeItem) -> str:
+    """要素のlabel値を文字列で返す。
+
+    Args:
+        item: Docling要素。
+
+    Returns:
+        label値。labelを持たない要素では空文字列。
+    """
+
+    label = getattr(item, "label", None)
+    return label.value if label is not None else ""
+
+
+def _uri(value: AnyUrl | PurePath) -> str:
+    """URIまたは相対pathを、OSに依存しない文字列へ変換する。
+
+    Args:
+        value: Docling要素のURIまたはpath。
+
+    Returns:
+        pathは`/`区切り、URIは文字列表現。
+    """
+
+    return value.as_posix() if isinstance(value, PurePath) else str(value)
+
+
+def _visible_content(item: NodeItem) -> bool:
     """要素自身が失うべきでない可視内容を持つか判定する。
 
     Args:
         item: Docling要素。
 
     Returns:
-        text、画像、表dataまたは数式が存在する場合はTrue。
+        text、画像または表dataが存在する場合はTrue。
     """
 
-    text = item.get("text")
-    return bool(
-        (isinstance(text, str) and text.strip())
-        or item.get("image")
-        or item.get("data")
-        or item.get("latex")
-    )
+    if isinstance(item, TextItem):
+        return bool(item.text.strip())
+    if isinstance(item, PictureItem):
+        return item.image is not None
+    return isinstance(item, TableItem)
 
 
-def _page_number(item: dict[str, Any]) -> int:
+def _page_number(item: NodeItem) -> int:
     """provenanceから1始まりページ番号を得る。
 
     Args:
@@ -77,11 +126,9 @@ def _page_number(item: dict[str, Any]) -> int:
         ページ番号。情報がない場合は1。
     """
 
-    provenance = item.get("prov")
-    if isinstance(provenance, list) and provenance and isinstance(provenance[0], dict):
-        value = provenance[0].get("page_no", 1)
-        if isinstance(value, int) and value > 0:
-            return value
+    provenance = item.prov if isinstance(item, DocItem) else []
+    if provenance and provenance[0].page_no > 0:
+        return provenance[0].page_no
     return 1
 
 
@@ -122,7 +169,7 @@ def _inline(
 
 
 def _inline_from_item(
-    item: dict[str, Any], ref: str, text: str, kind: TextKind
+    item: TextItem, ref: str, text: str, kind: TextKind
 ) -> list[TextSpan]:
     """Docling TextItemのlinkと装飾をInlineへ移す。
 
@@ -136,50 +183,28 @@ def _inline_from_item(
         hyperlinkとFormattingを保持したInline列。
     """
 
-    formatting = item.get("formatting")
     marks: list[TextMark] = []
-    if isinstance(formatting, dict):
-        mark_fields: tuple[tuple[str, TextMark], ...] = (
-            ("bold", "strong"),
-            ("italic", "emphasis"),
-            ("strikethrough", "strikethrough"),
-            ("underline", "underline"),
+    if item.formatting is not None:
+        marks.extend(
+            mark for name, mark in MARK_FIELDS if getattr(item.formatting, name)
         )
-        marks.extend(mark for field, mark in mark_fields if formatting.get(field))
-        script = formatting.get("script")
-        if script == "sub":
+        if item.formatting.script == Script.SUB:
             marks.append("subscript")
-        elif script == "super":
+        elif item.formatting.script == Script.SUPER:
             marks.append("superscript")
-    hyperlink = item.get("hyperlink")
-    href = str(hyperlink) if hyperlink is not None else None
+    href = _uri(item.hyperlink) if item.hyperlink is not None else None
     inline_kind: TextKind = "link" if href and kind == "text" else kind
     return _inline(ref, text, inline_kind, href, marks)
 
 
-def _cell_text(cell: dict[str, Any]) -> str:
-    """Docling table cellから文字列を得る。
-
-    Args:
-        cell: table cell object。
-
-    Returns:
-        textまたは空文字列。
-    """
-
-    value = cell.get("text") or cell.get("text_content") or ""
-    return str(value)
-
-
 @dataclass
 class _CellSource:
-    """LOAD呼出中だけ、論理セルとDoclingの別表現・参照根拠を対応させる。"""
+    """LOAD呼出中だけ、論理セルとDoclingの同一位置セルを対応させる。"""
 
     cell: TableCell
     rowspan: int = 1
     colspan: int = 1
-    variants: list[dict[str, Any]] = field(default_factory=list)
-    refs: set[str] = field(default_factory=set)
+    variants: list[DoclingCell] = field(default_factory=list)
 
 
 class TableImageOwnershipError(ValueError):
@@ -224,15 +249,11 @@ def _ownership_context(page: int | None, ref: str) -> Iterator[None]:
         raise TableImageOwnershipError(page, ref) from error
 
 
-def _cell_shape(
-    raw: dict[str, Any], row: int, column: int
-) -> tuple[int, int, int, int]:
+def _cell_shape(raw: DoclingCell) -> tuple[int, int, int, int]:
     """半開offsetとspanを照合し、負位置や矛盾を丸めずに拒否する。
 
     Args:
-        raw (dict[str, Any]): 正規化前の入力Data。
-        row (int): Table Cellの開始Row位置。
-        column (int): Table Cellの開始Column。
+        raw (DoclingCell): Doclingのtable cell。
 
     Returns:
         tuple[int, int, int, int]: 開始行、開始列、行span、列spanの組。
@@ -242,112 +263,54 @@ def _cell_shape(
             table cell span`のいずれかと判定した場合。
     """
 
-    start_row = raw.get("start_row_offset_idx", raw.get("row", row))
-    start_col = raw.get("start_col_offset_idx", raw.get("col", column))
-    if any(type(value) is not int or value < 0 for value in (start_row, start_col)):
+    start_row, start_col = raw.start_row_offset_idx, raw.start_col_offset_idx
+    if start_row < 0 or start_col < 0:
         raise ValueError("invalid table cell position")
-    row_span, col_span = raw.get("row_span", 1), raw.get("col_span", 1)
-    if any(type(value) is not int or value < 1 for value in (row_span, col_span)):
+    if raw.row_span < 1 or raw.col_span < 1:
         raise ValueError("invalid table cell span")
-    end_row = raw.get("end_row_offset_idx", start_row + row_span)
-    end_col = raw.get("end_col_offset_idx", start_col + col_span)
+    end_row, end_col = raw.end_row_offset_idx, raw.end_col_offset_idx
+    # 明示されたspanだけをoffsetと照合し、省略時の既定値では拒否しない。
     if (
-        any(type(value) is not int for value in (end_row, end_col))
-        or end_row <= start_row
+        end_row <= start_row
         or end_col <= start_col
-        or ("row_span" in raw and end_row - start_row != row_span)
-        or ("col_span" in raw and end_col - start_col != col_span)
+        or ("row_span" in raw.model_fields_set and end_row - start_row != raw.row_span)
+        or ("col_span" in raw.model_fields_set and end_col - start_col != raw.col_span)
     ):
         raise ValueError("conflicting table cell span")
     return start_row, start_col, end_row - start_row, end_col - start_col
 
 
-def _raw_cells(
-    data: dict[str, Any], ref: str
-) -> Iterator[tuple[dict[str, Any], int, int, str, str]]:
-    """gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。
+def _normalized_cells(item: TableItem, ref: str) -> list[_CellSource]:
+    """同一論理セルの重複を統合し、span・内容・占有領域の矛盾を拒否する。
 
     Args:
-        data (dict[str, Any]): 解析または変換対象のMapping Data。
-        ref (str): Docling要素を指すJSON参照。
-
-    Yields:
-        tuple[dict[str: gridとoffset配列の実在セルを、その参照pathと既存Inline ID付きで列挙する。
-
-    Raises:
-        ValueError: `invalid table grid row`、`invalid table grid cell`、`invalid table
-            cells`、`invalid table cell`、`unsupported Docling table cells`のいずれかと判定した場合。
-    """
-
-    grid = data.get("grid")
-    if isinstance(grid, list):
-        for row_index, row in enumerate(grid):
-            if not isinstance(row, list):
-                raise ValueError("invalid table grid row")
-            for column_index, raw in enumerate(row):
-                if not isinstance(raw, dict):
-                    raise ValueError("invalid table grid cell")
-                yield (
-                    raw,
-                    row_index,
-                    column_index,
-                    f"{ref}/data/grid/{row_index}/{column_index}",
-                    f"{ref}/cell/{row_index}/{column_index}",
-                )
-    has_cells = isinstance(grid, list)
-    for name in ("table_cells", "cells"):
-        values = data.get(name)
-        if values is None:
-            continue
-        if not isinstance(values, list):
-            raise ValueError("invalid table cells")
-        has_cells = True
-        for index, raw in enumerate(values):
-            if not isinstance(raw, dict):
-                raise ValueError("invalid table cell")
-            yield raw, 0, 0, f"{ref}/data/{name}/{index}", f"{ref}/cell/{index}"
-    if not has_cells:
-        raise ValueError("unsupported Docling table cells")
-
-
-def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
-    """同一論理セルの別表現を統合し、span・内容・占有領域の矛盾を拒否する。
-
-    Args:
-        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        item (TableItem): Doclingの表。
         ref (str): Docling要素を指すJSON参照。
 
     Returns:
         list[_CellSource]: 開始位置順の論理Cell一覧。空セルで表全体を埋める。
 
     Raises:
-        ValueError: `unsupported Docling table`、`table cell exceeds table
-            dimensions`、`conflicting table cell representations`、`conflicting table cell
-            header roles`、`grid cell lies outside its span`のいずれかと判定した場合。
+        ValueError: `table cell exceeds table dimensions`、`conflicting table cell
+            representations`、`conflicting table cell header roles`のいずれかと判定した場合。
     """
 
-    data = item.get("data")
-    if not isinstance(data, dict):
-        raise ValueError("unsupported Docling table")
+    data = item.data
     cells: dict[tuple[int, int], _CellSource] = {}
     occupied: dict[tuple[int, int], set[tuple[int, int]]] = {}
-    for raw, row, column, path, inline_ref in _raw_cells(data, ref):
-        start_row, start_col, rowspan, colspan = _cell_shape(raw, row, column)
+    for raw in data.table_cells:
+        start_row, start_col, rowspan, colspan = _cell_shape(raw)
         key = (start_row, start_col)
-        for size, end in (
-            (data.get("num_rows"), start_row + rowspan),
-            (data.get("num_cols"), start_col + colspan),
-        ):
-            if size is not None and (type(size) is not int or size < end):
-                raise ValueError("table cell exceeds table dimensions")
+        if data.num_rows < start_row + rowspan or data.num_cols < start_col + colspan:
+            raise ValueError("table cell exceeds table dimensions")
         cell = TableCell(
             id=f"{ref}/cell-r{start_row:04d}-c{start_col:04d}",
             row=start_row,
             column=start_col,
-            header=bool(raw.get("column_header") or raw.get("row_header")),
+            header=raw.column_header or raw.row_header,
             content=TextUnit(
                 id=f"{ref}/cell-r{start_row:04d}-c{start_col:04d}/content",
-                spans=_inline(inline_ref, _cell_text(raw)),
+                spans=_inline(f"{ref}/cell/{start_row}/{start_col}", raw.text),
             ),
         )
         if key in cells:
@@ -359,26 +322,18 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
                 previous.cell.content.text("source"),
             ) != (rowspan, colspan, cell.header, cell.content.text("source")):
                 raise ValueError("conflicting table cell representations")
-            previous_raw = cells[key].variants[0]
-            if any(
-                bool(previous_raw.get(name)) != bool(raw.get(name))
-                for name in ("row_header", "column_header")
+            previous_raw = previous.variants[0]
+            if (previous_raw.row_header, previous_raw.column_header) != (
+                raw.row_header,
+                raw.column_header,
             ):
                 raise ValueError("conflicting table cell header roles")
         else:
             cells[key] = _CellSource(cell, rowspan=rowspan, colspan=colspan)
-        if "/data/grid/" in path and not (
-            start_row <= row < start_row + rowspan
-            and start_col <= column < start_col + colspan
-        ):
-            raise ValueError("grid cell lies outside its span")
         for r in range(start_row, start_row + rowspan):
             for c in range(start_col, start_col + colspan):
                 occupied.setdefault((r, c), set()).add(key)
         cells[key].variants.append(raw)
-        cells[key].refs.add(path)
-        if isinstance(raw.get("self_ref"), str):
-            cells[key].refs.add(raw["self_ref"])
     conflicting = {
         key for owners in occupied.values() if len(owners) > 1 for key in owners
     }
@@ -387,8 +342,8 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
         cells[key].rowspan = 1
         cells[key].colspan = 1
     # 保存するDocumentは通常grid。結合範囲の本文は起点だけに置き、残りは空セルにする。
-    row_count = data.get("num_rows") or max((row + 1 for row, _ in occupied), default=0)
-    column_count = data.get("num_cols") or max(
+    row_count = data.num_rows or max((row + 1 for row, _ in occupied), default=0)
+    column_count = data.num_cols or max(
         (column + 1 for _, column in occupied), default=0
     )
     for row in range(row_count):
@@ -406,11 +361,11 @@ def _normalized_cells(item: dict[str, Any], ref: str) -> list[_CellSource]:
     return [cells[key] for key in sorted(cells)]
 
 
-def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
-    """別表現の重複を除いた論理セルを内部文書へ渡す。
+def _table_cells(item: TableItem, ref: str) -> list[TableCell]:
+    """重複を除いた論理セルを内部文書へ渡す。
 
     Args:
-        item (dict[str, Any]): 変換または位置計算対象の要素Data。
+        item (TableItem): Doclingの表。
         ref (str): Docling要素を指すJSON参照。
 
     Returns:
@@ -421,52 +376,45 @@ def _table_cells(item: dict[str, Any], ref: str) -> list[TableCell]:
         return [source.cell for source in _normalized_cells(item, ref)]
 
 
-def _top_left_box(raw: Any, page: Page) -> tuple[float, float, float, float] | None:
+def _top_left_box(
+    box: BoundingBox | None, page: Page
+) -> tuple[float, float, float, float] | None:
     """存在するbboxは有限の正領域として検査し、ページ高さで原点を統一する。
 
     Args:
-        raw (Any): 正規化前の入力Data。
-        page (Page): 処理対象のPageまたはPage番号。
+        box (BoundingBox | None): Doclingのbbox。
+        page (Page): 処理対象のPage。
 
     Returns:
         tuple[float, float, float, float] | None: 左上原点の左、上、右、下。bboxがない場合はNone。
 
     Raises:
         ValueError: `invalid image ownership geometry`、`missing page height for image
-            ownership`、`unknown image ownership coordinate origin`のいずれかと判定した場合。
+            ownership`のいずれかと判定した場合。
     """
 
-    if raw is None:
+    if box is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError("invalid image ownership geometry")
-    try:
-        left, top, right, bottom = (float(raw[key]) for key in ("l", "t", "r", "b"))
-    except (KeyError, ValueError, TypeError) as error:
-        raise ValueError("invalid image ownership geometry") from error
-    if raw.get("coord_origin") == "BOTTOMLEFT":
+    if box.coord_origin == CoordOrigin.BOTTOMLEFT:
         if page.height is None or not math.isfinite(page.height) or page.height <= 0:
             raise ValueError("missing page height for image ownership")
-        top, bottom = page.height - top, page.height - bottom
-    elif raw.get("coord_origin") != "TOPLEFT":
-        raise ValueError("unknown image ownership coordinate origin")
+        box = box.to_top_left_origin(page.height)
+    values = (box.l, box.t, box.r, box.b)
     if (
-        not all(math.isfinite(value) for value in (left, top, right, bottom))
-        or left >= right
-        or top >= bottom
+        not all(math.isfinite(value) for value in values)
+        or box.l >= box.r
+        or box.t >= box.b
     ):
         raise ValueError("invalid image ownership geometry")
-    return left, top, right, bottom
+    return values
 
 
-def _item_box(
-    item: dict[str, Any], page: Page
-) -> tuple[float, float, float, float] | None:
+def _item_box(item: DocItem, page: Page) -> tuple[float, float, float, float] | None:
     """所有関係を判断する同ページのprovenanceだけを取得し、矛盾を拒否する。
 
     Args:
-        item (dict[str, Any]): 変換または位置計算対象の要素Data。
-        page (Page): 処理対象のPageまたはPage番号。
+        item (DocItem): 位置を判定するDocling要素。
+        page (Page): 処理対象のPage。
 
     Returns:
         tuple[float, float, float, float] | None: 左上原点の座標。同Pageのbboxがない場合はNone。
@@ -475,11 +423,10 @@ def _item_box(
         ValueError: `conflicting image ownership provenance`と判定した場合。
     """
 
-    provenance = item.get("prov") or []
     boxes = {
-        _top_left_box(value.get("bbox"), page)
-        for value in provenance
-        if isinstance(value, dict) and value.get("page_no") == page.number
+        _top_left_box(value.bbox, page)
+        for value in item.prov
+        if value.page_no == page.number
     }
     boxes.discard(None)
     if len(boxes) > 1:
@@ -508,35 +455,6 @@ def _contains(
     )
 
 
-def _cell_box(
-    raw: dict[str, Any], page: Page
-) -> tuple[float, float, float, float] | None:
-    """セル側ページ指定とbbox/provenanceの整合を検査して座標を返す。
-
-    Args:
-        raw (dict[str, Any]): 正規化前の入力Data。
-        page (Page): 処理対象のPageまたはPage番号。
-
-    Returns:
-        tuple[float, float, float, float] | None: Cellの座標。情報がない場合はNone。
-
-    Raises:
-        ValueError: `cell ownership references another page`、`conflicting cell ownership
-            provenance`のいずれかと判定した場合。
-    """
-
-    if ("page_no" in raw and raw["page_no"] != page.number) or any(
-        not isinstance(value, dict) or value.get("page_no") != page.number
-        for value in raw.get("prov", []) or []
-    ):
-        raise ValueError("cell ownership references another page")
-    box = _top_left_box(raw.get("bbox"), page)
-    provenance = _item_box(raw, page)
-    if box is not None and provenance is not None and box != provenance:
-        raise ValueError("conflicting cell ownership provenance")
-    return box or provenance
-
-
 def _geometric_cell(
     cells: list[_CellSource], box: tuple[float, float, float, float], page: Page
 ) -> set[int]:
@@ -545,7 +463,7 @@ def _geometric_cell(
     Args:
         cells (list[_CellSource]): Markdownの一行へ配置するTable Cell列。
         box (tuple[float, float, float, float]): 判定対象の座標矩形。
-        page (Page): 処理対象のPageまたはPage番号。
+        page (Page): 処理対象のPage。
 
     Returns:
         set[int]: 画像を含む候補セルのIndex。一意でない場合も候補を保持する。
@@ -560,7 +478,7 @@ def _geometric_cell(
     center_x, center_y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
     for index, source in enumerate(cells):
         cell = source.cell
-        boxes = {_cell_box(raw, page) for raw in source.variants}
+        boxes = {_top_left_box(raw.bbox, page) for raw in source.variants}
         boxes.discard(None)
         if len(boxes) > 1:
             raise ValueError("conflicting cell ownership geometry")
@@ -570,12 +488,12 @@ def _geometric_cell(
         if _contains(cell_box, box):
             direct.add(index)
         if (
-            any(raw.get("column_header") for raw in source.variants)
+            any(raw.column_header for raw in source.variants)
             and cell_box[0] < center_x < cell_box[2]
         ):
             columns.update(range(cell.column, cell.column + source.colspan))
         if (
-            any(raw.get("row_header") for raw in source.variants)
+            any(raw.row_header for raw in source.variants)
             and cell_box[1] < center_y < cell_box[3]
         ):
             rows.update(range(cell.row, cell.row + source.rowspan))
@@ -593,13 +511,13 @@ def _geometric_cell(
 
 
 def _explicit_image_owners(
-    sources: dict[str, list[_CellSource]], pictures: dict[str, dict[str, Any]]
+    sources: dict[str, list[_CellSource]], pictures: dict[str, PictureItem]
 ) -> dict[str, set[tuple[str, int]]]:
     """セル側参照と画像の親参照を統合し、不正セル参照を幾何推測で隠さない。
 
     Args:
-        sources (dict[str, list[_CellSource]]): Register対象として収集したSource。
-        pictures (dict[str, dict[str, Any]]): 参照別の画像Metadata。
+        sources (dict[str, list[_CellSource]]): 表参照別の論理セル。
+        pictures (dict[str, PictureItem]): 参照別の画像。
 
     Returns:
         dict[str, set[tuple[str, int]]]: Picture参照から所有元のTable参照とCell Indexの集合への辞書。
@@ -609,33 +527,20 @@ def _explicit_image_owners(
     """
 
     owners: dict[str, set[tuple[str, int]]] = {}
-    refs: dict[str, set[tuple[str, int]]] = {}
     for table_ref, cells in sources.items():
         for index, source in enumerate(cells):
-            owner = (table_ref, index)
-            for ref in source.refs:
-                refs.setdefault(ref, set()).add(owner)
             for raw in source.variants:
-                children = raw.get("children", [])
-                if not isinstance(children, list):
-                    raise TableImageOwnershipError(None, table_ref)
-                for value in children:
-                    ref = value.get("$ref") if isinstance(value, dict) else None
-                    if not isinstance(ref, str):
+                if not isinstance(raw, RichTableCell):
+                    continue
+                ref = raw.ref.cref
+                if ref.startswith("#/pictures/"):
+                    if ref not in pictures:
                         raise TableImageOwnershipError(None, table_ref)
-                    if isinstance(ref, str) and ref.startswith("#/pictures/"):
-                        if ref not in pictures:
-                            raise TableImageOwnershipError(None, table_ref)
-                        owners.setdefault(ref, set()).add(owner)
+                    owners.setdefault(ref, set()).add((table_ref, index))
     for picture_ref, picture in pictures.items():
-        parent = picture.get("parent")
-        parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
-        if parent is not None and not isinstance(parent_ref, str):
-            raise TableImageOwnershipError(_page_number(picture), picture_ref)
-        if parent_ref in refs:
-            owners.setdefault(picture_ref, set()).update(refs[parent_ref])
-        elif (
-            isinstance(parent_ref, str)
+        parent_ref = picture.parent.cref if picture.parent is not None else None
+        if (
+            parent_ref is not None
             and parent_ref.startswith("#/tables/")
             and parent_ref not in sources
         ):
@@ -650,12 +555,16 @@ class DocumentLoader:
     """Docling文書を保持し、参照・Caption・図表を共通Documentへ変換する。"""
 
     def __init__(self, document: dict[str, Any]) -> None:
-        """参照解決と構造変換の対象文書を受け取る。
+        """Docling JSONを検証し、構造変換の対象として保持する。
 
         Args:
             document: Docling Serveが返したJSON object。元の値は書き換えない。
+
+        Raises:
+            ValueError: DoclingDocumentのschemaを満たさない場合。
         """
-        self.document = document
+        self.raw = document
+        self.document = DoclingDocument.model_validate(document)
 
     def load(self) -> Document:
         """Docling documentをページ順のv5 Documentへ変換する。
@@ -664,39 +573,37 @@ class DocumentLoader:
             正規化済みDocument。
 
         Raises:
-            ValueError: schema、ページ、参照、要素が契約を満たさない場合。
+            ValueError: ページ、参照、要素が契約を満たさない場合。
         """
 
-        if self.document.get("schema_name") != "DoclingDocument":
-            msg = f"unsupported Docling schema: {self.document.get('schema_name')!r}"
-            raise ValueError(msg)
         pages = self._normalized_pages()
         seen: set[str] = set()
         caption_refs = self._owned_caption_refs()
-        excluded_indexes = index_refs(self.document)
+        excluded_indexes = index_refs(self.raw)
         picture_content_refs = self._picture_content_refs()
         # bodyの文書順を正本とし、bodyに現れないcollection要素だけを後段で補完する。
-        ordered_items = list(self._walk_refs(self.document.get("body", {})))
-        for collection in COLLECTIONS[:-1]:
-            values = self.document.get(collection, [])
-            if not isinstance(values, list):
-                msg = f"Docling collection must be a list: {collection}"
-                raise ValueError(msg)
+        ordered_items: list[tuple[NodeItem, int, bool | None]] = [
+            (item, *self._list_context(item))
+            for item, _ in self.document.iterate_items(
+                with_groups=False,
+                traverse_pictures=True,
+                included_content_layers=set(ContentLayer),
+            )
+        ]
+        for collection in (
+            self.document.texts,
+            self.document.tables,
+            self.document.pictures,
+            self.document.key_value_items,
+            self.document.form_items,
+        ):
             ordered_items.extend(
-                (
-                    item,
-                    1
-                    if str(item.get("label", ""))
-                    in {"list_item", "checkbox_selected", "checkbox_unselected"}
-                    else 0,
-                    None,
-                )
-                for item in values
-                if isinstance(item, dict)
+                (item, 1 if _label(item) in LIST_LABELS else 0, None)
+                for item in collection
             )
         page_orders: dict[int, int] = dict.fromkeys(pages, 0)
         for item, list_level, parent_ordered in ordered_items:
-            ref = str(item.get("self_ref") or "")
+            ref = item.self_ref
             if ref in seen:
                 continue
             seen.add(ref)
@@ -712,13 +619,8 @@ class DocumentLoader:
                 raise ValueError(msg)
             block = self._block(item, page_orders[number], list_level, parent_ordered)
             if block is not None:
-                provenance = item.get("prov")
-                if (
-                    isinstance(provenance, list)
-                    and provenance
-                    and isinstance(provenance[0], dict)
-                ):
-                    block.bbox = _top_left_box(provenance[0].get("bbox"), pages[number])
+                if isinstance(item, DocItem) and item.prov:
+                    block.bbox = _top_left_box(item.prov[0].bbox, pages[number])
                 pages[number].blocks.append(block)
                 page_orders[number] += 1
         self._assign_cell_images(pages)
@@ -726,77 +628,38 @@ class DocumentLoader:
             pages=[pages[number] for number in sorted(pages)],
             metadata={
                 "source_schema": "DoclingDocument",
-                "source_name": str(self.document.get("name", "")),
+                "source_name": self.document.name,
             },
         )
 
-    def _resolve(self, ref: str) -> dict[str, Any]:
-        """Docling内部refをobjectへ解決する。
+    def _list_context(self, item: NodeItem) -> tuple[int, bool | None]:
+        """祖先のList groupから、箇条書きの階層と番号付きかどうかを求める。
 
         Args:
-            ref: `#/collection/index`形式の参照。
+            item: Docling要素。
 
         Returns:
-            参照先object。
-
-        Raises:
-            ValueError: 参照が不正または解決不能の場合。
+            List groupの祖先数と、最も近いList groupが番号付きかどうか。List外ではNone。
         """
 
-        try:
-            value = resolve_ref(self.document, ref)
-        except (KeyError, IndexError, TypeError, ValueError) as error:
-            msg = f"unresolved Docling ref: {ref}"
-            raise ValueError(msg) from error
-        if not isinstance(value, dict):
-            msg = f"Docling ref is not an object: {ref}"
-            raise ValueError(msg)
-        return value
+        level, ordered = 0, None
+        parent = item.parent
+        while parent is not None:
+            node = parent.resolve(self.document)
+            if isinstance(node, GroupItem) and node.label in {
+                GroupLabel.LIST,
+                GroupLabel.ORDERED_LIST,
+            }:
+                level += 1
+                if ordered is None:
+                    ordered = node.label == GroupLabel.ORDERED_LIST
+            parent = node.parent
+        return level, ordered
 
-    def _walk_refs(
-        self, value: Any, list_level: int = 0, ordered: bool | None = None
-    ) -> Iterator[tuple[dict[str, Any], int, bool | None]]:
-        """tree内refを文書順に展開する。
-
-        Args:
-            value: tree nodeまたは値。
-            list_level: 親Listから継承した階層Level。
-            ordered: 親Listが順序付きかどうか。List外ではNone。
-
-        Yields:
-            可視内容のない親を平坦化した参照先要素、親list階層、順序付きかどうかの組。
-        """
-
-        if isinstance(value, list):
-            for child in value:
-                yield from self._walk_refs(child, list_level, ordered)
-            return
-        if not isinstance(value, dict):
-            return
-        ref = value.get("$ref")
-        target = self._resolve(ref) if isinstance(ref, str) else value
-        label = str(target.get("label", ""))
-        children = target.get("children", [])
-        # groupは配置情報だけなので平坦化するが、可視内容を持つ親は子より先に残す。
-        if children and not _visible_content(target):
-            nested_level = (
-                list_level + 1 if label in {"list", "ordered_list"} else list_level
-            )
-            nested_ordered = (
-                label == "ordered_list"
-                if label in {"list", "ordered_list"}
-                else ordered
-            )
-            yield from self._walk_refs(children, nested_level, nested_ordered)
-        elif isinstance(ref, str):
-            yield target, list_level, ordered
-            if children:
-                yield from self._walk_refs(children, list_level, ordered)
-        else:
-            yield from self._walk_refs(children, list_level, ordered)
-
-    def _caption_inlines(self, item: dict[str, Any], ref: str) -> TextUnit | None:
-        """Doclingの新旧caption表現をInline列へ変換する。
+    def _caption_inlines(
+        self, item: TableItem | PictureItem, ref: str
+    ) -> TextUnit | None:
+        """図表のcaption参照をInline列へ変換する。
 
         Args:
             item: TableItemまたはPictureItem。
@@ -806,27 +669,18 @@ class DocumentLoader:
             参照先の装飾も保持したcaption Inline列。
         """
 
-        raw = item.get("captions")
-        if not raw:
-            raw = item.get("caption") or item.get("title") or []
-        values = raw if isinstance(raw, list) else [raw]
         result: list[TextSpan] = []
-        for index, value in enumerate(values):
-            caption_item: dict[str, Any] | None = None
-            if isinstance(value, dict):
-                nested_ref = value.get("$ref")
-                caption_item = (
-                    self._resolve(nested_ref) if isinstance(nested_ref, str) else value
-                )
-            if caption_item is not None:
-                text = str(caption_item.get("text") or "")
+        for index, caption in enumerate(item.captions):
+            caption_item = caption.resolve(self.document)
+            if isinstance(caption_item, TextItem):
                 result.extend(
                     _inline_from_item(
-                        caption_item, f"{ref}/caption/{index}", text, "text"
+                        caption_item,
+                        f"{ref}/caption/{index}",
+                        caption_item.text,
+                        "text",
                     )
                 )
-            elif isinstance(value, str):
-                result.extend(_inline(f"{ref}/caption/{index}", value))
         return TextUnit(id=f"{ref}/caption", spans=result) if result else None
 
     def _owned_caption_refs(self) -> set[str]:
@@ -837,19 +691,11 @@ class DocumentLoader:
         """
 
         # captionは図表Blockへ所有させ、body側TextItemとの二重出力を防ぐ。
-        refs: set[str] = set()
-        for collection in ("tables", "pictures"):
-            for item in self.document.get(collection, []):
-                if not isinstance(item, dict):
-                    continue
-                raw = item.get("captions") or item.get("caption") or []
-                values = raw if isinstance(raw, list) else [raw]
-                refs.update(
-                    str(value["$ref"])
-                    for value in values
-                    if isinstance(value, dict) and isinstance(value.get("$ref"), str)
-                )
-        return refs
+        return {
+            caption.cref
+            for item in [*self.document.tables, *self.document.pictures]
+            for caption in item.captions
+        }
 
     def _picture_content_refs(self) -> set[str]:
         """picture配下でcaptionではない重複textのrefを集める。
@@ -858,34 +704,30 @@ class DocumentLoader:
             Figure asset側に任せて本文出力しないtext ref集合。
         """
 
-        parents: dict[str, str] = {}
-        picture_refs = {
-            str(item.get("self_ref"))
-            for item in self.document.get("pictures", [])
-            if isinstance(item, dict) and item.get("self_ref")
+        picture_refs = {item.self_ref for item in self.document.pictures}
+        parents = {
+            item.self_ref: item.parent.cref
+            for collection in (
+                self.document.texts,
+                self.document.tables,
+                self.document.pictures,
+                self.document.key_value_items,
+                self.document.form_items,
+                self.document.groups,
+            )
+            for item in collection
+            if item.parent is not None
         }
-        for collection in COLLECTIONS:
-            for item in self.document.get(collection, []):
-                if not isinstance(item, dict) or not item.get("self_ref"):
-                    continue
-                parent = item.get("parent")
-                if isinstance(parent, dict) and isinstance(parent.get("$ref"), str):
-                    parents[str(item["self_ref"])] = str(parent["$ref"])
         # 親chainを辿るのは、picture直下にgroupを挟むDocling出力にも対応するため。
         result: set[str] = set()
-        for item in self.document.get("texts", []):
-            if (
-                not isinstance(item, dict)
-                or item.get("label") == "caption"
-                or not item.get("self_ref")
-            ):
+        for item in self.document.texts:
+            if _label(item) == "caption":
                 continue
-            ref = str(item["self_ref"])
-            parent = parents.get(ref, "")
+            parent = parents.get(item.self_ref, "")
             visited: set[str] = set()
             while parent and parent not in visited:
                 if parent in picture_refs:
-                    result.add(ref)
+                    result.add(item.self_ref)
                     break
                 visited.add(parent)
                 parent = parents.get(parent, "")
@@ -901,16 +743,8 @@ class DocumentLoader:
             TableImageOwnershipError: Table画像のPage、所有Cellまたは幾何情報が欠損、競合、曖昧な場合。
         """
 
-        tables = {
-            str(item.get("self_ref")): item
-            for item in self.document.get("tables", [])
-            if isinstance(item, dict)
-        }
-        pictures = {
-            str(item.get("self_ref")): item
-            for item in self.document.get("pictures", [])
-            if isinstance(item, dict)
-        }
+        tables = {item.self_ref: item for item in self.document.tables}
+        pictures = {item.self_ref: item for item in self.document.pictures}
         sources = {ref: _normalized_cells(item, ref) for ref, item in tables.items()}
         explicit = _explicit_image_owners(sources, pictures)
         for page in pages.values():
@@ -925,8 +759,7 @@ class DocumentLoader:
                 if not page_tables and not declared:
                     continue
                 picture = pictures[figure.id]
-                parent = picture.get("parent")
-                parent_ref = parent.get("$ref") if isinstance(parent, dict) else None
+                parent_ref = picture.parent.cref if picture.parent is not None else None
                 declared_ref = next(iter(declared))[0] if declared else None
                 if declared_ref is not None and declared_ref not in page_tables:
                     raise TableImageOwnershipError(page.number, figure.id)
@@ -977,7 +810,7 @@ class DocumentLoader:
                         raise TableImageOwnershipError(page.number, figure.id)
                     for raw in sources[ref][index].variants:
                         with _ownership_context(page.number, figure.id):
-                            cell_box = _cell_box(raw, page)
+                            cell_box = _top_left_box(raw.bbox, page)
                         if cell_box is not None and not _contains(cell_box, box):
                             raise TableImageOwnershipError(page.number, figure.id)
                 elif len(candidates) == 1:
@@ -1004,7 +837,7 @@ class DocumentLoader:
 
     def _block(
         self,
-        item: dict[str, Any],
+        item: NodeItem,
         order: int,
         list_level: int = 0,
         parent_ordered: bool | None = None,
@@ -1014,8 +847,8 @@ class DocumentLoader:
         Args:
             item: Docling要素。
             order: ページ内の文書順。
-            list_level: 親ListGroupから得た1始まり階層。
-            parent_ordered: 親ListGroupが順序付きかどうか。
+            list_level: 祖先のList groupから得た1始まり階層。
+            parent_ordered: 最も近いList groupが順序付きかどうか。
 
         Returns:
             対応Block。仕様上除外する要素はNone。
@@ -1024,8 +857,8 @@ class DocumentLoader:
             ValueError: 内容を持つ未知要素または欠損assetの場合。
         """
 
-        ref = str(item.get("self_ref") or f"#/unknown/{order}")
-        label = str(item.get("label", ""))
+        ref = item.self_ref
+        label = _label(item)
         if label in SKIPPED_LABELS:
             return None
         if label == "document_index":
@@ -1033,7 +866,7 @@ class DocumentLoader:
             label = {"tables": "table", "pictures": "picture"}.get(
                 ref.removeprefix("#/").split("/")[0], "text"
             )
-        if label == "table":
+        if label == "table" and isinstance(item, TableItem):
             return Block(
                 id=ref,
                 order=order,
@@ -1041,18 +874,16 @@ class DocumentLoader:
                 caption=self._caption_inlines(item, ref),
                 cells=_table_cells(item, ref),
             )
-        if label == "picture":
-            image = item.get("image")
-            uri = image.get("uri") if isinstance(image, dict) else None
-            uri = uri or item.get("uri")
-            if not isinstance(uri, str) or not uri:
+        if label == "picture" and isinstance(item, PictureItem):
+            if item.image is None:
                 msg = f"picture asset is missing: ref={ref} label={label}"
                 raise ValueError(msg)
-            relative = uri.removeprefix("artifacts/").removeprefix("assets/")
+            relative = (
+                _uri(item.image.uri).removeprefix("artifacts/").removeprefix("assets/")
+            )
             # MERGE publishes the contents of each structured/assets directory
             # under the run-level assets root; keep the Internal Document path
             # relative to that root so VALIDATE/Markdown resolve the same file.
-            uri = f"assets/{relative}"
             caption = self._caption_inlines(item, ref)
             return Block(
                 id=ref,
@@ -1060,16 +891,13 @@ class DocumentLoader:
                 kind="figure",
                 image=Image(
                     id=f"{ref}/image-0001",
-                    asset_path=uri,
-                    alt_text=str(
-                        item.get("alt_text")
-                        or (caption.text("source") if caption is not None else "")
-                    ),
+                    asset_path=f"assets/{relative}",
+                    alt_text=caption.text("source") if caption is not None else "",
                     caption=caption,
                 ),
             )
         kind = TEXT_KINDS.get(label)
-        if kind is None:
+        if kind is None or not isinstance(item, TextItem):
             if not _visible_content(item):
                 return None
             # 内容のある未知要素をparagraphへ丸めると欠損に気付けないためfail-fastする。
@@ -1077,9 +905,8 @@ class DocumentLoader:
                 f"unsupported content-bearing Docling element: ref={ref} label={label}"
             )
             raise ValueError(msg)
-        text = str(item.get("text") or item.get("latex") or "")
         inline_kind: TextKind = "code" if kind in {"code", "formula"} else "text"
-        level = item.get("level") if kind == "heading" else None
+        level = getattr(item, "level", None) if kind == "heading" else None
         checked = (
             True
             if label == "checkbox_selected"
@@ -1093,50 +920,38 @@ class DocumentLoader:
             kind=cast("BlockKind", kind),
             content=TextUnit(
                 id=f"{ref}/content",
-                spans=_inline_from_item(item, f"{ref}/content", text, inline_kind),
+                spans=_inline_from_item(item, f"{ref}/content", item.text, inline_kind),
             ),
-            level=int(level)
+            level=level
             if isinstance(level, int)
             else 1
             if kind == "heading"
             else max(1, list_level)
             if kind == "list_item"
             else None,
-            ordered=bool(item.get("enumerated"))
-            if "enumerated" in item
+            ordered=item.enumerated
+            if isinstance(item, ListItem)
             else bool(parent_ordered),
             checked=checked,
-            language=str(item.get("language")) if item.get("language") else None,
         )
 
     def _normalized_pages(self) -> dict[int, Page]:
-        """Docling page mapを検証して内部Page mapへ変換する。
+        """Docling page mapを内部Page mapへ変換する。
 
         Returns:
             Page番号をkeyとする内部Page map。
 
         Raises:
-            ValueError: Docling page mapを検証して内部Page mapへ変換する処理を完了できない場合。
+            ValueError: Docling page mapが空の場合。
         """
 
-        raw_pages = self.document.get("pages")
-        if not isinstance(raw_pages, dict) or not raw_pages:
+        if not self.document.pages:
             msg = "Docling pages must be a non-empty object"
             raise ValueError(msg)
-        pages: dict[int, Page] = {}
-        for raw_number, raw_page in raw_pages.items():
-            number = int(raw_number)
-            size = raw_page.get("size", {}) if isinstance(raw_page, dict) else {}
-            pages[number] = Page(
-                number=number,
-                width=float(size["width"])
-                if isinstance(size, dict) and "width" in size
-                else None,
-                height=float(size["height"])
-                if isinstance(size, dict) and "height" in size
-                else None,
-            )
-        return pages
+        return {
+            number: Page(number=number, width=page.size.width, height=page.size.height)
+            for number, page in self.document.pages.items()
+        }
 
 
 def load(source: Path, output_dir: Path) -> Document:
