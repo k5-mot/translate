@@ -1,5 +1,6 @@
 """分割Docling JSONをdocling-coreで結合するMERGE Task。"""
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -52,8 +53,15 @@ def merge(
             mode="json", by_alias=True, exclude_none=True
         )
         merged["name"] = source.stem
+        with source.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        # 結合でpart別のoriginが落ちるため、Doclingと同じ形式で原本の値を入れる。
         merged.setdefault("origin", {}).update(
-            {"filename": source.name, "mimetype": "application/pdf"}
+            {
+                "filename": source.name,
+                "mimetype": "application/pdf",
+                "binary_hash": int(digest, 16) % 2**64,
+            }
         )
         _normalize_asset_paths(merged)
         write_json(temporary / "document.json", merged, atomic=False)

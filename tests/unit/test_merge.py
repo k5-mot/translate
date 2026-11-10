@@ -1,8 +1,11 @@
 """MERGEがpart文書の参照、ページおよびassetを統合することを検証する。"""
 
+import hashlib
 import json
 from importlib import import_module
 from pathlib import Path
+
+from docling_core.types.doc import DoclingDocument
 
 from translate.models.artifacts import ArtifactFile, UnpackedPart, UnpackManifest
 
@@ -61,8 +64,14 @@ def _part(root: Path, number: int) -> UnpackedPart:
 def test_merge_renumbers_parts_and_keeps_asset_namespaces(tmp_path: Path) -> None:
     """2partの参照とページを振り直し、同名画像をpart別に保持する。"""
     manifest = UnpackManifest(parts=[_part(tmp_path, 1), _part(tmp_path, 2)])
-    output = merge(manifest, tmp_path / "source.pdf", tmp_path / "merged", tmp_path)
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-source")
+    output = merge(manifest, source, tmp_path / "merged", tmp_path)
     merged = json.loads(output.read_text(encoding="utf-8"))
+    # 後段が型として読めるよう、Doclingと同じ原本識別値を持つ。
+    DoclingDocument.model_validate(merged)
+    digest = hashlib.sha256(b"%PDF-source").hexdigest()
+    assert merged["origin"]["binary_hash"] == int(digest, 16) % 2**64
     assert [item["text"] for item in merged["texts"]] == ["Text 1", "Text 2"]
     assert sorted(merged["pages"], key=int) == ["1", "2"]
     assert [item["prov"][0]["page_no"] for item in merged["texts"]] == [1, 2]

@@ -1917,6 +1917,7 @@ Docling Adapterは次のinterfaceを使用する。
 UNPACKは展開前にZIPの全entryを検査する。絶対path、drive文字を持つpath、`..` path要素、symlink、同名entry、およびWindows上で大文字と小文字だけが異なるentryを含むZIPは失敗とし、一部だけを展開してはならない。展開先を正規化した絶対pathがpartの専用ディレクトリ内にあることも確認する。
 
 各partのassetは、MERGE時に `assets/part-0001/...` のようなpart番号付きnamespaceへ移す。MERGEはpart順にページ番号とDoclingのcollection indexを文書全体の連番へ写像し、JSON内の参照、画像URIおよびasset pathを同じ写像で更新する。参照先が存在しない場合、または写像後にID、index、URIもしくはasset pathが衝突する場合はMERGEを失敗させる。
+MERGEは結合後の `origin` に入力PDFのファイル名、MIME typeおよび `binary_hash` を設定する。`binary_hash` はDoclingと同じく、SHA-256の下位64bitとする。
 
 SPLITは `PDF_SPLIT_PAGES` pageごとに分割し、既定値を10とする。DOCLINGは次のrequest設定を固定して使用する。
 
