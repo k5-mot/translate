@@ -351,6 +351,7 @@ class ReviewAgent:
             group_steps: dict[str, int] = {}
             max_reference_ids = 32
             action_failures = 0
+            deterministic = False
             while True:
                 assigned = {
                     role: {
@@ -404,12 +405,17 @@ class ReviewAgent:
                         }
                         continue
                     break
-                if idle_steps >= 12 or time.monotonic() >= deadline:
+                if (idle_steps >= 12 and deterministic) or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
+                if idle_steps >= 12:
+                    # LLMの選択が進まなくても、状態から決まる残作業を最後まで実行する。
+                    logger.warning("Using deterministic Agent actions after idle steps")
+                    deterministic = True
+                    idle_steps = 0
                 try:
                     action = (
                         _fallback_action(state)
-                        if action_failures >= ACTION_FAILURE_LIMIT
+                        if deterministic or action_failures >= ACTION_FAILURE_LIMIT
                         else choose_action(
                             self.client,
                             "Review English source against Japanese translation and propose edits.",

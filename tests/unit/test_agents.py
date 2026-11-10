@@ -3431,13 +3431,22 @@ def test_agent_stops_repeated_overview_without_progress(
     operation: str,
     limit: int,
 ) -> None:
-    """情報取得や対象指定を繰り返す進展のないAgentを上限回数で停止する。"""
-    answers = [
+    """進展のない選択が上限に達すると、Reviewは残作業へ進みUpgradeは停止する。"""
+
+    def next_work(kwargs: dict[str, object]) -> BaseModel:
+        """判断を挟まず照合が送信されたことを確認して止める。"""
+        assert kwargs["response_type"] is AlignmentResponse
+        message = "stop"
+        raise LLMConnectionError(message)
+
+    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = [
         AgentAction(
             operation="overview",
         )
         for _ in range(limit)
     ]
+    if operation == "review":
+        answers.append(next_work)
     calls = scripted(monkeypatch, answers)
     if operation == "review":
         agent = ReviewAgent(
@@ -3456,9 +3465,13 @@ def test_agent_stops_repeated_overview_without_progress(
             tmp_path,
             config,
         )
-    with pytest.raises(TimeoutError, match="step or time limit"):
-        agent.run()
-    assert len(calls) == limit
+    if operation == "review":
+        with pytest.raises(LLMConnectionError):
+            agent.run()
+    else:
+        with pytest.raises(TimeoutError, match="step or time limit"):
+            agent.run()
+    assert len(calls) == limit + (operation == "review")
     assert not answers
 
 
