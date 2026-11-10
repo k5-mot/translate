@@ -580,6 +580,11 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 | `target_ids` | `list[str]` | 対応する訳文側の `TextUnit.id` |
 | `spans` | `list[TextSpan]` | 修正候補が参照できる訳文側のSpan |
 
+品質確認のLLM入力では、訳文の役割を明確にするため`spans`を`translation: list[{span_id, text}]`として渡し、
+構造文脈は`context`へ分離する。保存済みDocument／ReviewTargetのSchemaは変更しない。
+独立したReviewでは対応groupごとに品質確認する。日本語の抽出空白だけを変更する修正案と、日付項目で同じ暦日の区切り差だけを理由にした指摘は再判定を求める。
+数値の変更や英単語の区切りの変更はこの除外に含めない。
+
 #### 🔎 Finding
 
 `Finding` は問題の指摘を表し、対象の `TextUnit.id` を参照する。指摘と修正候補は分離する。

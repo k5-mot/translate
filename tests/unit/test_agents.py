@@ -328,6 +328,231 @@ def test_comparison_sends_context_separately_from_content(
         assert response.reviewed_source_v2_ids == ["source_v2"]
 
 
+def test_quality_review_receives_context_and_invalidates_stale_response(
+    config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """品質確認にも項目の役割を渡し、構造文脈が異なる保存済み応答を再利用しない。"""
+    calls = scripted(
+        monkeypatch,
+        [successful_review("review/current"), successful_review("review/current")],
+    )
+    context = {
+        "translation": {
+            "ja": {
+                "kind": "table_cell",
+                "row_label": "Author",
+                "position": "0.0",
+            }
+        }
+    }
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config, tmp_path, "", "", contexts=context
+    )
+    target = ReviewTarget(
+        id="review/current",
+        source="Engineering Documentation Team",
+        translation="Engineering Documentation Team",
+        target_ids=["ja"],
+        spans=[TextSpan(id="span", source="Engineering Documentation Team")],
+    )
+    client = LLMClient(config)
+    try:
+        task.run([target], tmp_path, client=client)
+        context["translation"]["ja"]["row_label"] = "Reviewer"
+        task.run([target], tmp_path, client=client)
+    finally:
+        client.client.close()
+    assert len(calls) == 2
+    assert json.loads(calls[0]["user"])["targets"][0]["context"] == [
+        {"kind": "table_cell", "row_label": "Author"}
+    ]
+    assert json.loads(calls[1]["user"])["targets"][0]["context"] == [
+        {"kind": "table_cell", "row_label": "Reviewer"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("Date", "2026/08/20", "2026/0820", False),
+        ("Date", "2026/08/20", "2026/08/21", True),
+        ("Version", "2026/08/20", "2026/0820", True),
+        ("Date", "2026/02/28", "2026/02/29", True),
+    ],
+)
+def test_review_distinguishes_date_format_from_changed_values(
+    case: tuple[str, str, str, bool],
+    tmp_path: Path,
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同じ暦日の区切り差を誤検知せず、日付の値や識別子の変更は検証対象にする。"""
+    label, source, current, has_issue = case
+    payloads = [
+        {
+            "assessments": [
+                {
+                    "target_id": "1",
+                    "reason": "日付が異なります。",
+                    "verdict": "issue",
+                    "edits": [{"span_id": "s1", "text": source}],
+                    "category": "accuracy",
+                    "severity": "error",
+                }
+            ]
+        },
+        {
+            "assessments": [
+                {
+                    "target_id": "1",
+                    "reason": "同じ日付です。",
+                    "verdict": "correct",
+                    "edits": [],
+                    "category": None,
+                    "severity": None,
+                }
+            ]
+        },
+    ]
+    responses = []
+    for payload in payloads:
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = json.dumps(payload)
+        response.usage = None
+        responses.append(response)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    target = ReviewTarget(
+        id="review/date",
+        source=source,
+        translation=current,
+        target_ids=["date"],
+        spans=[TextSpan(id="span", source=current)],
+    )
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config,
+        tmp_path,
+        "",
+        "",
+        contexts={"translation": {"date": {"row_label": label, "kind": "table_cell"}}},
+    )
+    try:
+        result = task.run([target], tmp_path, client=client)
+    finally:
+        client.client.close()
+    assert bool(result.findings) is has_issue
+    assert create.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("Timeout こ のセルの説明。", "Timeout このセルの説明。", False),
+        ("件数:9。", "件数:7。", True),
+        ("now here", "nowhere", True),
+        ("now\nhere", "nowhere", True),
+    ],
+)
+def test_review_rejects_only_extraction_space_revisions(
+    case: tuple[str, str, bool],
+    tmp_path: Path,
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """抽出空白だけの修正は再確認し、数値や英単語の区切りの修正は残す。"""
+    current, replacement, has_issue = case
+    issue = {
+        "assessments": [
+            {
+                "target_id": "1",
+                "reason": "修正が必要です。",
+                "verdict": "issue",
+                "edits": [{"span_id": "s1", "text": replacement}],
+                "category": "accuracy",
+                "severity": "error",
+            }
+        ],
+    }
+    correct = successful_review("1").model_dump()
+    responses = []
+    for payload in [issue, correct]:
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = json.dumps(payload)
+        response.usage = None
+        responses.append(response)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    target = ReviewTarget(
+        id="review/current",
+        source="Original.",
+        translation=current,
+        target_ids=["ja"],
+        spans=[TextSpan(id="span", source=current)],
+    )
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config, tmp_path, "", ""
+    )
+    try:
+        result = task.run([target], tmp_path, client=client)
+    finally:
+        client.client.close()
+    assert bool(result.findings) is has_issue
+    assert create.call_count == (1 if has_issue else 2)
+    assert json.loads(create.call_args_list[0].kwargs["messages"][1]["content"])[
+        "targets"
+    ][0]["translation"] == [{"span_id": "s1", "text": current}]
+
+
+def test_review_ignores_matching_table_dot_leaders(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一致する表内ドットリーダーへの誤指摘を除外する。"""
+    response = ReviewResponse.model_validate(
+        {
+            "assessments": [
+                {
+                    "target_id": "row",
+                    "reason": "ドットは不要です。",
+                    "verdict": "issue",
+                    "category": "style",
+                    "severity": "info",
+                    "edits": [{"span_id": "span", "text": "Nuclear Waste Disposal"}],
+                }
+            ]
+        }
+    )
+    calls = scripted(monkeypatch, [response])
+    current = (
+        "Nuclear Waste Disposal ....................................................."
+    )
+    target = ReviewTarget(
+        id="row",
+        source=current,
+        translation=current,
+        target_ids=["cell"],
+        spans=[TextSpan(id="span", source=current)],
+    )
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config,
+        tmp_path,
+        "",
+        "",
+        contexts={"translation": {"cell": {"kind": "table_cell"}}},
+    )
+    client = LLMClient(config)
+    try:
+        result = task.run([target], tmp_path, client=client)
+    finally:
+        client.client.close()
+
+    assert not result.findings
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("operation", ["overview", "read"])
 @pytest.mark.parametrize("count", [1, 9])
 def test_agent_fits_observation_without_cutting_units(

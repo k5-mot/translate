@@ -2423,6 +2423,242 @@ def test_review_retries_inconsistent_assessment_before_saving(
         client.client.close()
 
 
+def test_review_retries_edit_that_copies_an_adjacent_span(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """隣接spanの文字列を含む誤修正を再試行し、選択spanだけを直す。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="review",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id="translate/unit",
+        source="¢. Original.",
+        translation="¢。旧訳。",
+        target_ids=["unit"],
+        spans=[
+            TextSpan(id="marker", source="¢.", translated="¢。"),
+            TextSpan(id="selected", source="Original.", translated="旧訳。"),
+        ],
+    )
+
+    def response(edit: str) -> ReviewResponse:
+        """対象spanだけを変える提案、または隣接内容を含む提案を作る。"""
+        return ReviewResponse(
+            assessments=[
+                ReviewAssessment(
+                    target_id=target.id,
+                    reason="訳文を修正します。",
+                    verdict="issue",
+                    edits=[ReviewTextEdit(span_id="selected", text=edit)],
+                    category="accuracy",
+                    severity="error",
+                )
+            ]
+        )
+
+    completions = []
+    for answer in (response("¢。新訳。"), response("新訳。")):
+        completion = MagicMock()
+        completion.choices = [MagicMock(finish_reason="stop")]
+        completion.choices[0].message.content = answer.model_dump_json()
+        completion.usage = None
+        completions.append(completion)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=completions)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+        assert result.revisions[0].edits[0].text == "新訳。"
+        assert create.call_count == 2
+    finally:
+        client.client.close()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "TPFDD",
+            "TPFDD",
+            "TPFDD",
+            "略語「TPFDD」が訳文に含まれていません。",
+            "TPFDD",
+            False,
+        ),
+        (
+            "WARNORD",
+            "WARNORD",
+            "WARNORD",
+            "略語「WARNORD」が訳文に含まれていません。",
+            "WARNORD",
+            False,
+        ),
+        (
+            "NCTS-expansion",
+            "NCTS Naval Computer and Telecommunications Stations",
+            "NCTS Naval Computer and Telecommunications Stations",
+            "原文の「NCTS」という略語が訳文に含まれていません。",
+            "NCTS 海軍計算・通信基地",
+            True,
+        ),
+        (
+            "Spec. dec.",
+            "Spec. dec.",
+            "Spec. dec.",
+            "「Spec. dec.」は技術的略語なので、そのまま保持すべきです。",
+            "Spec. dec.",
+            False,
+        ),
+        (
+            "GLOSSARY",
+            "GLOSSARY",
+            "GLOSSARY",
+            "見出しが訳されていません。",
+            "用語集",
+            True,
+        ),
+        (
+            "page-ref-space",
+            "III-1 5",
+            "III-15",
+            "原文のページ参照と異なります。",
+            "III-1 5",
+            False,
+        ),
+        (
+            "page-ref-different",
+            "III-1 5",
+            "III-16",
+            "原文のページ参照と異なります。",
+            "III-1 5",
+            True,
+        ),
+        (
+            "english-word-space",
+            "now here",
+            "nowhere",
+            "単語の区切りが異なります。",
+            "now here",
+            True,
+        ),
+    ],
+)
+def test_review_clears_only_proven_false_positive_findings(
+    case: tuple[str, str, str, str, str, bool],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """確実な誤検知だけ除き、未訳・実値差・英文区切りの指摘は残す。"""
+    identifier, source, translated, reason, replacement, has_finding = case
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="review",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id=f"translate/{identifier}",
+        source=source,
+        translation=translated,
+        target_ids=[identifier],
+        spans=[TextSpan(id=f"{identifier}/span", source=translated)],
+    )
+    invalid = ReviewResponse(
+        assessments=[
+            ReviewAssessment(
+                target_id=target.id,
+                reason=reason,
+                verdict="issue",
+                edits=[ReviewTextEdit(span_id=f"{identifier}/span", text=replacement)],
+                category="accuracy",
+                severity="error",
+            )
+        ]
+    )
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = invalid.model_dump_json()
+    completion.usage = None
+    client = LLMClient(config)
+    monkeypatch.setattr(
+        client.client.chat.completions, "create", MagicMock(return_value=completion)
+    )
+    try:
+        result = ReviewTask(config, tmp_path, "", "").run(
+            [target], tmp_path, client=client
+        )
+        assert bool(result.findings) is has_finding
+        if not has_finding:
+            assert result.revisions == []
+        saved = ReviewResponse.model_validate_json(
+            next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
+        )
+        assert saved.assessments[0].verdict == ("issue" if has_finding else "correct")
+    finally:
+        client.client.close()
+
+
+def test_review_suppresses_separator_only_date_finding_when_values_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PDF抽出で日付区切りだけが落ちたfindingを保存しない。"""
+    config = Config(
+        openai_base_url="http://llm",
+        openai_review_model="review",
+        qdrant_uri=None,
+        openai_embedding_model=None,
+    )
+    target = ReviewTarget(
+        id="translate/date",
+        source="2026/08/20",
+        translation="2026/0820",
+        target_ids=["date-unit"],
+        spans=[
+            TextSpan(
+                id="date-span",
+                source="2026/08/20",
+                translated="2026/0820",
+            )
+        ],
+    )
+    invalid = successful_review(target.id).model_copy(deep=True)
+    assessment = invalid.assessments[0]
+    assessment.verdict = "issue"
+    assessment.category = "accuracy"
+    assessment.severity = "error"
+    completion = MagicMock()
+    completion.choices = [MagicMock(finish_reason="stop")]
+    completion.choices[0].message.content = invalid.model_dump_json()
+    completion.usage = None
+    client = LLMClient(config)
+    create = MagicMock(return_value=completion)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    monkeypatch.setattr("translate.adapters.llm.time.sleep", MagicMock())
+    try:
+        result = ReviewTask(
+            config,
+            tmp_path / "review",
+            "",
+            "",
+            contexts={"translation": {"date-unit": {"row_label": "Date"}}},
+        ).run(
+            [target],
+            tmp_path,
+            client=client,
+            span_owners={"date-span": "date-unit"},
+        )
+        assert result.findings == []
+        assert create.call_count == 1
+    finally:
+        client.client.close()
+
+
 def test_review_drops_optional_context_to_fit_target() -> None:
     """対象を削らず、RAG・用語集・既知指摘を必要時だけ省く。"""
 
@@ -2753,7 +2989,7 @@ def test_review_uses_short_response_ids_and_restores_original_ids(
             next(tmp_path.glob("calls/*/response.json")).read_text(encoding="utf-8")
         )
         assert sent["targets"][0]["id"] == "1"
-        assert sent["targets"][0]["spans"][0]["span_id"] == "s1"
+        assert sent["targets"][0]["translation"][0]["span_id"] == "s1"
         assert schema["$defs"]["ReviewAssessment"]["properties"]["target_id"][
             "enum"
         ] == ["1"]
@@ -2861,6 +3097,6 @@ def test_review_trims_rag_using_complete_native_prompt_budget(
         sent = json.loads(create.call_args.kwargs["messages"][1]["content"])
         assert 0 < len(sent["references"]) < 5
         assert sent["targets"][0]["source"] == target.source
-        assert sent["targets"][0]["spans"][0]["text"] == target.translation
+        assert sent["targets"][0]["translation"][0]["text"] == target.translation
     finally:
         client.client.close()
