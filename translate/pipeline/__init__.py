@@ -290,16 +290,17 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
-    per_role_limit = (
-        max(1, maximum_references // len(units)) if upgrade else maximum_references
-    )
+    per_role_limit = max(1, maximum_references // len(units))
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
             f"total document IDs from all roles and at most {per_role_limit} per role."
         )
     else:
-        contract += f" Use at most {maximum_references} document IDs in each operation."
+        contract += (
+            f" Use at most {maximum_references} document IDs total and at most "
+            f"{per_role_limit} per role in each operation."
+        )
 
     def validate(action: AgentAction) -> None:
         """現在の状態で実行できない操作を既存の応答訂正枠へ返す。
@@ -414,7 +415,8 @@ def choose_action(
                 "Revisit unverified IDs with new evidence or a smaller scope; zero unmatched IDs is not required. "
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "
                 "and discovers the pairs itself. Include multiple pending and unmatched candidates from both "
-                "roles together, up to 32 total, instead of repeatedly trying isolated pairs. "
+                f"roles together, up to {maximum_references} total and {per_role_limit} per role, "
+                "instead of repeatedly trying isolated pairs. "
                 "Use context.kind, section and row/column labels to distinguish repeated text and values. "
                 "A unit can contain several sentences; paragraph boundaries and page breaks can differ. "
                 "Read neighboring candidates and include all counterpart fragments rather than forcing a one-to-one match. "
@@ -431,7 +433,7 @@ def choose_action(
             contract=contract,
             native_schema=schema,
             input_tokens=client.config.review_input_tokens,
-            output_tokens=min(1024, client.config.review_output_tokens),
+            output_tokens=min(4096, client.config.review_output_tokens),
             validate=validate,
         )
     except LLMInputExceededError:
@@ -529,7 +531,14 @@ def observe_documents(
         role = cast(str, part["role"])
         identifier = cast(str, part.get("id", part.get("unit_id")))
         item = (
-            {**part, "context": contexts[role][identifier]}
+            {
+                **part,
+                "context": {
+                    key: value
+                    for key, value in contexts[role][identifier].items()
+                    if key != "position"
+                },
+            }
             if contexts and identifier in contexts.get(role, {})
             else part
         )
@@ -549,11 +558,14 @@ def observe_documents(
     }
 
 
-def completed_agent_calls(directory: Path) -> list[LLMCallArtifact]:
+def completed_agent_calls(
+    directory: Path, *, matching_version: int | None = None
+) -> list[LLMCallArtifact]:
     """再開時に再検証する成功操作を実行順で返す。
 
     Args:
         directory: AgentのTask directory。
+        matching_version: 指定時は同じ照合世代で保存した操作だけを返す。
 
     Returns:
         成功Callの一覧。応答と入力の検証は各Taskの再利用処理で行う。
@@ -563,6 +575,11 @@ def completed_agent_calls(directory: Path) -> list[LLMCallArtifact]:
         for path in (directory / "calls").glob("*/call.json")
     ]
     return sorted(
-        (call for call in calls if call.status == "succeeded"),
+        (
+            call
+            for call in calls
+            if call.status == "succeeded"
+            and (matching_version is None or call.matching_version == matching_version)
+        ),
         key=lambda call: call.round,
     )

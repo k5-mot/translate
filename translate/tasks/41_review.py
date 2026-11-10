@@ -30,7 +30,7 @@ from translate.models.review import (
     Revision,
     TextEdit,
 )
-from translate.tasks import SavedLLMCalls
+from translate.tasks import MATCHING_VERSION, SavedLLMCalls
 from translate.tasks.review_alignment import match_documents as _match_documents
 from translate.tasks.review_chunks import (
     _chunks,
@@ -326,6 +326,7 @@ class ReviewTask:
                 [],
                 operation=operation,
                 round_number=round_number,
+                matching_version=MATCHING_VERSION,
             )
             parent_path = self.task_directory / "calls" / parent_id / "call.json"
             parent = load_model(parent_path, LLMCallArtifact)

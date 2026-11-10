@@ -89,7 +89,13 @@ def match_documents(
                 "id": unit.id,
                 "text": unit.text("source"),
                 **(
-                    {"context": contexts[role][unit.id]}
+                    {
+                        "context": {
+                            key: value
+                            for key, value in contexts[role][unit.id].items()
+                            if key != "position"
+                        }
+                    }
                     if contexts and unit.id in contexts.get(role, {})
                     else {}
                 ),
@@ -113,8 +119,8 @@ def match_documents(
         "Omit IDs whose counterpart is unclear or absent from this candidate pool; the application records them as unverified. "
         "Return groups:[] when no correspondence is established. Never pair leftover IDs merely to cover the input. "
         "The source and translation arrays are independent candidate pools, not parallel rows. "
-        "context describes the kind, section and table row/column labels; it is not part of text to compare. "
-        "Use row and column meaning to distinguish repeated table values. Never match a formula to its explanatory prose, "
+        "context describes the kind, section, table row/column labels and adjacent row labels; it is not text to compare. "
+        "Use row meaning and adjacent labels to distinguish repeated table entries. Never match a formula to explanatory prose, "
         "or unrelated records merely to consume every ID. A shared equation number or similar wording is insufficient. "
         "For each source, search ALL translation candidates for the same content; "
         "never pair by array position or similar IDs. "
@@ -128,9 +134,14 @@ def match_documents(
         "Then select the kind and the IDs that belong to those texts. "
         "Do not use generic reasons such as matched content. "
         "Keep separate table cells separate: an identifier, its description, and its value are distinct content, even in the same row. "
-        "Paragraph and sentence boundaries can differ between PDFs: combine multiple units when their complete content "
-        "together corresponds to the other side, including fragments continued across a page break. "
-        "Account for the complete content of each matched unit on BOTH sides; do not absorb unrelated units. "
+        "Paragraph and sentence boundaries can differ between PDFs. Match a unit when any distinctive part continues "
+        "or overlaps the same passage on the other side, even if some content is omitted or extra. "
+        "Combine units when they continue the same sentence or passage, including fragments across a page break. "
+        "A single unit may combine reordered fragments from multiple units on the other side; include each ID whose "
+        "distinctive content appears in that same passage, even when the fragments are incomplete or out of order. "
+        "Inspect all sentences and clauses in each unit; do not stop after the first matching sentence. "
+        "Do not require full text coverage to assign a counterpart; the evaluator reports omissions and additions. "
+        "Keep unrelated adjacent units separate. "
         "If an identifier itself has no counterpart in this candidate pool, omit it from groups.",
         validate,
     )

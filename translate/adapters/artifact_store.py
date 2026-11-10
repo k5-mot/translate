@@ -200,6 +200,7 @@ def llm_call_id(
     *,
     operation: str | None = None,
     round_number: int = 0,
+    matching_version: int | None = None,
 ) -> str:
     """操作と再確認の回数を含む決定的なCall IDを作る。
 
@@ -209,20 +210,22 @@ def llm_call_id(
         lineage (list[str]): 親から子へ連なるLLM Call ID列。
         operation: Agentの操作名。省略時はTask名の小文字。
         round_number: 再確認の連番。通信Retryでは増加させない。
+        matching_version: 照合世代。旧世代の結果とcall IDを分離する。
 
     Returns:
         str: Task、順序付き対象IDおよび分割系譜から決定的なCall IDを作る。
     """
 
-    value = canonical_hash(
-        {
-            "task": task,
-            "operation": operation or task.lower(),
-            "round": round_number,
-            "target_ids": target_ids,
-            "lineage": lineage,
-        }
-    )
+    parameters: dict[str, object] = {
+        "task": task,
+        "operation": operation or task.lower(),
+        "round": round_number,
+        "target_ids": target_ids,
+        "lineage": lineage,
+    }
+    if matching_version is not None:
+        parameters["matching_version"] = matching_version
+    value = canonical_hash(parameters)
     return f"call-{value}"
 
 
@@ -236,6 +239,7 @@ def begin_llm_call(
     previous_attempts: int = 0,
     operation: str | None = None,
     round_number: int = 0,
+    matching_version: int | None = None,
 ) -> LLMCallArtifact:
     """送信前のCall状態を原子的に保存する。
 
@@ -258,6 +262,7 @@ def begin_llm_call(
         call_id=call_id,
         task=task,
         operation=operation or task.lower(),
+        matching_version=matching_version,
         round=round_number,
         status="processing",
         fingerprint=fingerprint,

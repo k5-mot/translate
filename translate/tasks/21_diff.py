@@ -104,7 +104,13 @@ class DiffTask:
                     "id": unit.id,
                     "text": unit.text("source"),
                     **(
-                        {"context": self.contexts[role][unit.id]}
+                        {
+                            "context": {
+                                key: value
+                                for key, value in self.contexts[role][unit.id].items()
+                                if key != "position"
+                            }
+                        }
                         if unit.id in self.contexts.get(role, {})
                         else {}
                     ),
@@ -132,7 +138,8 @@ class DiffTask:
             "The application derives reviewed coverage from these change IDs; do not repeat coverage arrays. "
             "Use only IDs from the corresponding input role. Leave translation_v1_ids empty "
             "when no supplied translation matches. "
-            "context describes kind, section and table row/column labels, not extra comparison text. "
+            "context describes kind, section, table row/column labels and adjacent row labels, not comparison text. "
+            "Use row meaning and adjacent labels to distinguish repeated table entries. "
             "Establish correspondence by complete content and row/column meaning before classifying changes. "
             "Paragraph and sentence boundaries can differ; combine split fragments, including page continuations. "
             "Never pair unrelated records or a formula with prose because their positions or equation numbers resemble. "

@@ -25,7 +25,7 @@ from translate.adapters.llm import (
 )
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
-from translate.models.artifacts import LLMCallIndex, TaskName
+from translate.models.artifacts import LLMCallArtifact, LLMCallIndex, TaskName
 from translate.models.document import Document
 from translate.models.review import AgentAction
 from translate.models.upgrade import (
@@ -45,9 +45,12 @@ from translate.pipeline import (
     pdf_inputs,
     resolve_processing_id,
 )
+from translate.pipeline.matching import MatchingCandidates
+from translate.tasks import MATCHING_VERSION
 
 DiffTask = import_module("translate.tasks.21_diff").DiffTask
 logger = logging.getLogger(__name__)
+_MATCH_FAILURE_LIMIT = 3
 
 
 def _fallback_action(state: dict[str, object]) -> AgentAction:
@@ -206,6 +209,9 @@ class UpgradeAgent:
         self.contexts = {
             role: document.unit_contexts() for role, document in documents.items()
         }
+        self.candidates = MatchingCandidates(
+            self.units, self.contexts, directory, config
+        )
         self.directory = directory
         self.config = config
 
@@ -240,14 +246,26 @@ class UpgradeAgent:
             )
             self.confirmed: list[tuple[str, DiffChange]] = []
             self.call_ids: list[str] = []
+            self.match_failures: dict[tuple[str, str], int] = {}
 
-            restored = completed_agent_calls(self.directory)
+            restored = completed_agent_calls(
+                self.directory, matching_version=MATCHING_VERSION
+            )
             for call in restored:
                 action = AgentAction.model_validate({"operation": call.operation})
                 for reference in call.target_ids:
                     role, _, identifier = reference.partition(":")
                     action.references.setdefault(role, []).append(identifier)
-                self._execute(action, call.round)
+                try:
+                    self._execute(action, call.round)
+                except InputError as error:
+                    logger.warning(
+                        "Skipping stale Upgrade operation round=%s operation=%s: %s",
+                        call.round,
+                        call.operation,
+                        error,
+                    )
+                    continue
             identical = self._identical_changes()
             self.confirmed.extend(identical)
             llm_required = (
@@ -265,6 +283,8 @@ class UpgradeAgent:
                 )
             )
             round_number = max((call.round for call in restored), default=-1) + 1
+            self._restore_match_failures()
+            self._record_exhausted_matches(round_number)
             idle_steps = 0
             group_steps: dict[str, int] = {}
             one_sided_failures = {"source_v1": 0, "source_v2": 0}
@@ -376,6 +396,32 @@ class UpgradeAgent:
                         )
                     break
                 before = sum(map(len, covered.values()))
+                if action.operation == "match":
+                    action.references = {
+                        role: [
+                            identifier
+                            for identifier in identifiers
+                            if identifier not in covered.get(role, set())
+                        ]
+                        for role, identifiers in action.references.items()
+                    }
+                    action.references = {
+                        role: identifiers
+                        for role, identifiers in action.references.items()
+                        if identifiers
+                    }
+                    if not any(
+                        action.references.get(role)
+                        for role in ("source_v1", "source_v2")
+                    ):
+                        observation = {
+                            "action": action.model_dump(),
+                            "result": {
+                                "error": "Those English units are already covered; use recheck to revisit them or choose pending units."
+                            },
+                        }
+                        action_failures += 1
+                        continue
                 # 同じ比較範囲が3回進まなければ、上限を縮小して未確認を記録する。
                 stalled_action = False
                 action_group_key = None
@@ -476,6 +522,19 @@ class UpgradeAgent:
                     )
                 else:
                     try:
+                        if action.operation in {"match", "evaluate"}:
+                            available = {
+                                role: set(values)
+                                - (
+                                    assigned_translation
+                                    if role == "translation_v1"
+                                    else covered[role]
+                                )
+                                for role, values in self.units.items()
+                            }
+                            action.references = self.candidates.expand(
+                                action.references, available, max_reference_ids
+                            )
                         observation = self._execute(action, round_number)
                     except (LLMInputExceededError, LLMOutputExceededError):
                         selected_count = sum(map(len, action.references.values()))
@@ -516,10 +575,22 @@ class UpgradeAgent:
                                 else "Select a different or smaller group."
                             )
                         }
+                        if action.operation == "match":
+                            for role in ("source_v1", "source_v2"):
+                                for identifier in action.references.get(role, []):
+                                    key = (role, identifier)
+                                    self.match_failures[key] = (
+                                        self.match_failures.get(key, 0) + 1
+                                    )
+                            self._record_exhausted_matches(round_number)
                     except InputError as error:
                         observation = {"error": str(error)}
                     else:
                         one_sided_failures = {"source_v1": 0, "source_v2": 0}
+                        if action.operation == "match":
+                            for role in ("source_v1", "source_v2"):
+                                for identifier in action.references.get(role, []):
+                                    self.match_failures.pop((role, identifier), None)
                     round_number += 1
                 observation = {"action": action.model_dump(), "result": observation}
                 after = sum(
@@ -600,6 +671,69 @@ class UpgradeAgent:
             for block in matcher.get_matching_blocks()
             for offset in range(block.size)
         ]
+
+    def _restore_match_failures(self) -> None:
+        """再開時に成功Call後も残るmatch失敗回数を復元する。"""
+        failures: dict[tuple[str, str], set[int]] = {}
+        successes: dict[tuple[str, str], set[int]] = {}
+        for path in (self.directory / "calls").glob("*/call.json"):
+            try:
+                call = load_model(path, LLMCallArtifact)
+            except (OSError, ValueError):
+                continue
+            if call.operation != "match" or call.matching_version != MATCHING_VERSION:
+                continue
+            for reference in call.target_ids:
+                role, _, identifier = reference.partition(":")
+                if role not in {"source_v1", "source_v2"}:
+                    continue
+                target = (role, identifier)
+                if call.status == "failed":
+                    failures.setdefault(target, set()).add(call.round)
+                elif call.status == "succeeded":
+                    successes.setdefault(target, set()).add(call.round)
+        for target, rounds in failures.items():
+            last_success = max(successes.get(target, {-1}))
+            count = sum(round_number >= last_success for round_number in rounds)
+            if count:
+                self.match_failures[target] = count
+
+    def _record_exhausted_matches(self, round_number: int) -> None:
+        """3回の失敗後も未確定の英文を未確認として記録する。"""
+        covered = {
+            role: {
+                identifier
+                for _, change in self.confirmed
+                for identifier in getattr(change, f"{role}_ids")
+            }
+            for role in ("source_v1", "source_v2")
+        }
+        exhausted = {
+            role: sorted(
+                identifier
+                for (unit_role, identifier), count in self.match_failures.items()
+                if unit_role == role
+                and count >= _MATCH_FAILURE_LIMIT
+                and identifier not in covered[role]
+            )
+            for role in ("source_v1", "source_v2")
+        }
+        if not any(exhausted.values()):
+            return
+        self.confirmed.append(
+            (
+                f"unverified-match-{round_number}-{len(self.confirmed) + 1}",
+                DiffChange(
+                    kind="unverified",
+                    source_v1_ids=exhausted["source_v1"],
+                    source_v2_ids=exhausted["source_v2"],
+                    summary="同じ英文unitの照合が3回失敗したため、変更内容は未確認です。",
+                ),
+            )
+        )
+        for role, identifiers in exhausted.items():
+            for identifier in identifiers:
+                self.match_failures.pop((role, identifier), None)
 
     def _execute(self, action: AgentAction, round_number: int) -> dict[str, object]:
         """選択範囲を比較し、矛盾する旧結果を残さず結果へ反映する。

@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Callable
+from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,7 +11,7 @@ import pytest
 from pydantic import BaseModel
 
 from tests import successful_review
-from translate.adapters.artifact_store import load_model
+from translate.adapters.artifact_store import llm_call_id, load_model, write_model
 from translate.adapters.llm import (
     LLMClient,
     LLMConnectionError,
@@ -43,10 +44,47 @@ from translate.pipeline import (
     completed_agent_calls,
     observe_documents,
 )
-from translate.pipeline.review import ReviewAgent
+from translate.pipeline.matching import MatchingCandidates
+from translate.pipeline.review import ReviewAgent, _copied_translation_front_page_ids
 from translate.pipeline.upgrade import UpgradeAgent
+from translate.tasks import MATCHING_VERSION
 
 _identical_changes = UpgradeAgent._identical_changes  # noqa: SLF001
+
+
+def test_completed_agent_calls_filters_out_legacy_matching_calls(
+    tmp_path: Path,
+) -> None:
+    """照合規則変更前の成功Callは再開時に再適用しない。"""
+    now = datetime.now(UTC)
+    for call_id, version in [("legacy", None), ("current", MATCHING_VERSION)]:
+        write_model(
+            tmp_path / "calls" / call_id / "call.json",
+            LLMCallArtifact(
+                call_id=call_id,
+                task="REVIEW",
+                operation="match",
+                matching_version=version,
+                status="succeeded",
+                fingerprint="0" * 64,
+                target_ids=["source:en", "translation:ja"],
+                attempts=1,
+                started_at=now,
+                updated_at=now,
+            ),
+        )
+
+    assert [
+        call.call_id
+        for call in completed_agent_calls(tmp_path, matching_version=MATCHING_VERSION)
+    ] == ["current"]
+
+
+def test_llm_call_id_changes_with_matching_version() -> None:
+    """照合世代を変えると保存Callの再利用先も分離する。"""
+    assert llm_call_id("REVIEW", ["source:en"], []) != llm_call_id(
+        "REVIEW", ["source:en"], [], matching_version=5
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -103,9 +141,9 @@ def test_agent_context_distinguishes_repeated_table_values() -> None:
                         for key, row, column, header, text in [
                             ("label-header", 0, 0, True, "Record"),
                             ("value-header", 0, 1, True, "Count"),
-                            ("row-5", 1, 0, True, "page_split_05"),
+                            ("row-5", 1, 0, False, "page_split_05"),
                             ("value-5", 1, 1, False, "5"),
-                            ("row-7", 2, 0, True, "page_split_07"),
+                            ("row-7", 2, 0, False, "page_split_07"),
                             ("value-7", 2, 1, False, "5"),
                         ]
                     ],
@@ -114,25 +152,92 @@ def test_agent_context_distinguishes_repeated_table_values() -> None:
         )
     )
     contexts = doc.unit_contexts()
-    assert contexts["formula"] == {"section": "Measurements", "kind": "formula"}
+    assert contexts["formula"] == {
+        "section": "Measurements",
+        "kind": "formula",
+        "position": "0.0",
+    }
     assert contexts["value-5"] == {
         "kind": "table_cell",
         "section": "Measurements",
+        "position": "1.0",
         "row_label": "page_split_05",
         "column_label": "Count",
+        "adjacent_row_labels": "next: page_split_07",
     }
     assert contexts["value-7"]["row_label"] == "page_split_07"
+    assert contexts["value-7"]["adjacent_row_labels"] == "previous: page_split_05"
     assert contexts["row-7"]["column_label"] == "Record"
-    view = observe_documents(
+    assert contexts["formula"]["position"] == "0.0"
+    assert contexts["value-5"]["position"] == "1.0"
+
+
+def test_agent_context_normalizes_page_position_for_candidate_ranking() -> None:
+    """PDFのページ位置を0から1の候補順位補助情報として保持する。"""
+    doc = Document(
+        pages=[
+            Page(
+                number=number,
+                blocks=[
+                    Block(
+                        id=f"heading-{number}",
+                        order=0,
+                        kind="heading",
+                        content=TextUnit(
+                            id=f"heading-{number}",
+                            spans=[
+                                TextSpan(id=f"heading-{number}/span", source="Heading")
+                            ],
+                        ),
+                    )
+                ],
+            )
+            for number in (1, 62, 100)
+        ]
+    )
+
+    contexts = doc.unit_contexts()
+
+    assert contexts["heading-1"]["position"] == "0.0"
+    assert contexts["heading-62"]["position"] == "0.6161616161616161"
+    assert contexts["heading-100"]["position"] == "1.0"
+    observation = observe_documents(
         AgentAction(operation="overview"),
         agent_units({"source": doc}),
         4096,
         contexts={"source": contexts},
     )
-    assert (
-        next(item for item in view["items"] if item["id"] == "value-7")["context"]
-        == contexts["value-7"]
+    assert "position" not in observation["items"][0]["context"]
+
+
+def test_agent_context_ignores_decorative_table_markers() -> None:
+    """目次の箇条書き記号を行見出しとして使わず、隣の説明文を使う。"""
+    doc = document()
+    doc.pages[0].blocks.append(
+        Block(
+            id="table-of-contents",
+            order=0,
+            kind="table",
+            cells=[
+                TableCell(
+                    id=identifier,
+                    row=1,
+                    column=column,
+                    content=TextUnit(
+                        id=identifier,
+                        spans=[TextSpan(id=f"{identifier}/span", source=text)],
+                    ),
+                )
+                for identifier, column, text in [
+                    ("bullet", 0, "•"),
+                    ("title", 1, "Planning Teams"),
+                    ("page-number", 2, "III-1"),
+                ]
+            ],
+        )
     )
+
+    assert doc.unit_contexts()["page-number"]["row_label"] == "Planning Teams"
 
 
 @pytest.mark.parametrize("task_name", ["REVIEW", "DIFF"])
@@ -155,6 +260,8 @@ def test_comparison_sends_context_separately_from_content(
                 "kind": "table_cell",
                 "row_label": "Record 07",
                 "column_label": "Count",
+                "adjacent_row_labels": "previous: Record 06 | next: Record 08",
+                "position": "0.0",
             }
         }
         for role in roles
@@ -203,7 +310,15 @@ def test_comparison_sends_context_separately_from_content(
     payload = json.loads(calls[0]["user"])
     for prefix, role in zip("abc", roles, strict=False):
         assert payload[role] == [
-            {"id": f"{prefix}1", "text": "5", "context": contexts[role][role]}
+            {
+                "id": f"{prefix}1",
+                "text": "5",
+                "context": {
+                    key: value
+                    for key, value in contexts[role][role].items()
+                    if key != "position"
+                },
+            }
         ]
     if task_name == "REVIEW":
         assert response.groups[0].source_ids == ["source"]
@@ -284,6 +399,44 @@ def test_agent_fits_observation_without_cutting_units(
         client.client.close()
 
 
+@pytest.mark.parametrize(
+    ("configured", "expected"), [(1024, 1024), (4096, 4096), (8192, 4096)]
+)
+def test_agent_action_can_use_configured_output_budget(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: int,
+    expected: int,
+) -> None:
+    """ReviewとUpgradeの制御応答に十分な出力枠を渡す。"""
+    client = LLMClient(config.model_copy(update={"review_output_tokens": configured}))
+    seen: dict[str, int] = {}
+
+    def structured(**kwargs: object) -> StructuredResult[AgentAction]:
+        """制御要求の上限を記録し、完了Actionを返す。"""
+        seen["output_tokens"] = int(kwargs["output_tokens"])
+        return StructuredResult(AgentAction(operation="finish"), 1, 1, 1)
+
+    monkeypatch.setattr(client, "structured", structured)
+    try:
+        choose_action(
+            client,
+            "Compare documents.",
+            {
+                "roles": ["source"],
+                "pending_counts": {"source": 0},
+                "unchecked_count": 0,
+                "conflicts": [],
+            },
+            {"action": {"operation": "overview"}, "result": {"items": []}},
+            {"source": {}},
+        )
+    finally:
+        client.client.close()
+
+    assert seen["output_tokens"] == expected
+
+
 @pytest.fixture
 def config() -> Config:
     """実サービスへ接続せず、RAGを明示的に無効にする設定。"""
@@ -295,6 +448,119 @@ def config() -> Config:
         qdrant_uri=None,
         qdrant_collection=None,
     )
+
+
+@pytest.mark.parametrize("kind", ["review", "upgrade"])
+def test_agents_use_retrieved_counterparts_and_leave_dropped_candidates_pending(
+    kind: str, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """候補検索が見つけた相手をLLMへ渡し、外した候補も後続で処理する。"""
+    old_role = "source" if kind == "review" else "source_v1"
+    new_role = "translation" if kind == "review" else "source_v2"
+    documents = {
+        old_role: document(old="Original."),
+        new_role: document(bad="Unrelated.", good="Correct counterpart."),
+    }
+    if kind == "upgrade":
+        documents["translation_v1"] = document(ja="訳文")
+    seen = []
+
+    def expand(
+        _self: MatchingCandidates,
+        references: dict[str, list[str]],
+        available: dict[str, set[str]],
+        _maximum_ids: int,
+    ) -> dict[str, list[str]]:
+        """正しい候補を返し、各操作で確定済みの相手が除外されることを記録する。"""
+        seen.append(available)
+        if references.get(old_role):
+            return {
+                old_role: ["old"],
+                new_role: ["good"],
+                **({"translation_v1": ["ja"]} if kind == "upgrade" else {}),
+            }
+        return references
+
+    monkeypatch.setattr(MatchingCandidates, "expand", expand)
+    answers = [
+        AgentAction(
+            operation="match", references={old_role: ["old"], new_role: ["bad"]}
+        )
+    ]
+    if kind == "review":
+        answers.extend(
+            [
+                AlignmentResponse.model_validate(
+                    {
+                        "groups": [
+                            {
+                                "source_ids": ["old"],
+                                "translation_ids": ["good"],
+                                "kind": "matched",
+                            }
+                        ]
+                    }
+                ),
+                AgentAction(
+                    operation="evaluate", target_ids=["review/alignment-000001"]
+                ),
+                successful_review("review/alignment-000001"),
+                AgentAction(operation="match", references={new_role: ["bad"]}),
+                AlignmentResponse(groups=[]),
+            ]
+        )
+    else:
+        answers.extend(
+            [
+                DiffResponse.model_validate(
+                    {
+                        "changes": [
+                            {
+                                "kind": "unchanged",
+                                "source_v1_ids": ["old"],
+                                "source_v2_ids": ["good"],
+                                "translation_v1_ids": ["ja"],
+                                "summary": "対応を確認",
+                            }
+                        ]
+                    }
+                ),
+                AgentAction(operation="match", references={new_role: ["bad"]}),
+                DiffResponse.model_validate(
+                    {
+                        "changes": [
+                            {
+                                "kind": "added",
+                                "source_v2_ids": ["bad"],
+                                "summary": "追加を確認",
+                            }
+                        ]
+                    }
+                ),
+            ]
+        )
+    answers.append(AgentAction(operation="finish"))
+    calls = scripted(monkeypatch, answers)
+    result = (
+        ReviewAgent(documents, tmp_path, tmp_path, config).run()
+        if kind == "review"
+        else UpgradeAgent(documents, tmp_path, config).run()
+    )
+    assert json.loads(calls[1]["user"])[new_role][0]["text"] == "Correct counterpart."
+    assert seen[0][new_role] == {"bad", "good"}
+    assert seen[1][new_role] == {"bad"}
+    if kind == "review":
+        assert [
+            (g.source_ids, g.translation_ids)
+            for g in result.groups
+            if g.kind == "matched"
+        ] == [(["old"], ["good"])]
+        assert any(
+            g.translation_ids == ["bad"] and g.kind == "translation_only"
+            for g in result.groups
+        )
+    else:
+        assert result.reviewed_source_v2_ids == ["bad", "good"]
 
 
 @pytest.mark.parametrize("operation", ["evaluate", "recheck"])
@@ -510,6 +776,76 @@ def test_upgrade_action_reselects_within_reduced_reference_limit(
         client.client.close()
 
 
+def test_review_action_schema_splits_reduced_total_reference_limit_by_role(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reviewの動的な合計上限をroleごとのschemaにも反映する。"""
+    client = LLMClient(
+        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
+    )
+    units = agent_units(
+        {
+            "source": document(**{f"source-{i}": f"Original {i}" for i in range(6)}),
+            "translation": document(
+                **{f"translation-{i}": f"訳文 {i}" for i in range(6)}
+            ),
+        }
+    )
+    state = {
+        "roles": list(units),
+        "pending_counts": {role: len(values) for role, values in units.items()},
+        "pending_ids": {role: list(values) for role, values in units.items()},
+        "unchecked_targets": [],
+        "unchecked_count": 0,
+        "conflicts": [],
+        "max_reference_ids": 8,
+    }
+    actions = (
+        AgentAction(
+            operation="match",
+            references={
+                "source": [f"source-{i}" for i in range(5)],
+                "translation": [f"translation-{i}" for i in range(4)],
+            },
+        ),
+        AgentAction(
+            operation="match",
+            references={
+                "source": [f"source-{i}" for i in range(4)],
+                "translation": [f"translation-{i}" for i in range(4)],
+            },
+        ),
+    )
+    responses = []
+    for action in actions:
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = action.model_dump_json()
+        response.usage = None
+        responses.append(response)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    try:
+        action = choose_action(
+            client,
+            "Review English source against Japanese translation.",
+            state,
+            {},
+            units,
+        )
+        assert sum(map(len, action.references.values())) == 8
+        assert create.call_count == 2
+        role_limits = create.call_args.kwargs["response_format"]["json_schema"][
+            "schema"
+        ]["properties"]["references"]["properties"]
+        assert {role: value["maxItems"] for role, value in role_limits.items()} == {
+            "source": 4,
+            "translation": 4,
+        }
+    finally:
+        client.client.close()
+
+
 def test_agent_overview_includes_bounded_content() -> None:
     """IDだけの一覧でAgentが探索を繰り返さないよう、予算内で本文も提示する。"""
     units = agent_units(
@@ -577,7 +913,10 @@ def test_match_schema_requests_only_correspondence(
     monkeypatch.setattr(client.client.chat.completions, "create", create)
     try:
         units = agent_units(
-            {"source": document(en="Original."), "translation": document(ja="訳文。")}
+            {
+                "source": document(en="Original."),
+                "translation": document(ja="訳文。"),
+            }
         )
         _, result = (
             import_module("translate.tasks.41_review")
@@ -842,6 +1181,54 @@ def test_match_retry_identifies_duplicate_and_unknown_ids(
         client.client.close()
 
 
+def test_match_prompt_assigns_partial_correspondence_for_later_evaluation(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """訳抜けを含む部分対応もmatchedに残し、品質評価へ渡す契約を維持する。"""
+    calls = scripted(
+        monkeypatch,
+        [
+            AlignmentResponse(
+                groups=[
+                    {
+                        "source_ids": ["first", "continuation"],
+                        "translation_ids": ["translated"],
+                        "kind": "matched",
+                        "reason": "The translation starts the same continuing passage.",
+                    }
+                ]
+            )
+        ],
+    )
+    client = LLMClient(config)
+    units = {
+        "source": list(
+            document(
+                first="Agreement should cover standard data",
+                continuation="bases and formats that the translation omits.",
+            )
+            .unit_index()
+            .values()
+        ),
+        "translation": list(
+            document(translated="合意には標準データを含める。").unit_index().values()
+        ),
+    }
+    try:
+        _, response = (
+            import_module("translate.tasks.41_review")
+            .ReviewTask(config, tmp_path, "", "")
+            .match_documents(units, client, 0)
+        )
+    finally:
+        client.client.close()
+
+    assert response.groups[0].source_ids == ["first", "continuation"]
+    assert "include each ID whose" in calls[0]["contract"]
+    assert "Do not require full text coverage" in calls[0]["contract"]
+    assert "do not stop after the first matching sentence" in calls[0]["contract"]
+
+
 def scripted(
     monkeypatch: pytest.MonkeyPatch,
     responses: list[BaseModel | Callable[[dict[str, object]], BaseModel]],
@@ -1005,7 +1392,8 @@ def test_review_recovers_unmatched_units_and_resumes(
             operation="evaluate",
             target_ids=["review/alignment-000003", "review/alignment-000004"],
         ),
-        successful_review(*["review/alignment-000003", "review/alignment-000004"]),
+        successful_review("review/alignment-000003"),
+        successful_review("review/alignment-000004"),
         AgentAction(operation="finish"),
     ]
     calls = scripted(monkeypatch, answers)
@@ -1055,22 +1443,11 @@ def test_review_agent_recovers_from_invalid_match_action(
     assert result.reviewed_target_ids == ["review/alignment-000001"]
 
 
-def test_review_rejects_repeated_unmatched_scope_before_llm_call(
+def test_review_retries_the_same_unmatched_scope_with_a_new_call_id(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
-    """source_onlyの同じ候補集合を再送せず、未対応の結果で完了する。"""
+    """未対応unitは失敗上限まで同じ候補範囲を再照合できる。"""
     action = AgentAction(operation="match", references={"source": ["en"]})
-
-    def finish_after_rejection(kwargs: dict[str, object]) -> AgentAction:
-        """重複照合が拒否され、未確認対象がないことを確かめる。"""
-        payload = json.loads(kwargs["user"])
-        assert "already" in payload["observation"]["result"]["error"].lower()
-        assert payload["state"]["pending_counts"] == {
-            "source": 0,
-            "translation": 0,
-        }
-        return AgentAction(operation="finish")
-
     scripted(
         monkeypatch,
         [
@@ -1088,7 +1465,19 @@ def test_review_rejects_repeated_unmatched_scope_before_llm_call(
                 }
             ),
             action,
-            finish_after_rejection,
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": [],
+                            "kind": "source_only",
+                            "reason": "対応訳なし",
+                        }
+                    ]
+                }
+            ),
+            AgentAction(operation="finish"),
         ],
     )
     result = ReviewAgent(
@@ -1098,7 +1487,274 @@ def test_review_rejects_repeated_unmatched_scope_before_llm_call(
         config,
     ).run()
     assert len(result.groups) == 1
-    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 1
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 2
+
+
+def test_review_retries_unmatched_source_and_translation_before_finish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """両側に再照合可能な未対応候補が残る間は、Reviewを完了しない。"""
+    unmatched = AlignmentResponse.model_validate(
+        {
+            "groups": [
+                {
+                    "source_ids": ["en"],
+                    "translation_ids": [],
+                    "kind": "source_only",
+                    "reason": "候補内で相手を確認できない",
+                },
+                {
+                    "source_ids": [],
+                    "translation_ids": ["ja"],
+                    "kind": "translation_only",
+                    "reason": "候補内で相手を確認できない",
+                },
+            ]
+        }
+    )
+    recovered = AlignmentResponse.model_validate(
+        {
+            "groups": [
+                {
+                    "source_ids": ["en"],
+                    "translation_ids": ["ja"],
+                    "kind": "matched",
+                    "reason": "Distinctive content corresponds.",
+                }
+            ]
+        }
+    )
+    scripted(
+        monkeypatch,
+        [
+            AgentAction(
+                operation="match",
+                references={"source": ["en"], "translation": ["ja"]},
+            ),
+            unmatched,
+            AgentAction(operation="finish"),
+            recovered,
+            AgentAction(operation="evaluate", target_ids=["review/alignment-000003"]),
+            successful_review("review/alignment-000003"),
+            AgentAction(operation="finish"),
+        ],
+    )
+
+    result = ReviewAgent(
+        {"source": document(en="Original"), "translation": document(ja="訳文")},
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+
+    assert [(group.source_ids, group.translation_ids) for group in result.groups] == [
+        (["en"], ["ja"])
+    ]
+    assert result.reviewed_target_ids == ["review/alignment-000003"]
+
+
+def test_review_exhausts_a_repeated_unmatched_pair_after_three_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """同じ未対応pairを3回照合した後は未確認として終了できる。"""
+    action = AgentAction(
+        operation="match", references={"source": ["en"], "translation": ["ja"]}
+    )
+    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = []
+    for _ in range(3):
+        answers.extend(
+            [
+                action,
+                AlignmentResponse.model_validate(
+                    {
+                        "groups": [
+                            {
+                                "source_ids": ["en"],
+                                "translation_ids": [],
+                                "kind": "source_only",
+                                "reason": "候補内で相手を確認できない",
+                            },
+                            {
+                                "source_ids": [],
+                                "translation_ids": ["ja"],
+                                "kind": "translation_only",
+                                "reason": "候補内で相手を確認できない",
+                            },
+                        ]
+                    }
+                ),
+            ]
+        )
+
+    def finish_after_exhaustion(kwargs: dict[str, object]) -> AgentAction:
+        """同一pairの失敗上限到達後は未対応候補がないことを確認する。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["state"]["unmatched_counts"] == {
+            "source": 0,
+            "translation": 0,
+        }
+        return AgentAction(operation="finish")
+
+    answers.append(finish_after_exhaustion)
+    scripted(monkeypatch, answers)
+
+    result = ReviewAgent(
+        {"source": document(en="Original"), "translation": document(ja="訳文")},
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+
+    assert [group.kind for group in result.groups] == [
+        "source_only",
+        "translation_only",
+    ]
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 3
+
+
+def test_review_stops_retrying_a_unit_after_three_different_failed_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """相手候補を変えても進まないTextUnitを、3回後の再試行対象から外す。"""
+
+    def unmatched_pair(source_id: str) -> AlignmentResponse:
+        """候補の対応を見つけられなかった応答を返す。"""
+        return AlignmentResponse.model_validate(
+            {
+                "groups": [
+                    {
+                        "source_ids": [source_id],
+                        "translation_ids": [],
+                        "kind": "source_only",
+                        "reason": "対応候補なし",
+                    },
+                    {
+                        "source_ids": [],
+                        "translation_ids": ["ja"],
+                        "kind": "translation_only",
+                        "reason": "対応候補なし",
+                    },
+                ]
+            }
+        )
+
+    def finish_after_exhaustion(kwargs: dict[str, object]) -> AgentAction:
+        """上限に達した訳文unitが再探索一覧から外れたことを確かめる。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["state"]["unmatched_counts"]["translation"] == 0
+        assert payload["state"]["unmatched_ids"]["translation"] == []
+        return AgentAction(operation="finish")
+
+    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = []
+    for source_id in ("en1", "en2", "en3"):
+        answers.extend(
+            [
+                AgentAction(
+                    operation="match",
+                    references={"source": [source_id], "translation": ["ja"]},
+                ),
+                unmatched_pair(source_id),
+            ]
+        )
+    answers.append(finish_after_exhaustion)
+    scripted(monkeypatch, answers)
+
+    result = ReviewAgent(
+        {
+            "source": document(en1="First", en2="Second", en3="Third"),
+            "translation": document(ja="訳文"),
+        },
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+
+    assert len(result.groups) == 4
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 3
+
+
+def test_review_uses_source_text_for_a_copied_front_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """複製原文ページのOCR差を除き、通常どおり未翻訳か評価する。"""
+    source_title = (
+        "Doctrine for Command, Control, Communications, and Computer (C4) "
+        'Systems Support to Joint Operations \\ (& "5 "='
+    )
+    translation_title = (
+        'CA Tv gli TB (0) WV "5 Command, Control, ~~ Communications, and '
+        "Computer (C4) Systems Support to Joint Operations"
+    )
+    scripted(
+        monkeypatch,
+        [
+            AgentAction(
+                operation="match",
+                references={"source": ["en"], "translation": ["ja"]},
+            ),
+            AlignmentResponse(
+                groups=[
+                    {
+                        "source_ids": ["en"],
+                        "translation_ids": ["ja"],
+                        "kind": "matched",
+                    }
+                ]
+            ),
+            AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
+            successful_review("review/alignment-000001"),
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = ReviewAgent(
+        {
+            "source": document(en=f"{source_title} Joint Pub 6-0 30 May 1995"),
+            "translation": document(
+                ja=f"{translation_title} Joint Pub 6-0 30 May 1995"
+            ),
+        },
+        tmp_path / "review",
+        tmp_path,
+        config,
+    ).run()
+
+    assert result.groups[0].kind == "matched"
+    assert result.targets[0].translation.startswith(source_title)
+    assert result.targets[0].spans == []
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 2
+
+
+def test_copied_front_page_detection_requires_long_english_near_duplicates() -> None:
+    """短すぎるページと日本語混在ページを複製原文と判定しない。"""
+    copied_text = "Repeated English source content. " * 30
+    source = document(en=copied_text)
+    short = document(ja="Short title")
+    translated = document(ja=("日本語の本文です。 " * 40))
+    noisy_source = document(
+        title=(
+            "Doctrine for Command, Control, Communications, and Computer (C4) "
+            'Systems Support to Joint Operations \\ (& "5 "='
+        ),
+        publication="Joint Pub 6-0",
+        date="30 May 1995",
+    )
+    noisy_translation = document(
+        title=(
+            'CA Tv gli TB (0) WV "5 Command, Control, ~~ Communications, and '
+            "Computer (C4) Systems Support to Joint Operations"
+        ),
+        publication="Joint Pub 6-0",
+        date="30 May 1995",
+    )
+
+    assert not _copied_translation_front_page_ids(source, short)
+    assert not _copied_translation_front_page_ids(source, translated)
+    assert _copied_translation_front_page_ids(noisy_source, noisy_translation) == {
+        "title",
+        "publication",
+        "date",
+    }
 
 
 def test_review_observes_only_current_matches_and_retains_all_results(
@@ -1152,7 +1808,7 @@ def test_review_observes_only_current_matches_and_retains_all_results(
                     }
                 ),
                 evaluate_current,
-                review_current,
+                *[review_current] * 6,
             ]
         )
     answers.append(AgentAction(operation="finish"))
@@ -1437,6 +2093,156 @@ def test_review_operation_failure_retains_stop_conditions(
     assert not list(tmp_path.glob("calls/*/response.json"))
 
 
+def test_review_skips_stale_operations_when_replayed_matches_change_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """照合結果が変わり無効になった評価・match Callを飛ばす。"""
+    directory = tmp_path / "review" / "review"
+    now = datetime.now(UTC)
+    for call_id, operation, round_number, target_ids in [
+        ("old-match", "match", 0, ["source:en", "translation:ja"]),
+        ("old-evaluate", "evaluate", 1, ["review:review/alignment-000001"]),
+        ("stale-evaluate", "evaluate", 2, ["review:review/alignment-000002"]),
+        ("old-match-again", "match", 3, ["source:en", "translation:ja"]),
+        ("duplicate-evaluate", "evaluate", 4, ["review:review/alignment-000001"]),
+    ]:
+        write_model(
+            directory / "calls" / call_id / "call.json",
+            LLMCallArtifact(
+                call_id=call_id,
+                task="REVIEW",
+                operation=operation,
+                matching_version=MATCHING_VERSION,
+                round=round_number,
+                status="succeeded",
+                fingerprint="0" * 64,
+                target_ids=target_ids,
+                attempts=1,
+                started_at=now,
+                updated_at=now,
+            ),
+        )
+
+    review_task = import_module("translate.tasks.41_review").ReviewTask
+
+    def current_match(
+        _task: object, *_args: object, **_kwargs: object
+    ) -> tuple[str, AlignmentResponse]:
+        """再照合でmatched groupが一つだけ生成される。"""
+        return (
+            "current-match",
+            AlignmentResponse.model_validate(
+                {
+                    "groups": [
+                        {
+                            "source_ids": ["en"],
+                            "translation_ids": ["ja"],
+                            "kind": "matched",
+                        }
+                    ]
+                }
+            ),
+        )
+
+    monkeypatch.setattr(review_task, "match_documents", current_match)
+    monkeypatch.setattr(
+        review_task,
+        "run",
+        lambda *_args, **_kwargs: import_module(
+            "translate.models.artifacts"
+        ).ReviewResult(),
+    )
+    scripted(
+        monkeypatch,
+        [
+            AgentAction(operation="finish"),
+        ],
+    )
+
+    result = ReviewAgent(
+        {"source": document(en="Source"), "translation": document(ja="訳文")},
+        directory,
+        tmp_path,
+        config,
+    ).run()
+
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+    assert [group.id for group in result.groups if group.kind == "matched"] == [
+        "alignment-000001"
+    ]
+
+
+def test_upgrade_skips_stale_match_when_replayed_changes_already_cover_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """更新後に同じsourceを含む古いmatch Callを再生しても現行結果を保つ。"""
+    directory = tmp_path / "upgrade"
+    now = datetime.now(UTC)
+    for call_id, round_number in [("old-match", 0), ("duplicate-match", 1)]:
+        write_model(
+            directory / "calls" / call_id / "call.json",
+            LLMCallArtifact(
+                call_id=call_id,
+                task="DIFF",
+                operation="match",
+                matching_version=MATCHING_VERSION,
+                round=round_number,
+                status="succeeded",
+                fingerprint="0" * 64,
+                target_ids=["source_v1:old", "source_v2:new"],
+                attempts=1,
+                started_at=now,
+                updated_at=now,
+            ),
+        )
+
+    diff_task = import_module("translate.tasks.21_diff").DiffTask
+
+    executed_rounds: list[int] = []
+
+    def current_diff(
+        _task: object,
+        _units: dict[str, list[TextUnit]],
+        _operation: str,
+        round_number: int,
+    ) -> tuple[str, DiffResponse]:
+        """最初の再生Callが両版のunitを一つの確定groupへまとめる。"""
+        executed_rounds.append(round_number)
+        return (
+            f"current-{round_number}",
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "unchanged",
+                            "source_v1_ids": ["old"],
+                            "source_v2_ids": ["new"],
+                            "translation_v1_ids": [],
+                            "summary": "変更なし",
+                        }
+                    ]
+                }
+            ),
+        )
+
+    monkeypatch.setattr(diff_task, "run", current_diff)
+    scripted(monkeypatch, [AgentAction(operation="finish")])
+
+    result = UpgradeAgent(
+        {
+            "source_v1": document(old="Same."),
+            "source_v2": document(new="Same."),
+            "translation_v1": document(),
+        },
+        directory,
+        config,
+    ).run()
+
+    assert executed_rounds == [0]
+    assert result.reviewed_source_v1_ids == ["old"]
+    assert result.reviewed_source_v2_ids == ["new"]
+
+
 def test_review_observes_conflict_and_rechecks_then_resumes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
@@ -1681,18 +2487,14 @@ def test_diff_schema_limits_changes_to_selected_english_units(
         client.client.close()
 
 
-@pytest.mark.parametrize(
-    ("remaining_role", "change_kind"),
-    [("source_v1", "deleted"), ("source_v2", "added")],
-)
-def test_upgrade_classifies_one_sided_units_after_repeated_diff_failures(
+@pytest.mark.parametrize("remaining_role", ["source_v1", "source_v2"])
+def test_upgrade_keeps_one_sided_units_unverified_after_repeated_diff_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config: Config,
     remaining_role: str,
-    change_kind: str,
 ) -> None:
-    """片側比較が3回失敗した残りを追加・削除として記録し、旧訳対応を推測しない。"""
+    """3回の応答失敗だけで追加・削除を断定せず、未確認として残す。"""
     documents = {
         "source_v1": document(
             **({"old": "Removed"} if remaining_role == "source_v1" else {})
@@ -1727,7 +2529,7 @@ def test_upgrade_classifies_one_sided_units_after_repeated_diff_failures(
     result = UpgradeAgent(documents, tmp_path, config).run()
 
     assert len(result.changes) == 1
-    assert result.changes[0].kind == change_kind
+    assert result.changes[0].kind == "unverified"
     assert result.changes[0].translation_v1_ids == []
     assert "未確認" in result.changes[0].summary
     assert result.reviewed_source_v1_ids == list(
@@ -2095,6 +2897,126 @@ def test_upgrade_reselects_after_diff_response_validation_fails(
     assert calls == 3
     assert result.reviewed_source_v1_ids == ["old1", "old2"]
     assert result.reviewed_source_v2_ids == ["new1", "new2"]
+
+
+def test_upgrade_marks_a_unit_unverified_after_three_failed_match_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """異なる候補との失敗も保存履歴から数え、同じ英文の照合を打ち切る。"""
+    directory = tmp_path / "upgrade"
+    now = datetime.now(UTC)
+    for round_number in (1, 2):
+        write_model(
+            directory / "calls" / f"call-failed-{round_number}" / "call.json",
+            LLMCallArtifact(
+                call_id=f"call-failed-{round_number}",
+                task="DIFF",
+                operation="match",
+                matching_version=MATCHING_VERSION,
+                round=round_number,
+                status="failed",
+                fingerprint="0" * 64,
+                target_ids=["source_v1:old1", "source_v2:new1"],
+                attempts=5,
+                started_at=now,
+                updated_at=now,
+                error={
+                    "code": "llm_call_failed",
+                    "message": "Invalid response",
+                    "cause_type": "LLMInvalidResponseError",
+                    "retryable": True,
+                },
+            ),
+        )
+
+    diff_task = import_module("translate.pipeline.upgrade").DiffTask
+    calls = 0
+
+    def diff_run(
+        _task: object,
+        units: dict[str, list[TextUnit]],
+        _operation: str,
+        round_number: int,
+    ) -> tuple[str, DiffResponse]:
+        """対象1の最後の失敗後は、対象2を正常に確認する。"""
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            message = "Invalid response"
+            raise LLMInvalidResponseError(message)
+        references = {
+            role: [unit.id for unit in selected] for role, selected in units.items()
+        }
+        return (
+            f"call-{round_number}",
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "unchanged",
+                            "source_v1_ids": references["source_v1"],
+                            "source_v2_ids": references["source_v2"],
+                            "summary": "変更なし",
+                        }
+                    ],
+                    "reviewed_source_v1_ids": references["source_v1"],
+                    "reviewed_source_v2_ids": references["source_v2"],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(diff_task, "run", diff_run)
+
+    def retry_failed(_kwargs: dict[str, object]) -> AgentAction:
+        """過去の失敗対象を別訳候補でもう一度試す。"""
+        return AgentAction(
+            operation="match",
+            references={
+                "source_v1": ["old1"],
+                "source_v2": ["new1"],
+                "translation_v1": ["ja2"],
+            },
+        )
+
+    def choose_remaining(kwargs: dict[str, object]) -> AgentAction:
+        """失敗unitが未確認へ移った後、残りの対象を選ぶ。"""
+        payload = json.loads(kwargs["user"])
+        assert payload["state"]["pending_ids"] == {
+            "source_v1": ["old2"],
+            "source_v2": ["new2"],
+        }
+        assert payload["state"]["confirmed_count"] == 1
+        return AgentAction(
+            operation="match",
+            references={
+                "source_v1": ["old2"],
+                "source_v2": ["new2"],
+                "translation_v1": ["ja2"],
+            },
+        )
+
+    scripted(
+        monkeypatch,
+        [
+            retry_failed,
+            choose_remaining,
+            AgentAction(operation="finish"),
+        ],
+    )
+    result = UpgradeAgent(
+        {
+            "source_v1": document(old1="First", old2="Second"),
+            "source_v2": document(new1="First", new2="Second"),
+            "translation_v1": document(ja1="一つ目", ja2="二つ目"),
+        },
+        directory,
+        config,
+    ).run()
+
+    assert calls == 2
+    assert result.reviewed_source_v1_ids == ["old1", "old2"]
+    assert result.reviewed_source_v2_ids == ["new1", "new2"]
+    assert [item.kind for item in result.changes] == ["unverified"]
 
 
 @pytest.mark.parametrize("failure", [LLMInputExceededError, LLMInvalidResponseError])

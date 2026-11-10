@@ -178,18 +178,23 @@ class Document(DocumentModel):
         return {unit.id: unit for _, unit in self.text_units()}
 
     def unit_contexts(self) -> dict[str, dict[str, str]]:
-        """照合対象の種別、節、表の行見出しと列見出しを本文とは別に取得する。
+        """照合対象の種別、節、表の行・列見出しと隣接行を本文とは別に取得する。
 
         Returns:
-            TextUnit IDごとの構造上の文脈。PDFごとの表番号やページ番号は対応の根拠にしない。
+            TextUnit IDごとの構造上の文脈。位置は候補順位の補助情報としてのみ含む。
         """
         contexts: dict[str, dict[str, str]] = {}
         section = ""
-        for page in sorted(self.pages, key=lambda item: item.number):
+        pages = sorted(self.pages, key=lambda item: item.number)
+        last_page = max((page.number for page in pages), default=1)
+        for page in pages:
+            position = str((page.number - 1) / max(1, last_page - 1))
             for block in sorted(page.blocks, key=lambda item: item.order):
                 if block.kind == "heading" and block.content is not None:
                     section = block.content.text("source")
-                base = {"section": section} if section else {}
+                base = {"position": position}
+                if section:
+                    base["section"] = section
                 if block.content is not None:
                     contexts[block.content.id] = {**base, "kind": block.kind}
                 captions = [block.caption]
@@ -199,12 +204,33 @@ class Document(DocumentModel):
                     if caption is not None:
                         contexts[caption.id] = {**base, "kind": "caption"}
                 cells = sorted(block.cells, key=lambda item: (item.row, item.column))
+                rows = sorted({cell.row for cell in cells})
+                header_rows = {cell.row for cell in cells if cell.header}
+                table_row_labels: dict[int, str] = {}
+                for value in cells:
+                    text = value.content.text("source").strip()
+                    if text and any(character.isalnum() for character in text):
+                        table_row_labels.setdefault(value.row, text)
+                previous_rows = {
+                    row: rows[index - 1] if index else None
+                    for index, row in enumerate(rows)
+                }
+                following_rows = {
+                    row: rows[index + 1] if index + 1 < len(rows) else None
+                    for index, row in enumerate(rows)
+                }
                 for cell in cells:
-                    row = [
+                    # Ignore decorative bullets so the text label identifies the row.
+                    row_labels = [
                         value.content.text("source")
                         for value in cells
                         if value.row == cell.row
+                        and value.column < cell.column
                         and value.content.text("source").strip()
+                        and any(
+                            character.isalnum()
+                            for character in value.content.text("source")
+                        )
                     ]
                     headers = [
                         value.content.text("source")
@@ -215,11 +241,26 @@ class Document(DocumentModel):
                         and value.row < cell.row
                         and value.content.text("source").strip()
                     ]
+                    adjacent_rows = [
+                        f"{direction}: {table_row_labels[row]}"
+                        for direction, row in (
+                            ("previous", previous_rows[cell.row]),
+                            ("next", following_rows[cell.row]),
+                        )
+                        if row is not None
+                        and row not in header_rows
+                        and row in table_row_labels
+                    ]
                     contexts[cell.content.id] = {
                         **base,
                         "kind": "table_cell",
-                        **({"row_label": row[0]} if row else {}),
+                        **({"row_label": row_labels[0]} if row_labels else {}),
                         **({"column_label": headers[-1]} if headers else {}),
+                        **(
+                            {"adjacent_row_labels": " | ".join(adjacent_rows)}
+                            if adjacent_rows
+                            else {}
+                        ),
                     }
                     for image in cell.images:
                         if image.caption is not None:

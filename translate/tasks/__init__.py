@@ -22,6 +22,9 @@ from translate.adapters.llm import LLMClient, LLMInputExceededError
 from translate.adapters.qdrant import QdrantStore
 from translate.models.artifacts import LLMTaskName
 
+# 照合規則変更ごとに増やし、旧世代のgroupをResumeで再適用しない。
+MATCHING_VERSION = 13
+
 
 class SavedLLMCalls:
     """Taskの保存先・判断規則・用語集を保持し、要求の再利用と保存を担当する。"""
@@ -86,11 +89,21 @@ class SavedLLMCalls:
             else config.review_input_tokens
         )
         call_id = llm_call_id(
-            self.task, target_ids, [], operation=operation, round_number=round_number
+            self.task,
+            target_ids,
+            [],
+            operation=operation,
+            round_number=round_number,
+            matching_version=MATCHING_VERSION,
         )
         call_dir = self.directory / "calls" / call_id
         fingerprint = canonical_hash(
-            {"task": self.task, "operation": operation, "input": payload}
+            {
+                "task": self.task,
+                "operation": operation,
+                "matching_version": MATCHING_VERSION,
+                "input": payload,
+            }
         )
         cached = load_reusable_llm_response(
             call_dir,
@@ -111,6 +124,7 @@ class SavedLLMCalls:
             previous_attempts=previous,
             operation=operation,
             round_number=round_number,
+            matching_version=MATCHING_VERSION,
         )
         try:
             id_aliases: dict[str, str] = {}

@@ -3,6 +3,7 @@
 import logging
 import time
 from datetime import UTC, datetime
+from difflib import SequenceMatcher
 from importlib import import_module
 from pathlib import Path
 from typing import cast
@@ -25,6 +26,7 @@ from translate.adapters.llm import (
 from translate.common.config import Config, validate_config
 from translate.common.logger import processing_logging
 from translate.models.artifacts import (
+    LLMCallArtifact,
     LLMCallIndex,
     ReviewRecord,
     ReviewResult,
@@ -43,9 +45,63 @@ from translate.pipeline import (
     pdf_inputs,
     resolve_processing_id,
 )
+from translate.pipeline.matching import MatchingCandidates
+from translate.tasks import MATCHING_VERSION
 
 ReviewTask = import_module("translate.tasks.41_review").ReviewTask
 logger = logging.getLogger(__name__)
+_MATCH_NO_PROGRESS_LIMIT = 3
+_DUPLICATE_FRONT_PAGE_MIN_CHARS = 100
+_DUPLICATE_FRONT_PAGE_MIN_SIMILARITY = 0.85
+
+
+def _copied_translation_front_page_ids(
+    source: Document, translation: Document
+) -> set[str]:
+    """訳文の先頭に複製された英語原文ページがあれば、そのTextUnit IDを返す。
+
+    Args:
+        source: 英語原文。
+        translation: Review対象の訳文。
+
+    Returns:
+        set[str]: OCR差の比較基準に原文LOAD本文を使う訳文unitのID。
+    """
+    if not source.pages or not translation.pages:
+        return set()
+    source_units = [
+        unit
+        for block in source.pages[0].blocks
+        for unit in ([block.content] if block.content else [])
+        + [cell.content for cell in block.cells]
+    ]
+    translation_units = [
+        unit
+        for block in translation.pages[0].blocks
+        for unit in ([block.content] if block.content else [])
+        + [cell.content for cell in block.cells]
+    ]
+    source_text = " ".join(unit.text("source") for unit in source_units)
+    translation_text = " ".join(unit.text("source") for unit in translation_units)
+    normalized_source = " ".join(source_text.casefold().split())
+    normalized_translation = " ".join(translation_text.casefold().split())
+    if min(len(normalized_source), len(normalized_translation)) < (
+        _DUPLICATE_FRONT_PAGE_MIN_CHARS
+    ):
+        return set()
+    japanese = sum(
+        "\u3040" <= character <= "\u30ff" or "\u4e00" <= character <= "\u9fff"
+        for character in normalized_translation
+    )
+    if japanese / len(normalized_translation) > 0.01:
+        return set()
+    # shortcut: checks only page 1; extend to later page pairs if copied originals can appear elsewhere.
+    if (
+        SequenceMatcher(None, normalized_source, normalized_translation).ratio()
+        < _DUPLICATE_FRONT_PAGE_MIN_SIMILARITY
+    ):
+        return set()
+    return {unit.id for unit in translation_units}
 
 
 def _fallback_action(state: dict[str, object]) -> AgentAction:
@@ -68,6 +124,12 @@ def _fallback_action(state: dict[str, object]) -> AgentAction:
     references = {role: ids[:limit] for role, ids in pending.items() if ids}
     if references:
         return AgentAction(operation="match", references=references)
+    unmatched = cast("dict[str, list[str]]", state["unmatched_ids"])
+    if unmatched["source"] and unmatched["translation"]:
+        return AgentAction(
+            operation="match",
+            references={role: ids[:limit] for role, ids in unmatched.items() if ids},
+        )
     return AgentAction(operation="finish")
 
 
@@ -200,9 +262,16 @@ class ReviewAgent:
             config: LLMの接続と処理予算。
         """
         self.units = agent_units(documents)
+        self.documents = documents
+        self.copied_front_page_ids = _copied_translation_front_page_ids(
+            documents["source"], documents["translation"]
+        )
         self.contexts = {
             role: document.unit_contexts() for role, document in documents.items()
         }
+        self.candidates = MatchingCandidates(
+            self.units, self.contexts, directory, config
+        )
         self.directory = directory
         self.config = config
         self.root = root
@@ -225,17 +294,26 @@ class ReviewAgent:
             templates = Path(__file__).parents[1] / "templates"
             rules = (templates / "review-rules.md").read_text(encoding="utf-8")
             glossary = (templates / "glossary.csv").read_text(encoding="utf-8")
+            # 対応群ごとに品質確認し、別の対象の不備を混入させない。
             self.review = ReviewTask(
-                self.config, self.directory, rules, glossary, contexts=self.contexts
+                self.config.model_copy(update={"review_max_targets": 1}),
+                self.directory,
+                rules,
+                glossary,
+                contexts=self.contexts,
             )
             self.result = ReviewResult()
             self.conflicts: set[str] = set()
             self.call_ids: list[str] = []
             self.match_scopes: set[tuple[tuple[str, ...], ...]] = set()
+            self.match_failures: dict[tuple[str, str], int] = {}
+            self.exhausted_match_ids: set[tuple[str, str]] = set()
             # 未対応群を置換しても、評価が参照するgroup IDを再利用しない。
             self.group_number = 0
 
-            restored = completed_agent_calls(self.directory)
+            restored = completed_agent_calls(
+                self.directory, matching_version=MATCHING_VERSION
+            )
             replayed: set[tuple[int, str]] = set()
             for call in restored:
                 key = (call.round, call.operation)
@@ -253,7 +331,19 @@ class ReviewAgent:
                         else:
                             action.target_ids.append(identifier.split("/part-", 1)[0])
                 action.target_ids = list(dict.fromkeys(action.target_ids))
-                self._execute(action, call.round, replay=True)
+                try:
+                    result = self._execute(action, call.round, replay=True)
+                except InputError as error:
+                    logger.warning(
+                        "Skipping stale Review operation round=%s operation=%s: %s",
+                        call.round,
+                        call.operation,
+                        error,
+                    )
+                    continue
+                if call.operation == "match":
+                    self._record_match_failures(action, result)
+            self._restore_failed_match_attempts()
 
             round_number = max((call.round for call in restored), default=-1) + 1
             idle_steps = 0
@@ -280,6 +370,7 @@ class ReviewAgent:
                         for group in self.result.groups
                         if group.kind != "matched"
                         for key in getattr(group, f"{role}_ids")
+                        if (role, key) not in self.exhausted_match_ids
                     ]
                     for role in self.units
                 }
@@ -305,6 +396,13 @@ class ReviewAgent:
                 if idle_steps >= 12 and not (
                     any(pending.values()) or unchecked or self.conflicts
                 ):
+                    if unmatched["source"] and unmatched["translation"]:
+                        action_failures = ACTION_FAILURE_LIMIT
+                        idle_steps = 0
+                        observation = {
+                            "error": "Unmatched units remain on both sides. Retry correspondence before finishing."
+                        }
+                        continue
                     break
                 if idle_steps >= 12 or time.monotonic() >= deadline:
                     raise TimeoutError("Review Agent reached its step or time limit")
@@ -342,7 +440,42 @@ class ReviewAgent:
                         raise InputError(
                             "Review cannot finish with unconfirmed or conflicting targets"
                         )
+                    if unmatched["source"] and unmatched["translation"]:
+                        action_failures = ACTION_FAILURE_LIMIT
+                        idle_steps = 0
+                        observation = {
+                            "error": "Unmatched units remain on both sides. Retry correspondence before finishing."
+                        }
+                        continue
                     break
+                if action.operation == "match":
+                    exhausted = {
+                        (role, identifier)
+                        for role, identifiers in action.references.items()
+                        for identifier in identifiers
+                        if (role, identifier) in self.exhausted_match_ids
+                    }
+                    if exhausted:
+                        action.references = {
+                            role: [
+                                identifier
+                                for identifier in identifiers
+                                if (role, identifier) not in exhausted
+                            ]
+                            for role, identifiers in action.references.items()
+                        }
+                        action.references = {
+                            role: identifiers
+                            for role, identifiers in action.references.items()
+                            if identifiers
+                        }
+                        observation = {
+                            "error": "These units already had three unsuccessful correspondence attempts. Choose other unmatched units."
+                        }
+                        action_failures += 1
+                        if action_failures >= ACTION_FAILURE_LIMIT:
+                            logger.warning("Using deterministic Agent action")
+                        continue
                 progress_before = (
                     sum(map(len, assigned.values()))
                     + len(self.result.targets)
@@ -467,7 +600,28 @@ class ReviewAgent:
                     )
                 else:
                     try:
+                        if action.operation == "match":
+                            available = {
+                                role: set(values)
+                                - {
+                                    key
+                                    for group in self.result.groups
+                                    if group.kind == "matched"
+                                    for key in getattr(group, f"{role}_ids")
+                                }
+                                - {
+                                    identifier
+                                    for unit_role, identifier in self.exhausted_match_ids
+                                    if unit_role == role
+                                }
+                                for role, values in self.units.items()
+                            }
+                            action.references = self.candidates.expand(
+                                action.references, available, max_reference_ids
+                            )
                         observation = self._execute(action, round_number)
+                        if action.operation == "match":
+                            self._record_match_failures(action, observation)
                     except (LLMInputExceededError, LLMOutputExceededError):
                         if action.operation == "match":
                             selected = sum(map(len, action.references.values()))
@@ -506,6 +660,8 @@ class ReviewAgent:
                             "error": f"{error}. No action was executed; choose valid references from the current state."
                         }
                     except LLMInvalidResponseError:
+                        if action.operation == "match":
+                            self._record_failed_match_attempt(action)
                         observation = {
                             "error": "The operation returned an invalid response after its validation retry. "
                             "No result was accepted. Inspect context and select a smaller or different group."
@@ -561,6 +717,102 @@ class ReviewAgent:
             )
         )
 
+    def _record_match_failures(
+        self, action: AgentAction, observation: dict[str, object]
+    ) -> None:
+        """未対応のまま三回照合したTextUnitを、再試行対象から外す。
+
+        Args:
+            action: 候補追加後に実行した照合。
+            observation: 対応付けで返された新しいgroup。
+        """
+        groups = cast("list[dict[str, object]]", observation["groups"])
+        matched = {
+            (role, identifier)
+            for group in groups
+            if group["kind"] == "matched"
+            for role in self.units
+            for identifier in cast("list[str]", group[f"{role}_ids"])
+        }
+        for role, identifiers in action.references.items():
+            for identifier in identifiers:
+                key = (role, identifier)
+                if key in matched:
+                    self.match_failures.pop(key, None)
+                    self.exhausted_match_ids.discard(key)
+                    continue
+                self._increment_match_failure(role, identifier)
+
+    def _record_failed_match_attempt(self, action: AgentAction) -> None:
+        """Record a rejected match request and leave exhausted IDs unverified."""
+        matched = {
+            (role, identifier)
+            for group in self.result.groups
+            if group.kind == "matched"
+            for role in self.units
+            for identifier in getattr(group, f"{role}_ids")
+        }
+        assigned = {
+            (role, identifier)
+            for group in self.result.groups
+            for role in self.units
+            for identifier in getattr(group, f"{role}_ids")
+        }
+        for role, identifiers in action.references.items():
+            for identifier in identifiers:
+                if (role, identifier) in matched:
+                    continue
+                self._increment_match_failure(role, identifier)
+                if (role, identifier) in self.exhausted_match_ids and (
+                    role,
+                    identifier,
+                ) not in assigned:
+                    self._add_unverified(
+                        role,
+                        identifier,
+                        "同じunitの照合が3回失敗したため、対応関係は未確認です。",
+                    )
+
+    def _increment_match_failure(self, role: str, identifier: str) -> None:
+        """同じunitの照合失敗数を加算し、上限到達時に再試行対象から外す。"""
+        key = (role, identifier)
+        failures = self.match_failures.get(key, 0) + 1
+        self.match_failures[key] = failures
+        if failures >= _MATCH_NO_PROGRESS_LIMIT:
+            self.exhausted_match_ids.add(key)
+
+    def _restore_failed_match_attempts(self) -> None:
+        """Restore failed match attempts that completed calls do not replay."""
+        failures: dict[int, dict[str, set[str]]] = {}
+        for path in (self.directory / "calls").glob("*/call.json"):
+            try:
+                call = load_model(path, LLMCallArtifact)
+            except (OSError, ValueError):
+                continue
+            if (
+                call.task != "REVIEW"
+                or call.operation != "match"
+                or call.matching_version != MATCHING_VERSION
+            ):
+                continue
+            if call.status != "failed":
+                continue
+            by_role = failures.setdefault(call.round, {})
+            for reference in call.target_ids:
+                role, _, identifier = reference.partition(":")
+                if role in self.units:
+                    by_role.setdefault(role, set()).add(identifier)
+        for round_failures in failures.values():
+            self._record_failed_match_attempt(
+                AgentAction(
+                    operation="match",
+                    references={
+                        role: sorted(identifiers)
+                        for role, identifiers in round_failures.items()
+                    },
+                )
+            )
+
     def _execute(
         self, action: AgentAction, round_number: int, *, replay: bool = False
     ) -> dict[str, object]:
@@ -599,7 +851,19 @@ class ReviewAgent:
                     )
             scope = tuple(tuple(sorted(chosen[role])) for role in self.units)
             if scope in self.match_scopes and not replay:
-                raise InputError("Review match scope was already checked")
+                unmatched = {
+                    (role, identifier)
+                    for group in self.result.groups
+                    if group.kind != "matched"
+                    for role in self.units
+                    for identifier in getattr(group, f"{role}_ids")
+                }
+                if not all(
+                    (role, identifier) in unmatched
+                    for role, identifiers in chosen.items()
+                    for identifier in identifiers
+                ):
+                    raise InputError("Review match scope was already checked")
             call_id, response = self.review.match_documents(
                 {
                     role: [self.units[role][key] for key in ids]
@@ -634,21 +898,29 @@ class ReviewAgent:
                 )
                 self.result.groups.append(group)
                 if group.kind == "matched":
+                    copied_page = set(group.translation_ids).issubset(
+                        self.copied_front_page_ids
+                    )
                     translated = [
                         self.units["translation"][key] for key in group.translation_ids
                     ]
+                    source_text = "\n".join(
+                        self.units["source"][key].text("source")
+                        for key in group.source_ids
+                    )
+                    # A copied source page is already represented by the source PDF;
+                    # use it as the text baseline to avoid findings from OCR drift.
                     self.result.targets.append(
                         ReviewTarget(
                             id=f"review/{group.id}",
-                            source="\n".join(
-                                self.units["source"][key].text("source")
-                                for key in group.source_ids
-                            ),
-                            translation="\n".join(
-                                unit.text("source") for unit in translated
-                            ),
+                            source=source_text,
+                            translation=source_text
+                            if copied_page
+                            else "\n".join(unit.text("source") for unit in translated),
                             target_ids=group.translation_ids,
-                            spans=[span for unit in translated for span in unit.spans],
+                            spans=[]
+                            if copied_page
+                            else [span for unit in translated for span in unit.spans],
                         )
                     )
             self.call_ids.append(call_id)
@@ -698,7 +970,9 @@ class ReviewAgent:
             if revision.target_id not in target_units
         ] + evaluated.revisions
         self.result.reviewed_target_ids = list(
-            dict.fromkeys([*self.result.reviewed_target_ids, *action.target_ids])
+            dict.fromkeys(
+                [*self.result.reviewed_target_ids, *(target.id for target in selected)]
+            )
         )
         self.conflicts.difference_update(action.target_ids)
         edits: dict[str, set[str]] = {}
@@ -709,7 +983,9 @@ class ReviewAgent:
             self.conflicts.update(action.target_ids)
         self.call_ids.extend(
             call.call_id
-            for call in completed_agent_calls(self.directory)
+            for call in completed_agent_calls(
+                self.directory, matching_version=MATCHING_VERSION
+            )
             if call.round == round_number and call.operation == action.operation
         )
         return {
