@@ -229,3 +229,5 @@
 - 影響: 外部APIの一時的な遅延だけで、実機検証を先頭からやり直す必要がある。
 - 対応: 外部APIの安定性は今回の範囲外のため、記録だけ行い再実行した。
 - 記録: `outputs/sample/01a1c51d-373e-72d3-892a-433596c5f31b/translation.log`。
+- 再発（2026-11-11 04:57、HEAD `1634faa`）: sample3のReviewで、16件のEmbedding要求が約3分応答せず`EmbeddingError`となった。実機検証`20261110-200735-a65687bc`は、sample〜sample4の16工程とsample3のRegister、Translateが成功した後に停止した。コードは変わっていないため、`-StartAt sample3`でsample3から再実行した。記録: `outputs/document.ja-office/01a1c6f8-d2ed-74e2-9f3a-9d20d47759af/review.log`。
+- 再発（2026-11-11 22:39、HEAD `1634faa`）: sample1のTranslateで、1件のEmbedding要求が約2分後に接続失敗となり`EmbeddingError`で失敗した。実機検証`20261111-050121-a17050f4`は、sample3〜sample2の8工程とsample1のRegisterが成功した後に停止した。コードは変わっていないため、`-StartAt sample1`でsample1から再実行した。記録: `outputs/sample1/01a1ca24-1db5-77c2-95ec-82a4ee6f86b3/translation.log`。
