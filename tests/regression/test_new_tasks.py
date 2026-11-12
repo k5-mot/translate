@@ -10,10 +10,12 @@ from unittest.mock import MagicMock
 
 import pypdfium2 as pdfium
 import pytest
+from docling_core.types.doc import CoordOrigin, DocItemLabel, TableData
+from docling_core.types.doc import TableCell as DoclingCell
 from PIL import Image as PILImage
 from PIL import ImageChops
 
-from tests import successful_review
+from tests import docling_document, docling_prov, successful_review
 from translate.adapters.glossary import Glossary
 from translate.adapters.llm import (
     LLMClient,
@@ -48,6 +50,31 @@ _validate_entries = import_module("translate.tasks.02_unpack")._validate_entries
 _inline = import_module("translate.tasks.12_load")._inline  # noqa: SLF001
 _normalized_cells = import_module("translate.tasks.12_load")._normalized_cells  # noqa: SLF001
 DocumentLoader = import_module("translate.tasks.12_load").DocumentLoader
+
+
+def _docling_cell(
+    row: int,
+    column: int,
+    text: str,
+    rows: int = 1,
+    columns: int = 1,
+    **fields: object,
+) -> DoclingCell:
+    """開始位置と結合範囲から、Docling表のセルfixtureを作る。"""
+    return DoclingCell.model_validate(
+        {
+            "start_row_offset_idx": row,
+            "end_row_offset_idx": row + rows,
+            "start_col_offset_idx": column,
+            "end_col_offset_idx": column + columns,
+            "row_span": rows,
+            "col_span": columns,
+            "text": text,
+            **fields,
+        }
+    )
+
+
 normalize = import_module("translate.tasks.11_normalize").normalize
 MAX_VISION_PIXELS = import_module("translate.tasks.13_structure").MAX_VISION_PIXELS
 StructurePatch = import_module("translate.tasks.13_structure").StructurePatch
@@ -221,31 +248,16 @@ def test_render_page_clips_in_display_coordinates(
 @pytest.mark.parametrize("origin", ["TOPLEFT", "BOTTOMLEFT"])
 def test_load_normalizes_block_coordinates_for_formula_image(origin: str) -> None:
     """Doclingの座標原点が違っても、原本画像の同じ領域を指すBlockに変換する。"""
-    result = DocumentLoader(
-        {
-            "schema_name": "DoclingDocument",
-            "pages": {"1": {"size": {"width": 100, "height": 80}}},
-            "texts": [
-                {
-                    "self_ref": "#/texts/0",
-                    "label": "text",
-                    "text": "Equation",
-                    "prov": [
-                        {
-                            "page_no": 1,
-                            "bbox": {
-                                "l": 10,
-                                "r": 40,
-                                "t": 20 if origin == "TOPLEFT" else 60,
-                                "b": 60 if origin == "TOPLEFT" else 20,
-                                "coord_origin": origin,
-                            },
-                        }
-                    ],
-                }
-            ],
-        }
-    ).load()
+    document = docling_document(height=80)
+    document.add_text(
+        label=DocItemLabel.TEXT,
+        text="Equation",
+        prov=docling_prov(
+            box=(10, 20, 40, 60) if origin == "TOPLEFT" else (10, 60, 40, 20),
+            origin=CoordOrigin(origin),
+        ),
+    )
+    result = DocumentLoader(document.export_to_dict()).load()
     assert result.pages[0].blocks[0].bbox == (10, 20, 40, 60)
 
 
@@ -1075,27 +1087,10 @@ def test_markdown_table_removes_dot_leaders_and_preserves_missing_value() -> Non
 def test_load_converts_minimal_docling_document() -> None:
     """LOADがDocling bodyを共通Documentと安定Spanへ変換する。"""
 
-    value = {
-        "schema_name": "DoclingDocument",
-        "name": "sample",
-        "pages": {"1": {"size": {"width": 100, "height": 200}}},
-        "texts": [
-            {
-                "self_ref": "#/texts/0",
-                "label": "text",
-                "text": "Hello",
-                "prov": [{"page_no": 1}],
-            }
-        ],
-        "tables": [],
-        "pictures": [],
-        "key_value_items": [],
-        "form_items": [],
-        "groups": [],
-        "body": {"children": [{"$ref": "#/texts/0"}]},
-    }
+    value = docling_document()
+    value.add_text(label=DocItemLabel.TEXT, text="Hello", prov=docling_prov())
 
-    document = DocumentLoader(value).load()
+    document = DocumentLoader(value.export_to_dict()).load()
 
     unit = document.pages[0].blocks[0].content
     assert unit is not None
@@ -1129,56 +1124,24 @@ def test_index_heading_does_not_discard_body_on_same_page(
         (2, "text", "Figure 1 ........ 2"),
         (2, "code" if body_kind == "code" else "text", paragraph),
     ]
-    value = {
-        "schema_name": "DoclingDocument",
-        "name": "mixed-index",
-        "pages": {
-            str(number): {"size": {"width": 100, "height": 200}} for number in (1, 2)
-        },
-        "texts": [
-            {
-                "self_ref": f"#/texts/{index}",
-                "label": label,
-                "text": text,
-                "prov": [{"page_no": page}],
-            }
-            for index, (page, label, text) in enumerate(texts)
-        ],
-        "tables": [],
-        "pictures": [],
-        "key_value_items": [],
-        "form_items": [],
-        "groups": [],
-        "body": {
-            "children": [{"$ref": f"#/texts/{index}"} for index in range(len(texts))]
-        },
-    }
     if body_kind == "table":
-        value["texts"].pop()
-        value["body"]["children"].pop()
-        value["tables"] = [
-            {
-                "self_ref": "#/tables/0",
-                "label": "table",
-                "prov": [{"page_no": 2}],
-                "data": {
-                    "num_rows": 1,
-                    "num_cols": 1,
-                    "table_cells": [
-                        {
-                            "start_row_offset_idx": 0,
-                            "start_col_offset_idx": 0,
-                            "end_row_offset_idx": 1,
-                            "end_col_offset_idx": 1,
-                            "text": "Document ID: SYS-DD-001",
-                        }
-                    ],
-                },
-            }
-        ]
-        value["body"]["children"].append({"$ref": "#/tables/0"})
+        texts.pop()
+    value = docling_document(pages=2)
+    for page, label, text in texts:
+        value.add_text(label=DocItemLabel(label), text=text, prov=docling_prov(page))
+    if body_kind == "table":
+        value.add_table(
+            data=TableData(
+                num_rows=1,
+                num_cols=1,
+                table_cells=[_docling_cell(0, 0, "Document ID: SYS-DD-001")],
+            ),
+            prov=docling_prov(2),
+        )
     source = tmp_path / "source.json"
-    source.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    source.write_text(
+        json.dumps(value.export_to_dict(), ensure_ascii=False), encoding="utf-8"
+    )
 
     normalized = normalize(source, tmp_path / "normalized")
     document = DocumentLoader(json.loads(normalized.read_text(encoding="utf-8"))).load()
@@ -1196,32 +1159,16 @@ def test_index_heading_does_not_discard_body_on_same_page(
 def test_load_keeps_cells_when_docling_spans_overlap() -> None:
     """Doclingの矛盾した結合範囲を縮退し、両方のセル本文を保持する。"""
 
-    item = {
-        "data": {
-            "num_rows": 1,
-            "num_cols": 2,
-            "table_cells": [
-                {
-                    "start_row_offset_idx": 0,
-                    "start_col_offset_idx": 0,
-                    "end_row_offset_idx": 1,
-                    "end_col_offset_idx": 2,
-                    "row_span": 1,
-                    "col_span": 2,
-                    "text": "first",
-                },
-                {
-                    "start_row_offset_idx": 0,
-                    "start_col_offset_idx": 1,
-                    "end_row_offset_idx": 1,
-                    "end_col_offset_idx": 2,
-                    "row_span": 1,
-                    "col_span": 1,
-                    "text": "second",
-                },
+    item = docling_document().add_table(
+        data=TableData(
+            num_rows=1,
+            num_cols=2,
+            table_cells=[
+                _docling_cell(0, 0, "first", columns=2),
+                _docling_cell(0, 1, "second"),
             ],
-        }
-    }
+        )
+    )
 
     cells = [source.cell for source in _normalized_cells(item, "#/tables/0")]
 
@@ -1249,60 +1196,18 @@ def test_load_keeps_unowned_picture_that_partially_overlaps_table() -> None:
             ),
         ],
     )
-    document = {
-        "tables": [
-            {
-                "self_ref": "#/tables/0",
-                "prov": [
-                    {
-                        "page_no": 1,
-                        "bbox": {
-                            "l": 0,
-                            "t": 80,
-                            "r": 80,
-                            "b": 20,
-                            "coord_origin": "BOTTOMLEFT",
-                        },
-                    }
-                ],
-                "data": {
-                    "num_rows": 1,
-                    "num_cols": 1,
-                    "table_cells": [
-                        {
-                            "start_row_offset_idx": 0,
-                            "start_col_offset_idx": 0,
-                            "end_row_offset_idx": 1,
-                            "end_col_offset_idx": 1,
-                            "row_span": 1,
-                            "col_span": 1,
-                            "text": "cell",
-                        }
-                    ],
-                },
-            }
-        ],
-        "pictures": [
-            {
-                "self_ref": "#/pictures/0",
-                "parent": {"$ref": "#/body"},
-                "prov": [
-                    {
-                        "page_no": 1,
-                        "bbox": {
-                            "l": 70,
-                            "t": 70,
-                            "r": 90,
-                            "b": 30,
-                            "coord_origin": "BOTTOMLEFT",
-                        },
-                    }
-                ],
-            }
-        ],
-    }
+    document = docling_document(height=100)
+    document.add_table(
+        data=TableData(
+            num_rows=1, num_cols=1, table_cells=[_docling_cell(0, 0, "cell")]
+        ),
+        prov=docling_prov(box=(0, 80, 80, 20), origin=CoordOrigin.BOTTOMLEFT),
+    )
+    document.add_picture(
+        prov=docling_prov(box=(70, 70, 90, 30), origin=CoordOrigin.BOTTOMLEFT)
+    )
 
-    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 表セル画像の帰属を検証する。
+    DocumentLoader(document.export_to_dict())._assign_cell_images({1: page})  # noqa: SLF001 — 表セル画像の帰属を検証する。
 
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
 
@@ -1326,73 +1231,21 @@ def test_load_keeps_table_picture_without_unique_cell_as_figure(
             ),
         ],
     )
-    document = {
-        "tables": [
-            {
-                "self_ref": "#/tables/0",
-                "prov": [
-                    {
-                        "page_no": 1,
-                        "bbox": {
-                            "l": 0,
-                            "t": 100,
-                            "r": 100,
-                            "b": 0,
-                            "coord_origin": "BOTTOMLEFT",
-                        },
-                    }
-                ],
-                "data": {
-                    "num_rows": 1,
-                    "num_cols": 1,
-                    "table_cells": [
-                        {
-                            "start_row_offset_idx": 0,
-                            "start_col_offset_idx": 0,
-                            "end_row_offset_idx": 1,
-                            "end_col_offset_idx": 1,
-                            "row_span": 1,
-                            "col_span": 1,
-                            "text": "",
-                        }
-                    ],
-                },
-            }
-        ],
-        "pictures": [
-            {
-                "self_ref": "#/pictures/0",
-                "parent": {"$ref": "#/tables/0"},
-                "prov": [
-                    {
-                        "page_no": 1,
-                        "bbox": {
-                            "l": 20,
-                            "t": 80,
-                            "r": 40,
-                            "b": 60,
-                            "coord_origin": "BOTTOMLEFT",
-                        },
-                    }
-                ],
-            }
-        ],
-    }
+    picture_box = docling_prov(box=(20, 80, 40, 60), origin=CoordOrigin.BOTTOMLEFT)
+    cells = [_docling_cell(0, 0, "")]
     if scenario == "overlap":
-        cells = document["tables"][0]["data"]["table_cells"]
-        cells[0]["bbox"] = document["pictures"][0]["prov"][0]["bbox"]
-        cells.append(
-            {
-                **cells[0],
-                "start_row_offset_idx": 1,
-                "end_row_offset_idx": 2,
-            }
-        )
-        document["tables"][0]["data"]["num_rows"] = 2
-    elif scenario == "table_unknown":
-        document["tables"][0].pop("prov")
+        # 同じ画像領域を含むセルが二つあり、所属先を一つに決められない。
+        cells = [_docling_cell(row, 0, "", bbox=picture_box.bbox) for row in range(2)]
+    document = docling_document(height=100)
+    table = document.add_table(
+        data=TableData(num_rows=len(cells), num_cols=1, table_cells=cells),
+        prov=None
+        if scenario == "table_unknown"
+        else docling_prov(box=(0, 100, 100, 0), origin=CoordOrigin.BOTTOMLEFT),
+    )
+    document.add_picture(prov=picture_box, parent=table)
 
-    DocumentLoader(document)._assign_cell_images({1: page})  # noqa: SLF001 — 帰属不能な図の退避を検証する。
+    DocumentLoader(document.export_to_dict())._assign_cell_images({1: page})  # noqa: SLF001 — 帰属不能な図の退避を検証する。
 
     assert [block.id for block in page.blocks] == ["#/tables/0", "#/pictures/0"]
     assert len(page.blocks[0].cells) == (2 if scenario == "overlap" else 1)
@@ -2861,23 +2714,13 @@ def test_unnumbered_caption_is_preserved(caption: str) -> None:
 
 def test_load_expands_merged_table_into_empty_grid_cells() -> None:
     """結合セル本文を起点だけに保存し、被覆セルは空Spanで保持する。"""
-    item = {
-        "data": {
-            "num_rows": 2,
-            "num_cols": 2,
-            "table_cells": [
-                {
-                    "start_row_offset_idx": 0,
-                    "start_col_offset_idx": 0,
-                    "end_row_offset_idx": 2,
-                    "end_col_offset_idx": 2,
-                    "row_span": 2,
-                    "col_span": 2,
-                    "text": "Merged",
-                }
-            ],
-        }
-    }
+    item = docling_document().add_table(
+        data=TableData(
+            num_rows=2,
+            num_cols=2,
+            table_cells=[_docling_cell(0, 0, "Merged", rows=2, columns=2)],
+        )
+    )
     cells = [source.cell for source in _normalized_cells(item, "#/tables/0")]
     assert len(cells) == 4
     assert cells[0].content.text() == "Merged"

@@ -450,6 +450,7 @@ Task完了時は保存済みCallを対象ID順に適用して最終結果を作�
 対象の図表に既存Captionがある場合は、`caption_source_id` による移動を適用せず、既存Captionと移動元本文を保持して診断情報へ記録する。
 Captionの移動先は図・表に限定し、補正後も見出しである要素をCaptionへ移す応答は適用しない。Captionが見出しに誤分類されている場合は、同じ応答で段落への補正を指定する。種別の補正を先に適用し、patchの並び順によってCaptionの所属を変えない。
 
+LOADは入力をdocling-coreの `DoclingDocument` として検証し、bodyの文書順、参照、座標およびcaptionを同ライブラリの型で読む。Schemaを満たさない入力は処理を失敗させる。
 LOADは結合セルを通常セルの矩形格子へ展開する。結合範囲の左上セルに本文と画像を一度だけ配置し、残りのセルを空欄とする。横結合・縦結合とも同じ規則とし、元の行数・列数と読み順を保持する。空欄は意図した表構造として扱い、翻訳対象へ含めない。結合範囲が重複して本文の配置を一意に決められない場合は構造エラーとし、本文を捨てたり重複させたりしない。
 表と画像が一部だけ重なり、親参照またはセル参照による所属根拠がない場合、LOADは画像を表へ移さず独立した図として保持する。明示的な所属根拠と座標が矛盾する場合は処理を失敗させる。
 提案された `kind` に必要な `content`、`level`、`alert_kind`、`image` または `cells` が既存Blockとpatchに存在しない場合は、その `kind` 変更だけを適用せず診断情報へ記録する。
@@ -1917,6 +1918,7 @@ Docling Adapterは次のinterfaceを使用する。
 UNPACKは展開前にZIPの全entryを検査する。絶対path、drive文字を持つpath、`..` path要素、symlink、同名entry、およびWindows上で大文字と小文字だけが異なるentryを含むZIPは失敗とし、一部だけを展開してはならない。展開先を正規化した絶対pathがpartの専用ディレクトリ内にあることも確認する。
 
 各partのassetは、MERGE時に `assets/part-0001/...` のようなpart番号付きnamespaceへ移す。MERGEはpart順にページ番号とDoclingのcollection indexを文書全体の連番へ写像し、JSON内の参照、画像URIおよびasset pathを同じ写像で更新する。参照先が存在しない場合、または写像後にID、index、URIもしくはasset pathが衝突する場合はMERGEを失敗させる。
+MERGEは結合後の `origin` に入力PDFのファイル名、MIME typeおよび `binary_hash` を設定する。`binary_hash` はDoclingと同じく、SHA-256の下位64bitとする。
 
 SPLITは `PDF_SPLIT_PAGES` pageごとに分割し、既定値を10とする。DOCLINGは次のrequest設定を固定して使用する。
 
