@@ -290,16 +290,17 @@ def choose_action(
     )
     upgrade = {"source_v1", "source_v2"}.issubset(units)
     maximum_references = min(32, cast("int", state.get("max_reference_ids", 32)))
-    per_role_limit = (
-        max(1, maximum_references // len(units)) if upgrade else maximum_references
-    )
+    per_role_limit = max(1, maximum_references // len(units))
     if upgrade:
         contract += (
             f" For Upgrade match/evaluate/recheck, use at most {maximum_references} "
             f"total document IDs from all roles and at most {per_role_limit} per role."
         )
     else:
-        contract += f" Use at most {maximum_references} document IDs in each operation."
+        contract += (
+            f" Use at most {maximum_references} document IDs total and at most "
+            f"{per_role_limit} per role in each operation."
+        )
 
     def validate(action: AgentAction) -> None:
         """現在の状態で実行できない操作を既存の応答訂正枠へ返す。
@@ -414,7 +415,12 @@ def choose_action(
                 "Revisit unverified IDs with new evidence or a smaller scope; zero unmatched IDs is not required. "
                 "Review overview includes these unmatched candidates. match accepts a pool of candidates "
                 "and discovers the pairs itself. Include multiple pending and unmatched candidates from both "
-                "roles together, up to 32 total, instead of repeatedly trying isolated pairs. "
+                f"roles together, up to {maximum_references} total and {per_role_limit} per role, "
+                "instead of repeatedly trying isolated pairs. "
+                "Use context.kind, section and row/column labels to distinguish repeated text and values. "
+                "A unit can contain several sentences; paragraph boundaries and page breaks can differ. "
+                "Read neighboring candidates and include all counterpart fragments rather than forcing a one-to-one match. "
+                "Matching locates the intended passage; translation defects are assessed later. "
                 "Search or read other candidates before declaring no counterpart; a mismatch in one selected pair "
                 "does not prove the counterpart is absent from the document. Revisit unmatched_ids with new "
                 "candidates or evidence; confirmed matched units cannot be reassigned. "
@@ -427,7 +433,7 @@ def choose_action(
             contract=contract,
             native_schema=schema,
             input_tokens=client.config.review_input_tokens,
-            output_tokens=min(1024, client.config.review_output_tokens),
+            output_tokens=min(4096, client.config.review_output_tokens),
             validate=validate,
         )
     except LLMInputExceededError:
@@ -454,7 +460,11 @@ def choose_action(
 
 
 def observe_documents(
-    action: AgentAction, units: dict[str, dict[str, TextUnit]], maximum_bytes: int
+    action: AgentAction,
+    units: dict[str, dict[str, TextUnit]],
+    maximum_bytes: int,
+    *,
+    contexts: dict[str, dict[str, dict[str, str]]] | None = None,
 ) -> dict[str, object]:
     """許可された文書閲覧・候補検索だけを実行し、文の途中で切らず返す。
 
@@ -462,6 +472,7 @@ def observe_documents(
         action: overview、readまたはsearch。
         units: 文書role別の本文索引。
         maximum_bytes: 観察結果の本文枠。全件はoffsetで順に取得できる。
+        contexts: 文書roleとTextUnit IDごとの構造情報。候補選択時にも行・列を区別する。
 
     Returns:
         対象と次のoffset。search結果は対応を確定しない候補ID。
@@ -517,14 +528,28 @@ def observe_documents(
     size = 2
     end = action.offset
     for part in parts[action.offset :]:
+        role = cast(str, part["role"])
+        identifier = cast(str, part.get("id", part.get("unit_id")))
+        item = (
+            {
+                **part,
+                "context": {
+                    key: value
+                    for key, value in contexts[role][identifier].items()
+                    if key != "position"
+                },
+            }
+            if contexts and identifier in contexts.get(role, {})
+            else part
+        )
         if action.operation != "read" and len(selected) == 32:
             break
-        size += len(json.dumps(part, ensure_ascii=False).encode("utf-8")) + 2
+        size += len(json.dumps(item, ensure_ascii=False).encode("utf-8")) + 2
         if size > maximum_bytes:
             if not selected:
                 raise ValueError("A single sentence exceeds the Agent context budget")
             break
-        selected.append(part)
+        selected.append(item)
         end += 1
     return {
         "items": selected,
@@ -533,11 +558,14 @@ def observe_documents(
     }
 
 
-def completed_agent_calls(directory: Path) -> list[LLMCallArtifact]:
+def completed_agent_calls(
+    directory: Path, *, matching_version: int | None = None
+) -> list[LLMCallArtifact]:
     """再開時に再検証する成功操作を実行順で返す。
 
     Args:
         directory: AgentのTask directory。
+        matching_version: 指定時は同じ照合世代で保存した操作だけを返す。
 
     Returns:
         成功Callの一覧。応答と入力の検証は各Taskの再利用処理で行う。
@@ -547,6 +575,11 @@ def completed_agent_calls(directory: Path) -> list[LLMCallArtifact]:
         for path in (directory / "calls").glob("*/call.json")
     ]
     return sorted(
-        (call for call in calls if call.status == "succeeded"),
+        (
+            call
+            for call in calls
+            if call.status == "succeeded"
+            and (matching_version is None or call.matching_version == matching_version)
+        ),
         key=lambda call: call.round,
     )

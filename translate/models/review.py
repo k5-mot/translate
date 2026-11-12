@@ -126,7 +126,7 @@ class ReviewAssessment(ReviewModel):
 class AlignmentResponse(ReviewModel):
     """対応付け操作から受け取る対応関係だけの応答。"""
 
-    groups: list[AlignmentCandidate] = Field(min_length=1)
+    groups: list[AlignmentCandidate] = Field(default_factory=list)
 
 
 class ReviewResponse(ReviewModel):

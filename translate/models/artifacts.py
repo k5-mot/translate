@@ -192,6 +192,7 @@ class LLMCallArtifact(ArtifactModel):
     call_id: str
     task: LLMTaskName
     operation: str = ""
+    matching_version: int | None = Field(default=None, ge=1)
     round: int = Field(default=0, ge=0)
     status: LLMCallStatus
     fingerprint: str

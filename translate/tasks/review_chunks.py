@@ -195,7 +195,9 @@ def _target_payload(target: ReviewTarget) -> dict[str, object]:
         "id": target.id,
         "source": target.source,
         "target_ids": target.target_ids,
-        "spans": [{"span_id": span.id, "text": span.text()} for span in target.spans],
+        "translation": [
+            {"span_id": span.id, "text": span.text()} for span in target.spans
+        ],
     }
 
 

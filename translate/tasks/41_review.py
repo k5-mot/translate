@@ -1,6 +1,8 @@
 """問題指摘と修正候補を生成するREVIEW Task。"""
 
+import re
 import time
+from datetime import date
 from pathlib import Path
 
 from translate.adapters.artifact_store import (
@@ -30,7 +32,7 @@ from translate.models.review import (
     Revision,
     TextEdit,
 )
-from translate.tasks import SavedLLMCalls
+from translate.tasks import MATCHING_VERSION, SavedLLMCalls
 from translate.tasks.review_alignment import match_documents as _match_documents
 from translate.tasks.review_chunks import (
     _chunks,
@@ -41,11 +43,49 @@ from translate.tasks.review_chunks import (
 )
 
 
+def _without_extraction_spaces(value: str) -> str:
+    """日本語の文字間空白と抽出時の改行を除き、英単語の区切りは保持する。
+
+    Args:
+        value: 訳文またはその修正候補。
+
+    Returns:
+        CJK文字に接する空白と改行だけを除いた比較用本文。
+    """
+    cjk = r"[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff]"
+    value = re.sub(r"\s+", " ", value)
+    return re.sub(rf"(?<={cjk})\s+|\s+(?={cjk})", "", value).strip()
+
+
+def _date_value(value: str) -> date | None:
+    """日付だけの値を区切りの有無に依存しない暦日へ変換する。
+
+    Args:
+        value: 4桁年・2桁月・2桁日を持つ値。月日の間の区切りは省略可能。
+
+    Returns:
+        有効な暦日。日付以外の値や存在しない日付ではNone。
+    """
+    match = re.fullmatch(r"(\d{4})[-/.](\d{2})[-/.]?(\d{2})", "".join(value.split()))
+    if match is None:
+        return None
+    try:
+        return date(*(int(part) for part in match.groups()))
+    except ValueError:
+        return None
+
+
 class ReviewTask:
     """原文と訳文の対応付け・評価を、共有する規則とCall保存先で実行する。"""
 
     def __init__(
-        self, config: Config, task_directory: Path, rules: str, glossary: str
+        self,
+        config: Config,
+        task_directory: Path,
+        rules: str,
+        glossary: str,
+        *,
+        contexts: dict[str, dict[str, dict[str, str]]] | None = None,
     ) -> None:
         """比較処理の依存関係と保存済み要求の管理を準備する。
 
@@ -54,11 +94,13 @@ class ReviewTask:
             task_directory: Callと評価結果の保存先。
             rules: 対応付けと品質評価の判断規則。
             glossary: 原文に関連する語を選ぶCSV用語集。
+            contexts: 文書roleとTextUnit IDごとの照合用構造情報。
         """
         self.config = config
         self.task_directory = task_directory
         self.rules = rules
         self.calls = SavedLLMCalls("REVIEW", task_directory, rules, glossary)
+        self.contexts = contexts or {}
 
     def run(
         self,
@@ -266,7 +308,101 @@ class ReviewTask:
                 if not (item.category or "").strip() or item.severity is None:
                     raise ValueError("Issues require category and severity")
                 target = by_id[item.target_id]
-                selected_spans = {span.id for span in target.spans}
+                if any(
+                    re.search(
+                        r"\bdate\b|日付",
+                        self.contexts.get("translation", {})
+                        .get(key, {})
+                        .get("row_label", ""),
+                        re.IGNORECASE,
+                    )
+                    for key in target.target_ids
+                ):
+                    source_date = _date_value(target.source)
+                    if source_date is not None and source_date == _date_value(
+                        "".join(span.text() for span in target.spans)
+                    ):
+                        item.reason = "日付の暦日は一致しており、区切り表記の差は不備ではありません。"
+                        item.verdict = "correct"
+                        item.edits = []
+                        item.category = None
+                        item.severity = None
+                        continue
+                translated = "".join(span.text() for span in target.spans)
+                source_page_ref = re.fullmatch(
+                    r"([IVXLCDM]+-\d)\s*(\d+)", target.source.strip()
+                )
+                translation_page_ref = re.fullmatch(
+                    r"([IVXLCDM]+-\d)\s*(\d+)", translated.strip()
+                )
+                if (
+                    source_page_ref is not None
+                    and translation_page_ref is not None
+                    and source_page_ref.groups() == translation_page_ref.groups()
+                ):
+                    item.reason = "原文と訳文のページ参照は同じであり、数字間の空白差は問題ありません。"
+                    item.verdict = "correct"
+                    item.edits = []
+                    item.category = None
+                    item.severity = None
+                    continue
+                same_text = target.source.strip() == translated.strip()
+                table_cell = any(
+                    self.contexts.get("translation", {}).get(key, {}).get("kind")
+                    == "table_cell"
+                    for key in target.target_ids
+                )
+                selected_spans = {span.id: span.text() for span in target.spans}
+                dot_leader_only = bool(item.edits) and all(
+                    edit.span_id in selected_spans
+                    and re.sub(
+                        r"\.{2,}",
+                        "",
+                        selected_spans[edit.span_id],
+                    ).strip()
+                    == re.sub(r"\.{2,}", "", edit.text).strip()
+                    for edit in item.edits
+                )
+                mentions_dot_leader = (
+                    "ドット" in item.reason or "dot" in item.reason.lower()
+                )
+                if (
+                    same_text
+                    and table_cell
+                    and re.search(r"\.{2,}", target.source)
+                    and dot_leader_only
+                    and mentions_dot_leader
+                ):
+                    item.reason = "表内のドットリーダーはレイアウト表記であり、原文と訳文で一致しています。"
+                    item.verdict = "correct"
+                    item.edits = []
+                    item.category = None
+                    item.severity = None
+                    continue
+                if same_text and (
+                    (
+                        f"「{target.source.strip()}」" in item.reason
+                        and any(
+                            phrase in item.reason
+                            for phrase in ("含まれていない", "含まれていません")
+                        )
+                    )
+                    or any(
+                        phrase in item.reason
+                        for phrase in (
+                            "そのまま保持すべき",
+                            "そのまま保持することは許容",
+                        )
+                    )
+                ):
+                    item.reason = (
+                        "原文と訳文は一致しており、指摘理由も変更不要としています。"
+                    )
+                    item.verdict = "correct"
+                    item.edits = []
+                    item.category = None
+                    item.severity = None
+                    continue
                 if any(
                     edit.span_id not in selected_spans
                     or (span_owners or {}).get(edit.span_id) not in target.target_ids
@@ -274,6 +410,35 @@ class ReviewTask:
                 ):
                     raise ValueError(
                         "Assessment references an unselected or unowned span"
+                    )
+                span_positions = {
+                    span.id: index for index, span in enumerate(target.spans)
+                }
+                for edit in item.edits:
+                    index = span_positions[edit.span_id]
+                    previous = (
+                        target.spans[index - 1].text().strip() if index > 0 else ""
+                    )
+                    following = (
+                        target.spans[index + 1].text().strip()
+                        if index + 1 < len(target.spans)
+                        else ""
+                    )
+                    if (
+                        len(previous) > 1 and edit.text.lstrip().startswith(previous)
+                    ) or (
+                        len(following) > 1 and edit.text.rstrip().endswith(following)
+                    ):
+                        raise ValueError(
+                            "Assessment edit includes text from an adjacent translation span"
+                        )
+                if item.edits and all(
+                    _without_extraction_spaces(selected_spans[edit.span_id])
+                    == _without_extraction_spaces(edit.text)
+                    for edit in item.edits
+                ):
+                    raise ValueError(
+                        "The edits only change extraction whitespace or leave the translation unchanged. Use correct."
                     )
 
         try:
@@ -283,7 +448,23 @@ class ReviewTask:
                 round_number,
                 [f"review:{key}" for key in target_ids],
                 {
-                    "targets": [_target_payload(target) for target in targets],
+                    "targets": [
+                        {
+                            **_target_payload(target),
+                            "context": [
+                                {
+                                    name: value
+                                    for name, value in self.contexts["translation"][
+                                        key
+                                    ].items()
+                                    if name != "position"
+                                }
+                                for key in target.target_ids
+                                if key in self.contexts.get("translation", {})
+                            ],
+                        }
+                        for target in targets
+                    ],
                     "lineage": lineage,
                 },
                 "\n".join(target.source for target in targets),
@@ -291,12 +472,14 @@ class ReviewTask:
                 "Return assessments, one object for each input targets[].id, in input order. "
                 "Each assessment contains target_id (the complete input targets[].id), reason (one brief sentence), "
                 "verdict (correct or issue), and edits (span_id and replacement text). "
-                "Each edits[].span_id must exactly match an input targets[].spans[].span_id. "
+                "Each edits[].span_id must exactly match an input targets[].translation[].span_id. "
+                "Edit text must replace only that span; do not copy text from adjacent spans. "
                 "For an issue, also provide category and severity (info, warning or error); for correct use null for both. "
-                "Compare the original source with all current spans[].text for that target. "
+                "Compare the original source with all current translation[].text for that target. "
                 "Use correct when the current translation needs no change; then edits must be empty. "
                 "Use issue only for a concrete defect, and propose replacements for the affected spans. "
                 "A correctly preserved technical identifier is correct, even though it is English. "
+                "context describes the translation's structural role, not additional translation text. "
                 "Ordinary English prose left untranslated is an issue. Explain the conclusion in Japanese.",
                 validate,
             )
@@ -318,6 +501,7 @@ class ReviewTask:
                 [],
                 operation=operation,
                 round_number=round_number,
+                matching_version=MATCHING_VERSION,
             )
             parent_path = self.task_directory / "calls" / parent_id / "call.json"
             parent = load_model(parent_path, LLMCallArtifact)
@@ -347,4 +531,4 @@ class ReviewTask:
         round_number: int,
     ) -> tuple[str, AlignmentResponse]:
         """Agentが選んだ原文と訳文の対応候補を取得する。"""
-        return _match_documents(self.calls, units, client, round_number)
+        return _match_documents(self.calls, units, client, round_number, self.contexts)

@@ -552,9 +552,17 @@ Review Agentが入力Documentの要素IDを対応付け、結果をREVIEWの成�
 
 `AlignmentGroup` は `id`、`source_ids: list[str]`、`translation_ids: list[str]`、`kind: Literal["matched", "source_only", "translation_only"]`、`reason: str | None` を持つ。1対多・多対1を含む対応は同じgroupで表し、元の読み順と参照を保持する。未対応の場合は `reason` に対応を確定できない理由を記録し、一覧へ表示する。存在しないID、矛盾する重複対応、未確認対象の黙示的な除外を禁止する。
 
-同じ表の行にある識別子・説明・値は別々の内容として対応付ける。複数要素をまとめるのは、同じ内容の分割・結合を表す場合とし、両側の全要素の内容を対応根拠に含める。選択した候補に相手がない要素は未対応として残し、関連する説明の対応へ吸収しない。この判断はLLMが行い、文字列一致や文字数による品質判定は追加しない。
+同じ表の行にある識別子・説明・値は別々の内容として対応付ける。複数要素をまとめるのは、同じ内容の分割・結合を表す場合とし、両側の全要素の内容を対応根拠に含める。候補選択と照合へ要素種別・節見出し・表の行見出しと列見出しを本文とは別に渡す。選択した候補に相手がない要素は未確認として残し、関連する説明の対応へ吸収しない。対応の判断はLLMが行い、文字列一致や文字数による品質判定は追加しない。
 
 対応済みgroupから `ReviewTarget` を作り、Agentが品質確認対象として選ぶ。未対応groupもUIの一覧へ表示する。Translateは同じDocumentの原文・訳文IDから対象を直接作成し、別文書間の対応付けを必要としない。
+
+Embedding接続が設定されている場合、Review／Upgradeの新しい照合では、選択英文を1unitずつ起点として未確定の相手文書全体から候補を検索する。
+類似度は候補選択だけに使い、対応の確定はLLMで行う。見出しの先頭番号は語句比較から除き、節番号の近さを候補順位へ加える。表セルは行・列の意味も検索へ含め、同じ行見出しの候補がある場合はEmbedding前に他行を外す。
+見出し、本文、caption、表セル、数式と箇条書きの構造役割を異なる候補から混在させない。
+表セルの行見出しが一致する候補がある場合はその行内から候補を選び、別行の同型データを混ぜない。
+各照合では1unitだけを起点とし、相手文書から最上位候補を選ぶ。段落・見出し・数式の分割を考慮して前後3要素までを候補へ加える。原文が1spanでも、同じ節の隣接段落・箇条書きが6span以上の同種候補を支持する場合は、その類似度も候補順位へ加える。近傍は同じ節内で本文との類似度を確認し、節をまたぐ場合は近傍自身の最上位候補が一致する時だけ加える。全role合計のID上限を守る。
+検索範囲から外した元の候補は未処理のまま残す。計算済みベクトルはTaskの`candidate-vectors.json`へbatchごとに保存し、
+同じ接続先・model・本文の再開で再利用する。Embedding未設定時は従来の候補選択を維持する。
 
 ### 🛠️ Reviewと修正
 
@@ -571,6 +579,11 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 | `translation` | `str` | 日本語訳文 |
 | `target_ids` | `list[str]` | 対応する訳文側の `TextUnit.id` |
 | `spans` | `list[TextSpan]` | 修正候補が参照できる訳文側のSpan |
+
+品質確認のLLM入力では、訳文の役割を明確にするため`spans`を`translation: list[{span_id, text}]`として渡し、
+構造文脈は`context`へ分離する。保存済みDocument／ReviewTargetのSchemaは変更しない。
+独立したReviewでは対応groupごとに品質確認する。日本語の抽出空白だけを変更する修正案と、日付項目で同じ暦日の区切り差だけを理由にした指摘は再判定を求める。
+数値の変更や英単語の区切りの変更はこの除外に含めない。
 
 #### 🔎 Finding
 
@@ -598,9 +611,9 @@ REVIEWはTranslateと独立した比較Reviewで共通の `ReviewTarget` を使�
 
 `FixResult` は更新した `Document` と `RevisionOutcome` の一覧を保持する。適用できない候補は本文の状態として保存せず、`RevisionOutcome` に理由とともに記録する。
 
-対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた応答用の形とする。`source_ids` と `translation_ids` は省略不可とし、未対応の側は空配列を明示する。品質確認の `ReviewResponse` は `assessments: list[ReviewAssessment]` を持つ。各比較対象について、判定理由、正常・問題ありの結論、および修正案を一つにまとめる。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
+対応付けの `AlignmentResponse` は `groups: list[AlignmentCandidate]` だけを持つ。`AlignmentCandidate` は `AlignmentGroup` から `id` を除いた形とする。LLMには確定できた `matched` の組だけを返させ、対応を確認できない場合の `groups` は空でよい。applicationが残りの候補を理由付きの `source_only`／`translation_only` として補う。この未確認は、文書全体に相手がないことを意味しない。品質確認の `ReviewResponse` は `assessments: list[ReviewAssessment]` を持つ。各比較対象について、判定理由、正常・問題ありの結論、および修正案を一つにまとめる。各操作は専用の応答Schemaを送信し、対応付けに品質評価の欄を混在させない。group、Finding、RevisionのIDはapplicationが付与する。
 
-対応付けのNative Schemaは `reason` を先頭に置き、内容の対応を説明してから対応種別とIDを選択させる。`matched` は両側に1件以上のIDを必要とし、`source_only` と `translation_only` は該当する側だけに1件以上のIDを持ち、反対側を空配列に限定する。未対応には空でない `reason` を必須とする。応答後も、IDの網羅性、重複、対応種別と配列の整合および未対応の理由を検証する。
+対応付けのNative Schemaは `reason` を先頭に置き、内容の対応を説明してからIDを選択させる。生成可能な種別は `matched` とし、両側に1件以上のIDを必要とする。照合入力には文書ごとに異なる短いIDを使い、Native Schemaで選択した候補に限定する。応答後に元のIDへ戻し、不明ID・重複ID・種別の矛盾を拒否する。applicationが補う未確認groupは片側だけにIDを持ち、空でない理由を記録する。補完後は全候補が一度ずつ含まれる。
 
 | Model | Field |
 |---|---|
@@ -779,7 +792,7 @@ LOAD直後の不完全な構造を扱えるよう、必要のない項目までB
 | `summary` | `str` |
 | `suggested_translation` | `str \| None` |
 
-`DiffResponse` は対応ID群、変更分類（未変更の `unchanged` を含む）、変更概要、日本語の修正候補、確認済みIDを返す。成功Callから集約する際、未変更項目は `changes` から除き、確認済みIDにだけ残す。変更IDはapplicationがCallと順序から決定的に付与する。修正候補は文書へ適用しない。削除・移動や候補を確定できない項目では `suggested_translation=None` とし、`summary` に提案内容または判断できない理由を示す。
+`DiffResponse` は対応ID群、変更分類（未変更の `unchanged` を含む）、変更概要、日本語の修正候補、確認済みIDを保持する。LLM応答は `changes` だけとし、確認済みIDは全選択英文IDが変更一覧に一度ずつ含まれることを検証した後にapplicationが導出する。照合時のIDは文書ごとに短縮し、保存前に元のIDへ戻す。成功Callから集約する際、未変更項目は `changes` から除き、確認済みIDにだけ残す。変更IDはapplicationがCallと順序から決定的に付与する。修正候補は文書へ適用しない。削除・移動や候補を確定できない項目では `suggested_translation=None` とし、`summary` に提案内容または判断できない理由を示す。
 
 各モデルはPydanticの `BaseModel` を継承し、`ConfigDict(extra="ignore")` を使用する。
 
