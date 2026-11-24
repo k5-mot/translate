@@ -1,6 +1,8 @@
 ﻿[CmdletBinding()]
 param(
     [switch]$SelfCheck,
+    # 未コミットの変更で検証する場合に指定する。差分のhashを記録する。
+    [switch]$AllowUncommitted,
     [ValidateSet('sample', 'sample5', 'sample4', 'sample3', 'sample2', 'sample1')]
     [string]$StartAt = 'sample'
 )
@@ -77,12 +79,15 @@ function Run-Ui {
 
 function Convert-Docx {
     param([string]$Stem, [string]$Id)
+    # 訳者のコラムを追加した訳文PDFを作り、Review・Upgradeの訳文入力にする。
     $docx = Join-Path $root "outputs/$Stem/$Id/tasks/54-ooxml/document.ja.docx"
-    $officeDocx = Join-Path (Split-Path -Parent $docx) 'document.ja-office.docx'
-    $officePdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office-export.pdf'
-    $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-office.pdf'
+    $columnsDocx = Join-Path (Split-Path -Parent $docx) 'document.ja-columns-source.docx'
+    $officeDocx = Join-Path (Split-Path -Parent $docx) 'document.ja-columns.docx'
+    $officePdf = Join-Path (Split-Path -Parent $docx) 'document.ja-columns-export.pdf'
+    $pdf = Join-Path (Split-Path -Parent $docx) 'document.ja-columns.pdf'
     if (Test-Path -LiteralPath $pdf -PathType Leaf) { return $pdf }
-    Invoke-Logged @('uv', 'run', 'python', 'scripts/prepare_office_docx.py', $docx, $officeDocx) | Out-Null
+    Invoke-Logged @('uv', 'run', 'python', 'scripts/add_translation_columns.py', $Stem, $docx, $columnsDocx) | Out-Null
+    Invoke-Logged @('uv', 'run', 'python', 'scripts/prepare_office_docx.py', $columnsDocx, $officeDocx) | Out-Null
     Invoke-Logged @('powershell.exe', '-NoProfile', '-File', 'scripts/convert_office_docx.ps1', $officeDocx, $officePdf) | Out-Null
     if (-not (Test-Path -LiteralPath $officePdf -PathType Leaf)) { throw "Word did not create $officePdf" }
     Move-Item -LiteralPath $officePdf -Destination $pdf -Force
@@ -116,7 +121,16 @@ if ($SelfCheck) {
     }
     exit 0
 }
-if (@(git status --porcelain --untracked-files=no -- translate scripts main.py pyproject.toml uv.lock).Count -gt 0) { throw 'Commit implementation changes before acceptance.' }
+$changes = @(git status --porcelain -- translate scripts main.py pyproject.toml uv.lock)
+if ($changes.Count -gt 0) {
+    if (-not $AllowUncommitted) { throw 'Commit implementation changes before acceptance.' }
+    # 検証したコードを後から特定できるよう、未コミットの差分と追加ファイルのhashを残す。
+    $diff = (& git diff HEAD -- translate scripts main.py pyproject.toml uv.lock | Out-String)
+    $untracked = (@(git ls-files --others --exclude-standard -- translate scripts) | ForEach-Object { Get-Content -LiteralPath $_ -Raw }) -join ''
+    $bytes = [Text.Encoding]::UTF8.GetBytes($diff + $untracked)
+    $state['uncommitted_sha256'] = -join ([Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') })
+    $state['uncommitted_files'] = @($changes)
+}
 Save-State -Snapshot $state -Path $statePath
 try {
     Invoke-Logged (@('uv', 'run', 'python', 'scripts/real_ui_step.py', 'prepare-versions') + $validationSamples) | Out-Null
@@ -133,13 +147,20 @@ try {
                 'upgrade' { @($source, (Join-Path $root ".tmp/versions/$stem.pdf"), $japanesePdf) }
             }
             $identifier = Run-Ui $operation $files "$stem/$operation"
-            $recordStem = if ($operation -eq 'review') { 'document.ja-office' } else { $stem }
+            $recordStem = if ($operation -eq 'review') { 'document.ja-columns' } else { $stem }
             $recordName = switch ($operation) { 'register' { 'registration' }; 'translate' { 'translation' }; default { $operation } }
             Wait-Record $recordStem $identifier $recordName
             $image = Join-Path (Split-Path -Parent $statePath) "$stem-$operation.png"
             & uv run python scripts/real_ui_step.py $operation --inspect $identifier --screenshot $image
             if ($LASTEXITCODE -ne 0) { throw "UI result verification failed: $currentStage" }
             if ($operation -eq 'translate') { $japanesePdf = Convert-Docx $stem $identifier }
+            if ($operation -in @('review', 'upgrade')) {
+                # コラムの扱いは精度の確認項目のため、結果を記録して検証は続ける。
+                $columnCheck = & uv run python scripts/check_translation_columns.py $operation $stem (Join-Path $root "outputs/$recordStem/$identifier") 2>&1
+                $columnCheck | ForEach-Object { Write-Output $_ }
+                $state["$stem/$operation/columns"] = if ($LASTEXITCODE -eq 0) { 'pass' } else { 'fail' }
+                Save-State -Snapshot $state -Path $statePath
+            }
         }
         $state["$stem/done"] = $true
         Save-State -Snapshot $state -Path $statePath
