@@ -12,6 +12,7 @@ from translate.adapters.llm import (
     LLMClient,
     LLMInvalidResponseError,
     StructuredResult,
+    _is_input_overflow,
     _provider_error,
 )
 from translate.common.config import Config
@@ -139,6 +140,27 @@ def test_provider_error_exposes_only_safe_http_diagnostics() -> None:
     assert "request_id=req-123" in str(error)
     assert "category=structured_output" in str(error)
     assert "source text" not in str(error)
+
+
+def test_input_overflow_follows_the_input_limit_category() -> None:
+    """一覧にない文言でも、入力上限と分類したHTTP 400は分割対象とする。"""
+    message = "the request exceeds the available context size, try increasing it"
+    error = SimpleNamespace(
+        status_code=400, body=message, response=SimpleNamespace(text=message)
+    )
+
+    assert _is_input_overflow(error)
+    assert "category=input_limit" in str(
+        _provider_error(
+            SimpleNamespace(
+                status_code=400,
+                code=None,
+                param=None,
+                response=SimpleNamespace(headers={}),
+                body=message,
+            )
+        )
+    )
 
 
 def test_fits_input_uses_counter_only_above_byte_budget(
