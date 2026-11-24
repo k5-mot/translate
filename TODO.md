@@ -6,26 +6,34 @@
 
 ## 🤖 Agentの制御
 
-### 🔴 高: 操作の選択をLLMに任せる範囲を絞る
+### ✅ 対応済み（高）: 操作の選択をLLMに任せる範囲を絞る
+
+- 対応済み: 操作の選択をLLMに任せず、英文の要素を文書順に起点として照合・評価する決定的な手順へ改めた（`feature/review-upgrade-completion`）。
 
 - 現状: ReviewとUpgradeは、毎手`choose_action`でLLMに次の操作を選ばせる。選択が不正または進捗がないときだけ、状態から決める`_fallback_action`へ切り替える。
 - 問題: 照合、評価、再確認、終了の順序は、状態からほぼ一意に決まる。sampleのReviewでは、Agentが照合を165回選んで評価を一度も選ばず、`TimeoutError`で失敗した（`1634faa`で回避）。操作選択のLLM Callは時間を使うが、成果物の質には寄与していない。
 - 改善案: 操作の順序は状態機械で決め、LLMは照合と評価の中身だけを担当する。overview、read、searchのような探索操作が必要な場面を実測し、残すかを決める。
 
-### 🟡 中: ReviewとUpgradeのAgentループを共通化する
+### ✅ 対応済み（中）: ReviewとUpgradeのAgentループを共通化する
+
+- 対応済み: 両方の手数・失敗回数の上限を廃止し、範囲の縮小（`narrowed`）、位置による候補補完（`positional_candidates`）、期限（`agent_deadline`）を共通の処理として使うようにした（`feature/review-upgrade-completion`）。
 
 - 現状: [review.py](translate/pipeline/review.py)と[upgrade.py](translate/pipeline/upgrade.py)は、それぞれ独自のループと上限を持つ。進捗のない手数の上限はReviewが12、Upgradeが12と36。同じunitの照合失敗の上限は`_MATCH_NO_PROGRESS_LIMIT`と`_MATCH_FAILURE_LIMIT`として別々に定義されている。
 - 問題: 片方で直した停止条件が、もう片方へ反映されない。`1634faa`の修正もReviewだけに入っている。
 - 改善案: 期限、進捗のない手数、対象ごとの失敗回数、決定的な操作への切り替えを共通のループへまとめ、上限値は設定として一か所で持つ。
 
-### 🔴 高: 処理できない対象を記録して先へ進む
+### ✅ 対応済み（高）: 処理できない対象を記録して先へ進む
+
+- 対応済み: 失敗を記録して飛ばすのではなく、失敗した範囲を縮めて処理を続け、全対象を完了させる方針とした。分割できない最小の対象は生成し直し、数式・コードだけの組は評価しない。単一要素がprovider側で入力上限を超える場合だけは停止する（`feature/review-upgrade-completion`）。
 
 - 現状: 1つの対象が入力上限超過や応答不正を繰り返すと、全体が`TimeoutError`や`DIFF did not complete.`で失敗する。sample1のReview（`LLMInputExceededError`45件）、sample1のUpgrade（text 1419）、sample2のUpgrade（同じセルの照合を12回）で観測した。
 - 改善案: 対象ごとの失敗回数が上限に達したら「処理不能」として成果物へ明記し、残りの対象を完了させる。入力上限を超える対象は、送信前に分割するか縮小する。
 
 ## ⏱️ 時間と入力の予算
 
-### 🔴 高: 期限を文書の規模に合わせる
+### ✅ 対応済み（高）: 期限を文書の規模に合わせる
+
+- 対応済み: ReviewとUpgradeの期限を、英文unit数1,000ごとに`LLM_TASK_DEADLINE_SECONDS`を加える形で文書の規模に比例させた（`feature/review-upgrade-completion`）。
 
 - 現状: LLM Taskの期限は`llm_task_deadline_seconds`の固定値で、文書の規模によらない。
 - 問題: sample（14ページ）でも4工程に約1時間20分かかる。357ページのsample1や88ページのsample2では、ReviewやUpgradeが期限内に終わるかを実行のたびに確認する必要がある。
