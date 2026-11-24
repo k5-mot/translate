@@ -11,13 +11,12 @@ import pytest
 from pydantic import BaseModel
 
 from tests import successful_review
-from translate.adapters.artifact_store import llm_call_id, load_model, write_model
+from translate.adapters.artifact_store import llm_call_id, write_model
 from translate.adapters.llm import (
     LLMClient,
-    LLMConnectionError,
-    LLMError,
     LLMInputExceededError,
     LLMInvalidResponseError,
+    LLMOutputTokenExceededError,
     StructuredResult,
 )
 from translate.common.config import Config
@@ -31,20 +30,18 @@ from translate.models.document import (
     TextUnit,
 )
 from translate.models.review import (
-    AgentAction,
     AlignmentResponse,
     ReviewResponse,
     ReviewTarget,
 )
 from translate.models.upgrade import DiffResponse
 from translate.pipeline import (
-    InputError,
+    agent_deadline,
     agent_units,
-    choose_action,
     completed_agent_calls,
-    observe_documents,
+    narrowed,
+    positional_candidates,
 )
-from translate.pipeline.matching import MatchingCandidates
 from translate.pipeline.review import ReviewAgent, _copied_translation_front_page_ids
 from translate.pipeline.upgrade import UpgradeAgent
 from translate.tasks import MATCHING_VERSION
@@ -201,13 +198,6 @@ def test_agent_context_normalizes_page_position_for_candidate_ranking() -> None:
     assert contexts["heading-1"]["position"] == "0.0"
     assert contexts["heading-62"]["position"] == "0.6161616161616161"
     assert contexts["heading-100"]["position"] == "1.0"
-    observation = observe_documents(
-        AgentAction(operation="overview"),
-        agent_units({"source": doc}),
-        4096,
-        contexts={"source": contexts},
-    )
-    assert "position" not in observation["items"][0]["context"]
 
 
 def test_agent_context_ignores_decorative_table_markers() -> None:
@@ -461,7 +451,7 @@ def test_review_rejects_only_extraction_space_revisions(
     config: Config,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """抽出空白だけの修正は再確認し、数値や英単語の区切りの修正は残す。"""
+    """抽出空白だけの修正は再要求せず不備なしとし、数値や英単語の区切りの修正は残す。"""
     current, replacement, has_issue = case
     issue = {
         "assessments": [
@@ -501,7 +491,7 @@ def test_review_rejects_only_extraction_space_revisions(
     finally:
         client.client.close()
     assert bool(result.findings) is has_issue
-    assert create.call_count == (1 if has_issue else 2)
+    assert create.call_count == 1
     assert json.loads(create.call_args_list[0].kwargs["messages"][1]["content"])[
         "targets"
     ][0]["translation"] == [{"span_id": "s1", "text": current}]
@@ -553,115 +543,6 @@ def test_review_ignores_matching_table_dot_leaders(
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("operation", ["overview", "read"])
-@pytest.mark.parametrize("count", [1, 9])
-def test_agent_fits_observation_without_cutting_units(
-    config: Config, monkeypatch: pytest.MonkeyPatch, operation: str, count: int
-) -> None:
-    """状態とSchema込みの上限を守り、候補本文を切らず後続の閲覧位置を保持する。"""
-    client = LLMClient(
-        config.model_copy(
-            update={"review_input_tokens": 11264, "llm_input_bytes_per_token": 1}
-        )
-    )
-    units = agent_units(
-        {
-            "source": document(
-                **{
-                    f"unit-{i}": "文脈を保持する。" * (500 if count == 1 else 150)
-                    for i in range(13)
-                }
-            )
-        }
-    )
-    items = [
-        {"role": "source", "id": key, "text": unit.text("source")}
-        for key, unit in list(units["source"].items())[4 : 4 + count]
-    ]
-    observation = {
-        "action": {"operation": operation, "offset": 4},
-        "result": {"items": items, "total": 13, "next_offset": None},
-    }
-    original = json.dumps(observation, ensure_ascii=False)
-    response = MagicMock()
-    response.choices = [MagicMock(finish_reason="stop")]
-    response.choices[0].message.content = AgentAction(
-        operation="overview"
-    ).model_dump_json()
-    response.usage = None
-    create = MagicMock(return_value=response)
-    monkeypatch.setattr(client.client.chat.completions, "create", create)
-    try:
-        if count == 1:
-            with pytest.raises(LLMInputExceededError):
-                choose_action(
-                    client,
-                    "Compare documents.",
-                    {"roles": ["source"], "pending_counts": {"source": 13}},
-                    observation,
-                    units,
-                )
-            create.assert_not_called()
-            return
-        action = choose_action(
-            client,
-            "Compare documents.",
-            {"roles": ["source"], "pending_counts": {"source": 13}},
-            observation,
-            units,
-        )
-        assert action.operation == "overview"
-        create.assert_called_once()
-        sent = json.loads(create.call_args.kwargs["messages"][1]["content"])[
-            "observation"
-        ]["result"]
-        assert 0 < len(sent["items"]) < len(items)
-        assert sent["items"] == items[: len(sent["items"])]
-        assert sent["next_offset"] == 4 + len(sent["items"])
-        assert sent["total"] == 13
-        assert json.dumps(observation, ensure_ascii=False) == original
-    finally:
-        client.client.close()
-
-
-@pytest.mark.parametrize(
-    ("configured", "expected"), [(1024, 1024), (4096, 4096), (8192, 4096)]
-)
-def test_agent_action_can_use_configured_output_budget(
-    config: Config,
-    monkeypatch: pytest.MonkeyPatch,
-    configured: int,
-    expected: int,
-) -> None:
-    """ReviewとUpgradeの制御応答に十分な出力枠を渡す。"""
-    client = LLMClient(config.model_copy(update={"review_output_tokens": configured}))
-    seen: dict[str, int] = {}
-
-    def structured(**kwargs: object) -> StructuredResult[AgentAction]:
-        """制御要求の上限を記録し、完了Actionを返す。"""
-        seen["output_tokens"] = int(kwargs["output_tokens"])
-        return StructuredResult(AgentAction(operation="finish"), 1, 1, 1)
-
-    monkeypatch.setattr(client, "structured", structured)
-    try:
-        choose_action(
-            client,
-            "Compare documents.",
-            {
-                "roles": ["source"],
-                "pending_counts": {"source": 0},
-                "unchecked_count": 0,
-                "conflicts": [],
-            },
-            {"action": {"operation": "overview"}, "result": {"items": []}},
-            {"source": {}},
-        )
-    finally:
-        client.client.close()
-
-    assert seen["output_tokens"] == expected
-
-
 @pytest.fixture
 def config() -> Config:
     """実サービスへ接続せず、RAGを明示的に無効にする設定。"""
@@ -673,119 +554,6 @@ def config() -> Config:
         qdrant_uri=None,
         qdrant_collection=None,
     )
-
-
-@pytest.mark.parametrize("kind", ["review", "upgrade"])
-def test_agents_use_retrieved_counterparts_and_leave_dropped_candidates_pending(
-    kind: str, config: Config, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """候補検索が見つけた相手をLLMへ渡し、外した候補も後続で処理する。"""
-    old_role = "source" if kind == "review" else "source_v1"
-    new_role = "translation" if kind == "review" else "source_v2"
-    documents = {
-        old_role: document(old="Original."),
-        new_role: document(bad="Unrelated.", good="Correct counterpart."),
-    }
-    if kind == "upgrade":
-        documents["translation_v1"] = document(ja="訳文")
-    seen = []
-
-    def expand(
-        _self: MatchingCandidates,
-        references: dict[str, list[str]],
-        available: dict[str, set[str]],
-        _maximum_ids: int,
-    ) -> dict[str, list[str]]:
-        """正しい候補を返し、各操作で確定済みの相手が除外されることを記録する。"""
-        seen.append(available)
-        if references.get(old_role):
-            return {
-                old_role: ["old"],
-                new_role: ["good"],
-                **({"translation_v1": ["ja"]} if kind == "upgrade" else {}),
-            }
-        return references
-
-    monkeypatch.setattr(MatchingCandidates, "expand", expand)
-    answers = [
-        AgentAction(
-            operation="match", references={old_role: ["old"], new_role: ["bad"]}
-        )
-    ]
-    if kind == "review":
-        answers.extend(
-            [
-                AlignmentResponse.model_validate(
-                    {
-                        "groups": [
-                            {
-                                "source_ids": ["old"],
-                                "translation_ids": ["good"],
-                                "kind": "matched",
-                            }
-                        ]
-                    }
-                ),
-                AgentAction(
-                    operation="evaluate", target_ids=["review/alignment-000001"]
-                ),
-                successful_review("review/alignment-000001"),
-                AgentAction(operation="match", references={new_role: ["bad"]}),
-                AlignmentResponse(groups=[]),
-            ]
-        )
-    else:
-        answers.extend(
-            [
-                DiffResponse.model_validate(
-                    {
-                        "changes": [
-                            {
-                                "kind": "unchanged",
-                                "source_v1_ids": ["old"],
-                                "source_v2_ids": ["good"],
-                                "translation_v1_ids": ["ja"],
-                                "summary": "対応を確認",
-                            }
-                        ]
-                    }
-                ),
-                AgentAction(operation="match", references={new_role: ["bad"]}),
-                DiffResponse.model_validate(
-                    {
-                        "changes": [
-                            {
-                                "kind": "added",
-                                "source_v2_ids": ["bad"],
-                                "summary": "追加を確認",
-                            }
-                        ]
-                    }
-                ),
-            ]
-        )
-    answers.append(AgentAction(operation="finish"))
-    calls = scripted(monkeypatch, answers)
-    result = (
-        ReviewAgent(documents, tmp_path, tmp_path, config).run()
-        if kind == "review"
-        else UpgradeAgent(documents, tmp_path, config).run()
-    )
-    assert json.loads(calls[1]["user"])[new_role][0]["text"] == "Correct counterpart."
-    assert seen[0][new_role] == {"bad", "good"}
-    assert seen[1][new_role] == {"bad"}
-    if kind == "review":
-        assert [
-            (g.source_ids, g.translation_ids)
-            for g in result.groups
-            if g.kind == "matched"
-        ] == [(["old"], ["good"])]
-        assert any(
-            g.translation_ids == ["bad"] and g.kind == "translation_only"
-            for g in result.groups
-        )
-    else:
-        assert result.reviewed_source_v2_ids == ["bad", "good"]
 
 
 @pytest.mark.parametrize("operation", ["evaluate", "recheck"])
@@ -853,240 +621,6 @@ def test_review_schema_keeps_confirmation_ids_distinct_from_unit_ids(
         assert result.reviewed_target_ids == expected
     finally:
         client.client.close()
-
-
-@pytest.mark.parametrize(
-    ("invalid", "expected_operation", "attempts"),
-    [
-        (AgentAction(operation="evaluate", target_ids=["source-id"]), "match", 2),
-        (AgentAction(operation="recheck"), "match", 2),
-        (
-            AgentAction(operation="read", references={"source": ["invented-id"]}),
-            "match",
-            2,
-        ),
-        (
-            AgentAction(operation="overview", references={"ignored": ["unused-id"]}),
-            "overview",
-            1,
-        ),
-    ],
-)
-def test_agent_validates_only_used_action_arguments(
-    config: Config,
-    monkeypatch: pytest.MonkeyPatch,
-    invalid: AgentAction,
-    expected_operation: str,
-    attempts: int,
-) -> None:
-    """操作に必要な対象だけを検証・訂正し、閲覧に使わない引数は破棄する。"""
-    client = LLMClient(
-        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
-    )
-    responses = []
-    for action in (
-        invalid,
-        AgentAction(
-            operation="match",
-            references={"source": ["source-id"], "translation": ["translation-id"]},
-        ),
-    ):
-        response = MagicMock()
-        response.choices = [MagicMock(finish_reason="stop")]
-        response.choices[0].message.content = action.model_dump_json()
-        response.usage = None
-        responses.append(response)
-    create = MagicMock(side_effect=responses)
-    monkeypatch.setattr(client.client.chat.completions, "create", create)
-    try:
-        action = choose_action(
-            client,
-            "Review English source against Japanese translation.",
-            {
-                "roles": ["source", "translation"],
-                "pending_counts": {"source": 1, "translation": 1},
-                "pending_ids": {
-                    "source": ["source-id"],
-                    "translation": ["translation-id"],
-                },
-                "unchecked_targets": [],
-                "unchecked_count": 0,
-                "conflicts": [],
-            },
-            {},
-            agent_units(
-                {
-                    "source": document(
-                        **{"source-id": "Original", "unseen-id": "Not displayed"}
-                    ),
-                    "translation": document(**{"translation-id": "訳文"}),
-                }
-            ),
-        )
-        assert action.operation == expected_operation
-        assert create.call_count == attempts
-        if attempts == 2:
-            assert "Previous response validation failed" in str(
-                create.call_args_list[1]
-            )
-        else:
-            assert action.references == {}
-        properties = create.call_args.kwargs["response_format"]["json_schema"][
-            "schema"
-        ]["properties"]
-        assert properties["role"]["enum"] == ["", "source", "translation"]
-        assert properties["references"]["properties"]["source"]["items"]["enum"] == [
-            "source-id"
-        ]
-    finally:
-        client.client.close()
-
-
-def test_upgrade_action_reselects_within_reduced_reference_limit(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """入力予算から下げたUpgrade対象数を超える操作を同じ訂正枠で選び直す。"""
-    client = LLMClient(
-        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
-    )
-    units = agent_units(
-        {
-            "source_v1": document(old1="Old one", old2="Old two"),
-            "source_v2": document(new1="New one", new2="New two"),
-            "translation_v1": document(),
-        }
-    )
-    state = {
-        "roles": list(units),
-        "pending_counts": {role: len(values) for role, values in units.items()},
-        "pending_ids": {role: list(values) for role, values in units.items()},
-        "translation_candidates": [],
-        "confirmed_count": 0,
-        "max_reference_ids": 2,
-    }
-    responses = []
-    for references in (
-        {"source_v1": ["old1", "old2"], "source_v2": ["new1"]},
-        {"source_v1": ["old1"], "source_v2": ["new1"]},
-    ):
-        response = MagicMock()
-        response.choices = [MagicMock(finish_reason="stop")]
-        response.choices[0].message.content = AgentAction(
-            operation="match", references=references
-        ).model_dump_json()
-        response.usage = None
-        responses.append(response)
-    create = MagicMock(side_effect=responses)
-    monkeypatch.setattr(client.client.chat.completions, "create", create)
-    try:
-        action = choose_action(
-            client,
-            "Compare English source_v1/source_v2 and Japanese translation_v1.",
-            state,
-            {},
-            units,
-        )
-        assert sum(map(len, action.references.values())) == 2
-        assert create.call_count == 2
-        assert "Previous response validation failed" in str(create.call_args_list[1])
-        role_limits = create.call_args.kwargs["response_format"]["json_schema"][
-            "schema"
-        ]["properties"]["references"]["properties"]
-        assert {role: value["maxItems"] for role, value in role_limits.items()} == {
-            "source_v1": 1,
-            "source_v2": 1,
-            "translation_v1": 0,
-        }
-    finally:
-        client.client.close()
-
-
-def test_review_action_schema_splits_reduced_total_reference_limit_by_role(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reviewの動的な合計上限をroleごとのschemaにも反映する。"""
-    client = LLMClient(
-        config.model_copy(update={"llm_structured_output_mode": "json_schema"})
-    )
-    units = agent_units(
-        {
-            "source": document(**{f"source-{i}": f"Original {i}" for i in range(6)}),
-            "translation": document(
-                **{f"translation-{i}": f"訳文 {i}" for i in range(6)}
-            ),
-        }
-    )
-    state = {
-        "roles": list(units),
-        "pending_counts": {role: len(values) for role, values in units.items()},
-        "pending_ids": {role: list(values) for role, values in units.items()},
-        "unchecked_targets": [],
-        "unchecked_count": 0,
-        "conflicts": [],
-        "max_reference_ids": 8,
-    }
-    actions = (
-        AgentAction(
-            operation="match",
-            references={
-                "source": [f"source-{i}" for i in range(5)],
-                "translation": [f"translation-{i}" for i in range(4)],
-            },
-        ),
-        AgentAction(
-            operation="match",
-            references={
-                "source": [f"source-{i}" for i in range(4)],
-                "translation": [f"translation-{i}" for i in range(4)],
-            },
-        ),
-    )
-    responses = []
-    for action in actions:
-        response = MagicMock()
-        response.choices = [MagicMock(finish_reason="stop")]
-        response.choices[0].message.content = action.model_dump_json()
-        response.usage = None
-        responses.append(response)
-    create = MagicMock(side_effect=responses)
-    monkeypatch.setattr(client.client.chat.completions, "create", create)
-    try:
-        action = choose_action(
-            client,
-            "Review English source against Japanese translation.",
-            state,
-            {},
-            units,
-        )
-        assert sum(map(len, action.references.values())) == 8
-        assert create.call_count == 2
-        role_limits = create.call_args.kwargs["response_format"]["json_schema"][
-            "schema"
-        ]["properties"]["references"]["properties"]
-        assert {role: value["maxItems"] for role, value in role_limits.items()} == {
-            "source": 4,
-            "translation": 4,
-        }
-    finally:
-        client.client.close()
-
-
-def test_agent_overview_includes_bounded_content() -> None:
-    """IDだけの一覧でAgentが探索を繰り返さないよう、予算内で本文も提示する。"""
-    units = agent_units(
-        {
-            "source": document(
-                **{f"unit-{i}": "Heading and context. " * 8 for i in range(10)}
-            ),
-            "translation": document(**{"translated-unit": "Translated context. " * 8}),
-        }
-    )
-    result = observe_documents(AgentAction(operation="overview"), units, 700)
-    assert "Heading and context." in json.dumps(result)
-    assert 0 < len(result["items"]) < 10
-    assert result["next_offset"] == len(result["items"])
-    assert len(json.dumps(result["items"]).encode()) <= 700
-    assert [item["role"] for item in result["items"][:2]] == ["source", "translation"]
 
 
 @pytest.mark.parametrize(
@@ -1490,37 +1024,6 @@ def matched() -> AlignmentResponse:
     )
 
 
-def test_review_finishes_after_idle_actions_when_all_targets_are_checked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """全対象を確認済みなら終了操作を選ばないAgentでも結果を保存する。"""
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source": ["en"], "translation": ["ja1", "ja2"]},
-        ),
-        matched(),
-        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-        successful_review("review/alignment-000001"),
-        *[AgentAction(operation="overview") for _ in range(12)],
-    ]
-    scripted(monkeypatch, answers)
-
-    result = ReviewAgent(
-        {
-            "source": document(en="Text"),
-            "translation": document(ja1="訳1", ja2="訳2"),
-        },
-        tmp_path,
-        tmp_path,
-        config,
-    ).run()
-
-    assert not answers
-    assert result.reviewed_target_ids == ["review/alignment-000001"]
-    assert (tmp_path / "review.json").is_file()
-
-
 def evaluation(*texts: str) -> ReviewResponse:
     """同じSpanの競合候補、または確定候補を返す。"""
     return ReviewResponse.model_validate(
@@ -1537,417 +1040,6 @@ def evaluation(*texts: str) -> ReviewResponse:
             ]
         }
     )
-
-
-def test_review_recovers_unmatched_units_and_resumes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """候補不足の未対応群を部分的に再対応付けし、IDと再開時の結果を保つ。"""
-    documents = {
-        "source": document(en1="Alpha", en2="Beta"),
-        "translation": document(ja1="ベータ", ja2="アルファ"),
-    }
-
-    def recover_remaining(kwargs: dict[str, object]) -> AgentAction:
-        """一部を対応付けた後も未対応の残りを観察し、次の候補へ組み直す。"""
-        state = json.loads(kwargs["user"])["state"]
-        assert state["unmatched_ids"] == {"source": [], "translation": ["ja1"]}
-        assert state["unmatched_counts"] == {"source": 0, "translation": 1}
-        assert state["unchecked_targets"] == ["review/alignment-000003"]
-        items = json.loads(kwargs["user"])["observation"]["result"]["items"]
-        assert {(item["role"], item["id"], item["text"]) for item in items} == {
-            ("source", "en2", "Beta"),
-            ("translation", "ja1", "ベータ"),
-        }
-        return AgentAction(
-            operation="match", references={"source": ["en2"], "translation": ["ja1"]}
-        )
-
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source": ["en1"], "translation": ["ja1", "ja2"]},
-        ),
-        AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": ["en1"],
-                        "translation_ids": [],
-                        "kind": "source_only",
-                        "reason": "対応未確定",
-                    },
-                    {
-                        "source_ids": [],
-                        "translation_ids": ["ja1", "ja2"],
-                        "kind": "translation_only",
-                        "reason": "対応未確定",
-                    },
-                ]
-            }
-        ),
-        AgentAction(
-            operation="match", references={"source": ["en1"], "translation": ["ja2"]}
-        ),
-        AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": ["en1"],
-                        "translation_ids": ["ja2"],
-                        "kind": "matched",
-                    }
-                ]
-            }
-        ),
-        AgentAction(operation="overview"),
-        recover_remaining,
-        AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": ["en2"],
-                        "translation_ids": ["ja1"],
-                        "kind": "matched",
-                    }
-                ]
-            }
-        ),
-        AgentAction(
-            operation="evaluate",
-            target_ids=["review/alignment-000003", "review/alignment-000004"],
-        ),
-        successful_review("review/alignment-000003"),
-        successful_review("review/alignment-000004"),
-        AgentAction(operation="finish"),
-    ]
-    calls = scripted(monkeypatch, answers)
-    directory = tmp_path / "review"
-    result = ReviewAgent(documents, directory, tmp_path, config).run()
-    assert not answers
-    assert [
-        (group.id, group.source_ids, group.translation_ids) for group in result.groups
-    ] == [
-        ("alignment-000003", ["en1"], ["ja2"]),
-        ("alignment-000004", ["en2"], ["ja1"]),
-    ]
-    assert len(result.targets) == len(result.reviewed_target_ids) == 2
-    before = len(calls)
-    answers.append(AgentAction(operation="finish"))
-    assert ReviewAgent(documents, directory, tmp_path, config).run() == result
-    assert len(calls) == before + 1
-
-
-def test_review_agent_recovers_from_invalid_match_action(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """未対応の再探索を許しても、確定した対応の再割当ては拒否する。"""
-    action = AgentAction(
-        operation="match", references={"source": ["en"], "translation": ["ja1", "ja2"]}
-    )
-    scripted(
-        monkeypatch,
-        [
-            action,
-            matched(),
-            action,
-            AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-            successful_review("review/alignment-000001"),
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = ReviewAgent(
-        {
-            "source": document(en="Text"),
-            "translation": document(ja1="訳", ja2="文"),
-        },
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-    assert result.reviewed_target_ids == ["review/alignment-000001"]
-
-
-def test_review_retries_the_same_unmatched_scope_with_a_new_call_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """未対応unitは失敗上限まで同じ候補範囲を再照合できる。"""
-    action = AgentAction(operation="match", references={"source": ["en"]})
-    scripted(
-        monkeypatch,
-        [
-            action,
-            AlignmentResponse.model_validate(
-                {
-                    "groups": [
-                        {
-                            "source_ids": ["en"],
-                            "translation_ids": [],
-                            "kind": "source_only",
-                            "reason": "対応訳なし",
-                        }
-                    ]
-                }
-            ),
-            action,
-            AlignmentResponse.model_validate(
-                {
-                    "groups": [
-                        {
-                            "source_ids": ["en"],
-                            "translation_ids": [],
-                            "kind": "source_only",
-                            "reason": "対応訳なし",
-                        }
-                    ]
-                }
-            ),
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = ReviewAgent(
-        {"source": document(en="Text"), "translation": document()},
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-    assert len(result.groups) == 1
-    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 2
-
-
-def test_review_retries_unmatched_source_and_translation_before_finish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """両側に再照合可能な未対応候補が残る間は、Reviewを完了しない。"""
-    unmatched = AlignmentResponse.model_validate(
-        {
-            "groups": [
-                {
-                    "source_ids": ["en"],
-                    "translation_ids": [],
-                    "kind": "source_only",
-                    "reason": "候補内で相手を確認できない",
-                },
-                {
-                    "source_ids": [],
-                    "translation_ids": ["ja"],
-                    "kind": "translation_only",
-                    "reason": "候補内で相手を確認できない",
-                },
-            ]
-        }
-    )
-    recovered = AlignmentResponse.model_validate(
-        {
-            "groups": [
-                {
-                    "source_ids": ["en"],
-                    "translation_ids": ["ja"],
-                    "kind": "matched",
-                    "reason": "Distinctive content corresponds.",
-                }
-            ]
-        }
-    )
-    scripted(
-        monkeypatch,
-        [
-            AgentAction(
-                operation="match",
-                references={"source": ["en"], "translation": ["ja"]},
-            ),
-            unmatched,
-            AgentAction(operation="finish"),
-            recovered,
-            AgentAction(operation="evaluate", target_ids=["review/alignment-000003"]),
-            successful_review("review/alignment-000003"),
-            AgentAction(operation="finish"),
-        ],
-    )
-
-    result = ReviewAgent(
-        {"source": document(en="Original"), "translation": document(ja="訳文")},
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-
-    assert [(group.source_ids, group.translation_ids) for group in result.groups] == [
-        (["en"], ["ja"])
-    ]
-    assert result.reviewed_target_ids == ["review/alignment-000003"]
-
-
-def test_review_exhausts_a_repeated_unmatched_pair_after_three_calls(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """同じ未対応pairを3回照合した後は未確認として終了できる。"""
-    action = AgentAction(
-        operation="match", references={"source": ["en"], "translation": ["ja"]}
-    )
-    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = []
-    for _ in range(3):
-        answers.extend(
-            [
-                action,
-                AlignmentResponse.model_validate(
-                    {
-                        "groups": [
-                            {
-                                "source_ids": ["en"],
-                                "translation_ids": [],
-                                "kind": "source_only",
-                                "reason": "候補内で相手を確認できない",
-                            },
-                            {
-                                "source_ids": [],
-                                "translation_ids": ["ja"],
-                                "kind": "translation_only",
-                                "reason": "候補内で相手を確認できない",
-                            },
-                        ]
-                    }
-                ),
-            ]
-        )
-
-    def finish_after_exhaustion(kwargs: dict[str, object]) -> AgentAction:
-        """同一pairの失敗上限到達後は未対応候補がないことを確認する。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["state"]["unmatched_counts"] == {
-            "source": 0,
-            "translation": 0,
-        }
-        return AgentAction(operation="finish")
-
-    answers.append(finish_after_exhaustion)
-    scripted(monkeypatch, answers)
-
-    result = ReviewAgent(
-        {"source": document(en="Original"), "translation": document(ja="訳文")},
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-
-    assert [group.kind for group in result.groups] == [
-        "source_only",
-        "translation_only",
-    ]
-    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 3
-
-
-def test_review_stops_retrying_a_unit_after_three_different_failed_pairs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """相手候補を変えても進まないTextUnitを、3回後の再試行対象から外す。"""
-
-    def unmatched_pair(source_id: str) -> AlignmentResponse:
-        """候補の対応を見つけられなかった応答を返す。"""
-        return AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": [source_id],
-                        "translation_ids": [],
-                        "kind": "source_only",
-                        "reason": "対応候補なし",
-                    },
-                    {
-                        "source_ids": [],
-                        "translation_ids": ["ja"],
-                        "kind": "translation_only",
-                        "reason": "対応候補なし",
-                    },
-                ]
-            }
-        )
-
-    def finish_after_exhaustion(kwargs: dict[str, object]) -> AgentAction:
-        """上限に達した訳文unitが再探索一覧から外れたことを確かめる。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["state"]["unmatched_counts"]["translation"] == 0
-        assert payload["state"]["unmatched_ids"]["translation"] == []
-        return AgentAction(operation="finish")
-
-    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = []
-    for source_id in ("en1", "en2", "en3"):
-        answers.extend(
-            [
-                AgentAction(
-                    operation="match",
-                    references={"source": [source_id], "translation": ["ja"]},
-                ),
-                unmatched_pair(source_id),
-            ]
-        )
-    answers.append(finish_after_exhaustion)
-    scripted(monkeypatch, answers)
-
-    result = ReviewAgent(
-        {
-            "source": document(en1="First", en2="Second", en3="Third"),
-            "translation": document(ja="訳文"),
-        },
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-
-    assert len(result.groups) == 4
-    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 3
-
-
-def test_review_uses_source_text_for_a_copied_front_page(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """複製原文ページのOCR差を除き、通常どおり未翻訳か評価する。"""
-    source_title = (
-        "Doctrine for Command, Control, Communications, and Computer (C4) "
-        'Systems Support to Joint Operations \\ (& "5 "='
-    )
-    translation_title = (
-        'CA Tv gli TB (0) WV "5 Command, Control, ~~ Communications, and '
-        "Computer (C4) Systems Support to Joint Operations"
-    )
-    scripted(
-        monkeypatch,
-        [
-            AgentAction(
-                operation="match",
-                references={"source": ["en"], "translation": ["ja"]},
-            ),
-            AlignmentResponse(
-                groups=[
-                    {
-                        "source_ids": ["en"],
-                        "translation_ids": ["ja"],
-                        "kind": "matched",
-                    }
-                ]
-            ),
-            AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-            successful_review("review/alignment-000001"),
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = ReviewAgent(
-        {
-            "source": document(en=f"{source_title} Joint Pub 6-0 30 May 1995"),
-            "translation": document(
-                ja=f"{translation_title} Joint Pub 6-0 30 May 1995"
-            ),
-        },
-        tmp_path / "review",
-        tmp_path,
-        config,
-    ).run()
-
-    assert result.groups[0].kind == "matched"
-    assert result.targets[0].translation.startswith(source_title)
-    assert result.targets[0].spans == []
-    assert result.reviewed_target_ids == ["review/alignment-000001"]
-    assert len(list((tmp_path / "review" / "calls").glob("*/call.json"))) == 2
 
 
 def test_copied_front_page_detection_requires_long_english_near_duplicates() -> None:
@@ -1980,691 +1072,6 @@ def test_copied_front_page_detection_requires_long_english_near_duplicates() -> 
         "publication",
         "date",
     }
-
-
-def test_review_observes_only_current_matches_and_retains_all_results(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """概要を再取得しながら13群を完了し、直近の観察と全確認範囲を保持する。"""
-    documents = {
-        "source": document(**{f"en-{index}": "Text" for index in range(78)}),
-        "translation": document(**{f"ja-{index}": "訳文" for index in range(78)}),
-    }
-
-    def evaluate_current(kwargs: dict[str, object]) -> AgentAction:
-        """直前の8組だけを観察し、累積状態にある未評価IDを選ぶ。"""
-        payload = json.loads(kwargs["user"])
-        groups = payload["observation"]["result"]["groups"]
-        targets = payload["state"]["unchecked_targets"]
-        assert len(groups) == len(targets) == 6
-        assert [f"review/{group['id']}" for group in groups] == targets
-        return AgentAction(operation="evaluate", target_ids=targets)
-
-    def review_current(kwargs: dict[str, object]) -> ReviewResponse:
-        """各Review Callが実際に受け取った対象IDへ応答する。"""
-        payload = json.loads(kwargs["user"])
-        target_ids = [target["id"] for target in payload["targets"]]
-        return successful_review(*target_ids)
-
-    answers = []
-    for start in range(0, 78, 6):
-        answers.extend(
-            [
-                AgentAction(operation="overview"),
-                AgentAction(
-                    operation="match",
-                    references={
-                        "source": [f"en-{index}" for index in range(start, start + 6)],
-                        "translation": [
-                            f"ja-{index}" for index in range(start, start + 6)
-                        ],
-                    },
-                ),
-                AlignmentResponse.model_validate(
-                    {
-                        "groups": [
-                            {
-                                "source_ids": [f"en-{index}"],
-                                "translation_ids": [f"ja-{index}"],
-                                "kind": "matched",
-                            }
-                            for index in range(start, start + 6)
-                        ]
-                    }
-                ),
-                evaluate_current,
-                *[review_current] * 6,
-            ]
-        )
-    answers.append(AgentAction(operation="finish"))
-    scripted(monkeypatch, answers)
-    result = ReviewAgent(
-        documents,
-        tmp_path / "review",
-        tmp_path,
-        config.model_copy(update={"review_input_tokens": 100_000}),
-    ).run()
-    assert len(result.groups) == len(result.reviewed_target_ids) == 78
-    assert not answers
-
-
-@pytest.mark.parametrize("kind", ["review", "upgrade"])
-def test_agent_recovers_invalid_action_without_losing_confirmed_units(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, kind: str
-) -> None:
-    """不正な次操作を実行せず、成功済み対象を保って残りの対象を確認する。"""
-    role = "source" if kind == "review" else "source_v1"
-    roles = (
-        [role, "translation"]
-        if kind == "review"
-        else [role, "source_v2", "translation_v1"]
-    )
-    documents = {name: document() for name in roles}
-    documents[role] = document(first="First", second="Second")
-
-    def result(key: str) -> BaseModel:
-        """原文だけに存在する選択対象を確認済みとして返す。"""
-        if kind == "review":
-            return AlignmentResponse.model_validate(
-                {
-                    "groups": [
-                        {
-                            "source_ids": [key],
-                            "translation_ids": [],
-                            "kind": "source_only",
-                            "reason": "対応訳なし",
-                        }
-                    ]
-                }
-            )
-        return DiffResponse.model_validate(
-            {
-                "changes": [
-                    {
-                        "source_v1_ids": [key],
-                        "kind": "deleted",
-                        "summary": "新版から削除",
-                        "suggested_translation": None,
-                    }
-                ],
-                "reviewed_source_v1_ids": [key],
-                "reviewed_source_v2_ids": [],
-            }
-        )
-
-    def failed_action(kwargs: dict[str, object]) -> BaseModel:
-        """操作選択の応答訂正を使い切った失敗を再現する。"""
-        assert kwargs["response_type"] is AgentAction
-        message = "Invalid action after validation retry"
-        raise LLMInvalidResponseError(message)
-
-    def reselect(kwargs: dict[str, object]) -> AgentAction:
-        """失敗の通知と未確認数を確認し、残る対象だけを選ぶ。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["state"]["pending_counts"][role] == 1
-        assert "invalid" in payload["observation"]["error"].lower()
-        return AgentAction(operation="match", references={role: ["second"]})
-
-    answers = [
-        AgentAction(operation="match", references={role: ["first"]}),
-        result("first"),
-        failed_action,
-        reselect,
-        result("second"),
-        AgentAction(operation="finish"),
-    ]
-    scripted(monkeypatch, answers)
-    agent = (
-        ReviewAgent(documents, tmp_path, tmp_path, config)
-        if kind == "review"
-        else UpgradeAgent(documents, tmp_path, config)
-    )
-    output = agent.run()
-    assert not answers
-    assert len(output.groups if kind == "review" else output.changes) == 2
-    artifacts = [
-        load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
-    ]
-    assert len(artifacts) == 2
-    assert all(call.status == "succeeded" for call in artifacts)
-
-
-@pytest.mark.parametrize("kind", ["review", "upgrade"])
-@pytest.mark.parametrize(
-    "case",
-    [(LLMConnectionError, LLMConnectionError, 1)],
-)
-def test_agent_action_failure_keeps_stop_conditions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    kind: str,
-    case: tuple[type[LLMError], type[Exception], int],
-) -> None:
-    """操作選択の契約不正は12回で止め、接続障害を選び直しで再送しない。"""
-    error_type, expected, attempts = case
-
-    def failure(kwargs: dict[str, object]) -> BaseModel:
-        """実行操作へ進む前のAgent判断を指定された例外で失敗させる。"""
-        assert kwargs["response_type"] is AgentAction
-        message = "Action failed"
-        raise error_type(message)
-
-    attempt_limit = attempts * (
-        3 if kind == "upgrade" and error_type is LLMInvalidResponseError else 1
-    )
-    answers = [failure] * attempt_limit
-    scripted(monkeypatch, answers)
-    roles = (
-        ["source", "translation"]
-        if kind == "review"
-        else ["source_v1", "source_v2", "translation_v1"]
-    )
-    documents = {role: document(unit="Text") for role in roles}
-    agent = (
-        ReviewAgent(documents, tmp_path, tmp_path, config)
-        if kind == "review"
-        else UpgradeAgent(documents, tmp_path, config)
-    )
-    with pytest.raises(expected):
-        agent.run()
-    assert not answers
-    assert not list(tmp_path.glob("calls/*/call.json"))
-    assert not (tmp_path / "review.json").exists()
-    assert not (tmp_path / "plan.json").exists()
-
-
-def test_review_agent_reselects_after_invalid_operation_response(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """検証再試行を使い切ったmatchを失敗保存し、Agentが対象を絞って確認を完了する。"""
-    documents = {
-        "source": document(en="Use two units."),
-        "translation": document(ja1="二つ使用する。", ja2="補足。"),
-    }
-
-    def failed_match(_kwargs: dict[str, object]) -> BaseModel:
-        """LLM接続層が検証再試行後に返す失敗を再現する。"""
-        message = "Invalid correspondence after retry"
-        raise LLMInvalidResponseError(message)
-
-    def reselect(kwargs: dict[str, object]) -> AgentAction:
-        """失敗を観察して、未確認のまま保持された対象から小さな候補群を選ぶ。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["state"]["pending_counts"] == {"source": 1, "translation": 2}
-        assert payload["state"]["unchecked_count"] == 0
-        assert "invalid" in payload["observation"]["result"]["error"]
-        return AgentAction(
-            operation="match", references={"source": ["en"], "translation": ["ja1"]}
-        )
-
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source": ["en"], "translation": ["ja1", "ja2"]},
-        ),
-        failed_match,
-        reselect,
-        AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": ["en"],
-                        "translation_ids": ["ja1"],
-                        "kind": "matched",
-                    }
-                ]
-            }
-        ),
-        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-        successful_review(*["review/alignment-000001"]),
-        AgentAction(operation="match", references={"translation": ["ja2"]}),
-        AlignmentResponse.model_validate(
-            {
-                "groups": [
-                    {
-                        "source_ids": [],
-                        "translation_ids": ["ja2"],
-                        "kind": "translation_only",
-                        "reason": "原文にない補足",
-                    }
-                ]
-            }
-        ),
-        AgentAction(operation="finish"),
-    ]
-    scripted(monkeypatch, answers)
-    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
-    assert not answers
-    assert len(result.groups) == 2
-    assert result.reviewed_target_ids == ["review/alignment-000001"]
-    artifacts = [
-        load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
-    ]
-    assert sorted(item.status for item in artifacts) == [
-        "failed",
-        "succeeded",
-        "succeeded",
-        "succeeded",
-    ]
-    failed = next(item for item in artifacts if item.status == "failed")
-    assert not (tmp_path / "calls" / failed.call_id / "response.json").exists()
-
-
-def test_review_records_repeated_invalid_match_as_unverified(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """同じ照合の契約不正が3回続くと、未確認として残し4回目を送信しない。"""
-
-    def failure(_kwargs: dict[str, object]) -> BaseModel:
-        """操作のLLM要求を契約不正にする。"""
-        message = "Operation failed"
-        raise LLMInvalidResponseError(message)
-
-    action = AgentAction(
-        operation="match", references={"source": ["en"], "translation": ["ja"]}
-    )
-    scripted(
-        monkeypatch,
-        [
-            *[item for _ in range(3) for item in (action, failure)],
-            action,
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = ReviewAgent(
-        {"source": document(en="Text"), "translation": document(ja="訳文")},
-        tmp_path,
-        tmp_path,
-        config,
-    ).run()
-    assert sorted(group.kind for group in result.groups) == [
-        "source_only",
-        "translation_only",
-    ]
-    assert len(list(tmp_path.glob("calls/*/call.json"))) == 3
-
-
-@pytest.mark.parametrize("case", [(LLMConnectionError, LLMConnectionError, 1)])
-def test_review_operation_failure_retains_stop_conditions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    case: tuple[type[LLMError], type[Exception], int],
-) -> None:
-    """接続失敗は対象選び直しで再送しない。"""
-    error_type, expected_error, attempts = case
-
-    def failure(_kwargs: dict[str, object]) -> BaseModel:
-        """操作のLLM要求だけを指定された失敗にする。"""
-        message = "Operation failed"
-        raise error_type(message)
-
-    action = AgentAction(
-        operation="match", references={"source": ["en"], "translation": ["ja"]}
-    )
-    answers = [item for _ in range(attempts) for item in (action, failure)]
-    scripted(monkeypatch, answers)
-    with pytest.raises(expected_error):
-        ReviewAgent(
-            {"source": document(en="Text"), "translation": document(ja="訳文")},
-            tmp_path,
-            tmp_path,
-            config,
-        ).run()
-    assert not answers
-    assert not (tmp_path / "review.json").exists()
-    assert len(list(tmp_path.glob("calls/*/call.json"))) == attempts
-    assert not list(tmp_path.glob("calls/*/response.json"))
-
-
-def test_review_skips_stale_operations_when_replayed_matches_change_targets(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """照合結果が変わり無効になった評価・match Callを飛ばす。"""
-    directory = tmp_path / "review" / "review"
-    now = datetime.now(UTC)
-    for call_id, operation, round_number, target_ids in [
-        ("old-match", "match", 0, ["source:en", "translation:ja"]),
-        ("old-evaluate", "evaluate", 1, ["review:review/alignment-000001"]),
-        ("stale-evaluate", "evaluate", 2, ["review:review/alignment-000002"]),
-        ("old-match-again", "match", 3, ["source:en", "translation:ja"]),
-        ("duplicate-evaluate", "evaluate", 4, ["review:review/alignment-000001"]),
-    ]:
-        write_model(
-            directory / "calls" / call_id / "call.json",
-            LLMCallArtifact(
-                call_id=call_id,
-                task="REVIEW",
-                operation=operation,
-                matching_version=MATCHING_VERSION,
-                round=round_number,
-                status="succeeded",
-                fingerprint="0" * 64,
-                target_ids=target_ids,
-                attempts=1,
-                started_at=now,
-                updated_at=now,
-            ),
-        )
-
-    review_task = import_module("translate.tasks.41_review").ReviewTask
-
-    def current_match(
-        _task: object, *_args: object, **_kwargs: object
-    ) -> tuple[str, AlignmentResponse]:
-        """再照合でmatched groupが一つだけ生成される。"""
-        return (
-            "current-match",
-            AlignmentResponse.model_validate(
-                {
-                    "groups": [
-                        {
-                            "source_ids": ["en"],
-                            "translation_ids": ["ja"],
-                            "kind": "matched",
-                        }
-                    ]
-                }
-            ),
-        )
-
-    monkeypatch.setattr(review_task, "match_documents", current_match)
-    monkeypatch.setattr(
-        review_task,
-        "run",
-        lambda *_args, **_kwargs: import_module(
-            "translate.models.artifacts"
-        ).ReviewResult(),
-    )
-    scripted(
-        monkeypatch,
-        [
-            AgentAction(operation="finish"),
-        ],
-    )
-
-    result = ReviewAgent(
-        {"source": document(en="Source"), "translation": document(ja="訳文")},
-        directory,
-        tmp_path,
-        config,
-    ).run()
-
-    assert result.reviewed_target_ids == ["review/alignment-000001"]
-    assert [group.id for group in result.groups if group.kind == "matched"] == [
-        "alignment-000001"
-    ]
-
-
-def test_upgrade_skips_stale_match_when_replayed_changes_already_cover_units(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """更新後に同じsourceを含む古いmatch Callを再生しても現行結果を保つ。"""
-    directory = tmp_path / "upgrade"
-    now = datetime.now(UTC)
-    for call_id, round_number in [("old-match", 0), ("duplicate-match", 1)]:
-        write_model(
-            directory / "calls" / call_id / "call.json",
-            LLMCallArtifact(
-                call_id=call_id,
-                task="DIFF",
-                operation="match",
-                matching_version=MATCHING_VERSION,
-                round=round_number,
-                status="succeeded",
-                fingerprint="0" * 64,
-                target_ids=["source_v1:old", "source_v2:new"],
-                attempts=1,
-                started_at=now,
-                updated_at=now,
-            ),
-        )
-
-    diff_task = import_module("translate.tasks.21_diff").DiffTask
-
-    executed_rounds: list[int] = []
-
-    def current_diff(
-        _task: object,
-        _units: dict[str, list[TextUnit]],
-        _operation: str,
-        round_number: int,
-    ) -> tuple[str, DiffResponse]:
-        """最初の再生Callが両版のunitを一つの確定groupへまとめる。"""
-        executed_rounds.append(round_number)
-        return (
-            f"current-{round_number}",
-            DiffResponse.model_validate(
-                {
-                    "changes": [
-                        {
-                            "kind": "unchanged",
-                            "source_v1_ids": ["old"],
-                            "source_v2_ids": ["new"],
-                            "translation_v1_ids": [],
-                            "summary": "変更なし",
-                        }
-                    ]
-                }
-            ),
-        )
-
-    monkeypatch.setattr(diff_task, "run", current_diff)
-    scripted(monkeypatch, [AgentAction(operation="finish")])
-
-    result = UpgradeAgent(
-        {
-            "source_v1": document(old="Same."),
-            "source_v2": document(new="Same."),
-            "translation_v1": document(),
-        },
-        directory,
-        config,
-    ).run()
-
-    assert executed_rounds == [0]
-    assert result.reviewed_source_v1_ids == ["old"]
-    assert result.reviewed_source_v2_ids == ["new"]
-
-
-def test_review_observes_conflict_and_rechecks_then_resumes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """文脈取得・探索・一対多対応・競合再確認を実行し、再開時は成功操作を再送しない。"""
-    documents = {
-        "source": document(en="Use two units."),
-        "translation": document(ja1="使用する。", ja2="三つ。"),
-    }
-    original = {role: value.model_dump() for role, value in documents.items()}
-    refs = {"source": ["en"], "translation": ["ja1", "ja2"]}
-
-    def after_conflict(kwargs: dict[str, object]) -> AgentAction:
-        """競合の観察結果から再確認を選ぶ。"""
-        payload = json.loads(kwargs["user"])
-        observation = payload["observation"]
-        assert payload["state"]["reviewed_targets"] == ["review/alignment-000001"]
-        assert observation["action"]["operation"] == "evaluate"
-        assert observation["result"]["conflicts"] == ["review/alignment-000001"]
-        return AgentAction(
-            operation="recheck", target_ids=observation["result"]["conflicts"]
-        )
-
-    def after_overview(kwargs: dict[str, object]) -> AgentAction:
-        """対応済みの要素が概要へ再登場せず、未評価対象を選べることを確認する。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["observation"]["result"]["items"] == []
-        return AgentAction(
-            operation="evaluate", target_ids=payload["state"]["unchecked_targets"]
-        )
-
-    answers = [
-        AgentAction(operation="read", references={"source": ["en"]}),
-        AgentAction(operation="search", role="translation", query="三つ"),
-        AgentAction(operation="match", references=refs),
-        matched(),
-        AgentAction(operation="overview"),
-        after_overview,
-        evaluation("二つ。", "四つ。"),
-        after_conflict,
-        evaluation("二つ。"),
-        AgentAction(operation="finish"),
-    ]
-    calls = scripted(monkeypatch, answers)
-    directory = tmp_path / "review" / "review"
-    result = ReviewAgent(documents, directory, tmp_path, config).run()
-    assert not answers
-    assert len(result.groups) == 1
-    assert len(result.revisions) == 1
-    assert result.revisions[0].edits[0].text == "二つ。"
-    assert {role: value.model_dump() for role, value in documents.items()} == original
-    assert len(completed_agent_calls(directory)) == 3
-    assert (directory / "review.json").is_file()
-    assert not list(tmp_path.rglob("*.docx"))
-    before = len(calls)
-    answers.append(AgentAction(operation="finish"))
-    restored = ReviewAgent(
-        documents,
-        directory,
-        tmp_path,
-        config.model_copy(update={"openai_review_model": "changed"}),
-    ).run()
-    assert restored == result
-    assert len(calls) == before + 1
-
-
-@pytest.mark.parametrize("operation", ["review", "upgrade"])
-def test_agent_rejects_premature_finish(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config, operation: str
-) -> None:
-    """未確認対象がある終了宣言を拒否し、最終成果物を公開しない。"""
-    scripted(monkeypatch, [AgentAction(operation="finish")])
-    if operation == "review":
-        operation_call = ReviewAgent(
-            {"source": document(en="Text"), "translation": document(ja="訳")},
-            tmp_path,
-            tmp_path,
-            config,
-        )
-    else:
-        operation_call = UpgradeAgent(
-            {
-                "source_v1": document(old="Old"),
-                "source_v2": document(new="New"),
-                "translation_v1": document(ja="訳"),
-            },
-            tmp_path,
-            config,
-        )
-    with pytest.raises(InputError, match="cannot finish"):
-        operation_call.run()
-    assert not (tmp_path / "review.json").exists()
-    assert not (tmp_path / "plan.json").exists()
-
-
-def test_invalid_review_edit_is_failed_before_cache_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """選択した比較対象に属さないSpanの修正を成功保存しない。"""
-    bad = evaluation("二つ。")
-    bad.assessments[0].edits[0].span_id = "unknown/span"
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source": ["en"], "translation": ["ja1", "ja2"]},
-        ),
-        matched(),
-        AgentAction(operation="evaluate", target_ids=["review/alignment-000001"]),
-        bad,
-    ]
-    scripted(monkeypatch, answers)
-    documents = {
-        "source": document(en="Two"),
-        "translation": document(ja1="訳", ja2="三つ"),
-    }
-    with pytest.raises(ValueError, match="unowned span"):
-        ReviewAgent(documents, tmp_path, tmp_path, config).run()
-    artifacts = [
-        load_model(path, LLMCallArtifact) for path in tmp_path.glob("calls/*/call.json")
-    ]
-    assert sorted(item.status for item in artifacts) == ["failed", "succeeded"]
-    assert not (tmp_path / "review.json").exists()
-
-
-def test_upgrade_covers_unchanged_but_only_lists_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """変更・削除・追加と旧訳対応を保持し、未変更は確認範囲だけに残す。"""
-    documents = {
-        "source_v1": document(old="One", same="Keep", deleted="Delete"),
-        "source_v2": document(new="Two", same2="Keep", added="Add"),
-        "translation_v1": document(ja="一つ", keep="維持", remove="削除"),
-    }
-    response = DiffResponse.model_validate(
-        {
-            "changes": [
-                {
-                    "kind": "modified",
-                    "source_v1_ids": ["old"],
-                    "source_v2_ids": ["new"],
-                    "translation_v1_ids": ["ja"],
-                    "summary": "数値変更",
-                    "suggested_translation": "二つ",
-                },
-                {
-                    "kind": "unchanged",
-                    "source_v1_ids": ["same"],
-                    "source_v2_ids": ["same2"],
-                    "translation_v1_ids": ["keep"],
-                    "summary": "変更なし",
-                },
-                {
-                    "kind": "deleted",
-                    "source_v1_ids": ["deleted"],
-                    "summary": "旧訳の該当箇所を削除",
-                    "translation_v1_ids": ["remove"],
-                },
-                {
-                    "kind": "added",
-                    "source_v2_ids": ["added"],
-                    "summary": "追加",
-                    "suggested_translation": "追加する",
-                },
-            ],
-            "reviewed_source_v1_ids": ["old", "same", "deleted"],
-            "reviewed_source_v2_ids": ["new", "same2", "added"],
-        }
-    )
-
-    def after_overview(kwargs: dict[str, object]) -> AgentAction:
-        """確認済み英文と対応済み旧訳を新しい比較の概要から除く。"""
-        items = json.loads(kwargs["user"])["observation"]["result"]["items"]
-        assert items == []
-        return AgentAction(operation="finish")
-
-    answers = [
-        AgentAction(
-            operation="evaluate",
-            references={
-                role: [block.content.id for block in doc.pages[0].blocks]
-                for role, doc in documents.items()
-            },
-        ),
-        response,
-        AgentAction(operation="overview"),
-        after_overview,
-    ]
-    calls = scripted(monkeypatch, answers)
-    result = UpgradeAgent(documents, tmp_path, config).run()
-    assert [item.kind for item in result.changes] == ["modified", "deleted", "added"]
-    assert "same" in result.reviewed_source_v1_ids
-    assert result.changes[0].suggested_translation == "二つ"
-    assert (tmp_path / "plan.json").is_file()
-    assert not list(tmp_path.rglob("*.docx"))
-    before = len(calls)
-    answers.append(AgentAction(operation="finish"))
-    assert UpgradeAgent(documents, tmp_path, config).run() == result
-    assert len(calls) == before + 1
 
 
 def test_diff_schema_limits_changes_to_selected_english_units(
@@ -2710,144 +1117,6 @@ def test_diff_schema_limits_changes_to_selected_english_units(
         assert schema["properties"]["changes"]["maxItems"] == 1
     finally:
         client.client.close()
-
-
-@pytest.mark.parametrize("remaining_role", ["source_v1", "source_v2"])
-def test_upgrade_keeps_one_sided_units_unverified_after_repeated_diff_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    remaining_role: str,
-) -> None:
-    """3回の応答失敗だけで追加・削除を断定せず、未確認として残す。"""
-    documents = {
-        "source_v1": document(
-            **({"old": "Removed"} if remaining_role == "source_v1" else {})
-        ),
-        "source_v2": document(
-            **({"new": "Added"} if remaining_role == "source_v2" else {})
-        ),
-        "translation_v1": document(ja="旧訳"),
-    }
-
-    def failed_diff(_kwargs: dict[str, object]) -> BaseModel:
-        """DIFFが構造化応答を3回続けて返せない状況を再現する。"""
-        message = "Invalid diff response"
-        raise LLMInvalidResponseError(message)
-
-    answers = [
-        item
-        for _ in range(3)
-        for item in (
-            AgentAction(
-                operation="match",
-                references={
-                    remaining_role: ["old" if remaining_role == "source_v1" else "new"]
-                },
-            ),
-            failed_diff,
-        )
-    ]
-    answers.append(AgentAction(operation="finish"))
-    scripted(monkeypatch, answers)
-
-    result = UpgradeAgent(documents, tmp_path, config).run()
-
-    assert len(result.changes) == 1
-    assert result.changes[0].kind == "unverified"
-    assert result.changes[0].translation_v1_ids == []
-    assert "未確認" in result.changes[0].summary
-    assert result.reviewed_source_v1_ids == list(
-        agent_units({"source_v1": documents["source_v1"]})["source_v1"]
-    )
-    assert result.reviewed_source_v2_ids == list(
-        agent_units({"source_v2": documents["source_v2"]})["source_v2"]
-    )
-
-
-def test_upgrade_classifies_one_sided_units_after_idle_steps(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """相手版が確認済みの残りを無進捗が続いた後に対応未確認で記録する。"""
-    documents = {
-        "source_v1": document(old1="Kept", old2="Removed"),
-        "source_v2": document(new="Kept"),
-        "translation_v1": document(ja="旧訳"),
-    }
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source_v1": ["old1"], "source_v2": ["new"]},
-        ),
-        DiffResponse.model_validate(
-            {
-                "changes": [
-                    {
-                        "kind": "unchanged",
-                        "source_v1_ids": ["old1"],
-                        "source_v2_ids": ["new"],
-                        "summary": "同じ内容",
-                    }
-                ],
-                "reviewed_source_v1_ids": ["old1"],
-                "reviewed_source_v2_ids": ["new"],
-            }
-        ),
-        *[AgentAction(operation="overview") for _ in range(12)],
-        AgentAction(operation="finish"),
-    ]
-    scripted(monkeypatch, answers)
-
-    result = UpgradeAgent(documents, tmp_path, config).run()
-
-    assert len(result.changes) == 1
-    assert result.changes[0].kind == "deleted"
-    assert result.changes[0].source_v1_ids == ["old2"]
-    assert result.changes[0].translation_v1_ids == []
-    assert "未確認" in result.changes[0].summary
-    assert result.reviewed_source_v1_ids == ["old1", "old2"]
-    assert result.reviewed_source_v2_ids == ["new"]
-
-
-def test_upgrade_finishes_after_covered_sources_make_no_progress(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """全英文が確認済みなら、12回無進捗の後にAgentの終了宣言を待たず確定する。"""
-    documents = {
-        "source_v1": document(old="Original"),
-        "source_v2": document(new="Original"),
-        "translation_v1": document(ja="原文"),
-    }
-    answers = [
-        AgentAction(
-            operation="match",
-            references={"source_v1": ["old"], "source_v2": ["new"]},
-        ),
-        DiffResponse.model_validate(
-            {
-                "changes": [
-                    {
-                        "kind": "unchanged",
-                        "source_v1_ids": ["old"],
-                        "source_v2_ids": ["new"],
-                        "summary": "変更なし",
-                    }
-                ],
-                "reviewed_source_v1_ids": ["old"],
-                "reviewed_source_v2_ids": ["new"],
-            }
-        ),
-        *[AgentAction(operation="overview") for _ in range(12)],
-    ]
-    scripted(monkeypatch, answers)
-
-    result = UpgradeAgent(documents, tmp_path, config).run()
-
-    assert not answers
-    assert result.changes == []
-    assert result.reviewed_source_v1_ids == ["old"]
-    assert result.reviewed_source_v2_ids == ["new"]
-    assert (tmp_path / "plan.json").is_file()
 
 
 @pytest.mark.parametrize(
@@ -2913,620 +1182,6 @@ def test_diff_schema_limits_ids_to_each_selected_document(
         client.client.close()
 
 
-@pytest.mark.parametrize("rejected", [None, "match", "evaluate", "used_translation"])
-def test_upgrade_advances_translation_candidates_after_confirmation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    rejected: str | None,
-) -> None:
-    """確定済み対象の再選択を訂正し、旧訳の重複対応を防いで比較・再開を完了する。"""
-    documents = {
-        "source_v1": document(old1="First", old2="Second"),
-        "source_v2": document(new1="First", new2="Second"),
-        "translation_v1": document(ja1="一つ目", ja2="二つ目"),
-    }
-
-    def select_candidates(kwargs: dict[str, object]) -> AgentAction:
-        """Agentへ渡された未確認英文と先頭の旧訳候補を選ぶ。"""
-        state = json.loads(kwargs["user"])["state"]
-        if not any(state["pending_counts"].values()):
-            assert state["translation_candidates"] == []
-            return AgentAction(operation="finish")
-        return AgentAction(
-            operation="match",
-            references={
-                **{role: ids[:1] for role, ids in state["pending_ids"].items()},
-                "translation_v1": state["translation_candidates"][:1],
-            },
-        )
-
-    answers = []
-    for index in (1, 2):
-        answers.extend(
-            [
-                select_candidates,
-                DiffResponse.model_validate(
-                    {
-                        "changes": [
-                            {
-                                "kind": "unchanged",
-                                "source_v1_ids": [f"old{index}"],
-                                "source_v2_ids": [f"new{index}"],
-                                "translation_v1_ids": [f"ja{index}"],
-                                "summary": "変更なし",
-                            }
-                        ],
-                        "reviewed_source_v1_ids": [f"old{index}"],
-                        "reviewed_source_v2_ids": [f"new{index}"],
-                    }
-                ),
-            ]
-        )
-    if rejected is None:
-
-        def after_overview(kwargs: dict[str, object]) -> AgentAction:
-            """未確認の各文書候補だけを表示し、使用済み旧訳は本文取得できる。"""
-            items = json.loads(kwargs["user"])["observation"]["result"]["items"]
-            assert {(item["role"], item["id"]) for item in items} == {
-                ("source_v1", "old2"),
-                ("source_v2", "new2"),
-                ("translation_v1", "ja2"),
-            }
-            return AgentAction(operation="read", references={"translation_v1": ["ja1"]})
-
-        def after_read(kwargs: dict[str, object]) -> AgentAction:
-            """候補から除いた旧訳も再確認用に読めることを確認して比較を進める。"""
-            items = json.loads(kwargs["user"])["observation"]["result"]["items"]
-            assert [item["text"] for item in items] == ["一つ目"]
-            return select_candidates(kwargs)
-
-        answers[2:3] = [AgentAction(operation="overview"), after_overview, after_read]
-    else:
-        references = {
-            "source_v1": ["old2" if rejected == "used_translation" else "old1"],
-            "source_v2": ["new2" if rejected == "used_translation" else "new1"],
-            "translation_v1": ["ja1"],
-        }
-
-        def after_rejection(kwargs: dict[str, object]) -> AgentAction:
-            """拒否理由を受け取り、確定済み対応を維持したまま次の組へ進める。"""
-            value = json.loads(kwargs["user"])
-            assert "recheck" in value["observation"]["result"]["error"].lower()
-            assert value["state"]["pending_ids"] == {
-                "source_v1": ["old2"],
-                "source_v2": ["new2"],
-            }
-            assert value["state"]["translation_candidates"] == ["ja2"]
-            return select_candidates(kwargs)
-
-        answers[2:3] = [
-            AgentAction(
-                operation="match" if rejected == "used_translation" else rejected,
-                references=references,
-            ),
-            after_rejection,
-        ]
-    answers.append(select_candidates)
-    calls = scripted(monkeypatch, answers)
-    result = UpgradeAgent(documents, tmp_path, config).run()
-    assert not result.changes
-    assert result.reviewed_source_v1_ids == ["old1", "old2"]
-    assert result.reviewed_source_v2_ids == ["new1", "new2"]
-    assert len(completed_agent_calls(tmp_path)) == 2
-    assert not answers
-    before = len(calls)
-    answers.append(select_candidates)
-    assert UpgradeAgent(documents, tmp_path, config).run() == result
-    assert len(calls) == before + 1
-
-
-def test_upgrade_reselects_after_diff_response_validation_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-) -> None:
-    """不正Diff応答の対象を保持し、Agentの再選択後に比較を完了する。"""
-    documents = {
-        "source_v1": document(old1="First", old2="Second"),
-        "source_v2": document(new1="First", new2="Second"),
-        "translation_v1": document(ja1="一つ目", ja2="二つ目"),
-    }
-    diff_task = import_module("translate.pipeline.upgrade").DiffTask
-    calls = 0
-
-    def diff_run(
-        _task: object,
-        units: dict[str, list[TextUnit]],
-        _operation: str,
-        round_number: int,
-    ) -> tuple[str, DiffResponse]:
-        """最初のDiffを失敗させ、その後は指定範囲を変更なしと確認する。"""
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            message = "Invalid structured response"
-            raise LLMInvalidResponseError(message)
-        references = {
-            role: [unit.id for unit in selected] for role, selected in units.items()
-        }
-        return (
-            f"call-{round_number}",
-            DiffResponse.model_validate(
-                {
-                    "changes": [
-                        {
-                            "kind": "unchanged",
-                            **{f"{role}_ids": ids for role, ids in references.items()},
-                            "summary": "変更なし",
-                        }
-                    ],
-                    "reviewed_source_v1_ids": references["source_v1"],
-                    "reviewed_source_v2_ids": references["source_v2"],
-                }
-            ),
-        )
-
-    monkeypatch.setattr(diff_task, "run", diff_run)
-
-    def choose_first(_kwargs: dict[str, object]) -> AgentAction:
-        """失敗する最初の比較対象を指定する。"""
-        return AgentAction(
-            operation="match",
-            references={
-                "source_v1": ["old1"],
-                "source_v2": ["new1"],
-                "translation_v1": ["ja1"],
-            },
-        )
-
-    def retry_failed(kwargs: dict[str, object]) -> AgentAction:
-        """失敗を採用せず、確定済み結果と未確認対象を保つ。"""
-        value = json.loads(kwargs["user"])
-        assert "invalid response" in value["observation"]["result"]["error"].lower()
-        assert value["state"]["pending_ids"] == {
-            "source_v1": ["old1", "old2"],
-            "source_v2": ["new1", "new2"],
-        }
-        assert value["state"]["confirmed_count"] == 0
-        return choose_first(kwargs)
-
-    def choose_second(kwargs: dict[str, object]) -> AgentAction:
-        """初回範囲の成功後、未確認範囲へ進む。"""
-        value = json.loads(kwargs["user"])
-        assert value["state"]["pending_ids"] == {
-            "source_v1": ["old2"],
-            "source_v2": ["new2"],
-        }
-        return AgentAction(
-            operation="match",
-            references={
-                "source_v1": ["old2"],
-                "source_v2": ["new2"],
-                "translation_v1": ["ja2"],
-            },
-        )
-
-    scripted(
-        monkeypatch,
-        [
-            choose_first,
-            retry_failed,
-            choose_first,
-            choose_second,
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = UpgradeAgent(documents, tmp_path, config).run()
-
-    assert calls == 3
-    assert result.reviewed_source_v1_ids == ["old1", "old2"]
-    assert result.reviewed_source_v2_ids == ["new1", "new2"]
-
-
-def test_upgrade_marks_a_unit_unverified_after_three_failed_match_attempts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """異なる候補との失敗も保存履歴から数え、同じ英文の照合を打ち切る。"""
-    directory = tmp_path / "upgrade"
-    now = datetime.now(UTC)
-    for round_number in (1, 2):
-        write_model(
-            directory / "calls" / f"call-failed-{round_number}" / "call.json",
-            LLMCallArtifact(
-                call_id=f"call-failed-{round_number}",
-                task="DIFF",
-                operation="match",
-                matching_version=MATCHING_VERSION,
-                round=round_number,
-                status="failed",
-                fingerprint="0" * 64,
-                target_ids=["source_v1:old1", "source_v2:new1"],
-                attempts=5,
-                started_at=now,
-                updated_at=now,
-                error={
-                    "code": "llm_call_failed",
-                    "message": "Invalid response",
-                    "cause_type": "LLMInvalidResponseError",
-                    "retryable": True,
-                },
-            ),
-        )
-
-    diff_task = import_module("translate.pipeline.upgrade").DiffTask
-    calls = 0
-
-    def diff_run(
-        _task: object,
-        units: dict[str, list[TextUnit]],
-        _operation: str,
-        round_number: int,
-    ) -> tuple[str, DiffResponse]:
-        """対象1の最後の失敗後は、対象2を正常に確認する。"""
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            message = "Invalid response"
-            raise LLMInvalidResponseError(message)
-        references = {
-            role: [unit.id for unit in selected] for role, selected in units.items()
-        }
-        return (
-            f"call-{round_number}",
-            DiffResponse.model_validate(
-                {
-                    "changes": [
-                        {
-                            "kind": "unchanged",
-                            "source_v1_ids": references["source_v1"],
-                            "source_v2_ids": references["source_v2"],
-                            "summary": "変更なし",
-                        }
-                    ],
-                    "reviewed_source_v1_ids": references["source_v1"],
-                    "reviewed_source_v2_ids": references["source_v2"],
-                }
-            ),
-        )
-
-    monkeypatch.setattr(diff_task, "run", diff_run)
-
-    def retry_failed(_kwargs: dict[str, object]) -> AgentAction:
-        """過去の失敗対象を別訳候補でもう一度試す。"""
-        return AgentAction(
-            operation="match",
-            references={
-                "source_v1": ["old1"],
-                "source_v2": ["new1"],
-                "translation_v1": ["ja2"],
-            },
-        )
-
-    def choose_remaining(kwargs: dict[str, object]) -> AgentAction:
-        """失敗unitが未確認へ移った後、残りの対象を選ぶ。"""
-        payload = json.loads(kwargs["user"])
-        assert payload["state"]["pending_ids"] == {
-            "source_v1": ["old2"],
-            "source_v2": ["new2"],
-        }
-        assert payload["state"]["confirmed_count"] == 1
-        return AgentAction(
-            operation="match",
-            references={
-                "source_v1": ["old2"],
-                "source_v2": ["new2"],
-                "translation_v1": ["ja2"],
-            },
-        )
-
-    scripted(
-        monkeypatch,
-        [
-            retry_failed,
-            choose_remaining,
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = UpgradeAgent(
-        {
-            "source_v1": document(old1="First", old2="Second"),
-            "source_v2": document(new1="First", new2="Second"),
-            "translation_v1": document(ja1="一つ目", ja2="二つ目"),
-        },
-        directory,
-        config,
-    ).run()
-
-    assert calls == 2
-    assert result.reviewed_source_v1_ids == ["old1", "old2"]
-    assert result.reviewed_source_v2_ids == ["new1", "new2"]
-    assert [item.kind for item in result.changes] == ["unverified"]
-
-
-@pytest.mark.parametrize("failure", [LLMInputExceededError, LLMInvalidResponseError])
-def test_upgrade_halves_scope_after_diff_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    failure: type[Exception],
-) -> None:
-    """DIFF失敗後は許容対象数を半減し、残りの英文を確認する。"""
-    documents = {
-        "source_v1": document(old1="First", old2="Second"),
-        "source_v2": document(new1="First", new2="Second"),
-        "translation_v1": document(),
-    }
-    diff_task = import_module("translate.pipeline.upgrade").DiffTask
-    calls = 0
-
-    def diff_run(
-        _task: object,
-        units: dict[str, list[TextUnit]],
-        _operation: str,
-        round_number: int,
-    ) -> tuple[str, DiffResponse]:
-        """初回の対象群を入力超過にし、縮小後は選択範囲を変更なしとする。"""
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            message = "Selected document scope failed"
-            raise failure(message)
-        references = {
-            role: [unit.id for unit in values] for role, values in units.items()
-        }
-        return (
-            f"call-{round_number}",
-            DiffResponse.model_validate(
-                {
-                    "changes": [
-                        {
-                            "kind": "unchanged",
-                            "source_v1_ids": references["source_v1"],
-                            "source_v2_ids": references["source_v2"],
-                            "summary": "変更なし",
-                        }
-                    ],
-                    "reviewed_source_v1_ids": references["source_v1"],
-                    "reviewed_source_v2_ids": references["source_v2"],
-                }
-            ),
-        )
-
-    monkeypatch.setattr(diff_task, "run", diff_run)
-
-    def first_action(_kwargs: dict[str, object]) -> AgentAction:
-        """最初に予算を超える4件を選ぶ。"""
-        return AgentAction(
-            operation="match",
-            references={
-                "source_v1": ["old1", "old2"],
-                "source_v2": ["new1", "new2"],
-            },
-        )
-
-    def reduced_action(kwargs: dict[str, object]) -> AgentAction:
-        """縮小後の上限と、次の判断へ渡す予算エラーを確認する。"""
-        value = json.loads(kwargs["user"])
-        assert value["state"]["max_reference_ids"] == 2
-        assert "at most 2" in value["observation"]["result"]["error"]
-        return AgentAction(
-            operation="match",
-            references={"source_v1": ["old1"], "source_v2": ["new1"]},
-        )
-
-    def remaining_action(kwargs: dict[str, object]) -> AgentAction:
-        """縮小後も残りの英文がAgentの次の判断に含まれる。"""
-        value = json.loads(kwargs["user"])
-        assert value["state"]["max_reference_ids"] == 2
-        assert value["state"]["pending_ids"]["source_v1"] == ["old2"]
-        assert value["state"]["pending_ids"]["source_v2"] == ["new2"]
-        return AgentAction(
-            operation="match",
-            references={"source_v1": ["old2"], "source_v2": ["new2"]},
-        )
-
-    scripted(
-        monkeypatch,
-        [
-            first_action,
-            reduced_action,
-            remaining_action,
-            AgentAction(operation="finish"),
-        ],
-    )
-    result = UpgradeAgent(documents, tmp_path, config).run()
-
-    assert calls == 3
-    assert result.reviewed_source_v1_ids == ["old1", "old2"]
-    assert result.reviewed_source_v2_ids == ["new1", "new2"]
-
-
-def test_upgrade_stops_when_minimum_scope_exceeds_input_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """最小の一対も予算に収まらない場合は同じ比較を再実行しない。"""
-    diff_task = import_module("translate.pipeline.upgrade").DiffTask
-
-    def fail_diff(
-        _task: object,
-        _units: dict[str, list[TextUnit]],
-        _operation: str,
-        _round_number: int,
-    ) -> tuple[str, DiffResponse]:
-        """最小の比較範囲を入力超過として返す。"""
-        message = "Selected document scope exceeds budget"
-        raise LLMInputExceededError(message)
-
-    monkeypatch.setattr(diff_task, "run", fail_diff)
-    scripted(
-        monkeypatch,
-        [
-            AgentAction(
-                operation="match",
-                references={"source_v1": ["old"], "source_v2": ["new"]},
-            )
-        ],
-    )
-
-    with pytest.raises(InputError, match="minimum two-unit DIFF scope"):
-        UpgradeAgent(
-            {
-                "source_v1": document(old="First"),
-                "source_v2": document(new="First"),
-                "translation_v1": document(),
-            },
-            tmp_path,
-            config,
-        ).run()
-
-
-def test_upgrade_can_refresh_overview_between_thirteen_groups(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
-) -> None:
-    """未確認範囲が減る概要取得を反復しても、13群以上の比較を完了できる。"""
-    documents = {
-        role: document(**{f"unit-{index}": "Text" for index in range(13)})
-        for role in ("source_v1", "source_v2", "translation_v1")
-    }
-    answers = []
-    for index in range(13):
-        references = {role: [f"unit-{index}"] for role in documents}
-        answers.extend(
-            [
-                AgentAction(operation="overview"),
-                AgentAction(operation="evaluate", references=references),
-                DiffResponse.model_validate(
-                    {
-                        "changes": [
-                            {
-                                "kind": "unchanged",
-                                **{
-                                    f"{role}_ids": ids
-                                    for role, ids in references.items()
-                                },
-                                "summary": "変更なし",
-                            }
-                        ],
-                        "reviewed_source_v1_ids": references["source_v1"],
-                        "reviewed_source_v2_ids": references["source_v2"],
-                    }
-                ),
-            ]
-        )
-    answers.append(AgentAction(operation="finish"))
-    scripted(monkeypatch, answers)
-    result = UpgradeAgent(documents, tmp_path, config).run()
-    assert len(result.reviewed_source_v1_ids) == 13
-    assert len(result.reviewed_source_v2_ids) == 13
-    assert not result.changes
-    assert not answers
-
-
-@pytest.mark.parametrize(("operation", "limit"), [("review", 12), ("upgrade", 36)])
-def test_agent_stops_repeated_overview_without_progress(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    operation: str,
-    limit: int,
-) -> None:
-    """進展のない選択が上限に達すると、Reviewは残作業へ進みUpgradeは停止する。"""
-
-    def next_work(kwargs: dict[str, object]) -> BaseModel:
-        """判断を挟まず照合が送信されたことを確認して止める。"""
-        assert kwargs["response_type"] is AlignmentResponse
-        message = "stop"
-        raise LLMConnectionError(message)
-
-    answers: list[BaseModel | Callable[[dict[str, object]], BaseModel]] = [
-        AgentAction(
-            operation="overview",
-        )
-        for _ in range(limit)
-    ]
-    if operation == "review":
-        answers.append(next_work)
-    calls = scripted(monkeypatch, answers)
-    if operation == "review":
-        agent = ReviewAgent(
-            {"source": document(en="Text"), "translation": document(ja="訳文")},
-            tmp_path,
-            tmp_path,
-            config,
-        )
-    else:
-        agent = UpgradeAgent(
-            {
-                "source_v1": document(old="Text"),
-                "source_v2": document(new="Text"),
-                "translation_v1": document(ja="訳文"),
-            },
-            tmp_path,
-            config,
-        )
-    if operation == "review":
-        with pytest.raises(LLMConnectionError):
-            agent.run()
-    else:
-        with pytest.raises(TimeoutError, match="step or time limit"):
-            agent.run()
-    assert len(calls) == limit + (operation == "review")
-    assert not answers
-
-
-@pytest.mark.parametrize("operation", ["review", "upgrade"])
-def test_agent_retries_action_from_state_when_observation_exceeds_budget(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    operation: str,
-) -> None:
-    """大きすぎる前回結果を捨てても保持済み状態からAgentを完了できる。"""
-    module = import_module(f"translate.pipeline.{operation}")
-    observations = []
-
-    def choose_action(
-        _client: LLMClient,
-        _purpose: str,
-        _state: dict[str, object],
-        observation: object,
-        _units: dict[str, dict[str, TextUnit]],
-    ) -> AgentAction:
-        """一回目は前回結果を大きくし、二回目で保持状態から終了する。"""
-        observations.append(observation)
-        if len(observations) == 1:
-            error = "action context exceeds input limit"
-            raise LLMInputExceededError(error)
-        assert observation == {
-            "error": (
-                "Previous result exceeded the action input budget. "
-                "No action was executed; choose from the current state."
-            )
-        }
-        return AgentAction(operation="finish")
-
-    monkeypatch.setattr(module, "choose_action", choose_action)
-    documents = (
-        {"source": document(), "translation": document()}
-        if operation == "review"
-        else {
-            "source_v1": document(),
-            "source_v2": document(),
-            "translation_v1": document(),
-        }
-    )
-    agent = (
-        ReviewAgent(documents, tmp_path, tmp_path, config)
-        if operation == "review"
-        else UpgradeAgent(documents, tmp_path, config)
-    )
-
-    agent.run()
-
-    assert len(observations) == 2
-
-
 def test_upgrade_confirms_identical_units_without_llm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
@@ -3568,47 +1223,529 @@ def test_upgrade_sends_only_differing_units_to_agent(
     ] == [(["a"], ["x"])]
 
 
-@pytest.mark.parametrize("interleaved", [False, True])
-@pytest.mark.parametrize("kind", ["review", "upgrade"])
-def test_agent_runs_next_work_after_repeated_invalid_actions(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: Config,
-    kind: str,
-    interleaved: bool,  # noqa: FBT001
+def raising(error: Exception) -> Callable[[dict[str, object]], BaseModel]:
+    """LLM要求の失敗を注入する応答を返す。"""
+
+    def respond(_kwargs: dict[str, object]) -> BaseModel:
+        """要求を受けた時点で指定の例外を送出する。"""
+        raise error
+
+    return respond
+
+
+def aligned(source: str, *translations: str) -> AlignmentResponse:
+    """一つの原文と訳文群の対応を返す。"""
+    return AlignmentResponse.model_validate(
+        {
+            "groups": [
+                {
+                    "source_ids": [source],
+                    "translation_ids": list(translations),
+                    "kind": "matched",
+                    "reason": "同じ内容",
+                }
+            ]
+        }
+    )
+
+
+def approve_all(kwargs: dict[str, object]) -> ReviewResponse:
+    """分割された評価要求でも、送られた全対象を正常と判定する。"""
+    targets = json.loads(str(kwargs["user"]))["targets"]
+    return successful_review(*(str(target["id"]) for target in targets))
+
+
+def match_payloads(calls: list[dict[str, object]]) -> list[dict[str, list[str]]]:
+    """照合要求ごとに、送った本文を文書role別に返す。"""
+    return [
+        {
+            role: [item["text"] for item in items]
+            for role, items in json.loads(str(call["user"])).items()
+            if role in {"source", "translation"}
+        }
+        for call in calls
+        if call["response_type"] is AlignmentResponse
+    ]
+
+
+def test_narrowed_keeps_the_start_and_halves_candidates_in_order() -> None:
+    """起点以外の起点側unitを先に外し、次に指定順で候補を上位半分へ絞る。"""
+    scope = {"source": ["en1", "en2"], "translation": ["a", "b", "c", "d", "e"]}
+    first = narrowed(scope, "source", ("translation",), 1)
+    assert first == {"source": ["en1"], "translation": ["a", "b", "c", "d", "e"]}
+    assert narrowed(first, "source", ("translation",), 1) == {
+        "source": ["en1"],
+        "translation": ["a", "b"],
+    }
+    assert (
+        narrowed(
+            {"source": ["en1"], "translation": ["a"]}, "source", ("translation",), 1
+        )
+        is None
+    )
+    upgrade = {"source_v1": ["old"], "source_v2": ["new"], "translation_v1": ["ja"]}
+    step = narrowed(upgrade, "source_v1", ("translation_v1", "source_v2"), 0)
+    assert step == {"source_v1": ["old"], "source_v2": ["new"], "translation_v1": []}
+    step = narrowed(step, "source_v1", ("translation_v1", "source_v2"), 0)
+    assert step == {"source_v1": ["old"], "source_v2": [], "translation_v1": []}
+    assert narrowed(step, "source_v1", ("translation_v1", "source_v2"), 0) is None
+
+
+def test_positional_candidates_pick_unused_units_near_the_relative_position() -> None:
+    """Embeddingがない場合は、起点と相対位置が近い未使用unitを文書順で補う。"""
+    units = agent_units(
+        {
+            "source": document(**{f"en{index}": "Text" for index in range(3)}),
+            "translation": document(**{f"ja{index}": "訳" for index in range(20)}),
+        }
+    )
+    available = {
+        "source": set(units["source"]),
+        "translation": set(units["translation"]) - {"ja19"},
+    }
+    result = positional_candidates(units, {"source": ["en2"]}, available, "source")
+    assert result["source"] == ["en2"]
+    assert result["translation"] == [f"ja{index}" for index in range(11, 19)]
+    kept = positional_candidates(
+        units, {"source": ["en0"], "translation": ["ja5"]}, available, "source"
+    )
+    assert kept["translation"] == ["ja5"]
+
+
+def test_review_leaves_translator_columns_out_of_matching_and_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
 ) -> None:
-    """進捗のないまま応答不正が3回に達すると、LLMの判断なしで未確認の作業へ進む。"""
-    roles = (
-        ["source", "translation"]
-        if kind == "review"
-        else ["source_v1", "source_v2", "translation_v1"]
+    """英文に対応のない訳者のコラムは評価せず、指摘・修正の対象にもしない。"""
+    documents = {
+        "source": document(en1="Alpha is the first value.", en2="Beta is the second."),
+        "translation": document(
+            ja1="アルファは最初の値です。",
+            column="コラム アルファとベータの補足説明。",
+            ja2="ベータは二番目です。",
+        ),
+    }
+    calls = scripted(
+        monkeypatch,
+        [
+            aligned("en1", "ja1"),
+            aligned("en2", "ja2"),
+            successful_review("review/alignment-000001"),
+            successful_review("review/alignment-000002"),
+        ],
     )
-    expected = AlignmentResponse if kind == "review" else DiffResponse
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
 
-    def invalid(kwargs: dict[str, object]) -> BaseModel:
-        """Agent判断を応答不正にする。"""
-        assert kwargs["response_type"] is AgentAction
-        message = "Action failed"
-        raise LLMInvalidResponseError(message)
-
-    def next_work(kwargs: dict[str, object]) -> BaseModel:
-        """判断を挟まず比較操作が送信されたことを確認して止める。"""
-        assert kwargs["response_type"] is expected
-        message = "stop"
-        raise LLMConnectionError(message)
-
-    idle = AgentAction(operation="overview")
-    answers = (
-        [invalid, idle, invalid, idle, invalid, next_work]
-        if interleaved
-        else [invalid, invalid, invalid, next_work]
+    assert match_payloads(calls)[0]["translation"] == [
+        "アルファは最初の値です。",
+        "コラム アルファとベータの補足説明。",
+        "ベータは二番目です。",
+    ]
+    assert "コラム" in str(calls[0]["system"]) + str(calls[0]["contract"])
+    evaluated = " ".join(
+        str(call["user"]) for call in calls if call["response_type"] is ReviewResponse
     )
-    scripted(monkeypatch, answers)
-    documents = {role: document(unit="Text") for role in roles}
-    agent = (
-        ReviewAgent(documents, tmp_path, tmp_path, config)
-        if kind == "review"
-        else UpgradeAgent(documents, tmp_path, config)
+    assert "コラム" not in evaluated
+    assert [
+        (group.kind, group.source_ids, group.translation_ids) for group in result.groups
+    ] == [
+        ("matched", ["en1"], ["ja1"]),
+        ("matched", ["en2"], ["ja2"]),
+        ("translation_only", [], ["column"]),
+    ]
+    assert "補足" in (result.groups[-1].reason or "")
+    assert result.reviewed_target_ids == [
+        "review/alignment-000001",
+        "review/alignment-000002",
+    ]
+    assert not result.findings
+    assert not result.revisions
+
+
+def test_review_and_upgrade_never_offer_a_titled_translator_column(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """本文の見出しに似たコラムの見出しも、照合・比較の候補に入れない。"""
+    review_calls = scripted(
+        monkeypatch,
+        [aligned("en", "ja"), successful_review("review/alignment-000001")],
     )
-    with pytest.raises(LLMConnectionError):
-        agent.run()
+    result = ReviewAgent(
+        {
+            "source": document(en="INFORMATION QUALITY CRITERIA"),
+            "translation": document(
+                column="コラム\uff1a情報の質の基準について", ja="情報の質の基準"
+            ),
+        },
+        tmp_path / "review",
+        tmp_path / "review",
+        config,
+    ).run()
+    assert match_payloads(review_calls)[0]["translation"] == ["情報の質の基準"]
+    assert ("translation_only", ["column"]) in [
+        (group.kind, group.translation_ids) for group in result.groups
+    ]
+
+    upgrade_calls = scripted(
+        monkeypatch,
+        [
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "modified",
+                            "source_v1_ids": ["old"],
+                            "source_v2_ids": ["new"],
+                            "translation_v1_ids": ["ja"],
+                            "summary": "変更",
+                            "suggested_translation": "新しい訳。",
+                        }
+                    ]
+                }
+            )
+        ],
+    )
+    UpgradeAgent(
+        {
+            "source_v1": document(old="Old text."),
+            "source_v2": document(new="New text."),
+            "translation_v1": document(column="訳注\uff1a補足説明。", ja="旧訳。"),
+        },
+        tmp_path / "upgrade",
+        config,
+    ).run()
+    assert "補足説明" not in str(upgrade_calls[0]["user"])
+
+
+def test_review_narrows_a_failed_match_scope_until_it_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """入力上限超過や応答不正の照合は候補を絞って続け、Review全体を完了する。"""
+    documents = {
+        "source": document(en="Two"),
+        "translation": document(t1="一", t2="二", t3="三", t4="四"),
+    }
+    calls = scripted(
+        monkeypatch,
+        [
+            raising(LLMInputExceededError("too large")),
+            raising(LLMInvalidResponseError("invalid")),
+            aligned("en", "t1"),
+            successful_review("review/alignment-000001"),
+        ],
+    )
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+
+    assert [payload["translation"] for payload in match_payloads(calls)] == [
+        ["一", "二", "三", "四"],
+        ["一", "二"],
+        ["一"],
+    ]
+    assert [
+        (group.kind, group.source_ids, group.translation_ids) for group in result.groups
+    ] == [
+        ("matched", ["en"], ["t1"]),
+        ("translation_only", [], ["t2"]),
+        ("translation_only", [], ["t3"]),
+        ("translation_only", [], ["t4"]),
+    ]
+
+
+def test_review_resamples_an_unsplittable_target_after_output_overflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """分割できない対象の出力上限到達は、生成し直してReviewを完了する。"""
+    documents = {
+        "source": document(en="Two"),
+        "translation": document(ja="二"),
+    }
+    calls = scripted(
+        monkeypatch,
+        [
+            aligned("en", "ja"),
+            raising(LLMOutputTokenExceededError("looped")),
+            successful_review("review/alignment-000001"),
+        ],
+    )
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+
+    evaluated = [call for call in calls if call["response_type"] is ReviewResponse]
+    assert len(evaluated) == 2
+    assert evaluated[0]["user"] == evaluated[1]["user"]
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+
+
+def test_review_matches_a_formula_without_evaluating_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """数式だけの原文は対応を記録し、翻訳対象外として評価しない。"""
+    documents = {
+        "source": document(en="Alpha", formula=r"a = \begin{pmatrix} 0 \end{pmatrix}"),
+        "translation": document(ja="アルファ", math=r"$$a = \begin{pmatrix} 0"),
+    }
+    documents["source"].pages[0].blocks[1].content.spans[0].kind = "code"
+    calls = scripted(
+        monkeypatch,
+        [
+            aligned("en", "ja"),
+            aligned("formula", "math"),
+            successful_review("review/alignment-000001"),
+        ],
+    )
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+
+    evaluated = [call for call in calls if call["response_type"] is ReviewResponse]
+    assert len(evaluated) == 1
+    assert "pmatrix" not in str(evaluated[0]["user"])
+    assert [(group.kind, group.translation_ids) for group in result.groups] == [
+        ("matched", ["ja"]),
+        ("matched", ["math"]),
+    ]
+    assert "対象外" in (result.groups[1].reason or "")
+    assert result.reviewed_target_ids == ["review/alignment-000001"]
+
+
+def test_review_records_a_source_without_counterpart_and_reuses_saved_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """対応のない原文は訳抜け候補として残し、再実行では保存済みCallを再利用する。"""
+    documents = {
+        "source": document(en1="Alpha", en2="Missing sentence."),
+        "translation": document(ja="アルファ"),
+    }
+    calls = scripted(
+        monkeypatch,
+        [
+            aligned("en1", "ja"),
+            successful_review("review/alignment-000001"),
+        ],
+    )
+    first = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+    assert len(calls) == 2
+    assert [(group.kind, group.source_ids) for group in first.groups] == [
+        ("matched", ["en1"]),
+        ("source_only", ["en2"]),
+    ]
+    assert "訳抜け" in (first.groups[1].reason or "")
+
+    resumed_calls = scripted(monkeypatch, [])
+    resumed = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+    assert not resumed_calls
+    assert resumed == first
+
+
+def test_review_uses_source_text_for_a_copied_front_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """訳文の先頭に複製された英語表紙は、原文を比較基準にして評価する。"""
+    cover = "Joint Planning doctrine for command and control of joint operations. " * 3
+    documents = {
+        "source": document(en=cover),
+        "translation": document(copy=cover.replace("command", "cornmand")),
+    }
+    calls = scripted(
+        monkeypatch,
+        [aligned("en", "copy"), successful_review("review/alignment-000001")],
+    )
+    result = ReviewAgent(documents, tmp_path, tmp_path, config).run()
+    assert result.targets[0].translation == cover
+    assert result.targets[0].spans == []
+    assert "cornmand" not in str(calls[-1]["user"])
+
+
+def test_review_rejects_two_edits_for_the_same_span(
+    tmp_path: Path, config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同じSpanへの複数の修正は応答不正として再要求し、一つの判定を採用する。"""
+    duplicate = {
+        "assessments": [
+            {
+                "target_id": "1",
+                "reason": "数値を原文に合わせる。",
+                "verdict": "issue",
+                "edits": [
+                    {"span_id": "s1", "text": "二つ。"},
+                    {"span_id": "s1", "text": "2つ。"},
+                ],
+                "category": "accuracy",
+                "severity": "error",
+            }
+        ],
+    }
+    responses = []
+    for payload in [duplicate, successful_review("1").model_dump()]:
+        response = MagicMock()
+        response.choices = [MagicMock(finish_reason="stop")]
+        response.choices[0].message.content = json.dumps(payload)
+        response.usage = None
+        responses.append(response)
+    client = LLMClient(config)
+    create = MagicMock(side_effect=responses)
+    monkeypatch.setattr(client.client.chat.completions, "create", create)
+    target = ReviewTarget(
+        id="review/current",
+        source="Two.",
+        translation="三つ。",
+        target_ids=["ja"],
+        spans=[TextSpan(id="span", source="三つ。")],
+    )
+    task = import_module("translate.tasks.41_review").ReviewTask(
+        config, tmp_path, "", ""
+    )
+    try:
+        result = task.run([target], tmp_path, client=client)
+    finally:
+        client.client.close()
+    assert create.call_count == 2
+    assert not result.revisions
+
+
+def test_match_clips_long_units_to_fit_the_input_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """長いunitは先頭と末尾を残して照合へ送り、入力上限を超えない。"""
+    long_text = "Start. " + "Middle sentence. " * 2000 + "End."
+    documents = {
+        "source": document(en=long_text),
+        "translation": document(ja="開始。中間の文。終わり。"),
+    }
+    calls = scripted(
+        monkeypatch,
+        [aligned("en", "ja"), *[approve_all] * 16],
+    )
+    ReviewAgent(documents, tmp_path, tmp_path, config).run()
+    payload = match_payloads(calls)[0]
+    assert payload["source"][0].startswith("Start.")
+    assert payload["source"][0].endswith("End.")
+    assert " … " in payload["source"][0]
+    budget = config.input_bytes(config.review_input_tokens)
+    assert len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) < budget
+
+
+def test_upgrade_narrows_candidates_and_then_compares_remaining_new_units(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """比較の失敗は旧訳、新版の順に候補を絞って続け、残った新版も比較する。"""
+    documents = {
+        "source_v1": document(old="Old text."),
+        "source_v2": document(new="New text.", other="Other text."),
+        "translation_v1": document(ja1="旧訳。", ja2="コラム 補足。"),
+    }
+    failure = raising(LLMInvalidResponseError("invalid"))
+    calls = scripted(
+        monkeypatch,
+        [
+            failure,
+            failure,
+            failure,
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "modified",
+                            "source_v1_ids": ["old"],
+                            "source_v2_ids": ["new"],
+                            "summary": "文言を変更",
+                            "suggested_translation": "新しい訳。",
+                        }
+                    ]
+                }
+            ),
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "added",
+                            "source_v2_ids": ["other"],
+                            "summary": "追加",
+                            "suggested_translation": "その他。",
+                        }
+                    ]
+                }
+            ),
+        ],
+    )
+    result = UpgradeAgent(documents, tmp_path, config).run()
+
+    sizes = [
+        {
+            role: len(items)
+            for role, items in json.loads(str(call["user"])).items()
+            if role in documents
+        }
+        for call in calls
+    ]
+    assert sizes == [
+        {"source_v1": 1, "source_v2": 2, "translation_v1": 2},
+        {"source_v1": 1, "source_v2": 2, "translation_v1": 1},
+        {"source_v1": 1, "source_v2": 2, "translation_v1": 0},
+        {"source_v1": 1, "source_v2": 1, "translation_v1": 0},
+        {"source_v1": 0, "source_v2": 1, "translation_v1": 2},
+    ]
+    assert "コラム" in str(calls[0]["system"]) + str(calls[0]["contract"])
+    assert [(change.kind, change.source_v2_ids) for change in result.changes] == [
+        ("modified", ["new"]),
+        ("added", ["other"]),
+    ]
+    assert result.reviewed_source_v1_ids == ["old"]
+    assert result.reviewed_source_v2_ids == ["new", "other"]
+
+    # 失敗したCallは保存されないため、再開時は失敗した要求だけを再び送る。
+    resumed_calls = scripted(monkeypatch, [failure, failure, failure])
+    assert UpgradeAgent(documents, tmp_path, config).run() == result
+    assert len(resumed_calls) == 3
+
+
+def test_upgrade_raises_when_the_starting_unit_alone_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """候補をすべて外しても起点だけの比較が失敗する場合は、その失敗を伝える。"""
+    documents = {
+        "source_v1": document(old="Old text."),
+        "source_v2": document(),
+        "translation_v1": document(),
+    }
+    scripted(monkeypatch, [raising(LLMInputExceededError("too large"))])
+    with pytest.raises(LLMInputExceededError):
+        UpgradeAgent(documents, tmp_path, config).run()
+
+
+def test_upgrade_resamples_the_starting_unit_after_output_overflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: Config
+) -> None:
+    """起点だけの比較が出力上限へ達した場合は、同じ範囲を生成し直して完了する。"""
+    documents = {
+        "source_v1": document(old="Old text."),
+        "source_v2": document(),
+        "translation_v1": document(),
+    }
+    calls = scripted(
+        monkeypatch,
+        [
+            raising(LLMOutputTokenExceededError("looped")),
+            DiffResponse.model_validate(
+                {
+                    "changes": [
+                        {
+                            "kind": "deleted",
+                            "source_v1_ids": ["old"],
+                            "summary": "削除",
+                        }
+                    ]
+                }
+            ),
+        ],
+    )
+    UpgradeAgent(documents, tmp_path, config).run()
+    assert len(calls) == 2
+    assert json.loads(str(calls[0]["user"])) == json.loads(str(calls[1]["user"]))
+
+
+def test_agent_deadline_scales_with_english_units(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """期限は英文1,000要素ごとに設定値を加算し、小さい文書でも設定値を下回らない。"""
+    monkeypatch.setattr("translate.pipeline.time.monotonic", lambda: 100.0)
+    limit = config.llm_task_deadline_seconds
+    assert agent_deadline(config, 0) == 100.0 + limit
+    assert agent_deadline(config, 1000) == 100.0 + limit
+    assert agent_deadline(config, 3526) == 100.0 + limit * 4

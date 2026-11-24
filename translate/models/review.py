@@ -28,19 +28,6 @@ class AlignmentGroup(AlignmentCandidate):
     id: str
 
 
-class AgentAction(ReviewModel):
-    """Agentが次に行う許可済み操作と、文書内の対象指定。"""
-
-    operation: Literal[
-        "overview", "read", "search", "match", "evaluate", "recheck", "finish"
-    ]
-    references: dict[str, list[str]] = Field(default_factory=dict)
-    target_ids: list[str] = Field(default_factory=list)
-    role: str = ""
-    query: str = ""
-    offset: int = Field(default=0, ge=0)
-
-
 class ReviewTarget(ReviewModel):
     """REVIEWへ渡す原文・訳文と修正可能なSpan。"""
 

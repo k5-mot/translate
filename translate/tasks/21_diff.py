@@ -5,7 +5,7 @@ from pathlib import Path
 from translate.adapters.llm import LLMClient
 from translate.models.document import TextUnit
 from translate.models.upgrade import DiffResponse
-from translate.tasks import SavedLLMCalls
+from translate.tasks import SavedLLMCalls, clipped_text
 
 
 class DiffTask:
@@ -98,11 +98,17 @@ class DiffTask:
             ).issubset(expected["translation_v1"]):
                 raise ValueError("Invalid or duplicated previous translation reference")
 
+        # 旧訳は修正提案の文脈なので、長い場合は先頭と末尾だけを渡す。
+        translation_bytes = self.client.config.input_bytes(
+            self.client.config.review_input_tokens
+        ) // (4 * max(1, len(expected["translation_v1"])))
         payload: dict[str, object] = {
             role: [
                 {
                     "id": unit.id,
-                    "text": unit.text("source"),
+                    "text": clipped_text(unit.text("source"), translation_bytes)
+                    if role == "translation_v1"
+                    else unit.text("source"),
                     **(
                         {
                             "context": {
@@ -143,6 +149,9 @@ class DiffTask:
             "Establish correspondence by complete content and row/column meaning before classifying changes. "
             "Paragraph and sentence boundaries can differ; combine split fragments, including page continuations. "
             "Never pair unrelated records or a formula with prose because their positions or equation numbers resemble. "
-            "Keep unchanged only for coverage. Do not create a complete document.",
+            "Keep unchanged only for coverage. Do not create a complete document. "
+            "translation_v1 can contain translator-added supplementary columns or notes, for example "
+            "headed コラム, 訳注 or 補足, that have no English counterpart. Never list them in "
+            "translation_v1_ids and never rewrite or remove them in suggested_translation.",
             validate,
         )

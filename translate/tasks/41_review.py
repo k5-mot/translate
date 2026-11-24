@@ -1,5 +1,6 @@
 """問題指摘と修正候補を生成するREVIEW Task。"""
 
+import logging
 import re
 import time
 from datetime import date
@@ -41,6 +42,8 @@ from translate.tasks.review_chunks import (
     _target_payload,
     _user_payload,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _without_extraction_spaces(value: str) -> str:
@@ -257,6 +260,7 @@ class ReviewTask:
         operation: str = "evaluate",
         round_number: int = 0,
         span_owners: dict[str, str] | None = None,
+        sample: int = 1,
     ) -> list[tuple[str, ReviewResponse, list[ReviewTarget]]]:
         """対象を評価し、上限超過時は意味単位を保って分割する。
 
@@ -268,6 +272,7 @@ class ReviewTask:
             operation: evaluateまたはrecheck。
             round_number: Agentが選んだ再確認の連番。
             span_owners: 修正対象の所属を検証するSpan IDとTextUnit IDの対応。
+            sample: 分割できない対象を生成し直した回数。
 
         Returns:
             Call ID、応答、対応する入力対象の組。
@@ -353,6 +358,13 @@ class ReviewTask:
                     for key in target.target_ids
                 )
                 selected_spans = {span.id: span.text() for span in target.spans}
+                edited_spans = [edit.span_id for edit in item.edits]
+                if len(edited_spans) != len(set(edited_spans)):
+                    # 同じSpanへの複数の修正は適用順で結果が変わるため、一つにまとめさせる。
+                    raise ValueError(
+                        "Assessment edits the same span more than once. "
+                        "Combine the changes into one edit per span."
+                    )
                 dot_leader_only = bool(item.edits) and all(
                     edit.span_id in selected_spans
                     and re.sub(
@@ -437,9 +449,13 @@ class ReviewTask:
                     == _without_extraction_spaces(edit.text)
                     for edit in item.edits
                 ):
-                    raise ValueError(
-                        "The edits only change extraction whitespace or leave the translation unchanged. Use correct."
-                    )
+                    # 訳文を変えない修正案は同じ応答を繰り返しやすいため、
+                    # 再要求せず不備なしとして確定する。
+                    item.reason = "修正案が現在の訳文と同じため、不備なしとします。"
+                    item.verdict = "correct"
+                    item.edits = []
+                    item.category = None
+                    item.severity = None
 
         try:
             call_id, response = self.calls.request(
@@ -480,6 +496,8 @@ class ReviewTask:
                 "Use issue only for a concrete defect, and propose replacements for the affected spans. "
                 "A correctly preserved technical identifier is correct, even though it is English. "
                 "context describes the translation's structural role, not additional translation text. "
+                "A translator-added supplementary column or note, for example headed コラム, 訳注 or 補足, "
+                "has no source counterpart by design; never report it as an addition and never edit its spans. "
                 "Ordinary English prose left untranslated is an issue. Explain the conclusion in Japanese.",
                 validate,
             )
@@ -487,14 +505,35 @@ class ReviewTask:
             LLMInputExceededError,
             LLMInvalidResponseError,
             LLMOutputExceededError,
-        ):
+        ) as error:
             groups = (
                 _retry_groups(targets)
                 if depth < self.config.llm_split_max_depth
                 else ()
             )
             if not groups:
-                raise
+                # 小さい入力でも生成が反復して出力上限へ達することがあるため、
+                # 分割できない対象は同じ要求を生成し直す。
+                if (
+                    isinstance(error, LLMInputExceededError)
+                    or sample >= self.config.llm_retry_attempts
+                ):
+                    raise
+                logger.info(
+                    "Resampling Review target=%s after %s",
+                    target_ids[0],
+                    type(error).__name__,
+                )
+                return self._execute(
+                    client=client,
+                    targets=targets,
+                    lineage=lineage,
+                    depth=depth,
+                    operation=operation,
+                    round_number=round_number,
+                    span_owners=span_owners,
+                    sample=sample + 1,
+                )
             parent_id = llm_call_id(
                 "REVIEW",
                 [f"review:{key}" for key in target_ids],

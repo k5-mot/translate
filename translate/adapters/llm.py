@@ -500,6 +500,9 @@ def _is_input_overflow(error: APIStatusError) -> bool:
         return True
     if error.status_code != 400:
         return False
+    # 一覧にないprovider固有の文言も、診断で入力上限と分類したものは超過として扱う。
+    if _provider_error_category(error.body) == "input_limit":
+        return True
     message = error.response.text.casefold()
     return any(
         marker in message

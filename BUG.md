@@ -41,6 +41,9 @@
 - 結果: 再起動後に`/health`がHTTP 200となってからUpgradeを再実行したが、DoclingのGET状態確認も約14分後に6回の接続再試行を使い切り`ConnectError`で失敗した。
 - 影響: Doclingはhealth応答後も処理中に接続が切れ、Upgradeを完了できない。
 - 記録: `outputs/sample5/01a18df6-d862-7d81-8568-e2c1c881ebc0/upgrade.log`と`state-upgrade.json`。
+- 再発（2026-11-12 23:43、HEAD `9bc1892`と未コミットの変更）: sample5のUpgradeで、Doclingの状態確認GETが4回応答なしの後にHTTP 404となり`HTTPStatusError`で失敗した。Docling側で変換taskが失われたとみられる。実機検証`20261112-195025-4baa45ca`は、sampleの4工程とsample5のRegister、Translate、Reviewが成功した後に停止した。コードは変わっていないため、`-StartAt sample5`でsample5から再実行した。記録: `outputs/sample5/01a1d01a-0a73-7091-9c2d-c98322fdb296/upgrade.log`。
+- 再発（2026-11-13 23:36〜11-14 03:46、HEAD `9bc1892`と未コミットの変更）: sample2のRegisterで、Docling変換POSTが50分ごとに6回応答なしとなり`ReadTimeout`で失敗した。失敗直後は`/health`も応答しなかった。実機検証`20261113-224636-86aa4d70`はsample2のRegisterで停止した。製品コードは変わっていないため、Doclingの応答が戻ってから`-StartAt sample2`で再実行した。記録: `outputs/sample2/01a1d529-30f7-7aa3-b324-60cbed8c2104/registration.log`。
+- 再発（2026-11-15 00:32〜01:02、HEAD `9bc1892`と未コミットの変更）: 利用者がDoclingを再起動し11-14 20:20に再開したsample2のRegisterは成功したが、11-15 00:32の再実行では開始時点からDoclingが接続を拒否し、約30分の回復待ちの後に`ConnectError`で失敗した。失敗後も`/health`は応答しなかった。Doclingの応答が戻ってから`-StartAt sample2`で再実行する。記録: `outputs/sample2/01a1dab0-58b1-7c11-b5d1-5c8b3c9a688a/registration.log`。
 
 ## 🧭 Review/Upgrade結果画面の見出しがTranslateのまま
 
@@ -231,3 +234,52 @@
 - 記録: `outputs/sample/01a1c51d-373e-72d3-892a-433596c5f31b/translation.log`。
 - 再発（2026-11-11 04:57、HEAD `1634faa`）: sample3のReviewで、16件のEmbedding要求が約3分応答せず`EmbeddingError`となった。実機検証`20261110-200735-a65687bc`は、sample〜sample4の16工程とsample3のRegister、Translateが成功した後に停止した。コードは変わっていないため、`-StartAt sample3`でsample3から再実行した。記録: `outputs/document.ja-office/01a1c6f8-d2ed-74e2-9f3a-9d20d47759af/review.log`。
 - 再発（2026-11-11 22:39、HEAD `1634faa`）: sample1のTranslateで、1件のEmbedding要求が約2分後に接続失敗となり`EmbeddingError`で失敗した。実機検証`20261111-050121-a17050f4`は、sample3〜sample2の8工程とsample1のRegisterが成功した後に停止した。コードは変わっていないため、`-StartAt sample1`でsample1から再実行した。記録: `outputs/sample1/01a1ca24-1db5-77c2-95ec-82a4ee6f86b3/translation.log`。
+- 再発（2026-11-13 22:45、HEAD `9bc1892`と未コミットの変更）: sample2のTranslateでEmbedding要求が時間切れとなり`EmbeddingError`で失敗した。実機検証`20261113-064015-2e593111`は、sample〜sample3の16工程とsample2のRegisterが成功した後に停止した。製品コードは変わっていないため、`-StartAt sample2`でsample2から再実行した。記録: `outputs/sample2/01a1d3cd-c8b9-79e1-ad22-82a696743cac/translation.log`。
+- 再発（2026-11-14 21:10〜11-15 00:31、HEAD `9bc1892`と未コミットの変更）: sample2のTranslateで、1件のEmbedding要求が約3時間20分応答せず、最後にHTTP 429で`EmbeddingError`となった。実機検証`20261114-202013-69c9eba1`はsample2のRegister成功後に停止した。失敗後、接続先`192.168.1.100:31000`は応答していた。製品コードは変わっていないため、`-StartAt sample2`で再実行した。記録: `outputs/sample2/01a1d9ee-2dcf-7802-a90d-1d1e9f02a2c9/translation.log.2026-11-14`と`translation.log`。
+- 再発（2026-11-15 05:38、HEAD `9bc1892`と未コミットの変更）: Docling復旧後に再開したsample2のRegisterで、237件のEmbedding要求がHTTP 500で失敗した。製品コードは変わっていないため、時間をおいて`-StartAt sample2`で再実行した。記録: `outputs/sample2/01a1dbc4-e07e-7412-b322-35ceb932d2a7/registration.log`。
+- 中断（2026-11-16 08:34〜11-18、HEAD `9bc1892`と未コミットの変更）: 実機検証`20261115-214801-df24d278`は、sample〜sample3の16工程とsample2のRegisterが成功した後、sample2のTranslateでEmbedding要求の開始を最後にログが止まった。この間に検証用PCのスリープ復帰（11-16 19:36）と再起動（11-17 19:54）があり、検証プロセスは終了していた。製品コードは変わっていないため、11-18 09:09に`-StartAt sample2`で再実行した。記録: `outputs/sample2/01a1e15c-bdf1-77b1-878b-c8cd8814045d/translation.log`。
+- 中断（2026-11-19 08:41、HEAD `9bc1892`と未コミットの変更）: 実機検証`20261118-120141-af6f2abd`は、sample2の全4工程とコラム確認、sample1のRegisterが成功した後、sample1のTranslate（STRUCTURE・TRANSLATE・REVIEW・FIXは完了）の途中で、検証用PCがスタートメニューから電源を切られて終了した。製品コードは変わっていないため、11-19 23:17に`-StartAt sample1`で再実行した。記録: `outputs/sample1/01a1eed8-67cb-7153-8b5f-13a32e8382b6/translation.log`。
+- 中断（2026-11-20 08:36、HEAD `9bc1892`と未コミットの変更）: 再実行`20261119-231759-cf8b0496`も、sample1のRegister成功後、TranslateのREVIEW中に検証用PCの電源が切られて終了した。sample1はTranslateだけで約20時間かかり、検証スクリプトは途中から再開できないため、利用者の判断でsample1のTranslate以降の検証を終了した。記録: `outputs/sample1/01a1f4e1-7142-7113-ade9-88fa7f511bb8/translation.log`。
+
+## 🧷 コラム追加の位置が訳文の表現差で見つからず実機検証が停止する
+
+- 再現条件: 実機検証でsampleのTranslate後、`scripts/add_translation_columns.py`が訳文DOCXへコラムを追加する（2026-11-12 19:49）。
+- 結果: 新しい訳文は見出しを「数式」ではなく「方程式」と訳しており、挿入位置の語句が見つからず`ValueError`で検証が停止した。
+- 原因: 挿入位置を一つの語句だけで探していた。訳文の表現は実行ごとに変わる。
+- 対応: 語句の候補を追加し、どの語句も見つからない場合は文書内の決まった位置の本文段落の後ろへ挿入して検証を続けるようにした。検証は先頭からやり直した。
+- 記録: `.tmp/acceptance/20261112-193658-014e0fd9/state.json`。
+- 関連（2026-11-13、検査スクリプト）: sample3のReviewで、コラム本文と直後の本文行「ジョージ・W・ブッシュ大統領 2003年10月」が日本語PDFの抽出で一つのunitへ結合された。Reviewは本文行の部分で原文と対応付け、このunitへの指摘・修正はなかったが、検査は`translation_only`でないことを`COLUMN FAIL`とした。検査を、コラムだけのunitは`translation_only`であること、本文と結合したunitは修正後もコラムの文が変わらないことを確かめるよう改めた。改めた検査でsample〜sample3のReviewはすべて合格した。記録: `outputs/document.ja-columns/01a1d34a-d27a-78d1-b936-0e7f8f9cb5a2/tasks/41-review/review.json`。
+
+## 🔁 分割できない最小の対象で出力上限に達しReviewが停止する
+
+- 再現条件: 実機検証`20261112-234510-00b3cd24`でsample5のReviewを実行する（2026-11-13 02:18、HEAD `9bc1892`と未コミットの変更）。
+- 結果: 1組だけの評価対象`review/alignment-000021`（入力は他の組と同程度の約5,000 token）で、生成が約3分続いて`REVIEW_OUTPUT_TOKENS=8192`に達し、`LLMOutputTokenExceededError`でReviewが失敗した。他の組の出力は約90 tokenだった。
+- 原因: 小さい入力でも生成が反復して出力上限へ達することがある。これ以上分割できない対象では、分割による継続ができず失敗を伝えていた。Upgradeの起点だけの比較も同じだった。
+- 対応: 分割できない対象の出力超過・応答不正は、`LLM_RETRY_ATTEMPTS`回まで同じ要求を生成し直すようにした。入力超過は従来どおり失敗とする。実機検証は先頭からやり直した。
+- 記録: `outputs/document.ja-columns/01a1d086-7330-7302-a982-7eb01f20592b/review.log`。
+- 再発（2026-11-13 05:58、上記の対応後）: 同じ対象が5回の生成し直しですべて出力上限に達した。対象は原文が数式だけのunit（同じ6列行列が繰り返される約3,200文字のLaTeX）で、訳文側は数式が2つのunitに分かれて文字として抽出されていた。LLMが数式全体を書き直す修正を出力し、反復が止まらないため偶発ではなかった。
+- 対応（再発分）: 数式・コードは翻訳せず原文の記法を残す対象のため、原文が数式・コードだけの組は対応だけを記録し、品質確認へ送らないようにした。実機検証は先頭からやり直した。記録: `outputs/document.ja-columns/01a1d141-a890-74a1-a65d-363124c9d8c6/review.log`。
+
+## ♻️ 訳文を変えない修正案を繰り返しReviewが停止する
+
+- 再現条件: 実機検証`20261113-060352-7be2ce58`でsampleのReviewを実行する（2026-11-13 06:35、HEAD `9bc1892`と未コミットの変更）。
+- 結果: 評価対象`review/alignment-000041`で、LLMが抽出空白だけを変える、または訳文を変えない修正案を返し続けた。再要求5回と生成し直し5回の計25回すべてが同じ理由で拒否され、`LLMInvalidResponseError`でReviewが失敗した。
+- 原因: 訳文を変えない修正案を応答不正として再要求していた。LLMは同じ判断を繰り返すため、再要求では解消しなかった。
+- 対応: 訳文を変えない修正案は、日付の区切り差と同様に再要求せず不備なしとして確定するようにした。実機検証は先頭からやり直した。
+- 記録: `outputs/document.ja-columns/01a1d19e-4019-7800-bbb9-5109add1e2d3/review.log`。
+
+## 🏷️ 本文の見出しに似たコラムの見出しが英文と対応付けられ修正される
+
+- 再現条件: 実機検証`20261115-054915-e02d1b7f`でsample2のReviewを実行する（2026-11-15、HEAD `9bc1892`と未コミットの変更）。
+- 結果: 追加したコラムの見出し「コラム：情報の質の基準について」が英文の見出し`INFORMATION QUALITY CRITERIA`と対応付けられ、「コラム：」を不要とする指摘と、見出しを「情報の質の基準」へ書き換える修正提案が作られた。コラムの本文は訳文のみとして正しく扱われた。
+- 原因: コラムを対応付けない規則をLLMへの指示だけで守らせていた。コラムの見出しが本文の見出しとほぼ同じ語句だったため、LLMが対応付けた。
+- 対応: 「コラム：」「訳注：」「訳者注：」「補足：」で始まる訳文の要素は、ReviewとUpgradeの照合・比較の候補から除くようにした。実機検証は先頭からやり直した。
+- 記録: `outputs/document.ja-columns/01a1dc69-b0f2-7b81-b3ea-097a3c2ea31c/tasks/41-review/review.json`。
+
+## 📏 providerの入力上限超過が分割されずTranslateが停止する
+
+- 再現条件: 実機検証`20261118-090914-098b2a44`でsample2のTranslateを実行する（2026-11-18 11:55、HEAD `9bc1892`と未コミットの変更）。
+- 結果: 翻訳後の品質確認で8件の評価対象をまとめた要求が、endpointからHTTP 400（診断`category=input_limit`）で拒否され、`LLMProviderError`としてTranslateが失敗した。送信前の入力検査は通過していた。
+- 原因: 分割へ回すcontext超過の判定が既知の文言の一覧だけで行われ、診断で入力上限と分類した応答の文言が一覧になかった。そのため分割せず、通常のHTTPエラーとして停止した。
+- 対応: 診断で入力上限と分類したHTTP 400もcontext超過として扱い、対象を分割して続けるようにした。この変更はこのエラーを受けた場合の動作だけを変え、受けずに合格したsample〜sample3の結果は変わらないため、実機検証はsample2から再開した。
+- 記録: `outputs/sample2/01a1ec21-1aff-7412-992a-ab331002968f/tasks/41-review/calls/call-c453f171c3730701587c3b5fdad5e59b065d2d60357a903d3804a7b79caf963b/call.json`。

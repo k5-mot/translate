@@ -33,7 +33,7 @@ Dockerからホスト上のサービスへ接続する場合は、必要に応�
 | Register | 単一・複数PDF、またはPDFを含むディレクトリ | Qdrantへの登録結果 |
 | Upgrade | 英文旧版・新版PDF・日本語旧版PDF | 追加・変更・削除・移動した箇所と修正提案の一覧・JSON |
 
-ReviewとUpgradeのAgentは、途中結果から調査対象と操作を選び、必要な文脈の取得や再確認を繰り返します。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
+ReviewとUpgradeのAgentは、英文の要素を文書順に照合・比較し、失敗した要求は対象を分割して最後まで処理します。訳者が訳文だけに追加したコラムや訳注は、照合・指摘・修正の対象にしません。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
 
 成果物と入力PDFは`outputs/<file-basename>/<uuidv7>/`にまとめます。タスク成果物は`tasks/<番号>-<task名>/`、状態ファイルは`state-translation.json`などの名前で、ログは`translation.log`、`review.log`、`registration.log`または`upgrade.log`として処理ディレクトリ直下に保存します。
 
@@ -51,9 +51,11 @@ uv run pytest
 
 ### 🌐 実PDFの受入検証
 
-実装をコミットしてから、`inputs/sample.pdf`、`sample5.pdf`、`sample4.pdf`、`sample3.pdf`、`sample2.pdf`、`sample1.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXはWindowsのMicrosoft WordでPDFへ変換し、ReviewとUpgradeへ渡します。
+実装をコミットしてから、`inputs/sample.pdf`、`sample5.pdf`、`sample4.pdf`、`sample3.pdf`、`sample2.pdf`、`sample1.pdf`の順に検証します。各PDFについてPlaywrightで実際のUIからRegister → Translate → Review → Upgradeを開始し、完了と成果物表示を確認します。TranslateのDOCXには、英文のどの版にもない訳者のコラムを`scripts/add_translation_columns.py`で追加し、WindowsのMicrosoft WordでPDFへ変換してReviewとUpgradeへ渡します。コラムの位置と本文は`scripts/translation_columns.json`に定義します。
 
 Upgradeの新版入力には、元PDFの最終ページを削除した検証用PDFを`.tmp/versions/`へ生成します。入力の変更内容は同じ場所のJSONへ記録します。
+
+ReviewとUpgradeの完了後、`scripts/check_translation_columns.py`でコラムが訳文のみの要素として扱われ、指摘・修正提案・旧訳の対応に含まれないことを検査し、結果を`state.json`へ記録します。この検査の失敗では検証を止めません。
 
 ```powershell
 # Playwrightのブラウザーを準備し、実サービスとMicrosoft Wordで検証する。
@@ -61,7 +63,7 @@ uv run playwright install chromium
 .\scripts\real_acceptance.ps1
 ```
 
-未起動の場合は検証用UIを`127.0.0.1:8502`で起動します。実行ごとの状態・コマンド出力・画面キャプチャは`.tmp/acceptance/<実行ID>/`へ保存します。失敗時は停止します。失敗したPDFの修正後は、そのPDFのRegisterから全工程を新しい処理IDで検証し直します。`-StartAt sample5`のように開始するPDFを指定できます。
+未起動の場合は検証用UIを`127.0.0.1:8502`で起動します。実行ごとの状態・コマンド出力・画面キャプチャは`.tmp/acceptance/<実行ID>/`へ保存します。失敗時は停止します。失敗したPDFの修正後は、そのPDFのRegisterから全工程を新しい処理IDで検証し直します。`-StartAt sample5`のように開始するPDFを指定できます。未コミットの変更で検証する場合は`-AllowUncommitted`を指定し、差分のhashを`state.json`へ記録します。
 
 ## 🧭 設計・開発資料
 

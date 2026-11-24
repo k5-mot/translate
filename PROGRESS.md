@@ -4,28 +4,28 @@ Review／Upgradeの対応付け精度の改善と、その実機検証の進捗�
 
 ## 🧭 現在の状況
 
-- 作業ブランチ: `feature/review-matching-audit`（`origin/main`の`e3696fd`から分岐。未push）
-- 実装: 完了。修正ごとにコミット済み
-- 品質検査: `pytest`（unit・regression）405件成功、`ruff check`、`ruff format --check`、`ty check`は問題なし。照合の修正だけを含むコミット`58d2d69`でも385件成功
-- 実機検証: sample〜sample2の20工程は成功。sample1は規模が大きいため、Translateの途中で検証を中止した
+- 作業ブランチ: `feature/review-upgrade-completion`（`origin/main`の`701c359`へrebase済み）
+- 実装: ReviewとUpgradeを、対象を分割して最後まで処理する決定的な手順へ改めた。訳者が追加したコラムは修正の対象にしない
+- 品質検査: `pytest` 362件成功、`ruff check`、`ruff format --check`、`ty check`は問題なし
+- 実機検証: sample〜sample2の全20工程とコラム確認が成功。sample1はRegisterまで成功し、Translate以降は検証用PCの電源断が続いたため、利用者の判断で検証を終了した
 - 範囲外: LLMとEmbeddingを含む外部APIの安定性は、この作業の対象外とする。外部APIが原因の失敗は記録だけ行う
 
 ## 🧪 実機検証
 
-順序はsample、sample5、sample4、sample3、sample2、sample1とする。起動は`scripts/real_acceptance.ps1`、記録は`.tmp/acceptance/`配下の`20261110-200735-a65687bc`（sample〜sample4）、`20261111-050121-a17050f4`（sample3、sample2）、`20261111-224211-54e37494`（sample1）の`state.json`にある。外部APIの失敗で止まった実行は、コードが同じ（HEAD `1634faa`）ため止まった文書から再開した。
+順序はsample、sample5、sample4、sample3、sample2、sample1とする。起動は`scripts/real_acceptance.ps1 -AllowUncommitted`、記録は`.tmp/acceptance/`配下の`20261115-214801-df24d278`（sample〜sample3）と`20261118-120141-af6f2abd`（sample2、sample1）の`state.json`にある。
 
-Reviewの訳文はTranslateのDOCXをWordでPDF化したものを使う。Upgradeは英文v1に元PDF、英文v2に最終ページを削除したPDF、日本語v1に訳文PDFを指定し、差分処理も検証する。
+Reviewの訳文は、TranslateのDOCXへ`scripts/add_translation_columns.py`で英文にないコラムを加え、WordでPDF化したものを使う。Upgradeは英文v1に元PDF、英文v2に最終ページを削除したPDF、日本語v1にコラム入りの訳文PDFを指定する。各Review・Upgradeの後に`scripts/check_translation_columns.py`で、コラムが照合・指摘・修正提案の対象になっていないことを確認した（表の「コラム」列）。
 
-sample1は、Registerに約3時間20分、Translateに3時間以上かかる。2026-11-11 22:39のEmbedding接続失敗と、2026-11-12 04:57のWindows Updateによる再起動でTranslateが2回中断したため、検証を中止した。sample2のReviewは4時間49分で、LLM Taskの期限（6時間）に収まった。
+sample2の初回Translateは、providerの入力上限超過（HTTP 400）を分割せず停止したため修正した（[BUG.md](BUG.md)）。この修正はそのエラーを受けた場合の動作だけを変えるため、sample〜sample3は再実行していない。sample1は規模が大きく（Translateだけで約20時間）、2026-11-19と11-20に検証用PCの電源が切られてTranslateが2回中断した。検証スクリプトは途中から再開できないため、Translate以降は未検証とした。
 
-| 文書 | Register | Translate | Review | Upgrade |
-|---|---|---|---|---|
-| sample | 成功 (`01a1c524-8e7f-7161-9d57-bbcf4550b2ac`) | 成功 (`01a1c526-5354-7140-bad3-95914c56a06e`) | 成功 (`01a1c52f-0cd2-7440-8367-745afa7ae1c6`) | 成功 (`01a1c55d-aeee-70e0-978e-286174e4d590`) |
-| sample5 | 成功 (`01a1c561-ed07-7a90-9f90-1d399e39afed`) | 成功 (`01a1c587-d6fb-7d63-ad4a-f8b182f4ab5d`) | 成功 (`01a1c5b1-8c9d-7ee3-abcb-54706be8a53c`) | 成功 (`01a1c60a-2b22-7942-93de-bd23e9f435fd`) |
-| sample4 | 成功 (`01a1c656-55b8-7d43-8602-4a2c46f6b845`) | 成功 (`01a1c65f-2820-72c2-9696-e2da986df647`) | 成功 (`01a1c678-d631-7240-9ab2-d0eff3aca196`) | 成功 (`01a1c6b7-0bd6-7f91-81d8-09a05ed18f99`) |
-| sample3 | 成功 (`01a1c70d-230e-7183-880e-a289db831d53`) | 成功 (`01a1c716-a722-7ef1-a4c8-8411d75047ae`) | 成功 (`01a1c736-f4b6-7421-85d0-e43c69feaf30`) | 成功 (`01a1c797-fe08-76f2-9fc1-31dea8e3c115`) |
-| sample2 | 成功 (`01a1c7c5-5223-7f22-980d-7bd6046f580a`) | 成功 (`01a1c7e9-afc6-7002-96ea-ddd5f7bbd915`) | 成功 (`01a1c85f-2f09-7833-8281-692184d9cb8b`) | 成功 (`01a1c968-6d1e-7ff0-83c4-404b69046aa8`) |
-| sample1 | 成功 (`01a1cad8-7730-77c2-87a6-0fe4a0d1eb46`) | 中止 (`01a1cb8e-41a6-7bd2-be90-1b55b898baaa`) | 未実行 | 未実行 |
+| 文書 | Register | Translate | Review | Upgrade | コラム |
+|---|---|---|---|---|---|
+| sample | 成功 (`01a1df40-3c81-7c91-9837-cd147ff223e3`) | 成功 (`01a1df42-aa83-7773-97b2-05e85330212b`) | 成功 (`01a1df4c-175c-7963-9fbb-29fb38fefea9`) | 成功 (`01a1df62-af70-7e53-8f72-9bc1fb894dbc`) | 成功 |
+| sample5 | 成功 (`01a1df66-b66c-79a2-9ad2-6ee87b4d320d`) | 成功 (`01a1df8c-dda2-7631-bca7-b2cc8867fb70`) | 成功 (`01a1dfb6-32b2-7a00-9173-5c47a448a88c`) | 成功 (`01a1dffd-d39b-7c00-8a4a-27b87d2f12f6`) | 成功 |
+| sample4 | 成功 (`01a1e04c-1494-7022-b91a-d585f1bdabdc`) | 成功 (`01a1e054-ec15-7f12-997e-0c7adc8fb157`) | 成功 (`01a1e06e-286b-7233-8b6c-4e82ba0604e9`) | 成功 (`01a1e09b-ed5b-77b1-9624-fcb4be97e7ef`) | 成功 |
+| sample3 | 成功 (`01a1e0b1-25fb-74f2-bb24-fd26c2a8c120`) | 成功 (`01a1e0ba-ad63-70a3-bac4-d978f0b36ddd`) | 成功 (`01a1e0da-d94f-7c91-8303-e8e2f93497c3`) | 成功 (`01a1e11d-02c7-7e52-b471-c3135fefa729`) | 成功 |
+| sample2 | 成功 (`01a1ec9a-7fc7-7840-a4c1-4d459064d86f`) | 成功 (`01a1ecbe-d4f7-7cb1-b1a6-c020a6e26c43`) | 成功 (`01a1ed38-7040-7753-b6e1-e2fb225db2d1`) | 成功 (`01a1ee1c-6b86-7c12-b8d7-df832c9963c2`) | 成功 |
+| sample1 | 成功 (`01a1f42c-18ca-78d2-a58e-a807a7c6d78f`) | 中止 (`01a1f4e1-7142-7113-ade9-88fa7f511bb8`) | 未実行 | 未実行 | 未実行 |
 
 ## ✅ 実装済みの修正
 
@@ -36,6 +36,11 @@ sample1は、Registerに約3時間20分、Translateに3時間以上かかる。2
 | `58d2d69` | Embeddingで照合候補を文書全体から検索する。照合規則の世代をCall IDへ含める。同じunitの照合が3回失敗したら未確認とする。複製された英語表紙は原文を比較基準にする。操作選択の出力上限とrole別ID上限を直す |
 | `ef251ce` | 抽出空白、日付区切り、ページ参照、ドットリーダー、固有名詞、略語、書誌タイトル、単位換算の誤検知を抑える |
 | `1634faa` | Reviewで進捗のない照合が手数の上限に達したら、評価を含む残作業を状態から決めて完了させる |
+| `feature/review-upgrade-completion` | ReviewとUpgradeを、英文の要素を文書順に起点とする決定的な手順へ改め、失敗した範囲は縮めて続け、全対象を処理する |
+| `feature/review-upgrade-completion` | 分割できない最小の対象が出力超過・応答不正となった場合に、`LLM_RETRY_ATTEMPTS`回まで生成し直す |
+| `feature/review-upgrade-completion` | 原文が数式・コードだけの組は対応だけを記録し、品質確認へ送らない。訳文を変えない修正案は不備なしとする |
+| `feature/review-upgrade-completion` | 「コラム：」「訳注：」「訳者注：」「補足：」で始まる訳文の要素を、照合・比較の候補から除く |
+| `feature/review-upgrade-completion` | providerが入力上限超過と分類できるHTTP 400を、文言が既知でなくても分割の対象とする |
 
 ## 🔬 照合精度の確認結果
 
@@ -59,3 +64,7 @@ sample1は、Registerに約3時間20分、Translateに3時間以上かかる。2
 - LOADのdocling-coreへの移行は、ブランチ`feature/load-docling-core`で完了した（`30479fe`、`58b250a`）。既存87文書でLOAD結果が移行前と完全に一致する。実機検証の終了後に取り込む
 - `.env.sample`へ`LLM_INPUT_BYTES_PER_TOKEN`を追記していない。権限設定で`.env*`の読み取りが禁止されているため
 - コードブロックの言語はLOADで取り込んでいない。Doclingのキーは`code_language`だが、既存実装は`language`を読んでいた。挙動を変えないよう、移行でもそのままにした
+- 見出しのないコラムを照合しないことは、LLMへの指示だけで守らせている。sample3では本文の行と結合したコラムを確認したが、すべての文書で守られる保証はない
+- Translateは数式を`$$…$$`の文字としてDOCXへ出力し、Word経由の訳文PDFでは数式が複数の要素に分かれる。原文が数式・コードだけの組はReviewで評価しない
+- 単一要素でもprovider側で入力上限を超える場合は、従来どおり失敗として停止する
+- sample1（357ページ）のTranslate以降は、このブランチのコードで実機検証していない
