@@ -3,7 +3,7 @@
 from translate.adapters.llm import LLMClient
 from translate.models.document import TextUnit
 from translate.models.review import AlignmentCandidate, AlignmentResponse
-from translate.tasks import SavedLLMCalls
+from translate.tasks import SavedLLMCalls, clipped_text
 
 
 def match_documents(
@@ -29,6 +29,10 @@ def match_documents(
         LLMError: LLM要求が失敗した場合。
     """
     expected = {role: [unit.id for unit in values] for role, values in units.items()}
+    # 長いunitだけの組でも照合できるよう、各unitの本文へ入力の一部ずつを割り当てる。
+    unit_bytes = client.config.input_bytes(client.config.review_input_tokens) // (
+        2 * max(1, sum(map(len, expected.values())))
+    )
 
     def validate(response: AlignmentResponse) -> None:
         """不明・重複IDを拒否し、対応が返らなかった候補を未確認として補う。
@@ -87,7 +91,7 @@ def match_documents(
         role: [
             {
                 "id": unit.id,
-                "text": unit.text("source"),
+                "text": clipped_text(unit.text("source"), unit_bytes),
                 **(
                     {
                         "context": {
@@ -142,6 +146,10 @@ def match_documents(
         "Inspect all sentences and clauses in each unit; do not stop after the first matching sentence. "
         "Do not require full text coverage to assign a counterpart; the evaluator reports omissions and additions. "
         "Keep unrelated adjacent units separate. "
+        "The translation can contain translator-added supplementary columns or notes, for example "
+        "headed コラム, 訳注 or 補足, that explain the text but have no English counterpart. "
+        "Even when they discuss the same terms as a source unit, never match them and never merge "
+        "them into a group with translated text; omit their IDs. "
         "If an identifier itself has no counterpart in this candidate pool, omit it from groups.",
         validate,
     )

@@ -33,7 +33,7 @@ Dockerからホスト上のサービスへ接続する場合は、必要に応�
 | Register | 単一・複数PDF、またはPDFを含むディレクトリ | Qdrantへの登録結果 |
 | Upgrade | 英文旧版・新版PDF・日本語旧版PDF | 追加・変更・削除・移動した箇所と修正提案の一覧・JSON |
 
-ReviewとUpgradeのAgentは、途中結果から調査対象と操作を選び、必要な文脈の取得や再確認を繰り返します。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
+ReviewとUpgradeのAgentは、英文の要素を文書順に照合・比較し、失敗した要求は対象を分割して最後まで処理します。訳者が訳文だけに追加したコラムや訳注は、照合・指摘・修正の対象にしません。提案は一覧表示までとし、入力文書への適用やDOCXの生成は行いません。
 
 成果物と入力PDFは`outputs/<file-basename>/<uuidv7>/`にまとめます。タスク成果物は`tasks/<番号>-<task名>/`、状態ファイルは`state-translation.json`などの名前で、ログは`translation.log`、`review.log`、`registration.log`または`upgrade.log`として処理ディレクトリ直下に保存します。
 

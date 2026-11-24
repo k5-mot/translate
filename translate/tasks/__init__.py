@@ -23,7 +23,31 @@ from translate.adapters.qdrant import QdrantStore
 from translate.models.artifacts import LLMTaskName
 
 # 照合規則変更ごとに増やし、旧世代のgroupをResumeで再適用しない。
-MATCHING_VERSION = 13
+MATCHING_VERSION = 14
+# 照合・比較の入力全体のうち、各unitの本文へ割り当てる最小byte数。
+_MINIMUM_CLIPPED_BYTES = 512
+
+
+def clipped_text(text: str, maximum_bytes: int) -> str:
+    """照合用の本文を上限byte数へ収め、先頭と末尾を残して中央を省く。
+
+    照合は本文の特徴的な部分で相手を特定するため、長いunitでも先頭と末尾が
+    あれば判断できる。訳文の評価や修正提案には使わない。
+
+    Args:
+        text: unitの本文。
+        maximum_bytes: UTF-8で数えた上限。
+
+    Returns:
+        str: 上限内の本文。収まる場合は入力のまま。
+    """
+    limit = max(_MINIMUM_CLIPPED_BYTES, maximum_bytes)
+    if len(text.encode("utf-8")) <= limit:
+        return text
+    half = limit // 2
+    head = text.encode("utf-8")[:half].decode("utf-8", errors="ignore")
+    tail = text.encode("utf-8")[-half:].decode("utf-8", errors="ignore")
+    return f"{head} … {tail}"
 
 
 class SavedLLMCalls:
